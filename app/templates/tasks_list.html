@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Tasks — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>Tasks (attività)</h2>
+  <p class="muted">
+    Un <strong>task</strong> è un'attività autonoma (scraping, qualifier, outreach, responder, ecc.):
+    può essere lanciata indipendentemente, oppure orchestrata in cascata da un
+    <a href="/workflows">🔗 workflow</a>.
+  </p>
+  {% if tasks %}
+  <table class="data">
+    <thead>
+      <tr><th>#</th><th>Nome</th><th>Modalità</th><th>Modello</th><th>Cron</th><th>Aggiornato</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for t in tasks %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td><a href="/tasks/{{ t.id }}">{{ t.name }}</a></td>
+        <td><code>{{ t.agent_mode }}</code></td>
+        <td><code>{{ t.model }}</code></td>
+        <td><code>{{ t.cron or "—" }}</code></td>
+        <td><small>{{ t.updated_at }}</small></td>
+        <td>
+          <a href="/tasks/{{ t.id }}/edit">modifica</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Nessun task. <a href="/tasks/new">Creane uno</a>.</p>
+  {% endif %}
+</section>
+{% endblock %}

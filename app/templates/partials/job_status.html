@@ -1,0 +1,33 @@
+{% set in_progress = job.status in ("queued", "running") %}
+<div class="job-status"
+     {% if in_progress %}
+     hx-get="/jobs/{{ job.id }}/status"
+     hx-trigger="every 2s"
+     hx-swap="outerHTML"
+     {% endif %}>
+  <p>
+    <strong>Job #{{ job.id }}</strong>
+    &middot;
+    <span class="status status-{{ job.status }}">{{ job.status }}</span>
+    {% if job.started_at %}<small>avvio: {{ job.started_at }}</small>{% endif %}
+    {% if job.finished_at %}<small>&middot; fine: {{ job.finished_at }}</small>{% endif %}
+  </p>
+  {% if job.error %}<p class="errors"><strong>Errore:</strong> {{ job.error }}</p>{% endif %}
+  {% if job.result_path %}
+    {% set norm = job.result_path.replace('\\','/') %}
+    {% set marker = '/results/' ~ task.id|string ~ '/' %}
+    {% set rel = norm.split(marker)[-1] %}
+    {% set parts = rel.split('/') %}
+    <p>📄 <a href="/tasks/{{ task.id }}/results/{{ rel }}">{{ rel }}</a>
+    {% if parts|length > 1 %}
+      &middot; <a href="/tasks/{{ task.id }}/results/{{ parts[0] }}">📁 cartella run</a>
+    {% endif %}
+    </p>
+  {% endif %}
+  {% if job.log %}
+    <details {% if in_progress %}open{% endif %}>
+      <summary>Log ({{ job.log.count('\n') }} righe)</summary>
+      <pre class="log">{{ job.log }}</pre>
+    </details>
+  {% endif %}
+</div>

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}{{ workflow.name }} — Workflow — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <p><a href="/workflows">← Workflows</a></p>
+  <h2>🔗 {{ workflow.name }} <small>#{{ workflow.id }}</small></h2>
+  {% if workflow.description %}<p class="muted">{{ workflow.description }}</p>{% endif %}
+
+  {% if request.query_params.get('flash') %}
+    <div class="flash-ok">✓ {{ request.query_params.get('flash') }}</div>
+  {% endif %}
+  {% if request.query_params.get('error') %}
+    <div class="errors">⚠️ {{ request.query_params.get('error') }}</div>
+  {% endif %}
+
+  <div class="actions">
+    <form method="post" action="/workflows/{{ workflow.id }}/run" style="display:inline">
+      <button type="submit">▶ Esegui workflow</button>
+    </form>
+    <a href="/workflows/{{ workflow.id }}/edit" class="btn-link-action">✏️ Modifica nome/descrizione</a>
+    <form method="post" action="/workflows/{{ workflow.id }}/delete" style="display:inline"
+          onsubmit="return confirm('Eliminare il workflow {{ workflow.name }}? Gli edge saranno cancellati ma i task NO.');">
+      <button type="submit" class="btn-danger-inline">🗑️ Elimina workflow</button>
+    </form>
+    <small class="muted">
+      (Esegui = lancia i task root del DAG. La cascata segue gli edge.)
+    </small>
+  </div>
+
+  <h3>📍 Tasks root del DAG</h3>
+  {% if roots %}
+    <ul>
+      {% for tid in roots %}
+        {% set t = tasks | selectattr("id", "equalto", tid) | first %}
+        <li><a href="/tasks/{{ tid }}">#{{ tid }} — {{ t.name if t else "(eliminato)" }}</a> <small class="muted">({{ t.agent_mode if t else "?" }})</small></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">Nessun task root: questo workflow non ha edges. Aggiungi edge sotto.</p>
+  {% endif %}
+
+  <h3>➕ Aggiungi edge</h3>
+  {% if tasks|length < 2 %}
+  <p class="muted">
+    ⚠️ Servono <strong>almeno 2 task</strong> per creare un edge.
+    {% if tasks|length == 0 %}<a href="/tasks/new">Creane uno</a>.{% else %}<a href="/tasks/new">Creane un altro</a>.{% endif %}
+  </p>
+  {% else %}
+  <form method="post" action="/workflows/{{ workflow.id }}/edges" class="settings-form">
+    <div class="row three">
+      <label>Da (upstream)
+        <select name="from_task_id" required>
+          <option value="" selected>— scegli task upstream —</option>
+          {% for t in tasks %}
+            <option value="{{ t.id }}">#{{ t.id }} — {{ t.name }} ({{ t.agent_mode }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>A (downstream)
+        <select name="to_task_id" required>
+          <option value="" selected>— scegli task downstream —</option>
+          {% for t in tasks %}
+            <option value="{{ t.id }}">#{{ t.id }} — {{ t.name }} ({{ t.agent_mode }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Artifact da passare <span class="hint">(file relativo alla run dir, es. <code>profiles.jsonl</code>)</span>
+        <input type="text" name="pass_artifact" placeholder="profiles.jsonl">
+      </label>
+    </div>
+    <label>
+      <input type="checkbox" name="enabled" checked> Edge abilitato subito
+    </label>
+    <div class="actions">
+      <button type="submit">➕ Crea edge</button>
+    </div>
+  </form>
+  {% endif %}
+
+  <h3>🔗 Edges del workflow</h3>
+  {% if edges %}
+  <table class="data">
+    <thead>
+      <tr><th>#</th><th>Upstream</th><th>→</th><th>Downstream</th><th>Artifact</th><th>Stato</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for e in edges %}
+      <tr>
+        <td>{{ e.id }}</td>
+        <td><a href="/tasks/{{ e.from_task_id }}">{{ e.from_name }}</a></td>
+        <td>→</td>
+        <td><a href="/tasks/{{ e.to_task_id }}">{{ e.to_name }}</a></td>
+        <td><small>{% if e.pass_artifact %}<code>{{ e.pass_artifact }}</code>{% else %}—{% endif %}</small></td>
+        <td>
+          {% if e.enabled %}<span class="badge badge-ok">enabled</span>
+          {% else %}<span class="badge badge-pause">disabled</span>{% endif %}
+        </td>
+        <td>
+          <form method="post" action="/workflow_edges/{{ e.id }}/toggle" style="display:inline">
+            <input type="hidden" name="redirect_to" value="/workflows/{{ workflow.id }}">
+            <button type="submit" class="btn-small">↩️</button>
+          </form>
+          <form method="post" action="/workflow_edges/{{ e.id }}/delete" style="display:inline" onsubmit="return confirm('Eliminare l\'edge?');">
+            <input type="hidden" name="redirect_to" value="/workflows/{{ workflow.id }}">
+            <button type="submit" class="btn-small btn-danger">🗑️</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Nessun edge. Aggiungi sopra.</p>
+  {% endif %}
+
+  <h3>📋 Esecuzioni recenti</h3>
+  {% if runs %}
+  <table class="data">
+    <thead><tr><th>Run #</th><th>Stato</th><th>Avvio</th><th>Fine</th></tr></thead>
+    <tbody>
+      {% for r in runs %}
+      <tr>
+        <td>{{ r.id }}</td>
+        <td><span class="status status-{{ r.status }}">{{ r.status }}</span></td>
+        <td><small>{{ r.started_at }}</small></td>
+        <td><small>{{ r.finished_at or "—" }}</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Nessuna esecuzione ancora.</p>
+  {% endif %}
+</section>
+{% endblock %}

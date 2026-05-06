@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Risultati di {{ task.name }} — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>Risultati salvati</h2>
+  <p><a href="/tasks/{{ task.id }}">← {{ task.name }}</a></p>
+  {% if items %}
+  <table class="data">
+    <thead><tr><th>Tipo</th><th>Nome</th><th>Contenuto</th><th>Dimensione</th></tr></thead>
+    <tbody>
+      {% for it in items %}
+      <tr>
+        {% if it.type == "dir" %}
+          <td>📁 run</td>
+          <td><a href="/tasks/{{ task.id }}/results/{{ it.name }}">{{ it.name }}</a></td>
+          <td><small>{{ it.files_count }} file</small></td>
+          <td><small>{{ it.size }} byte</small></td>
+        {% else %}
+          <td>📄 file</td>
+          <td><a href="/tasks/{{ task.id }}/results/{{ it.name }}">{{ it.name }}</a></td>
+          <td><small>—</small></td>
+          <td><small>{{ it.size }} byte</small></td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Nessun file. Esegui il task per generare un report.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Contatti — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>👥 Contatti</h2>
+  <p>
+    <a href="/inbox">← Inbox</a>
+  </p>
+
+  <form method="get" class="filters">
+    <label>Stato
+      <select name="status" onchange="this.form.submit()">
+        <option value="">tutti</option>
+        <option value="new" {% if filter_status=='new' %}selected{% endif %}>new</option>
+        <option value="qualified" {% if filter_status=='qualified' %}selected{% endif %}>qualified</option>
+        <option value="rejected" {% if filter_status=='rejected' %}selected{% endif %}>rejected</option>
+        <option value="contacted" {% if filter_status=='contacted' %}selected{% endif %}>contacted</option>
+        <option value="replied" {% if filter_status=='replied' %}selected{% endif %}>replied</option>
+        <option value="optedout" {% if filter_status=='optedout' %}selected{% endif %}>optedout</option>
+      </select>
+    </label>
+  </form>
+
+  {% if contacts %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>#</th><th>Nome</th><th>Email</th><th>Telegram</th>
+        <th>Status</th><th>Score</th><th>Sorgente</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in contacts %}
+      <tr>
+        <td>{{ c.id }}</td>
+        <td>{{ c.display_name or '—' }}</td>
+        <td>{% if c.email %}<code>{{ c.email }}</code>{% else %}—{% endif %}</td>
+        <td>
+          {% if c.telegram_username %}@{{ c.telegram_username }}{% endif %}
+          {% if c.telegram_chat_id %}<small class="muted">chat:{{ c.telegram_chat_id }}</small>{% endif %}
+          {% if not c.telegram_username and not c.telegram_chat_id %}—{% endif %}
+        </td>
+        <td><span class="status status-{{ c.status }}">{{ c.status }}</span></td>
+        <td>{% if c.qualifier_score is not none %}{{ c.qualifier_score }}/10{% else %}—{% endif %}</td>
+        <td><small>{% if c.source_url %}<a href="{{ c.source_url }}" target="_blank" rel="noopener">{{ c.source_domain or 'link' }}</a>{% else %}—{% endif %}</small></td>
+        <td>
+          {% if c.status != 'optedout' %}
+            <form method="post" action="/inbox/contacts/{{ c.id }}/optout" style="display:inline" onsubmit="return confirm('Opt-out manuale?');">
+              <button type="submit" class="btn-small btn-danger">🚫</button>
+            </form>
+          {% else %}
+            <form method="post" action="/inbox/contacts/{{ c.id }}/reset" style="display:inline">
+              <button type="submit" class="btn-small">↩️</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Nessun contatto. Vengono creati dai runner outreach/qualifier o quando ricevi messaggi.</p>
+  {% endif %}
+</section>
+{% endblock %}

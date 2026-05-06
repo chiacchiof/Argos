@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Thread #{{ thread.id }} — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>
+    {% if thread.channel=='email' %}📧{% else %}💬{% endif %}
+    Thread #{{ thread.id }} — {{ thread.subject or '(senza oggetto)' }}
+  </h2>
+  <p>
+    <a href="/inbox">← Inbox</a>
+    &middot;
+    <strong>{{ contact.display_name or contact.email or contact.telegram_username or '(anonimo)' }}</strong>
+    {% if contact.email %} &middot; <code>{{ contact.email }}</code>{% endif %}
+    {% if contact.telegram_username %} &middot; <code>@{{ contact.telegram_username }}</code>{% endif %}
+    &middot; <span class="status status-{{ thread.status }}">{{ thread.status }}</span>
+    &middot; contatto: <span class="status status-{{ contact.status }}">{{ contact.status }}</span>
+  </p>
+
+  {% if contact.source_url %}
+  <p class="muted small">📍 Sorgente: <a href="{{ contact.source_url }}" target="_blank" rel="noopener">{{ contact.source_url }}</a></p>
+  {% endif %}
+
+  <div class="thread-messages">
+    {% for m in messages %}
+    <div class="msg msg-{{ m.direction }}{% if m.llm_generated %} msg-llm{% endif %}">
+      <div class="msg-header">
+        <strong>{% if m.direction=='out' %}🠊 outbound{% else %}🠈 inbound{% endif %}</strong>
+        {% if m.llm_generated %}<span class="badge badge-pause">🤖 LLM</span>{% endif %}
+        <span class="status status-{{ m.status }}">{{ m.status }}</span>
+        <small class="muted">{{ m.sent_at or m.created_at }}</small>
+      </div>
+      <div class="msg-body">{{ m.body }}</div>
+      {% if m.error %}<div class="errors">⚠️ {{ m.error }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if contact.status != 'optedout' %}
+  <h3>✏️ Rispondi</h3>
+  <form method="post" action="/inbox/{{ thread.id }}/reply">
+    <textarea name="body" rows="6" required placeholder="Scrivi qui la tua risposta..."></textarea>
+    <div class="actions">
+      <button type="submit">📤 Invia</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="errors">⚠️ Il contatto è in opt-out. Non è possibile inviargli ulteriori messaggi.</p>
+  {% endif %}
+
+  {% if contact.status != 'optedout' %}
+  <form method="post" action="/inbox/contacts/{{ contact.id }}/optout" class="danger" onsubmit="return confirm('Marcare il contatto come opt-out (niente più messaggi)?');">
+    <button type="submit" class="danger">🚫 Opt-out manuale</button>
+  </form>
+  {% else %}
+  <form method="post" action="/inbox/contacts/{{ contact.id }}/reset">
+    <button type="submit">↩️ Reset opt-out</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

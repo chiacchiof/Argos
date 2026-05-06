@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Inbox — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>📨 Inbox</h2>
+
+  <p>
+    <a href="/inbox/contacts">👥 Contatti</a>
+    &middot;
+    <a href="/settings">⚙️ Settings canali</a>
+  </p>
+
+  <form method="get" class="filters">
+    <label>Canale
+      <select name="channel" onchange="this.form.submit()">
+        <option value="">tutti</option>
+        <option value="email" {% if filter_channel=='email' %}selected{% endif %}>email</option>
+        <option value="telegram" {% if filter_channel=='telegram' %}selected{% endif %}>telegram</option>
+      </select>
+    </label>
+    <label>Stato
+      <select name="status" onchange="this.form.submit()">
+        <option value="">tutti</option>
+        <option value="open" {% if filter_status=='open' %}selected{% endif %}>open</option>
+        <option value="replied" {% if filter_status=='replied' %}selected{% endif %}>replied</option>
+        <option value="closed" {% if filter_status=='closed' %}selected{% endif %}>closed</option>
+        <option value="optedout" {% if filter_status=='optedout' %}selected{% endif %}>optedout</option>
+      </select>
+    </label>
+  </form>
+
+  {% if threads %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>#</th><th>Canale</th><th>Contatto</th><th>Subject</th>
+        <th>Stato</th><th>Ultimo msg</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in threads %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>{% if t.channel=='email' %}📧{% else %}💬{% endif %} {{ t.channel }}</td>
+        <td>
+          <a href="/inbox/{{ t.id }}">
+            {{ t.display_name or t.email or t.telegram_username or '(anonimo)' }}
+          </a>
+          {% if t.email %}<small class="muted">{{ t.email }}</small>{% endif %}
+          {% if t.telegram_username %}<small class="muted">@{{ t.telegram_username }}</small>{% endif %}
+        </td>
+        <td><small>{{ t.subject or '—' }}</small></td>
+        <td><span class="status status-{{ t.status }}">{{ t.status }}</span></td>
+        <td><small>{{ t.last_msg_at or t.created_at }}</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Nessun thread. I thread vengono creati quando lanci un outreach o ricevi una mail/messaggio.</p>
+  {% endif %}
+</section>
+{% endblock %}

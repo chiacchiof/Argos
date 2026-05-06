@@ -1,0 +1,8 @@
+<div id="jobs-history"
+     {% if has_active %}
+     hx-get="/tasks/{{ task.id }}/jobs"
+     hx-trigger="every 3s"
+     hx-swap="outerHTML"
+     {% endif %}>
+  {% include "partials/jobs_history.html" %}
+</div>

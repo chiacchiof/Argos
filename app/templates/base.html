@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}AgentScraper{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body>
+  <header>
+    <h1><a href="/">AgentScraper</a></h1>
+    <nav>
+      <a href="/">Tasks</a>
+      <a href="/tasks/new">+ Nuovo task</a>
+      <a href="/workflows">🔗 Workflows</a>
+      <a href="/inbox">📨 Inbox</a>
+      <a href="/settings">⚙️ Settings</a>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    <small>Locale &middot; Ollama @ {{ request.app.state if false else "" }}</small>
+  </footer>
+</body>
+</html>

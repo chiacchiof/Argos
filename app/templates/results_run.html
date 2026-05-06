@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ run_name }} — {{ task.name }} — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>📁 {{ run_name }}</h2>
+  <p>
+    <a href="/tasks/{{ task.id }}/results">← Tutti i risultati</a>
+    &middot;
+    <a href="/tasks/{{ task.id }}">{{ task.name }}</a>
+  </p>
+  {% if files %}
+  <table class="data">
+    <thead><tr><th>File</th><th>Dimensione</th></tr></thead>
+    <tbody>
+      {% for f in files %}
+      <tr>
+        <td><a href="/tasks/{{ task.id }}/results/{{ run_name }}/{{ f.path }}">{{ f.path }}</a></td>
+        <td><small>{{ f.size }} byte</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Cartella vuota.</p>
+  {% endif %}
+</section>
+{% endblock %}

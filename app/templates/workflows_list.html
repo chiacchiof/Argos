@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Workflows — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>🔗 Workflows</h2>
+  <p class="muted">
+    Un <strong>workflow</strong> è un'orchestrazione di <a href="/">tasks</a> in cascata
+    (DAG). Quando un task termina, eventuali task downstream connessi via edge vengono
+    lanciati automaticamente. Ogni task resta comunque lanciabile da solo.
+  </p>
+  <p><a href="/workflows/new">+ Nuovo workflow</a></p>
+
+  {% if workflows %}
+  <table class="data">
+    <thead>
+      <tr><th>#</th><th>Nome</th><th>Tasks</th><th>Edges</th><th>Aggiornato</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for w in workflows %}
+      <tr>
+        <td>{{ w.id }}</td>
+        <td><a href="/workflows/{{ w.id }}">{{ w.name }}</a></td>
+        <td>{{ w.n_tasks }}</td>
+        <td>{{ w.n_edges }}</td>
+        <td><small>{{ w.updated_at }}</small></td>
+        <td><a href="/workflows/{{ w.id }}/edit">modifica</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Nessun workflow ancora. <a href="/workflows/new">Creane uno</a>.</p>
+  {% endif %}
+</section>
+{% endblock %}

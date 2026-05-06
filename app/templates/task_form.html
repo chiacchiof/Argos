@@ -1,0 +1,335 @@
+{% extends "base.html" %}
+{% block title %}{% if task and task.id %}Modifica{% else %}Nuovo{% endif %} task — AgentScraper{% endblock %}
+{% block content %}
+{% set is_edit = task and task.get("id") %}
+<section>
+  <h2>{% if is_edit %}Modifica task #{{ task.id }}{% else %}Nuovo task{% endif %}</h2>
+
+  {% if errors %}
+  <div class="errors">
+    <strong>Errori di validazione:</strong>
+    <ul>{% for e in errors %}<li>{{ e.loc | join(".") }}: {{ e.msg }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  {% set p = task or {} %}
+  <form method="post" action="{% if is_edit %}/tasks/{{ task.id }}{% else %}/tasks{% endif %}" id="task-form">
+
+    {# ============================================================
+       SEZIONE 1: IDENTITÀ — sempre visibile per tutte le modalità
+       ============================================================ #}
+    <label>Nome
+      <input name="name" required maxlength="200" value="{{ p.get('name','') }}">
+    </label>
+    <label>Descrizione <span class="hint">(promemoria interno)</span>
+      <textarea name="description" rows="2">{{ p.get('description','') or '' }}</textarea>
+    </label>
+
+    {# ============================================================
+       SEZIONE 2: MODALITÀ AGENTE — sempre visibile, pilota tutto il resto
+       ============================================================ #}
+    <label>
+      <strong>Modalità agente</strong>
+      <select name="agent_mode" id="agent-mode-select">
+        {% set mode = p.get('agent_mode','react') %}
+        <option value="react" {% if mode=='react' %}selected{% endif %}>react — ricerca leggera HTTP+DDG</option>
+        <option value="browser_use" {% if mode=='browser_use' %}selected{% endif %}>browser_use — scraping con browser reale</option>
+        <option value="qualifier" {% if mode=='qualifier' %}selected{% endif %}>qualifier — LLM filtra/scora contatti</option>
+        <option value="outreach" {% if mode=='outreach' %}selected{% endif %}>outreach — invio email/telegram</option>
+        <option value="responder" {% if mode=='responder' %}selected{% endif %}>responder — auto-reply LLM ai messaggi inbound</option>
+      </select>
+      <small class="hint mode-hint" data-mode-hint>Scegli la modalità: il form si adatterà automaticamente.</small>
+    </label>
+
+    {# ============================================================
+       SEZIONE 3: OBIETTIVO / CRITERIO — sempre presente, label varia
+       ============================================================ #}
+    <label>
+      <span class="dyn-label"
+            data-label-react="Obiettivo / cosa cercare"
+            data-label-browseruse="Obiettivo / cosa cercare"
+            data-label-qualifier="Criterio di filtro / scoring"
+            data-label-outreach="Note descrittive (opzionale)"
+            data-label-responder="Note descrittive (opzionale)">Obiettivo</span>
+      <span class="hint dyn-hint"
+            data-hint-react="Cosa deve trovare l'agente, in linguaggio naturale."
+            data-hint-browseruse="Cosa cerca l'agente nel browser. Combinato con lo schema di estrazione."
+            data-hint-qualifier="Criterio LLM per decidere se un profilo è valido (es. 'tieni solo profili con email pubblica e descrizione narrativa')."
+            data-hint-outreach="Memo per te, non usato dall'agente. Le istruzioni effettive sono in template/subject/canali."
+            data-hint-responder="Memo per te, non usato dall'agente. Le istruzioni effettive sono nel system prompt sotto.">(cosa cerca, come deve produrre il report)</span>
+      <textarea name="objective" rows="5" required>{{ p.get('objective','') }}</textarea>
+    </label>
+
+    {# ============================================================
+       SEZIONE 4: SCRAPING — seed queries, domini, max iter
+       Solo per react / browser_use
+       ============================================================ #}
+    <fieldset class="dyn-section" data-modes="react browser_use">
+      <legend>Configurazione di ricerca</legend>
+
+      <label>
+        <span class="dyn-label"
+              data-label-react="Seed queries"
+              data-label-browseruse="Seed URL">Seed</span>
+        <span class="hint dyn-hint"
+              data-hint-react="Una query DuckDuckGo per riga. Se vuoto l'agente le deduce dall'obiettivo."
+              data-hint-browseruse="Una URL completa per riga (es. <code>https://example.com/categoria/1</code>). Ognuna è una sessione browser-use indipendente.">(una per riga, opzionale)</span>
+        <textarea name="seed_queries" rows="3">{% if p.get('seed_queries') %}{% if p.seed_queries is string %}{{ p.seed_queries }}{% else %}{{ p.seed_queries | join("\n") }}{% endif %}{% endif %}</textarea>
+      </label>
+
+      <div class="row">
+        <label>Domini consentiti <span class="hint">(uno per riga, vuoto = tutti)</span>
+          <textarea name="allowed_domains" rows="3">{% if p.get('allowed_domains') %}{% if p.allowed_domains is string %}{{ p.allowed_domains }}{% else %}{{ p.allowed_domains | join("\n") }}{% endif %}{% endif %}</textarea>
+        </label>
+        <label>Domini bloccati
+          <textarea name="blocked_domains" rows="3">{% if p.get('blocked_domains') %}{% if p.blocked_domains is string %}{{ p.blocked_domains }}{% else %}{{ p.blocked_domains | join("\n") }}{% endif %}{% endif %}</textarea>
+        </label>
+      </div>
+
+      <label>
+        <span class="dyn-label"
+              data-label-react="Max iterazioni totali"
+              data-label-browseruse="Max step PER seed">Max iterazioni</span>
+        <span class="hint dyn-hint"
+              data-hint-react="Numero massimo di tool-call totali (5–15 sufficienti per ricerche semplici)."
+              data-hint-browseruse="Step di browser-use per ogni seed URL. Con 5 seed e max 30 → 150 step totali. Per task complessi 30–50.">(numero massimo)</span>
+        <input type="number" name="max_iterations" min="1" max="100" value="{{ p.get('max_iterations', 10) }}">
+      </label>
+    </fieldset>
+
+    {# Quelli che NON sono react/browser_use ma vogliono comunque max_iterations
+       (in pratica nessuno: qualifier processa tutti i record dell'artifact;
+        outreach itera sui contatti rate-limited; responder processa tutti
+        gli inbound. Per loro max_iterations resta nel DB col valore di default.)
+       Nascondiamo l'input e inviamo il valore corrente come hidden per non perderlo. #}
+    <input type="hidden" name="_max_iter_default" value="{{ p.get('max_iterations', 10) }}">
+
+    {# ============================================================
+       SEZIONE 5: SCHEMA DI ESTRAZIONE — solo browser_use
+       ============================================================ #}
+    <fieldset class="extraction-fieldset dyn-section" data-modes="browser_use">
+      <legend>Schema di estrazione</legend>
+
+      {% set selected_template = p.get('extraction_template') or 'profile_contacts' %}
+      <label>Template di partenza
+        <select name="extraction_template"
+                hx-get="/templates/extraction"
+                hx-trigger="change"
+                hx-target="#extraction_schema_field"
+                hx-swap="outerHTML"
+                hx-include="this">
+          {% for t in extraction_templates %}
+            <option value="{{ t.key }}"
+                    {% if t.key == selected_template %}selected{% endif %}>
+              {{ t.name }} — {{ t.description }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>Schema effettivo <span class="hint">(modificalo come preferisci; cambiando il template di partenza il contenuto viene rigenerato)</span>
+        {% set current_schema = p.get('extraction_schema') %}
+        {% if current_schema %}
+          <textarea id="extraction_schema_field" name="extraction_schema" rows="20"
+                    class="schema-textarea"
+                    placeholder="Lo schema descrive cosa cercare e quali campi estrarre.">{{ current_schema }}</textarea>
+        {% else %}
+          {% include "partials/extraction_schema_field_initial.html" %}
+        {% endif %}
+      </label>
+    </fieldset>
+
+    {# ============================================================
+       SEZIONE 6: INPUT UPSTREAM — solo qualifier / outreach / responder (responder lo usa indirettamente per filtri)
+       ============================================================ #}
+    <fieldset class="dyn-section" data-modes="qualifier outreach">
+      <legend>Input upstream</legend>
+      <label>Input artifact path <span class="hint">(file <code>profiles.jsonl</code> da un task upstream. Vuoto se l'edge DAG lo passa automaticamente.)</span>
+        <input type="text" name="input_artifact_path" value="{{ p.get('input_artifact_path','') or '' }}"
+               placeholder="data/results/3/20260601T../profiles.jsonl">
+      </label>
+    </fieldset>
+
+    {# ============================================================
+       SEZIONE 7: OUTREACH — solo outreach
+       ============================================================ #}
+    <fieldset class="dyn-section" data-modes="outreach">
+      <legend>Configurazione outreach</legend>
+
+      <label>Subject email <span class="hint">Placeholder: <code>{display_name}</code>, <code>{source_domain}</code>, <code>{source_url}</code>, <code>{email}</code></span>
+        <input type="text" name="message_subject" value="{{ p.get('message_subject','') or '' }}"
+               placeholder="Proposta ottimizzazione per {display_name}">
+      </label>
+
+      <label>Canali messaggio <span class="hint">virgola-separati: <code>email</code>, <code>telegram</code></span>
+        {% set ch = p.get('message_channels') %}
+        {% if ch is iterable and ch is not string %}{% set chstr = ch | join(",") %}{% else %}{% set chstr = ch or "" %}{% endif %}
+        <input type="text" name="message_channels" value="{{ chstr }}"
+               placeholder="email">
+      </label>
+
+      <label>Message template <span class="hint">corpo del messaggio. Placeholder come sopra. Multiline.</span>
+        <textarea name="message_template" rows="8"
+                  placeholder="Ciao {display_name},&#10;&#10;ho visto la tua pagina su {source_url} e...">{{ p.get('message_template','') or '' }}</textarea>
+      </label>
+    </fieldset>
+
+    {# ============================================================
+       SEZIONE 8: RESPONDER — solo responder
+       ============================================================ #}
+    <fieldset class="dyn-section" data-modes="responder">
+      <legend>Configurazione responder</legend>
+
+      <label>System prompt LLM <span class="hint">Usato per generare le auto-reply ai messaggi inbound. Definisci tono, scopo, eventuali domande standard.</span>
+        <textarea name="responder_system_prompt" rows="6"
+                  placeholder="Sei un assistente cordiale che risponde in italiano. Se l'utente fa una domanda specifica, rispondi nel merito; altrimenti proponi una call la prossima settimana.">{{ p.get('responder_system_prompt','') or '' }}</textarea>
+      </label>
+
+      <p class="muted small">
+        ⚠️ <strong>Auto-detect opt-out</strong>: messaggi che contengono <code>STOP</code>, <code>unsubscribe</code>,
+        <code>rimuovimi</code>, ecc. NON ricevono risposta e il contatto viene marcato <code>optedout</code>.
+      </p>
+    </fieldset>
+
+    {# ============================================================
+       SEZIONE 9: PROVIDER LLM — tutti tranne outreach (outreach è solo template-fill)
+       ============================================================ #}
+    <fieldset class="dyn-section" data-modes="react browser_use qualifier responder">
+      <legend>Modello LLM</legend>
+
+      <label>Provider
+        {% set selected_provider = p.get('llm_provider') or 'ollama' %}
+        <select name="llm_provider" id="llm_provider_select"
+                hx-get="/providers/model-field"
+                hx-trigger="change"
+                hx-target="#provider-model-block"
+                hx-swap="outerHTML"
+                hx-include="this">
+          {% for prov in llm_providers %}
+            <option value="{{ prov.key }}" {% if prov.key == selected_provider %}selected{% endif %}>
+              {{ prov.name }}{% if prov.needs_key and not env_key_status[prov.key] %} ⚠️{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      {% set provider_info = (llm_providers | selectattr("key", "equalto", selected_provider) | list | first) %}
+      {% set suggested_models = [] %}
+      {% if selected_provider == "ollama" %}
+        {% for m in models %}{% set _ = suggested_models.append({'id': m, 'desc': '(installato in locale)'}) %}{% endfor %}
+      {% else %}
+        {% for m in (provider_info.suggested_models or []) %}{% set _ = suggested_models.append(m) %}{% endfor %}
+      {% endif %}
+
+      <div class="provider-block">
+        {% with
+           provider_key = selected_provider,
+           provider = provider_info,
+           suggested_models = suggested_models,
+           default_model = (suggested_models[0].id if suggested_models else ''),
+           current_model = p.get('model') or '',
+           current_base_url = p.get('llm_base_url') or '',
+           current_api_key = p.get('llm_api_key') or '',
+           env_key_set = env_key_status[selected_provider]
+        %}
+          {% include "partials/provider_model_field.html" %}
+        {% endwith %}
+      </div>
+    </fieldset>
+
+    {# Per outreach: salviamo provider/model/key di default come hidden così non si perdono se l'utente cambia mode #}
+    <div class="dyn-section" data-modes="outreach" style="display:none">
+      <input type="hidden" name="_outreach_no_llm" value="1">
+    </div>
+
+    {# ============================================================
+       SEZIONE 10: OUTPUT FORMAT — sempre
+       ============================================================ #}
+    <div class="row">
+      <label>Output
+        {% set fmt = p.get('output_format','txt') %}
+        <select name="output_format">
+          <option value="txt" {% if fmt=='txt' %}selected{% endif %}>txt</option>
+          <option value="md" {% if fmt=='md' %}selected{% endif %}>md</option>
+          <option value="both" {% if fmt=='both' %}selected{% endif %}>entrambi</option>
+        </select>
+      </label>
+    </div>
+
+    {# ============================================================
+       SEZIONE 11: CRON — sempre
+       ============================================================ #}
+    <label>Cron <span class="hint">opzionale, formato standard 5 campi: <code>m h dom mon dow</code></span>
+      <input name="cron" placeholder="es. 0 9 * * *" value="{{ p.get('cron','') or '' }}">
+    </label>
+
+    <div class="actions">
+      <button type="submit">{% if is_edit %}Salva modifiche{% else %}Crea task{% endif %}</button>
+      <a href="{% if is_edit %}/tasks/{{ task.id }}{% else %}/{% endif %}" class="link-cancel">Annulla</a>
+    </div>
+  </form>
+
+  {% if is_edit %}
+  <form method="post" action="/tasks/{{ task.id }}/delete" class="danger"
+        onsubmit="return confirm('Eliminare il task e tutti i suoi job?');">
+    <button type="submit" class="danger">Elimina task</button>
+  </form>
+  {% endif %}
+</section>
+
+{# ============================================================
+   JS: show/hide sezioni + label/hint dinamici basati su agent_mode
+   Pochi righe vanilla, no librerie. I valori dei campi nascosti vengono
+   comunque inviati al server (così se l'utente cambia idea non li perde).
+   ============================================================ #}
+<script>
+(function () {
+  const sel = document.getElementById('agent-mode-select');
+  if (!sel) return;
+
+  // mode 'browser_use' diventa 'browseruse' nei data-attribute (per evitare ambiguità con underscore)
+  function modeKey(mode) { return mode.replace(/_/g, ''); }
+
+  function camelKey(prefix, mode) {
+    const k = modeKey(mode);
+    return prefix + k.charAt(0).toUpperCase() + k.slice(1);
+  }
+
+  function update() {
+    const mode = sel.value;
+
+    // Mostra/nascondi sezioni basandosi su data-modes
+    document.querySelectorAll('[data-modes]').forEach(el => {
+      const modes = el.getAttribute('data-modes').split(/\s+/);
+      el.style.display = modes.includes(mode) ? '' : 'none';
+    });
+
+    // Aggiorna label dinamiche
+    document.querySelectorAll('.dyn-label').forEach(el => {
+      const txt = el.dataset[camelKey('label', mode)];
+      if (txt) el.textContent = txt;
+    });
+
+    // Aggiorna hint dinamici
+    document.querySelectorAll('.dyn-hint').forEach(el => {
+      const txt = el.dataset[camelKey('hint', mode)];
+      if (txt) el.innerHTML = txt;
+    });
+
+    // Hint sopra il selettore di modalità
+    const modeHint = document.querySelector('[data-mode-hint]');
+    const modeHints = {
+      react: "Loop ReAct con DDG: trova info via HTTP. Veloce, niente browser.",
+      browser_use: "Pilota un browser reale (Chromium): scrolla, clicca, gestisce JS. Per scraping serio.",
+      qualifier: "Legge un profiles.jsonl e filtra i contatti via LLM, scorando 0-10.",
+      outreach: "Manda email/telegram ai contatti qualified. Usa il template che definisci sotto.",
+      responder: "Risponde automaticamente ai messaggi inbound usando un LLM. Opt-out detection inclusa."
+    };
+    if (modeHint && modeHints[mode]) modeHint.textContent = modeHints[mode];
+  }
+
+  sel.addEventListener('change', update);
+  update(); // initial render
+})();
+</script>
+{% endblock %}

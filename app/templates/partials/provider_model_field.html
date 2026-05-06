@@ -1,0 +1,63 @@
+<div id="provider-model-block" class="provider-block-inner">
+  <div class="provider-status">
+    {% if provider.needs_key %}
+      {% if env_key_set %}
+        <span class="badge badge-ok" title="Variabile {{ provider.env_key }} trovata in .env">
+          ✓ {{ provider.env_key }} configurata
+        </span>
+      {% else %}
+        <span class="badge badge-warn" title="Imposta {{ provider.env_key }} in .env oppure compila il campo 'API key' qui sotto">
+          ⚠️ {{ provider.env_key }} non in .env
+        </span>
+      {% endif %}
+    {% endif %}
+    {% if provider.hint %}<small class="muted">{{ provider.hint }}</small>{% endif %}
+    {% if provider.docs_url %}
+      <small><a href="{{ provider.docs_url }}" target="_blank" rel="noopener">📖 docs</a></small>
+    {% endif %}
+  </div>
+
+  <label>Modello <span class="hint">(scegli dal menu o digita un nome diverso)</span>
+    <select id="model-picker-{{ provider_key }}" class="model-picker"
+            onchange="if (this.value) { this.parentElement.querySelector('input[name=model]').value = this.value; }">
+      <option value="">— scegli un modello suggerito —</option>
+      {% for m in suggested_models %}
+        <option value="{{ m.id }}" title="{{ m.desc }}"
+                {% if m.id == (current_model or default_model) %}selected{% endif %}>
+          {{ m.id }} — {{ m.desc }}
+        </option>
+      {% endfor %}
+    </select>
+    <input type="text" name="model" class="model-input"
+           value="{{ current_model or default_model }}"
+           placeholder="es. {{ default_model or 'nome-modello' }}"
+           autocomplete="off">
+  </label>
+
+  {% if provider_key == "custom" %}
+  <label>Base URL <span class="hint">(endpoint OpenAI-compat completo, es. <code>https://example.com/v1</code>)</span>
+    <input type="text" name="llm_base_url" value="{{ current_base_url }}"
+           placeholder="https://example.com/v1" autocomplete="off">
+  </label>
+  {% else %}
+    <input type="hidden" name="llm_base_url" value="{{ current_base_url }}">
+  {% endif %}
+
+  {% if provider.needs_key or provider_key == "custom" %}
+  <label>API key
+    <span class="hint">
+      (opzionale — se la lasci vuota viene letta dalla variabile d'ambiente
+      {% if provider.env_key %}<code>{{ provider.env_key }}</code>{% endif %}.
+      Se la compili viene <strong>salvata nel DB del progetto</strong>: il file
+      <code>data/agentscraper.db</code> è gitignorato ma comunque accessibile a chi
+      ha file system access alla macchina.)
+    </span>
+    <input type="password" name="llm_api_key" value="{{ current_api_key or '' }}"
+           placeholder="lascia vuoto per usare {{ provider.env_key or 'env var' }}"
+           autocomplete="off"
+           data-lpignore="true">
+  </label>
+  {% else %}
+    <input type="hidden" name="llm_api_key" value="{{ current_api_key or '' }}">
+  {% endif %}
+</div>

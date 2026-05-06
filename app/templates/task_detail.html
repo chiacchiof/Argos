@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}{{ task.name }} — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>{{ task.name }} <small>#{{ task.id }}</small></h2>
+  {% if task.description %}<p class="muted">{{ task.description }}</p>{% endif %}
+
+  <details open>
+    <summary>Configurazione</summary>
+    <dl class="kv">
+      <dt>Obiettivo</dt><dd><pre>{{ task.objective }}</pre></dd>
+      <dt>Modalità agente</dt><dd><code>{{ task.agent_mode or "react" }}</code></dd>
+      <dt>Provider LLM</dt><dd><code>{{ task.llm_provider or "ollama" }}</code>{% if task.llm_base_url %} <small>({{ task.llm_base_url }})</small>{% endif %}</dd>
+      <dt>Modello</dt><dd><code>{{ task.model }}</code></dd>
+      <dt>Max iterazioni / step</dt><dd>{{ task.max_iterations }}</dd>
+      <dt>Output</dt><dd>{{ task.output_format }}</dd>
+      <dt>Cron</dt><dd><code>{{ task.cron or "—" }}</code></dd>
+      <dt>Seed query</dt><dd>{% if task.seed_queries %}<ul>{% for q in task.seed_queries %}<li>{{ q }}</li>{% endfor %}</ul>{% else %}—{% endif %}</dd>
+      <dt>Whitelist domini</dt><dd>{% if task.allowed_domains %}{{ task.allowed_domains | join(", ") }}{% else %}—{% endif %}</dd>
+      <dt>Blacklist domini</dt><dd>{% if task.blocked_domains %}{{ task.blocked_domains | join(", ") }}{% else %}—{% endif %}</dd>
+      {% if task.agent_mode == 'browser_use' %}
+      <dt>Template estrazione</dt><dd><code>{{ task.extraction_template or "profile_contacts (default)" }}</code></dd>
+      <dt>Schema effettivo</dt>
+      <dd>
+        <details>
+          <summary>{{ (task.extraction_schema or '')|length }} caratteri — espandi</summary>
+          <pre class="log">{{ task.extraction_schema or "(usa il template di default)" }}</pre>
+        </details>
+      </dd>
+      {% endif %}
+    </dl>
+  </details>
+
+  {% if related_workflows %}
+  <p class="muted">
+    🔗 Questo task fa parte di {{ related_workflows|length }} workflow:
+    {% for w in related_workflows %}<a href="/workflows/{{ w.id }}">{{ w.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+
+  <div class="actions">
+    <button hx-post="/tasks/{{ task.id }}/run"
+            hx-target="#job-status" hx-swap="innerHTML">
+      ▶ Esegui ora
+    </button>
+    <a href="/tasks/{{ task.id }}/edit">Modifica</a>
+    <a href="/tasks/{{ task.id }}/results">Risultati salvati</a>
+  </div>
+
+  <h3>Stato esecuzione corrente</h3>
+  <div id="job-status">
+    {% if latest_dashboard %}
+      {% with d = latest_dashboard %}
+        {% include "partials/job_dashboard.html" %}
+      {% endwith %}
+    {% else %}
+      <p class="muted">Nessuna esecuzione ancora lanciata. Premi "▶ Esegui ora".</p>
+    {% endif %}
+  </div>
+
+  <h3>Cronologia job</h3>
+  {% set has_active = jobs | selectattr("status", "in", ["queued", "running"]) | list | length > 0 %}
+  <div id="jobs-history"
+       {% if has_active %}
+       hx-get="/tasks/{{ task.id }}/jobs"
+       hx-trigger="every 3s"
+       hx-swap="outerHTML"
+       {% endif %}>
+    {% include "partials/jobs_history.html" %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,29 @@
+{% if jobs %}
+<table class="data">
+  <thead><tr><th>#</th><th>Stato</th><th>Avvio</th><th>Fine</th><th>Risultato</th><th></th></tr></thead>
+  <tbody>
+    {% for j in jobs %}
+    <tr>
+      <td>{{ j.id }}</td>
+      <td><span class="status status-{{ j.status }}">{{ j.status }}</span></td>
+      <td><small>{{ j.started_at or "—" }}</small></td>
+      <td><small>{{ j.finished_at or "—" }}</small></td>
+      <td>
+        {% if j.result_path %}
+          {% set norm = j.result_path.replace('\\','/') %}
+          {% set marker = '/results/' ~ task.id|string ~ '/' %}
+          {% set rel = norm.split(marker)[-1] %}
+          <a href="/tasks/{{ task.id }}/results/{{ rel }}">{{ rel }}</a>
+        {% else %}—{% endif %}
+      </td>
+      <td>
+        <a href="#" hx-get="/jobs/{{ j.id }}/status"
+           hx-target="#job-status" hx-swap="innerHTML">log</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">Nessun job ancora eseguito.</p>
+{% endif %}

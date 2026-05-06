@@ -1,0 +1,129 @@
+{% if not d %}
+<p class="muted">Nessun job da mostrare.</p>
+{% else %}
+{% set is_active = d.is_active %}
+<div class="dashboard-panel"
+     {% if is_active %}
+     hx-get="/jobs/{{ d.job_id }}/dashboard"
+     hx-trigger="every 3s"
+     hx-swap="outerHTML"
+     {% endif %}>
+  <div class="dashboard-header">
+    <div>
+      <strong>Job #{{ d.job_id }}</strong>
+      &middot; <span class="status status-{{ d.status }}">{{ d.status }}</span>
+      {% if d.health == "stuck" %}<span class="badge badge-warn">⚠️ stuck</span>{% endif %}
+      {% if d.health == "error" %}<span class="badge badge-err">❌ error</span>{% endif %}
+      {% if d.health == "ok" %}<span class="badge badge-ok">✅ progressing</span>{% endif %}
+      {% if d.health == "paused" %}<span class="badge badge-pause">⏸ paused</span>{% endif %}
+      {% if d.health == "done" %}<span class="badge badge-done">✓ done</span>{% endif %}
+      {% if d.health == "cancelled" %}<span class="badge badge-cancel">⏹ cancelled</span>{% endif %}
+      {% if d.health == "dead" %}<span class="badge badge-err">💀 dead (runner perso)</span>{% endif %}
+    </div>
+    <div class="dashboard-controls">
+      {% if d.status == "running" %}
+      <button hx-post="/jobs/{{ d.job_id }}/control" hx-vals='{"signal":"pause"}'
+              hx-target="closest .dashboard-panel" hx-swap="outerHTML"
+              type="button" class="btn-small">⏸ Pausa</button>
+      <button hx-post="/jobs/{{ d.job_id }}/control" hx-vals='{"signal":"stop"}'
+              hx-target="closest .dashboard-panel" hx-swap="outerHTML"
+              type="button" class="btn-small btn-danger"
+              hx-confirm="Sicuro di voler interrompere il job? Lo stop si applicherà al termine della seed corrente.">⏹ Stop</button>
+      {% elif d.status == "paused" %}
+      <button hx-post="/jobs/{{ d.job_id }}/control" hx-vals='{"signal":"resume"}'
+              hx-target="closest .dashboard-panel" hx-swap="outerHTML"
+              type="button" class="btn-small btn-primary">▶ Riprendi</button>
+      <button hx-post="/jobs/{{ d.job_id }}/control" hx-vals='{"signal":"stop"}'
+              hx-target="closest .dashboard-panel" hx-swap="outerHTML"
+              type="button" class="btn-small btn-danger">⏹ Stop</button>
+      <a href="/tasks/{{ d.task_id }}/edit" class="btn-small btn-link">✏️ Modifica istruzioni</a>
+      {% elif d.status == "queued" %}
+      <button hx-post="/jobs/{{ d.job_id }}/control" hx-vals='{"signal":"stop"}'
+              hx-target="closest .dashboard-panel" hx-swap="outerHTML"
+              type="button" class="btn-small btn-danger">⏹ Annulla</button>
+      {% endif %}
+
+      {% if d.health == "dead" %}
+      <button hx-post="/jobs/{{ d.job_id }}/control" hx-vals='{"signal":"stop"}'
+              hx-target="closest .dashboard-panel" hx-swap="outerHTML"
+              type="button" class="btn-small btn-danger"
+              hx-confirm="Il runner non è più attivo. Marco il job come cancellato?">💀 Chiudi job morto</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="dashboard-grid">
+    <div class="metric">
+      <div class="metric-label">Profili estratti</div>
+      <div class="metric-value big">{{ d.profile_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Seed</div>
+      <div class="metric-value">
+        {% if d.current_seed_idx and d.total_seeds %}
+          {{ d.current_seed_idx }} / {{ d.total_seeds }}
+        {% else %}—{% endif %}
+      </div>
+      {% if d.seed_pct is not none %}
+      <div class="bar"><div class="bar-fill" style="width: {{ d.seed_pct }}%"></div></div>
+      {% endif %}
+    </div>
+    <div class="metric">
+      <div class="metric-label">Step seed corrente</div>
+      <div class="metric-value">
+        {% if d.current_step and d.max_steps_per_seed %}
+          {{ d.current_step }} / {{ d.max_steps_per_seed }}
+        {% elif d.current_step %}
+          {{ d.current_step }}
+        {% else %}—{% endif %}
+      </div>
+      {% if d.step_pct is not none %}
+      <div class="bar"><div class="bar-fill" style="width: {{ d.step_pct }}%"></div></div>
+      {% endif %}
+    </div>
+    <div class="metric">
+      <div class="metric-label">Tempo trascorso</div>
+      <div class="metric-value">{{ d.elapsed_human }}</div>
+      {% if d.idle_sec is not none and d.idle_sec > 30 and is_active %}
+      <div class="metric-sub warn">idle da {{ d.idle_human }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if d.current_seed_url %}
+  <p class="muted small">
+    🌐 Su: <code>{{ d.current_seed_url }}</code>
+    {% if d.run_dir_name %}
+      &middot; 📁 <a href="/tasks/{{ d.task_id }}/results/{{ d.run_dir_name }}">{{ d.run_dir_name }}</a>
+    {% endif %}
+  </p>
+  {% endif %}
+
+  {% if d.recent_actions %}
+  <details {% if is_active %}open{% endif %}>
+    <summary>Ultime azioni dell'agente ({{ d.recent_actions|length }})</summary>
+    <ul class="action-list">
+      {% for a in d.recent_actions %}
+      <li><code>{{ a }}</code></li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+
+  {% if d.error %}
+  <p class="errors"><strong>Errore:</strong> {{ d.error }}</p>
+  {% endif %}
+
+  {% if d.result_path %}
+    {% set norm = d.result_path.replace('\\','/') %}
+    {% set marker = '/results/' ~ d.task_id|string ~ '/' %}
+    {% set rel = norm.split(marker)[-1] %}
+    <p>📄 Report: <a href="/tasks/{{ d.task_id }}/results/{{ rel }}">{{ rel }}</a></p>
+  {% endif %}
+
+  <p class="dashboard-footer">
+    <a href="/jobs/{{ d.job_id }}/status" hx-get="/jobs/{{ d.job_id }}/status"
+       hx-target="closest .dashboard-panel" hx-swap="outerHTML">📜 mostra log completo</a>
+  </p>
+</div>
+{% endif %}

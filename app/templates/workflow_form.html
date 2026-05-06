@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{% if workflow and workflow.id %}Modifica{% else %}Nuovo{% endif %} workflow — AgentScraper{% endblock %}
+{% block content %}
+{% set is_edit = workflow and workflow.get("id") %}
+<section>
+  <h2>{% if is_edit %}Modifica workflow #{{ workflow.id }}{% else %}Nuovo workflow{% endif %}</h2>
+
+  {% if errors %}
+  <div class="errors">
+    <strong>Errori di validazione:</strong>
+    <ul>{% for e in errors %}<li>{{ e.loc | join(".") }}: {{ e.msg }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  {% set w = workflow or {} %}
+  <form method="post" action="{% if is_edit %}/workflows/{{ workflow.id }}{% else %}/workflows{% endif %}">
+    <label>Nome
+      <input name="name" required maxlength="200" value="{{ w.get('name','') }}">
+    </label>
+    <label>Descrizione
+      <textarea name="description" rows="3">{{ w.get('description','') or '' }}</textarea>
+    </label>
+    <div class="actions">
+      <button type="submit">{% if is_edit %}Salva modifiche{% else %}Crea workflow{% endif %}</button>
+      <a href="{% if is_edit %}/workflows/{{ workflow.id }}{% else %}/workflows{% endif %}" class="link-cancel">Annulla</a>
+    </div>
+  </form>
+
+  {% if is_edit %}
+  <form method="post" action="/workflows/{{ workflow.id }}/delete" class="danger"
+        onsubmit="return confirm('Eliminare il workflow? Gli edges associati verranno rimossi (ma i task NO).');">
+    <button type="submit" class="danger">Elimina workflow</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

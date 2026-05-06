@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Settings — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>⚙️ Settings — Canali di messaggistica</h2>
+
+  {% if flash %}<div class="flash-ok">✓ {{ flash }}</div>{% endif %}
+  {% if error %}<div class="errors">⚠️ {{ error }}</div>{% endif %}
+
+  <p class="muted">
+    Le credenziali sensibili (password SMTP/IMAP, token Telegram) si possono
+    impostare via <strong>variabile d'ambiente in <code>.env</code></strong>
+    (priorità) oppure salvarle qui nel DB. Il file
+    <code>data/agentscraper.db</code> è gitignorato, ma il pattern env-first è più
+    sicuro per chi committa il progetto.
+  </p>
+
+  <hr>
+
+  <h3>📧 Email (SMTP / IMAP)</h3>
+  <form method="post" action="/settings/email" class="settings-form">
+    <div class="row">
+      <label>SMTP host
+        <input type="text" name="smtp_host" value="{{ email_cfg.smtp_host or '' }}" placeholder="smtp.gmail.com">
+      </label>
+      <label>SMTP port
+        <input type="number" name="smtp_port" value="{{ email_cfg.smtp_port or 587 }}">
+      </label>
+    </div>
+    <div class="row">
+      <label>SMTP user
+        <input type="text" name="smtp_user" value="{{ email_cfg.smtp_user or '' }}" placeholder="me@gmail.com">
+      </label>
+      <label>SMTP password
+        <span class="hint">
+          {% if email_env.smtp_password %}
+            <span class="badge badge-ok">✓ SMTP_PASSWORD in env</span> (questo campo viene ignorato se compilato)
+          {% else %}
+            non in env, salvata nel DB se compili
+          {% endif %}
+        </span>
+        <input type="password" name="smtp_password" value="" placeholder="lascia vuoto per mantenere quella attuale" autocomplete="off" data-lpignore="true">
+      </label>
+    </div>
+    <div class="row">
+      <label>From address
+        <input type="email" name="from_address" value="{{ email_cfg.from_address or '' }}" placeholder="me@gmail.com">
+      </label>
+      <label>Reply-to (opzionale)
+        <input type="email" name="reply_to" value="{{ email_cfg.reply_to or '' }}">
+      </label>
+    </div>
+    <label>
+      <input type="checkbox" name="smtp_use_tls" {% if email_cfg.smtp_use_tls is not defined or email_cfg.smtp_use_tls %}checked{% endif %}>
+      Usa STARTTLS (richiesto da Gmail/Outlook su porta 587)
+    </label>
+
+    <h4>IMAP (per ricezione)</h4>
+    <div class="row">
+      <label>IMAP host
+        <input type="text" name="imap_host" value="{{ email_cfg.imap_host or '' }}" placeholder="imap.gmail.com">
+      </label>
+      <label>IMAP port
+        <input type="number" name="imap_port" value="{{ email_cfg.imap_port or 993 }}">
+      </label>
+    </div>
+    <div class="row">
+      <label>IMAP user <span class="hint">(default = SMTP user se vuoto)</span>
+        <input type="text" name="imap_user" value="{{ email_cfg.imap_user or '' }}">
+      </label>
+      <label>IMAP password
+        <span class="hint">
+          {% if email_env.imap_password %}
+            <span class="badge badge-ok">✓ IMAP_PASSWORD in env</span>
+          {% else %}
+            non in env (default = SMTP password se vuoto)
+          {% endif %}
+        </span>
+        <input type="password" name="imap_password" value="" placeholder="lascia vuoto" autocomplete="off" data-lpignore="true">
+      </label>
+    </div>
+    <div class="row">
+      <label>IMAP folder
+        <input type="text" name="imap_folder" value="{{ email_cfg.imap_folder or 'INBOX' }}">
+      </label>
+      <label>Rate limit (msg/min)
+        <input type="number" name="rate_limit_per_minute" value="{{ email_cfg.rate_limit_per_minute or 10 }}" min="1" max="600">
+      </label>
+    </div>
+
+    <label>
+      <input type="checkbox" name="enabled" {% if email_enabled %}checked{% endif %}>
+      <strong>Canale abilitato</strong> (deve essere ON perché outreach/responder lo usino)
+    </label>
+
+    <div class="actions">
+      <button type="submit">Salva configurazione email</button>
+    </div>
+  </form>
+
+  {% if email_enabled %}
+  <form method="post" action="/settings/test-email" class="settings-form-inline">
+    <label>Invia mail di test a:
+      <input type="email" name="to_address" placeholder="indirizzo destinatario di test" required>
+    </label>
+    <button type="submit">📨 Test invio SMTP</button>
+  </form>
+  <form method="post" action="/settings/test-imap" class="settings-form-inline">
+    <button type="submit">📥 Test fetch IMAP</button>
+    <small class="hint">(legge fino a 5 mail non lette per verificare il login IMAP)</small>
+  </form>
+  {% endif %}
+
+  <hr>
+
+  <h3>💬 Telegram Bot</h3>
+  <p class="muted small">
+    Crea un bot tramite <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>
+    e copia qui il token. <strong>Il bot riceve messaggi solo da utenti che gli hanno scritto per primi</strong>
+    (vincolo della piattaforma).
+  </p>
+  <form method="post" action="/settings/telegram" class="settings-form">
+    <label>Bot token
+      <span class="hint">
+        {% if telegram_env.bot_token %}
+          <span class="badge badge-ok">✓ TELEGRAM_BOT_TOKEN in env</span> (questo campo è ignorato se compilato)
+        {% else %}
+          non in env, salvato nel DB se compili
+        {% endif %}
+      </span>
+      <input type="password" name="bot_token" value="" placeholder="lascia vuoto per mantenere quello attuale" autocomplete="off" data-lpignore="true">
+    </label>
+    <label>
+      <input type="checkbox" name="enabled" {% if telegram_enabled %}checked{% endif %}>
+      <strong>Canale abilitato</strong>
+    </label>
+    <div class="actions">
+      <button type="submit">Salva token Telegram</button>
+    </div>
+  </form>
+
+  {% if telegram_enabled %}
+  <form method="post" action="/settings/test-telegram" class="settings-form-inline">
+    <label>Manda messaggio test a chat_id:
+      <input type="text" name="chat_id" placeholder="chat_id di un utente che ha scritto al bot" required>
+    </label>
+    <button type="submit">💬 Test invio Telegram</button>
+    <small class="hint">(per ottenere il tuo chat_id: scrivi al tuo bot, poi visita <code>/settings/test-imap</code> dopo aver impostato il polling)</small>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}
