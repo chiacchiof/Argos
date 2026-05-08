@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}Orchestrator - AgentScraper{% endblock %}
+{% block content %}
+<section class="orchestrator-page">
+  <div class="orchestrator-head">
+    <div>
+      <h2>Orchestrator</h2>
+      <p class="muted">
+        Descrivi il risultato che vuoi ottenere: l'orchestrator prepara task, workflow e passaggi artifact.
+      </p>
+    </div>
+    <span class="badge badge-health badge-health-{{ 'ok' if autonomy_level in ['advisor','builder'] else 'warn' }}">
+      {{ autonomy_levels[autonomy_level].label }}
+    </span>
+  </div>
+
+  {% if flash %}
+    <div class="flash-ok">{{ flash }}</div>
+  {% endif %}
+  {% if error %}
+    <div class="errors"><strong>Errore:</strong> {{ error }}</div>
+  {% endif %}
+
+  <div class="orchestrator-layout">
+    <form method="post" action="/orchestrator/plan" class="orchestrator-console">
+      <label>Brief
+        <textarea name="brief" rows="10"
+                  placeholder="Esempio: estrai contatti da questi siti, qualificali e prepara outreach solo per lead validi...">{{ brief }}</textarea>
+      </label>
+
+      <details class="optional-block planner-under-brief" {% if use_llm %}open{% endif %}>
+        <summary><strong>Planner per questo brief</strong></summary>
+        <p class="muted small">
+          Usa il modello configurato in <a href="/settings">Settings</a>:
+          <code>{{ llm_provider }}/{{ planner_model }}</code>.
+          Se lo lasci spento, il piano viene costruito con il planner euristico locale.
+        </p>
+        <label>
+          <input type="checkbox" name="use_llm" value="on" {% if use_llm %}checked{% endif %}>
+          Usa Planner LLM per migliorare il piano di questo brief
+        </label>
+      </details>
+
+      <fieldset class="orchestrator-autonomy">
+        <legend>Livello di autonomia</legend>
+        <div class="autonomy-grid">
+          {% for key, meta in autonomy_levels.items() %}
+          <label class="autonomy-option {% if key == autonomy_level %}selected{% endif %}">
+            <input type="radio" name="autonomy_level" value="{{ key }}"
+                   {% if key == autonomy_level %}checked{% endif %}>
+            <strong>{{ meta.label }}</strong>
+            <span>{{ meta.description }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit">Genera piano</button>
+        <a href="/" class="link-cancel">Torna ai task</a>
+      </div>
+    </form>
+
+    <aside class="orchestrator-panel">
+      <section id="orchestrator-chat" class="orchestrator-chat">
+        <div class="chat-head">
+          <div>
+            <h3>Chat Orchestrator</h3>
+            <p class="muted small">Persistente su DB. Usa <code>{{ llm_provider }}/{{ planner_model }}</code>.</p>
+            <div class="chat-capabilities">
+              <span class="badge badge-{{ 'ok' if orchestrator_cfg.chat_web_enabled else 'warn' }}">
+                Web {{ 'ON' if orchestrator_cfg.chat_web_enabled else 'OFF' }}
+              </span>
+              <span class="badge badge-{{ 'ok' if orchestrator_cfg.chat_files_enabled else 'warn' }}">
+                File {{ 'ON' if orchestrator_cfg.chat_files_enabled else 'OFF' }}
+              </span>
+            </div>
+          </div>
+          {% if chat_messages %}
+          <form method="post" action="/orchestrator/chat/clear">
+            <button type="submit" class="btn-small btn-link">pulisci</button>
+          </form>
+          {% endif %}
+        </div>
+
+        <div class="chat-transcript">
+          {% if chat_messages %}
+            {% for m in chat_messages %}
+            <div class="chat-message chat-{{ m.role }}">
+              <div class="chat-meta">
+                <strong>{% if m.role == 'assistant' %}Orchestrator{% else %}Tu{% endif %}</strong>
+                <small>{{ m.created_at }}</small>
+              </div>
+              <div class="chat-body">{{ m.body }}</div>
+            </div>
+            {% endfor %}
+          {% else %}
+            <div class="chat-empty">
+              Scrivi qui per ragionare prima di generare un piano, oppure chiedimi cosa sta succedendo nei task.
+            </div>
+          {% endif %}
+        </div>
+
+        <form method="post" action="/orchestrator/chat" class="chat-form" enctype="multipart/form-data">
+          <textarea name="message" rows="4"
+                    placeholder="Es. Ho questi tre siti: conviene auto_extract o bulk_extract?"></textarea>
+          {% if orchestrator_cfg.chat_files_enabled %}
+          <label class="chat-file-input">
+            <span>Allega file testuale</span>
+            <input type="file"
+                   name="attachment"
+                   accept=".txt,.md,.csv,.json,.jsonl,.ndjson,.html,.htm,.xml,.log,.py,.js,.ts,.css,.sql,.yaml,.yml,text/*">
+          </label>
+          {% else %}
+          <p class="muted small chat-disabled-note">
+            Allegati disabilitati in <a href="/settings">Settings</a>.
+          </p>
+          {% endif %}
+          <button type="submit">Invia</button>
+        </form>
+      </section>
+
+      {% if plan %}
+        <article class="plan-card">
+          <div class="plan-head">
+            <div>
+              <h3>{{ plan.title }}</h3>
+              <p class="muted small">
+                Planner: <code>{{ plan.planner_used }}</code> · rischio <code>{{ plan.risk_level }}</code>
+              </p>
+            </div>
+            <span class="badge badge-{{ 'err' if plan.risk_level == 'high' else ('warn' if plan.risk_level == 'medium' else 'ok') }}">
+              {{ plan.risk_level }}
+            </span>
+          </div>
+
+          <p>{{ plan.summary }}</p>
+
+          {% if plan.assumptions %}
+          <h4>Assunzioni</h4>
+          <ul>
+            {% for item in plan.assumptions %}
+            <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+
+          {% if plan.warnings %}
+          <h4>Attenzioni</h4>
+          <ul class="warning-list">
+            {% for item in plan.warnings %}
+            <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+
+          <h4>Task proposti</h4>
+          <div class="planned-tasks">
+            {% for t in plan.tasks %}
+            <div class="planned-task">
+              <div class="planned-task-top">
+                <strong>{{ loop.index }}. {{ t.name }}</strong>
+                <code>{{ t.agent_mode }}</code>
+              </div>
+              <p>{{ t.objective }}</p>
+              <dl class="mini-kv">
+                <dt>Key</dt><dd><code>{{ t.key }}</code></dd>
+                <dt>Modello</dt><dd><code>{{ t.llm_provider }}/{{ t.model }}</code></dd>
+                <dt>Max</dt><dd>{{ t.max_iterations }}</dd>
+                {% if t.seed_queries %}
+                <dt>Seed</dt><dd>{{ t.seed_queries | length }} URL/query</dd>
+                {% endif %}
+                {% if t.message_channels %}
+                <dt>Canali</dt><dd>{{ t.message_channels | join(", ") }}</dd>
+                {% endif %}
+              </dl>
+            </div>
+            {% endfor %}
+          </div>
+
+          {% if plan.edges %}
+          <h4>Pipeline</h4>
+          <ol class="edge-list">
+            {% for e in plan.edges %}
+            <li>
+              <code>{{ e.from_key }}</code> -> <code>{{ e.to_key }}</code>
+              {% if e.pass_artifact %}<span class="muted">passa <code>{{ e.pass_artifact }}</code></span>{% endif %}
+            </li>
+            {% endfor %}
+          </ol>
+          {% endif %}
+
+          <form method="post" action="/orchestrator/execute" class="execute-plan-form">
+            <input type="hidden" name="plan_b64" value="{{ plan_b64 }}">
+
+            {% if not autonomy_meta.can_create %}
+              <p class="muted">
+                Livello Consigliere: questo piano resta una proposta. Passa a Builder o superiore per creare risorse.
+              </p>
+            {% else %}
+              {% if autonomy_meta.can_run %}
+              <label class="checkbox-line">
+                <input type="checkbox" name="run_now" value="on" {% if plan.run_after_create %}checked{% endif %}>
+                Lancia subito dopo la creazione
+              </label>
+              {% endif %}
+
+              {% if plan.has_risky_modes %}
+              <label class="checkbox-line risky-confirm">
+                <input type="checkbox" name="confirm_risky" value="on">
+                Confermo che outreach/responder possono inviare messaggi se il workflow viene lanciato
+              </label>
+              {% endif %}
+
+              <button type="submit" class="btn-primary">
+                {% if autonomy_meta.can_run %}Crea piano{% if plan.run_after_create %} e lancia{% endif %}{% else %}Crea task/workflow{% endif %}
+              </button>
+            {% endif %}
+          </form>
+        </article>
+      {% endif %}
+    </aside>
+  </div>
+</section>
+{% endblock %}

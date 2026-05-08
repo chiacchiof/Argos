@@ -1,0 +1,685 @@
+from __future__ import annotations
+
+import base64
+import json
+import re
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from .. import db
+from ..agent.llm_providers import (
+    env_key_status,
+    get_provider,
+    list_providers,
+    resolve_api_key,
+    resolve_base_url,
+)
+from ..agent.ollama import list_models
+from ..agent.tools.fetch_http import fetch_http
+from ..agent.tools.search import web_search
+from ..config import UPLOADS_DIR, settings
+from ..orchestrator import (
+    AUTONOMY_LEVELS,
+    OrchestratorPlan,
+    autonomy_meta,
+    build_plan,
+    execute_plan,
+)
+from ..templates import templates
+
+
+router = APIRouter()
+
+CHAT_FILE_MAX_BYTES = 5 * 1024 * 1024
+CHAT_FILE_CONTEXT_CHARS = 40_000
+CHAT_HISTORY_FILE_CONTEXT_CHARS = 8_000
+CHAT_TOOL_MAX_LOOPS = 3
+CHAT_ALLOWED_FILE_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".jsonl",
+    ".ndjson",
+    ".html",
+    ".htm",
+    ".xml",
+    ".log",
+    ".py",
+    ".js",
+    ".ts",
+    ".css",
+    ".sql",
+    ".yaml",
+    ".yml",
+}
+
+CHAT_WEB_TOOLS_SPEC = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Cerca sul web e ritorna risultati con titolo, URL e snippet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Query di ricerca."},
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Numero di risultati, massimo 8.",
+                        "default": 5,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": "Scarica una pagina web e ritorna testo principale, titolo e status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL completo http(s)."},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+]
+
+
+def _saved_orchestrator_config() -> dict:
+    row = db.get_channel_config("orchestrator") or {}
+    cfg = row.get("config") or {}
+    return {
+        "use_llm": bool(row.get("enabled") or cfg.get("use_llm")),
+        "llm_provider": cfg.get("llm_provider") or "ollama",
+        "planner_model": cfg.get("planner_model") or "",
+        "llm_base_url": cfg.get("llm_base_url") or "",
+        "llm_api_key": cfg.get("llm_api_key") or "",
+        "chat_web_enabled": bool(cfg.get("chat_web_enabled")),
+        "chat_files_enabled": bool(cfg.get("chat_files_enabled")),
+    }
+
+
+async def _models_for_provider(provider_key: str) -> list[str]:
+    if provider_key == "ollama":
+        try:
+            return await list_models()
+        except Exception:
+            return [settings.default_model]
+    info = get_provider(provider_key)
+    return [m["id"] for m in (info.get("suggested_models") or [])]
+
+
+def _encode_plan(plan: OrchestratorPlan) -> str:
+    raw = plan.model_dump_json()
+    return base64.b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def _decode_plan(payload: str) -> OrchestratorPlan:
+    raw = base64.b64decode(payload.encode("ascii")).decode("utf-8")
+    return OrchestratorPlan.model_validate_json(raw)
+
+
+async def _context(
+    *,
+    request: Request,
+    brief: str = "",
+    autonomy_level: str | None = None,
+    llm_provider: str | None = None,
+    planner_model: str | None = None,
+    llm_base_url: str | None = None,
+    use_llm: bool | None = None,
+    plan: OrchestratorPlan | None = None,
+    plan_b64: str = "",
+    error: str | None = None,
+) -> dict:
+    saved = _saved_orchestrator_config()
+    autonomy_level = autonomy_level or "builder"
+    llm_provider = llm_provider or saved["llm_provider"]
+    llm_base_url = saved["llm_base_url"] if llm_base_url is None else llm_base_url
+    use_llm = saved["use_llm"] if use_llm is None else use_llm
+    models = await _models_for_provider(llm_provider)
+    effective_model = planner_model or saved["planner_model"] or (models[0] if models else settings.default_model)
+    return {
+        "brief": brief,
+        "autonomy_level": autonomy_level,
+        "autonomy_levels": AUTONOMY_LEVELS,
+        "autonomy_meta": autonomy_meta(autonomy_level),
+        "llm_provider": llm_provider,
+        "planner_model": effective_model,
+        "llm_base_url": llm_base_url,
+        "use_llm": use_llm,
+        "llm_providers": list_providers(),
+        "env_key_status": env_key_status(),
+        "models": models,
+        "orchestrator_cfg": saved,
+        "plan": plan,
+        "plan_b64": plan_b64,
+        "chat_messages": db.list_orchestrator_messages(limit=80),
+        "error": error,
+        "flash": request.query_params.get("flash"),
+    }
+
+
+@router.get("/orchestrator", response_class=HTMLResponse)
+async def orchestrator_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "orchestrator.html",
+        await _context(request=request),
+    )
+
+
+@router.post("/orchestrator/plan", response_class=HTMLResponse)
+async def orchestrator_plan(
+    request: Request,
+    brief: str = Form(""),
+    autonomy_level: str = Form("builder"),
+    llm_provider: str = Form(""),
+    planner_model: str = Form(""),
+    llm_base_url: str = Form(""),
+    llm_api_key: str = Form(""),
+    use_llm: str = Form(""),
+):
+    brief = brief.strip()
+    if not brief:
+        return templates.TemplateResponse(
+            request,
+            "orchestrator.html",
+            await _context(
+                request=request,
+                brief=brief,
+                autonomy_level=autonomy_level,
+                llm_provider=llm_provider,
+                planner_model=planner_model,
+                llm_base_url=llm_base_url,
+                use_llm=bool(use_llm),
+                error="Scrivi un brief prima di generare il piano.",
+            ),
+            status_code=400,
+        )
+    if autonomy_level not in AUTONOMY_LEVELS:
+        autonomy_level = "builder"
+    saved = _saved_orchestrator_config()
+    llm_provider = llm_provider.strip() or saved["llm_provider"]
+    planner_model = planner_model.strip() or saved["planner_model"]
+    llm_base_url = llm_base_url.strip() or saved["llm_base_url"]
+    llm_api_key = llm_api_key.strip() or saved["llm_api_key"]
+    try:
+        plan = await build_plan(
+            brief=brief,
+            autonomy_level=autonomy_level,  # type: ignore[arg-type]
+            provider=llm_provider,
+            model=planner_model or None,
+            llm_base_url=llm_base_url or None,
+            llm_api_key=llm_api_key or None,
+            use_llm=bool(use_llm),
+        )
+        plan_b64 = _encode_plan(plan)
+        status_code = 200
+        error = None
+    except Exception as e:
+        plan = None
+        plan_b64 = ""
+        status_code = 500
+        error = f"Planner fallito: {type(e).__name__}: {e}"
+
+    return templates.TemplateResponse(
+        request,
+        "orchestrator.html",
+        await _context(
+            request=request,
+            brief=brief,
+            autonomy_level=autonomy_level,
+            llm_provider=llm_provider,
+            planner_model=planner_model,
+            llm_base_url=llm_base_url,
+            use_llm=bool(use_llm),
+            plan=plan,
+            plan_b64=plan_b64,
+            error=error,
+        ),
+        status_code=status_code,
+    )
+
+
+@router.post("/orchestrator/execute", response_class=HTMLResponse)
+async def orchestrator_execute(
+    request: Request,
+    plan_b64: str = Form(""),
+    run_now: str = Form(""),
+    confirm_risky: str = Form(""),
+):
+    try:
+        plan = _decode_plan(plan_b64)
+        result = execute_plan(
+            plan,
+            run_now=bool(run_now),
+            confirm_risky=bool(confirm_risky),
+        )
+    except Exception as e:
+        plan = None
+        try:
+            plan = _decode_plan(plan_b64)
+        except Exception:
+            pass
+        return templates.TemplateResponse(
+            request,
+            "orchestrator.html",
+            await _context(
+                request=request,
+                plan=plan,
+                plan_b64=plan_b64,
+                autonomy_level=plan.autonomy_level if plan else "builder",
+                error=f"Esecuzione piano non riuscita: {type(e).__name__}: {e}",
+            ),
+            status_code=400,
+        )
+
+    sep = "&" if "?" in result.redirect_url else "?"
+    return RedirectResponse(
+        url=f"{result.redirect_url}{sep}flash={result.message.replace(' ', '+')}",
+        status_code=303,
+    )
+
+
+@router.post("/orchestrator/chat")
+async def orchestrator_chat(
+    message: str = Form(""),
+    attachment: UploadFile | None = File(None),
+):
+    message = (message or "").strip()
+    cfg = _saved_orchestrator_config()
+
+    try:
+        file_info = await _save_chat_attachment(
+            attachment,
+            enabled=cfg["chat_files_enabled"],
+        )
+    except ValueError as e:
+        user_body = message or "[Tentativo di allegare un file]"
+        db.add_orchestrator_message("user", user_body)
+        db.add_orchestrator_message(
+            "assistant",
+            f"Non ho caricato l'allegato: {e}",
+            metadata={"error": str(e), "capability": "files"},
+        )
+        return RedirectResponse(url="/orchestrator#orchestrator-chat", status_code=303)
+
+    if not message and not file_info:
+        return RedirectResponse(url="/orchestrator#orchestrator-chat", status_code=303)
+
+    user_body = _compose_user_chat_body(message, file_info)
+    db.add_orchestrator_message(
+        "user",
+        user_body,
+        metadata={"attachment": _public_file_metadata(file_info)} if file_info else None,
+    )
+    try:
+        reply, metadata = await _generate_chat_reply(user_body, file_info=file_info)
+    except Exception as e:
+        reply = (
+            "Non riesco a contattare il modello configurato per l'Orchestrator. "
+            f"Errore: {type(e).__name__}: {str(e)[:240]}\n\n"
+            "Controlla provider, modello, base URL e API key in Settings."
+        )
+        metadata = {"error": f"{type(e).__name__}: {e}"}
+    db.add_orchestrator_message("assistant", reply, metadata=metadata)
+    return RedirectResponse(url="/orchestrator#orchestrator-chat", status_code=303)
+
+
+@router.post("/orchestrator/chat/clear")
+async def orchestrator_chat_clear():
+    db.clear_orchestrator_messages()
+    return RedirectResponse(url="/orchestrator#orchestrator-chat", status_code=303)
+
+
+async def _save_chat_attachment(
+    attachment: UploadFile | None,
+    *,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    if attachment is None or not attachment.filename:
+        return None
+    if not enabled:
+        raise ValueError("gli allegati file sono disabilitati in Settings.")
+
+    original_name = Path(attachment.filename).name
+    ext = Path(original_name).suffix.lower()
+    content_type = (attachment.content_type or "").lower()
+    if ext not in CHAT_ALLOWED_FILE_EXTENSIONS and not content_type.startswith("text/"):
+        allowed = ", ".join(sorted(CHAT_ALLOWED_FILE_EXTENSIONS))
+        raise ValueError(f"formato non supportato ({ext or content_type or 'sconosciuto'}). Usa file testuali: {allowed}.")
+
+    raw = await attachment.read(CHAT_FILE_MAX_BYTES + 1)
+    if len(raw) > CHAT_FILE_MAX_BYTES:
+        raise ValueError("file troppo grande: massimo 5 MB.")
+
+    text = raw.decode("utf-8", errors="replace")
+    truncated = len(text) > CHAT_FILE_CONTEXT_CHARS
+    context_text = text[:CHAT_FILE_CONTEXT_CHARS]
+
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    dest_dir = UPLOADS_DIR / "orchestrator" / day
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_upload_filename(original_name)
+    stamp = datetime.now(timezone.utc).strftime("%H%M%S")
+    dest = dest_dir / f"{stamp}_{uuid.uuid4().hex[:8]}_{safe_name}"
+    dest.write_bytes(raw)
+
+    return {
+        "filename": original_name,
+        "stored_path": str(dest),
+        "stored_relpath": str(dest.relative_to(UPLOADS_DIR.parent)),
+        "content_type": attachment.content_type or "",
+        "size_bytes": len(raw),
+        "chars": len(text),
+        "context_chars": len(context_text),
+        "truncated": truncated,
+        "context_text": context_text,
+    }
+
+
+def _safe_upload_filename(filename: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "allegato.txt").strip("._")
+    return safe or "allegato.txt"
+
+
+def _public_file_metadata(file_info: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not file_info:
+        return None
+    return {
+        "filename": file_info["filename"],
+        "stored_path": file_info["stored_path"],
+        "stored_relpath": file_info["stored_relpath"],
+        "content_type": file_info["content_type"],
+        "size_bytes": file_info["size_bytes"],
+        "chars": file_info["chars"],
+        "context_chars": file_info["context_chars"],
+        "truncated": file_info["truncated"],
+    }
+
+
+def _compose_user_chat_body(message: str, file_info: dict[str, Any] | None) -> str:
+    if not file_info:
+        return message
+    note = (
+        f"[Allegato: {file_info['filename']} | {file_info['size_bytes']} byte | "
+        f"salvato in {file_info['stored_relpath']}]"
+    )
+    if message:
+        return f"{message}\n\n{note}"
+    return f"Analizza l'allegato e usalo come contesto per la risposta.\n\n{note}"
+
+
+def _file_context_message(file_info: dict[str, Any]) -> str:
+    truncated_note = (
+        "\n\n[Nota: contenuto troncato per limiti di contesto.]"
+        if file_info.get("truncated")
+        else ""
+    )
+    return (
+        "CONTESTO FILE ALLEGATO\n"
+        f"Nome: {file_info['filename']}\n"
+        f"Percorso salvato: {file_info['stored_relpath']}\n"
+        f"Dimensione: {file_info['size_bytes']} byte\n\n"
+        "CONTENUTO:\n"
+        f"{file_info['context_text']}"
+        f"{truncated_note}"
+    )
+
+
+def _historical_file_context(metadata: dict[str, Any] | None) -> str | None:
+    attachment = (metadata or {}).get("attachment") or {}
+    stored_path = attachment.get("stored_path")
+    if not stored_path:
+        return None
+    filename = attachment.get("filename") or Path(stored_path).name
+    try:
+        text = Path(stored_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return (
+            "CONTESTO FILE PRECEDENTE NON DISPONIBILE\n"
+            f"Nome: {filename}\n"
+            f"Percorso salvato: {attachment.get('stored_relpath') or stored_path}"
+        )
+    truncated = len(text) > CHAT_HISTORY_FILE_CONTEXT_CHARS
+    truncated_note = "\n\n[Nota: contenuto precedente troncato.]" if truncated else ""
+    return (
+        "CONTESTO FILE PRECEDENTE\n"
+        f"Nome: {filename}\n"
+        f"Percorso salvato: {attachment.get('stored_relpath') or stored_path}\n\n"
+        "CONTENUTO:\n"
+        f"{text[:CHAT_HISTORY_FILE_CONTEXT_CHARS]}"
+        f"{truncated_note}"
+    )
+
+
+async def _generate_chat_reply(
+    latest_user_message: str,
+    *,
+    file_info: dict[str, Any] | None = None,
+) -> tuple[str, dict]:
+    cfg = _saved_orchestrator_config()
+    provider_key = cfg["llm_provider"]
+    model = cfg["planner_model"]
+    if not model:
+        models = await _models_for_provider(provider_key)
+        model = models[0] if models else settings.default_model
+
+    base_url = resolve_base_url(provider_key, cfg["llm_base_url"])
+    api_key = resolve_api_key(provider_key, cfg["llm_api_key"])
+
+    history = db.list_orchestrator_messages(limit=30)
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "system",
+            "content": _chat_system_prompt(cfg),
+        }
+    ]
+    historical_attachments = 0
+    for m in history:
+        role = "assistant" if m["role"] == "assistant" else "user"
+        messages.append({"role": role, "content": (m.get("body") or "")[:5000]})
+        if (
+            role == "user"
+            and m.get("body") != latest_user_message
+            and historical_attachments < 2
+        ):
+            historical_context = _historical_file_context(m.get("metadata"))
+            if historical_context:
+                messages.append({"role": "user", "content": historical_context})
+                historical_attachments += 1
+    if not history or history[-1].get("body") != latest_user_message:
+        messages.append({"role": "user", "content": latest_user_message})
+    if file_info:
+        messages.append({"role": "user", "content": _file_context_message(file_info)})
+
+    metadata: dict[str, Any] = {
+        "provider": provider_key,
+        "model": model,
+        "web_enabled": bool(cfg["chat_web_enabled"]),
+        "files_enabled": bool(cfg["chat_files_enabled"]),
+        "tool_calls": [],
+    }
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.35,
+        "max_tokens": 900,
+    }
+    if cfg["chat_web_enabled"]:
+        payload["tools"] = CHAT_WEB_TOOLS_SPEC
+        payload["tool_choice"] = "auto"
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    async with httpx.AsyncClient(timeout=120) as client:
+        try:
+            text = await _run_chat_completion_loop(
+                client,
+                base_url=base_url,
+                headers=headers,
+                payload=payload,
+                metadata=metadata,
+            )
+        except httpx.HTTPStatusError as e:
+            if not cfg["chat_web_enabled"]:
+                raise
+            metadata["tool_error"] = f"{e.response.status_code}: {e.response.text[:300]}"
+            payload.pop("tools", None)
+            payload.pop("tool_choice", None)
+            payload["messages"].append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Il provider non ha accettato i tool web. Rispondi senza navigazione "
+                        "e segnala che la capacita web non e disponibile per questa chiamata."
+                    ),
+                }
+            )
+            text = await _run_chat_completion_loop(
+                client,
+                base_url=base_url,
+                headers=headers,
+                payload=payload,
+                metadata=metadata,
+            )
+
+    return text or "(il modello non ha prodotto risposta)", metadata
+
+
+async def _run_chat_completion_loop(
+    client: httpx.AsyncClient,
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    metadata: dict[str, Any],
+) -> str:
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    last_text = ""
+    for _ in range(CHAT_TOOL_MAX_LOOPS + 1):
+        r = await client.post(url, json=payload, headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        message = data.get("choices", [{}])[0].get("message", {}) or {}
+        last_text = (message.get("content") or "").strip()
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            return last_text
+        normalized_calls: list[dict[str, Any]] = []
+        for call in tool_calls:
+            normalized = dict(call)
+            normalized.setdefault("id", f"call_{uuid.uuid4().hex[:8]}")
+            normalized_calls.append(normalized)
+
+        payload["messages"].append(
+            {
+                "role": "assistant",
+                "content": message.get("content") or "",
+                "tool_calls": normalized_calls,
+            }
+        )
+        for call in normalized_calls:
+            tool_name = (call.get("function") or {}).get("name") or ""
+            args = _decode_tool_arguments((call.get("function") or {}).get("arguments"))
+            tool_output = await _run_chat_tool(tool_name, args)
+            metadata.setdefault("tool_calls", []).append(
+                {"name": tool_name, "args": args, "output_chars": len(tool_output)}
+            )
+            payload["messages"].append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "name": tool_name,
+                    "content": tool_output[:12_000],
+                }
+            )
+    return last_text or "Ho usato gli strumenti disponibili, ma non ho ricevuto una sintesi finale dal modello."
+
+
+def _decode_tool_arguments(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
+    try:
+        if name == "web_search":
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return "Errore: query mancante."
+            max_results = max(1, min(int(args.get("max_results") or 5), 8))
+            results = await web_search(query, max_results=max_results)
+            return json.dumps(results, ensure_ascii=False, indent=2)
+        if name == "fetch_url":
+            url = str(args.get("url") or "").strip()
+            if not url.startswith(("http://", "https://")):
+                return "Errore: URL non valido. Usa http(s)."
+            result = await fetch_http(url, max_chars=12_000)
+            return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
+        return f"Tool non supportato: {name}"
+    except Exception as e:
+        return f"Errore tool {name}: {type(e).__name__}: {e}"
+
+
+def _chat_system_prompt(cfg: dict[str, Any]) -> str:
+    snapshot = _orchestrator_snapshot()
+    web_line = (
+        "Navigazione web abilitata: se servono informazioni aggiornate usa web_search e fetch_url. "
+        "Cita gli URL usati nella risposta."
+        if cfg.get("chat_web_enabled")
+        else "Navigazione web disabilitata: non cercare sul web e dichiara quando servirebbero dati aggiornati."
+    )
+    files_line = (
+        "Allegati file abilitati: quando ricevi un blocco CONTESTO FILE ALLEGATO, usalo come fonte primaria."
+        if cfg.get("chat_files_enabled")
+        else "Allegati file disabilitati: non aspettarti contenuti caricati dall'utente."
+    )
+    return (
+        "Sei l'Orchestrator di AgentScraper. Parli in italiano, in modo operativo e concreto. "
+        "Aiuti l'utente a capire quali task creare, come collegarli, che cosa sta succedendo nei job, "
+        "e quali rischi ci sono. Non dici di aver creato/lanciato nulla dalla chat: per agire, invita "
+        "l'utente a usare il Brief e Genera piano, oppure a premere i bottoni di conferma gia presenti. "
+        "Se mancano dettagli, fai una domanda breve. Se l'utente chiede stato, usa lo snapshot qui sotto.\n\n"
+        f"CAPACITA CHAT:\n- {web_line}\n- {files_line}\n\n"
+        f"SNAPSHOT SISTEMA:\n{snapshot}"
+    )
+
+
+def _orchestrator_snapshot() -> str:
+    lines: list[str] = []
+    tasks = db.list_tasks()[:10]
+    if not tasks:
+        return "Nessun task presente."
+    for t in tasks:
+        latest = db.latest_job(t["id"])
+        if latest:
+            job_info = f"ultimo job #{latest['id']} status={latest['status']}"
+        else:
+            job_info = "nessun job"
+        lines.append(
+            f"- task #{t['id']} {t['name']} mode={t.get('agent_mode')} "
+            f"model={t.get('model')} {job_info}"
+        )
+    return "\n".join(lines)

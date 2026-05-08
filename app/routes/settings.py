@@ -1,15 +1,18 @@
-"""Settings: configurazione canali email + telegram, test invio."""
+"""Settings: configurazione orchestrator, canali email + telegram, test invio."""
 from __future__ import annotations
 
 import os
 from typing import Any
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db
+from ..agent.llm_providers import get_provider, list_providers
+from ..agent.ollama import list_models
 from ..channels import email as ch_email
 from ..channels import telegram as ch_telegram
+from ..config import settings as app_settings
 from ..templates import templates
 
 
@@ -27,14 +30,44 @@ def _telegram_env_status() -> dict[str, bool]:
     return {"bot_token": bool(os.environ.get("TELEGRAM_BOT_TOKEN"))}
 
 
+def _orchestrator_defaults() -> dict[str, Any]:
+    return {
+        "use_llm": False,
+        "llm_provider": "ollama",
+        "planner_model": "",
+        "llm_base_url": "",
+        "chat_web_enabled": False,
+        "chat_files_enabled": False,
+    }
+
+
+async def _planner_model_options(provider_key: str) -> list[dict[str, str]]:
+    if provider_key == "ollama":
+        try:
+            models = await list_models()
+        except Exception:
+            models = [app_settings.default_model]
+        return [{"id": m, "desc": "(installato in locale)"} for m in models]
+
+    info = get_provider(provider_key)
+    return list(info.get("suggested_models") or [])
+
+
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     email_cfg = db.get_channel_config("email") or {}
     telegram_cfg = db.get_channel_config("telegram") or {}
+    orchestrator_row = db.get_channel_config("orchestrator") or {}
+    orchestrator_cfg = {**_orchestrator_defaults(), **(orchestrator_row.get("config") or {})}
+    orchestrator_provider = orchestrator_cfg.get("llm_provider") or "ollama"
     return templates.TemplateResponse(
         request,
         "settings.html",
         {
+            "orchestrator_cfg": orchestrator_cfg,
+            "orchestrator_enabled": bool(orchestrator_row.get("enabled")),
+            "llm_providers": list_providers(),
+            "orchestrator_planner_models": await _planner_model_options(orchestrator_provider),
             "email_cfg": email_cfg.get("config", {}),
             "email_enabled": bool(email_cfg.get("enabled")),
             "telegram_cfg": telegram_cfg.get("config", {}),
@@ -45,6 +78,57 @@ async def settings_page(request: Request):
             "error": request.query_params.get("error"),
         },
     )
+
+
+@router.get("/settings/orchestrator/model-field", response_class=HTMLResponse)
+async def orchestrator_model_field(
+    request: Request,
+    llm_provider: str = "ollama",
+    planner_model: str = "",
+):
+    provider_key = (llm_provider or "ollama").strip()
+    models = await _planner_model_options(provider_key)
+    default_model = models[0]["id"] if models else ""
+    return templates.TemplateResponse(
+        request,
+        "partials/orchestrator_planner_model_field.html",
+        {
+            "provider_key": provider_key,
+            "planner_models": models,
+            "current_model": planner_model.strip(),
+            "default_model": default_model,
+        },
+    )
+
+
+@router.post("/settings/orchestrator")
+async def save_orchestrator_config(
+    use_llm: str = Form(""),
+    chat_web_enabled: str = Form(""),
+    chat_files_enabled: str = Form(""),
+    llm_provider: str = Form("ollama"),
+    planner_model: str = Form(""),
+    llm_base_url: str = Form(""),
+    llm_api_key: str = Form(""),
+):
+    existing = (db.get_channel_config("orchestrator") or {}).get("config", {})
+    cfg: dict[str, Any] = {
+        "use_llm": bool(use_llm),
+        "llm_provider": (llm_provider or "ollama").strip() or "ollama",
+        "planner_model": planner_model.strip() or None,
+        "llm_base_url": llm_base_url.strip() or None,
+        "chat_web_enabled": bool(chat_web_enabled),
+        "chat_files_enabled": bool(chat_files_enabled),
+    }
+    key_action = (llm_api_key or "").strip()
+    if key_action.upper() == "CLEAR":
+        pass
+    elif key_action:
+        cfg["llm_api_key"] = key_action
+    elif existing.get("llm_api_key"):
+        cfg["llm_api_key"] = existing["llm_api_key"]
+    db.save_channel_config("orchestrator", cfg, enabled=bool(use_llm))
+    return RedirectResponse(url="/settings?flash=Orchestrator+config+salvata", status_code=303)
 
 
 @router.post("/settings/email")

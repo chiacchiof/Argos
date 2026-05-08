@@ -105,7 +105,24 @@ Il form di creazione/modifica task (`/tasks/new`, `/tasks/<id>/edit`) è organiz
 
 **Submit**: il bottone **✓ Crea task** (o **💾 Salva modifiche**) appare SOLO nell'ultimo step. Negli step intermedi vedi solo **Avanti ▶**. Click su un titolo della stepper-bar = jump diretto a quello step. Il form è un'unica request al server (niente upload parziali tra step).
 
-**Sezioni collassabili** (`<details>` HTML nativi): tutte le sezioni "fieldset" del form sono retrattili — click sul titolo per chiudere/aprire. Default: aperte le sezioni essenziali, chiuse le opzionali (es. "Configura Discovery LLM (avanzato)" si apre solo se ci sono già valori salvati). Stato della singola sezione open/closed NON viene persistito tra reload.
+**Sezioni collassabili** (`<details>` HTML nativi): tutte le sezioni "fieldset" del form sono retrattili e **partono CHIUSE per default** — click sul titolo per espandere quella che ti serve. Stato della singola sezione open/closed NON viene persistito tra reload.
+
+### 2.2.1 Orchestrator: creare task/workflow da un brief
+
+La pagina `/orchestrator` è una console per descrivere un obiettivo in linguaggio naturale e ottenere una **preview operativa**: task proposti, workflow DAG, artifact passati tra task e rischi.
+
+Livelli di autonomia:
+
+| Livello | Cosa può fare |
+|---|---|
+| **Consigliere** | propone il piano, senza creare nulla |
+| **Builder** | crea task/workflow solo dopo conferma, ma non lancia job |
+| **Supervisionato** | crea e può lanciare dopo conferma esplicita |
+| **Autonomo controllato** | crea e lancia dopo conferma iniziale; outreach/responder richiedono comunque consenso dedicato |
+
+Il planner funziona anche senza LLM esterno usando una strategia euristica locale. Se abiliti **Planner LLM**, l'orchestrator chiede a un modello OpenAI-compatible un piano JSON; se la chiamata fallisce, torna automaticamente al piano euristico. La API key del planner serve solo a generare il piano e non viene salvata nei task creati.
+
+La colonna destra contiene una **chat persistente** salvata in DB. Usa lo stesso provider/modello configurato in Settings e puo essere abilitata, sempre da Settings, a usare tool web (`web_search`, `fetch_url`) oppure allegati file testuali. Gli allegati vengono salvati in `data/uploads/orchestrator/` e passati al modello come contesto della singola richiesta.
 
 ### 2.2 Come scegliere l'input `.jsonl` di un task
 

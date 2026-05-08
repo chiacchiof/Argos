@@ -2,7 +2,7 @@
 {% block title %}Settings — AgentScraper{% endblock %}
 {% block content %}
 <section>
-  <h2>⚙️ Settings — Canali di messaggistica</h2>
+  <h2>⚙️ Settings — Orchestrator e canali</h2>
 
   {% if flash %}<div class="flash-ok">✓ {{ flash }}</div>{% endif %}
   {% if error %}<div class="errors">⚠️ {{ error }}</div>{% endif %}
@@ -14,6 +14,86 @@
     <code>data/agentscraper.db</code> è gitignorato, ma il pattern env-first è più
     sicuro per chi committa il progetto.
   </p>
+
+  <hr>
+
+  <h3>Orchestrator</h3>
+  <p class="muted small">
+    Questi valori sono i default della pagina <code>/orchestrator</code>. Sono salvati nel DB locale:
+    uso del planner LLM, provider, modello, base URL, API key planner e capacita della chat.
+  </p>
+  <form method="post" action="/settings/orchestrator" class="settings-form">
+    <div class="row">
+      <label>Provider planner
+        <select name="llm_provider"
+                hx-get="/settings/orchestrator/model-field"
+                hx-trigger="change"
+                hx-target="#orchestrator-planner-model-block"
+                hx-swap="outerHTML">
+          {% for prov in llm_providers %}
+          <option value="{{ prov.key }}" {% if orchestrator_cfg.llm_provider == prov.key %}selected{% endif %}>
+            {{ prov.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <div class="row">
+      {% with
+         provider_key = orchestrator_cfg.llm_provider or 'ollama',
+         planner_models = orchestrator_planner_models,
+         current_model = orchestrator_cfg.planner_model or '',
+         default_model = (orchestrator_planner_models[0].id if orchestrator_planner_models else '')
+      %}
+        {% include "partials/orchestrator_planner_model_field.html" %}
+      {% endwith %}
+      <label>Base URL custom
+        <input type="text" name="llm_base_url"
+               value="{{ orchestrator_cfg.llm_base_url or '' }}"
+               placeholder="solo per provider custom, es. https://example.com/v1">
+      </label>
+    </div>
+
+    <label>API key planner
+      <span class="hint">
+        {% if orchestrator_cfg.llm_api_key %}
+          <span class="badge badge-ok">chiave salvata nel DB ({{ orchestrator_cfg.llm_api_key|length }} caratteri)</span>
+          lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per cancellarla.
+        {% else %}
+          non salvata; se compili viene memorizzata in <code>channel_config</code>.
+        {% endif %}
+      </span>
+      <input type="password" name="llm_api_key" value=""
+             placeholder="{% if orchestrator_cfg.llm_api_key %}lascia vuoto per mantenere - o CLEAR per cancellare{% else %}API key planner{% endif %}"
+             autocomplete="off" data-lpignore="true">
+    </label>
+
+    <label>
+      <input type="checkbox" name="use_llm" {% if orchestrator_enabled or orchestrator_cfg.use_llm %}checked{% endif %}>
+      <strong>Usa Planner LLM di default</strong>
+      <span class="hint">se OFF, l'orchestrator usa il planner euristico locale.</span>
+    </label>
+
+    <div class="settings-subsection">
+      <h4>Chat Orchestrator</h4>
+      <label>
+        <input type="checkbox" name="chat_web_enabled" {% if orchestrator_cfg.chat_web_enabled %}checked{% endif %}>
+        <strong>Consenti navigazione web</strong>
+        <span class="hint">abilita tool <code>web_search</code> e <code>fetch_url</code> per modelli compatibili con tool calling.</span>
+      </label>
+      <label>
+        <input type="checkbox" name="chat_files_enabled" {% if orchestrator_cfg.chat_files_enabled %}checked{% endif %}>
+        <strong>Consenti allegati file</strong>
+        <span class="hint">la chat puo leggere file testuali caricati e salvarli in <code>data/uploads</code>.</span>
+      </label>
+    </div>
+
+    <div class="actions">
+      <button type="submit">Salva configurazione orchestrator</button>
+      <a href="/orchestrator" class="link-cancel">Apri orchestrator</a>
+    </div>
+  </form>
 
   <hr>
 

@@ -299,6 +299,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     # 7. report
     fmt = task.get("output_format") or "md"
     report_ext = "md" if fmt in ("md", "both") else "txt"
+    status_text = "INTERROTTO dall'utente" if stopped else "Completato"
     report = (
         f"# Outreach run {ts}\n\n"
         f"- **Task**: {task['name']} (#{task['id']})\n"
@@ -307,7 +308,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         f"- **Inviati**: {n_sent}\n"
         f"- **Falliti**: {n_failed}\n"
         f"- **Skippati**: {n_skipped}\n"
-        f"- **Stato**: {'INTERROTTO dall\\'utente' if stopped else 'Completato'}\n\n"
+        f"- **Stato**: {status_text}\n\n"
         f"Vedi `outreach_log.jsonl` per il dettaglio per messaggio.\n"
     )
     report_path = run_dir / f"report.{report_ext}"

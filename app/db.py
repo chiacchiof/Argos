@@ -162,6 +162,16 @@ CREATE TABLE IF NOT EXISTS channel_config (
   enabled     INTEGER NOT NULL DEFAULT 0,
   updated_at  TEXT NOT NULL
 );
+
+-- Chat persistente dell'Orchestrator
+CREATE TABLE IF NOT EXISTS orchestrator_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  role TEXT NOT NULL,
+  body TEXT NOT NULL,
+  metadata_json TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_messages_id ON orchestrator_messages(id);
 """
 
 
@@ -1238,3 +1248,50 @@ def save_channel_config(channel: str, config: dict[str, Any], enabled: bool) -> 
             """,
             (channel, payload, 1 if enabled else 0, now_iso()),
         )
+
+
+# ===========================================================================
+# Orchestrator persistent chat
+# ===========================================================================
+
+def add_orchestrator_message(
+    role: str,
+    body: str,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    payload = json.dumps(metadata or {})
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO orchestrator_messages (role, body, metadata_json, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (role, body, payload, now_iso()),
+        )
+        return int(cur.lastrowid)
+
+
+def list_orchestrator_messages(limit: int = 100) -> list[dict[str, Any]]:
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM orchestrator_messages
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in reversed(rows):
+        d = dict(r)
+        try:
+            d["metadata"] = json.loads(d.get("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            d["metadata"] = {}
+        out.append(d)
+    return out
+
+
+def clear_orchestrator_messages() -> None:
+    with connect() as con:
+        con.execute("DELETE FROM orchestrator_messages")

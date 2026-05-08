@@ -3,12 +3,17 @@
 {% block title %}Tasks — AgentScraper{% endblock %}
 {% block content %}
 <section>
-  <h2>Tasks (attività)</h2>
-  <p class="muted">
-    Un <strong>task</strong> è un'attività autonoma (scraping, qualifier, outreach, responder, ecc.):
-    può essere lanciata indipendentemente, oppure orchestrata in cascata da un
-    <a href="/workflows">🔗 workflow</a>.
-  </p>
+  <div class="section-header">
+    <div>
+      <h2 style="margin: 0">Tasks (attività)</h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        Un <strong>task</strong> è un'attività autonoma (scraping, qualifier, outreach, responder, ecc.):
+        può essere lanciata indipendentemente, oppure orchestrata in cascata da un
+        <a href="/workflows">🔗 workflow</a>.
+      </p>
+    </div>
+    <a href="/tasks/new" class="btn-primary">+ Nuovo task</a>
+  </div>
 
   {# Filtro per status_tag — query string ?status_tag=... #}
   <div class="task-filter">

@@ -10,6 +10,7 @@ from . import db, jobs
 from .config import settings
 from .routes import inbox as inbox_routes
 from .routes import jobs as jobs_routes
+from .routes import orchestrator as orchestrator_routes
 from .routes import results as results_routes
 from .routes import settings as settings_routes
 from .routes import tasks as tasks_routes
@@ -40,6 +41,7 @@ app.include_router(results_routes.router)
 app.include_router(settings_routes.router)
 app.include_router(inbox_routes.router)
 app.include_router(workflows_routes.router)
+app.include_router(orchestrator_routes.router)
 
 
 def run() -> None:

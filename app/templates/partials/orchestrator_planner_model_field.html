@@ -1,0 +1,20 @@
+<label id="orchestrator-planner-model-block">Modello planner
+  <span class="hint">(scegli dal menu o digita un nome diverso)</span>
+  <select class="model-picker"
+          onchange="if (this.value) { this.parentElement.querySelector('input[name=planner_model]').value = this.value; }">
+    <option value="">-- scegli un modello suggerito --</option>
+    {% for m in planner_models %}
+      <option value="{{ m.id }}" title="{{ m.desc }}"
+              {% if m.id == (current_model or default_model) %}selected{% endif %}>
+        {{ m.id }} - {{ m.desc }}
+      </option>
+    {% endfor %}
+  </select>
+  <input id="orchestrator-planner-model-input"
+         type="text"
+         name="planner_model"
+         class="model-input"
+         value="{{ current_model or default_model }}"
+         placeholder="es. {{ default_model or 'nome-modello' }}"
+         autocomplete="off">
+</label>

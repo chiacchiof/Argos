@@ -93,7 +93,7 @@ def test_boot_and_crud(monkeypatch, tmp_path):
 
 
 def test_new_tables_created(monkeypatch, tmp_path):
-    """Verifica che le 5 nuove tabelle (workflow_edges, contacts, threads, messages, channel_config) siano create da init_db()."""
+    """Verifica che le nuove tabelle operative siano create da init_db()."""
     from app import config, db, storage
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
@@ -108,7 +108,10 @@ def test_new_tables_created(monkeypatch, tmp_path):
         names = {r["name"] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
-    expected = {"workflow_edges", "contacts", "threads", "messages", "channel_config"}
+    expected = {
+        "workflow_edges", "contacts", "threads", "messages",
+        "channel_config", "orchestrator_messages",
+    }
     missing = expected - names
     assert not missing, f"tabelle mancanti: {missing}"
 
@@ -149,6 +152,14 @@ def test_new_tables_created(monkeypatch, tmp_path):
     pending = db.find_unprocessed_inbound()
     # il msg "in" è dopo l'ultimo "out" → counts as unprocessed
     assert any(m["id"] == msgs[1]["id"] for m in pending)
+
+    # chat persistente orchestrator
+    db.add_orchestrator_message("user", "ciao")
+    db.add_orchestrator_message("assistant", "dimmi pure")
+    chat = db.list_orchestrator_messages()
+    assert [m["role"] for m in chat[-2:]] == ["user", "assistant"]
+    db.clear_orchestrator_messages()
+    assert db.list_orchestrator_messages() == []
 
 
 def test_workflow_dag_create_and_cycle(monkeypatch, tmp_path):
@@ -270,7 +281,8 @@ def test_bulk_extract_url_collection_filters():
     from app.agent.runner_bulk_extract import (
         _normalize_url, _domain_allowed, _load_urls_from_artifact,
     )
-    import json, tempfile
+    import json
+    import tempfile
     from pathlib import Path
 
     # _normalize_url: aggiunge https://, gestisce vuoto
@@ -342,3 +354,100 @@ def test_validation_error_returns_form(monkeypatch, tmp_path):
         )
         assert r.status_code == 400, f"body={r.text[:300]}"
         assert "Errori di validazione" in r.text
+
+
+def test_orchestrator_plan_and_execute(monkeypatch, tmp_path):
+    """L'orchestrator genera un piano locale e crea task/workflow dopo conferma."""
+    import re
+    from html import unescape
+
+    from app import config, db, storage
+    from app.routes import orchestrator as orchestrator_route
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(orchestrator_route, "UPLOADS_DIR", tmp_path / "uploads")
+    db.init_db()
+
+    async def fake_chat_reply(latest_user_message, *, file_info=None):
+        assert "Allegato" in latest_user_message
+        assert file_info and file_info["filename"] == "brief.md"
+        assert "contenuto allegato" in file_info["context_text"]
+        return "Ho letto il file allegato.", {"fake": True}
+
+    monkeypatch.setattr(orchestrator_route, "_generate_chat_reply", fake_chat_reply)
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/settings/orchestrator",
+            data={
+                "use_llm": "on",
+                "chat_web_enabled": "on",
+                "chat_files_enabled": "on",
+                "llm_provider": "custom",
+                "planner_model": "planner-test",
+                "llm_base_url": "https://llm.example/v1",
+                "llm_api_key": "secret-test",
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        saved = db.get_channel_config("orchestrator")
+        assert saved["enabled"] == 1
+        assert saved["config"]["llm_provider"] == "custom"
+        assert saved["config"]["llm_api_key"] == "secret-test"
+        assert saved["config"]["chat_web_enabled"] is True
+        assert saved["config"]["chat_files_enabled"] is True
+
+        r = client.get("/orchestrator")
+        assert r.status_code == 200
+        assert "Orchestrator" in r.text
+        assert "planner-test" in r.text
+        assert "Web ON" in r.text
+        assert "File ON" in r.text
+
+        r = client.post(
+            "/orchestrator/chat",
+            data={"message": "Leggi questo file."},
+            files={"attachment": ("brief.md", b"contenuto allegato", "text/markdown")},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        chat = db.list_orchestrator_messages()
+        assert chat[-2]["role"] == "user"
+        assert "brief.md" in chat[-2]["body"]
+        assert chat[-2]["metadata"]["attachment"]["filename"] == "brief.md"
+        assert chat[-1]["body"] == "Ho letto il file allegato."
+
+        r = client.post(
+            "/orchestrator/plan",
+            data={
+                "brief": "estrai contatti da https://example.com e qualificali",
+                "autonomy_level": "builder",
+                "llm_provider": "ollama",
+                "planner_model": "qwen3.5:latest",
+            },
+        )
+        assert r.status_code == 200
+        assert "Task proposti" in r.text
+        assert "Estrazione dati" in r.text
+        assert "Qualifica contatti" in r.text
+
+        m = re.search(r'name="plan_b64" value="([^"]+)"', r.text)
+        assert m, r.text[:500]
+        plan_b64 = unescape(m.group(1))
+
+        r = client.post(
+            "/orchestrator/execute",
+            data={"plan_b64": plan_b64},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert r.headers["location"].startswith("/workflows/")
+
+    assert len(db.list_tasks()) == 2
+    assert len(db.list_workflows()) == 1
