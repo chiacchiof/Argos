@@ -375,3 +375,175 @@ details.optional-block[open] > summary {
   padding: 0.1rem 0.4rem;
 }
 .selected-artifact > .btn-link:hover { text-decoration: underline; }
+
+/* ===== Wizard a step ===== */
+.wizard-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: stretch;
+  margin: 0 0 1.2rem 0;
+  padding: 0.4rem 0;
+  border-bottom: 2px solid #e5e7eb;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 10;
+}
+.wizard-stepper-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.8rem;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  font-size: 0.9em;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+.wizard-stepper-item:hover {
+  background: #e5e7eb;
+  color: #374151;
+}
+.wizard-stepper-item.active {
+  background: #1f2937;
+  color: #fff;
+  border-color: #1f2937;
+  font-weight: 600;
+}
+.wizard-stepper-item .step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  font-size: 0.8em;
+  font-weight: 700;
+}
+.wizard-stepper-item.active .step-num {
+  background: #fbbf24;
+  color: #1f2937;
+}
+.wizard-stepper-item:not(.active) .step-num {
+  background: #d1d5db;
+}
+.wizard-stepper-item .step-title {
+  white-space: nowrap;
+}
+
+/* Lo step attivo è l'unico mostrato; gli altri sono nascosti via JS (style.display=none).
+   Aggiungo padding/spacing per leggibilità. */
+section.wizard-step {
+  padding: 0.4rem 0;
+  animation: wizard-fade-in 0.2s ease;
+}
+@keyframes wizard-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Bottoni di navigazione del wizard */
+.wizard-nav {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e5e7eb;
+}
+.wizard-nav button {
+  padding: 0.5rem 1.2rem;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+.wizard-nav button#wizard-next {
+  background: #1f2937;
+  color: #fff;
+  border: 1px solid #1f2937;
+  border-radius: 4px;
+}
+.wizard-nav button#wizard-next:hover { background: #111827; }
+.wizard-nav button#wizard-prev {
+  background: #fff;
+  color: #1f2937;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+.wizard-nav button#wizard-prev:hover { background: #f3f4f6; }
+.wizard-nav button#wizard-submit {
+  background: #16a34a;
+  color: #fff;
+  border: 1px solid #16a34a;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.wizard-nav button#wizard-submit:hover { background: #15803d; }
+.wizard-nav .link-cancel {
+  margin-left: auto;
+  color: #6b7280;
+  text-decoration: none;
+}
+.wizard-nav .link-cancel:hover { text-decoration: underline; }
+
+/* Mobile: stepper item compatto */
+@media (max-width: 768px) {
+  .wizard-stepper-item .step-title { display: none; }
+  .wizard-stepper-item.active .step-title { display: inline; }
+}
+
+/* ===== Sezioni collassabili (sostituiscono i fieldset, native HTML <details>) ===== */
+details.collapsible-section {
+  margin: 1rem 0;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 4px;
+  padding: 0.4rem 1rem;
+  background: #fff;
+}
+details.collapsible-section[open] {
+  padding-bottom: 1rem;
+}
+details.collapsible-section > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.4rem 0;
+  user-select: none;
+  font-size: 1em;
+  color: #1f2937;
+}
+details.collapsible-section > summary:hover {
+  color: #4b5563;
+}
+details.collapsible-section[open] > summary {
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #f3f4f6;
+}
+/* Legacy stile fieldset extraction-fieldset (textarea schema) — riapplico sopra details */
+details.collapsible-section.extraction-fieldset {
+  background: #fcfcfc;
+}
+
+/* Box riepilogativo "Quali LLM" — versione collassabile (overview in cima a Step 3) */
+details.llm-roles-overview {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  margin: 0.5rem 0 1.2rem 0;
+}
+details.llm-roles-overview > summary {
+  cursor: pointer;
+  font-size: 1em;
+  padding: 0.3rem 0;
+  user-select: none;
+}
+details.llm-roles-overview[open] > summary {
+  margin-bottom: 0.4rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px dashed #fed7aa;
+}

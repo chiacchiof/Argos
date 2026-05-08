@@ -89,6 +89,24 @@ In AgentScraper i `.jsonl` sono il **"currency" interno tra task**:
 
 Tutti i `.jsonl` vivono in `data/results/<task_id>/<timestamp>/`.
 
+### 2.2.0 Creare/modificare un task: il wizard a 5 step
+
+Il form di creazione/modifica task (`/tasks/new`, `/tasks/<id>/edit`) è organizzato come **wizard a 5 step navigabili** invece che come un'unica pagina lunga. Vedi una stepper-bar in cima (cliccabile) e bottoni **◀ Indietro** / **Avanti ▶** / **✓ Crea task** in fondo.
+
+| # | Step | Cosa contiene | Visibile per |
+|---|---|---|---|
+| 1 | 🎯 **Identità** | Nome, descrizione, modalità agente, obiettivo | sempre |
+| 2 | 🔍 **Target & Schema** | Seed/URL, domini, schema di estrazione, crawler config (concorrenza, rate, depth, pattern) | scraping modes |
+| 3 | 🧠 **LLM** | Tabella overview "Quali LLM" + 3 ruoli LLM: Main (obbligatorio), Discovery (opzionale, collassabile), Browser (opzionale, collassabile) | tutti tranne `outreach` |
+| 4 | 🔄 **Pipeline I/O** | Input upstream (file picker), Outreach config, Responder system prompt | bulk/qualifier/outreach/responder/auto |
+| 5 | 📋 **Pianificazione** | Output format, cron, valutazione personale | sempre |
+
+**Step automaticamente skippati**: il wizard rileva quali step sono vuoti per la modalità scelta e li nasconde dalla stepper. Esempio: per `react` ti vedi solo Step 1, Step 2 (parziale), Step 3 e Step 5. Step 4 sparisce.
+
+**Submit**: il bottone **✓ Crea task** (o **💾 Salva modifiche**) appare SOLO nell'ultimo step. Negli step intermedi vedi solo **Avanti ▶**. Click su un titolo della stepper-bar = jump diretto a quello step. Il form è un'unica request al server (niente upload parziali tra step).
+
+**Sezioni collassabili** (`<details>` HTML nativi): tutte le sezioni "fieldset" del form sono retrattili — click sul titolo per chiudere/aprire. Default: aperte le sezioni essenziali, chiuse le opzionali (es. "Configura Discovery LLM (avanzato)" si apre solo se ci sono già valori salvati). Stato della singola sezione open/closed NON viene persistito tra reload.
+
 ### 2.2 Come scegliere l'input `.jsonl` di un task
 
 Quando crei un task della famiglia "Pipeline downstream" (qualifier/outreach/responder), o un `bulk_extract` con input pre-esistente, hai **3 modi per indicare il file di input**, nella sezione "📂 Input upstream" del form:

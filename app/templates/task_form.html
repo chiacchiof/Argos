@@ -15,6 +15,14 @@
   {% set p = task or {} %}
   <form method="post" action="{% if is_edit %}/tasks/{{ task.id }}{% else %}/tasks{% endif %}" id="task-form">
 
+    {# Stepper bar (popolata da JS in base agli step visibili per la modalità) #}
+    <nav id="wizard-stepper" class="wizard-stepper" aria-label="Configurazione task per fasi"></nav>
+
+    {# ============================================================
+       STEP 1 — Identità (Nome / Descrizione / Modalità / Obiettivo)
+       ============================================================ #}
+    <section class="wizard-step" data-step="1" data-step-title="🎯 Identità">
+
     {# ============================================================
        SEZIONE 1: IDENTITÀ — sempre visibile per tutte le modalità
        ============================================================ #}
@@ -62,12 +70,19 @@
       <textarea name="objective" rows="5" required>{{ p.get('objective','') }}</textarea>
     </label>
 
+    </section>{# fine STEP 1 #}
+
+    {# ============================================================
+       STEP 2 — Target & Schema (seed, domini, schema, crawler bulk + discovery LLM)
+       ============================================================ #}
+    <section class="wizard-step" data-step="2" data-step-title="🔍 Target &amp; Schema">
+
     {# ============================================================
        SEZIONE 4: SCRAPING — seed queries, domini, max iter
        Solo per react / browser_use
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="react browser_use bulk_extract auto_extract">
-      <legend>Configurazione di ricerca</legend>
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract">
+      <summary>Configurazione di ricerca</summary>
 
       <label>
         <span class="dyn-label"
@@ -105,7 +120,7 @@
               data-hint-autoextract="Cap di URL processate per ogni singolo sito della lista (vale per la fase bulk_extract; per i siti instradati a browser_use è il N° max di step).">(numero massimo)</span>
         <input type="number" name="max_iterations" min="1" max="100000" value="{{ p.get('max_iterations', 10) }}">
       </label>
-    </fieldset>
+    </details>
 
     {# Quelli che NON sono react/browser_use ma vogliono comunque max_iterations
        (in pratica nessuno: qualifier processa tutti i record dell'artifact;
@@ -117,8 +132,8 @@
     {# ============================================================
        SEZIONE 5: SCHEMA DI ESTRAZIONE — solo browser_use
        ============================================================ #}
-    <fieldset class="extraction-fieldset dyn-section" data-modes="browser_use bulk_extract auto_extract">
-      <legend>Schema di estrazione</legend>
+    <details class="collapsible-section extraction-fieldset dyn-section" data-modes="browser_use bulk_extract auto_extract">
+      <summary>Schema di estrazione</summary>
 
       {% set selected_template = p.get('extraction_template') or 'profile_contacts' %}
       <label>Template di partenza
@@ -147,13 +162,13 @@
           {% include "partials/extraction_schema_field_initial.html" %}
         {% endif %}
       </label>
-    </fieldset>
+    </details>
 
     {# ============================================================
        SEZIONE 5b: CONFIGURAZIONE BULK — solo bulk_extract
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="bulk_extract auto_extract">
-      <legend>Configurazione bulk <span class="hint">(per <code>auto_extract</code> queste impostazioni si applicano ai siti dove il profiler sceglie <code>bulk_extract</code>)</span></legend>
+    <details class="collapsible-section dyn-section" data-modes="bulk_extract auto_extract">
+      <summary>Configurazione bulk <span class="hint">(per <code>auto_extract</code> queste impostazioni si applicano ai siti dove il profiler sceglie <code>bulk_extract</code>)</span></summary>
 
       <div class="row three">
         <label>Concorrenza <span class="hint">(URL in parallelo, max ~10)</span>
@@ -217,150 +232,23 @@
         </label>
       </div>
 
-      <div class="llm-roles-box">
-        <h5 style="margin: 0 0 0.4rem 0">🧠 Quali LLM vengono usati e per cosa</h5>
-        <p class="muted small" style="margin: 0 0 0.5rem 0">
-          Un task può usare fino a <strong>3 LLM separati</strong> per ruoli diversi.
-          <strong>Lascia vuoti gli slot opzionali</strong> se il modello principale ti basta —
-          è la scelta semplice e funziona nel 90% dei casi.
-        </p>
-        <table class="llm-roles">
-          <thead>
-            <tr><th>Slot</th><th>Quando viene chiamato</th><th>N° chiamate</th><th>Cosa serve</th></tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><strong>Main</strong> (Modello LLM, sotto)<br><span class="muted small">obbligatorio</span></td>
-              <td>Per OGNI URL processato (estrae campi dal testo della pagina)</td>
-              <td><strong>N</strong> = URL discovered</td>
-              <td>Anche locale gratis se l'extraction è semplice (<code>llama3.1:8b</code>, <code>gpt-oss:20b</code>) o <code>gpt-4o-mini</code> per affidabilità</td>
-            </tr>
-            <tr>
-              <td><strong>Discovery</strong><br><span class="muted small">opzionale</span></td>
-              <td>Una volta all'inizio, per scegliere il pattern URL target nel crawler. <em>In <code>auto_extract</code> riusato anche dal profiler (1 chiamata per sito).</em></td>
-              <td>1 + N° siti</td>
-              <td>Capable: <code>gpt-4o-mini</code> (~$0.0003 per chiamata)</td>
-            </tr>
-            <tr>
-              <td><strong>Browser</strong><br><span class="muted small">opzionale</span></td>
-              <td>Solo per <code>browser_use</code> e per i siti che <code>auto_extract</code> instrada al browser. Tool-calling complesso + visione.</td>
-              <td>M = step browser-use</td>
-              <td><strong>Capable obbligatorio</strong>: <code>gpt-4o-mini</code> minimo. Modelli ≤8B falliscono il tool-calling.</td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="muted small" style="margin: 0.5rem 0 0 0">
-          💡 <strong>Strategia "mix"</strong>: Main locale gratis + Discovery capace cloud + Browser capace cloud →
-          paghi pochi centesimi e processi cataloghi grandi. <strong>Strategia semplice</strong>: tutti e 3 vuoti tranne Main =
-          <code>gpt-4o-mini</code> → un solo modello, costa poco, sempre OK.
-        </p>
-      </div>
+    </details>
 
-      <details class="optional-block" {% if p.get('discovery_llm_provider') or p.get('discovery_llm_model') or p.get('discovery_llm_api_key') %}open{% endif %}>
-        <summary>🔧 <strong>Configura Discovery LLM</strong> (avanzato — clicca per espandere)</summary>
-        <p class="muted small" style="margin-top: 0.4rem">
-          Lascia vuoto per usare il modello principale. Compila solo se vuoi un modello diverso
-          (più capace) per la fase di Discovery.
-        </p>
-
-        <div class="row">
-          <label>Discovery — Provider LLM <span class="hint">(opzionale)</span>
-            <select name="discovery_llm_provider">
-              <option value="" {% if not p.get('discovery_llm_provider') %}selected{% endif %}>— stesso del task (default) —</option>
-              {% for prov in llm_providers %}
-                <option value="{{ prov.key }}"
-                        {% if prov.key == p.get('discovery_llm_provider') %}selected{% endif %}>
-                  {{ prov.name }}{% if prov.needs_key and not env_key_status[prov.key] %} ⚠️{% endif %}
-                </option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Discovery — Modello <span class="hint">(opzionale, vuoto = stesso del task)</span>
-            <input type="text" name="discovery_llm_model"
-                   value="{{ p.get('discovery_llm_model','') or '' }}"
-                   placeholder="es. gpt-4o-mini">
-          </label>
-        </div>
-
-        <label>Discovery — API key
-          <span class="hint">
-            Necessaria solo se il <strong>Provider LLM Discovery</strong> richiede una chiave
-            (es. openai, anthropic, grok, gemini) ed è <em>diverso</em> dal provider principale.
-            Lascia vuoto per usare la variabile d'ambiente del provider scelto
-            (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, ecc.).
-            Se compilata, viene salvata nel DB del progetto.
-          </span>
-          {% if p.get('discovery_llm_api_key') %}
-            <span class="badge badge-ok"
-                  title="Una chiave è già stata salvata. Lascia il campo vuoto per mantenerla, scrivi una nuova per sovrascriverla. Per cancellarla, scrivi 'CLEAR' nel campo.">
-              ✓ chiave già salvata in DB ({{ p.get('discovery_llm_api_key')|length }} caratteri) — lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per rimuoverla
-            </span>
-          {% endif %}
-          <input type="password" name="discovery_llm_api_key" value=""
-                 placeholder="{% if p.get('discovery_llm_api_key') %}lascia vuoto per mantenere — o digita CLEAR per cancellarla{% else %}lascia vuoto per usare l'env var del provider{% endif %}"
-                 autocomplete="off" data-lpignore="true">
-      </label>
-      </details>
-    </fieldset>
+    </section>{# fine STEP 2 #}
 
     {# ============================================================
-       SEZIONE 5b: BROWSER LLM — solo browser_use / auto_extract (LLM dedicato per visione + tool-calling)
+       STEP 4 — Pipeline I/O (input upstream + outreach config + responder prompt)
+       Nel DOM viene PRIMA dello STEP 3 ma il wizard JS lo mostra come step 4.
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="browser_use auto_extract">
-      <legend>🖥️ Browser LLM <span class="hint">(opzionale)</span></legend>
-
-      <details class="optional-block" {% if p.get('browser_llm_provider') or p.get('browser_llm_model') or p.get('browser_llm_api_key') %}open{% endif %}>
-        <summary>🖥️ <strong>Configura Browser LLM</strong> (avanzato — clicca per espandere)</summary>
-        <p class="muted small" style="margin-top: 0.4rem">
-          Browser_use richiede tool-calling complesso. I modelli locali piccoli (≤ 8B) spesso falliscono.
-          Tipicamente serve <code>gpt-4o-mini</code>+ o <code>gpt-oss:20b</code>+ locale. Se il tuo modello
-          principale è già adeguato, lascia tutti questi campi vuoti.
-        </p>
-
-        <div class="row">
-          <label>Browser — Provider LLM
-            <select name="browser_llm_provider">
-              <option value="" {% if not p.get('browser_llm_provider') %}selected{% endif %}>— stesso del task (default) —</option>
-              {% for prov in llm_providers %}
-                <option value="{{ prov.key }}"
-                        {% if prov.key == p.get('browser_llm_provider') %}selected{% endif %}>
-                  {{ prov.name }}{% if prov.needs_key and not env_key_status[prov.key] %} ⚠️{% endif %}
-                </option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Browser — Modello
-            <input type="text" name="browser_llm_model"
-                   value="{{ p.get('browser_llm_model','') or '' }}"
-                   placeholder="es. gpt-4o-mini, gpt-oss:20b">
-          </label>
-        </div>
-
-        <label>Browser — API key
-          <span class="hint">
-            (opzionale — se vuoto viene letta dalla variabile d'ambiente del provider scelto;
-            se compilata viene <strong>salvata nel DB</strong>)
-          </span>
-          {% if p.get('browser_llm_api_key') %}
-            <span class="badge badge-ok"
-                  title="Una chiave è già stata salvata nel DB del task. Lascia il campo vuoto per mantenerla. Scrivi una nuova chiave per sovrascriverla. Per cancellarla, scrivi 'CLEAR' nel campo.">
-              ✓ chiave già salvata in DB ({{ p.get('browser_llm_api_key')|length }} caratteri) — lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per rimuoverla
-            </span>
-          {% endif %}
-          <input type="password" name="browser_llm_api_key" value=""
-                 placeholder="{% if p.get('browser_llm_api_key') %}lascia vuoto per mantenere — o digita CLEAR per cancellarla{% else %}lascia vuoto per usare l'env var del provider{% endif %}"
-                 autocomplete="off" data-lpignore="true">
-        </label>
-      </details>
-    </fieldset>
+    <section class="wizard-step" data-step="4" data-step-title="🔄 Pipeline I/O">
 
     {# ============================================================
        SEZIONE 6: INPUT UPSTREAM — bulk_extract / qualifier / outreach / responder
        Permette di scegliere un file .jsonl come input dal filesystem (file picker)
        oltre che inserire il path manualmente.
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="bulk_extract qualifier outreach responder">
-      <legend>📂 Input upstream <span class="hint">(file <code>.jsonl</code>)</span></legend>
+    <details class="collapsible-section dyn-section" data-modes="bulk_extract qualifier outreach responder">
+      <summary>📂 Input upstream <span class="hint">(file <code>.jsonl</code>)</span></summary>
 
       <p class="muted small">
         Per <code>qualifier</code>/<code>outreach</code>/<code>responder</code>: <strong>obbligatorio</strong>
@@ -405,7 +293,7 @@
         <input type="hidden" name="input_artifact_path"
                value="{{ p.get('input_artifact_path','') or '' }}">
       </div>
-    </fieldset>
+    </details>
 
     <script>
     (function () {
@@ -493,8 +381,8 @@
     {# ============================================================
        SEZIONE 7: OUTREACH — solo outreach
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="outreach">
-      <legend>Configurazione outreach</legend>
+    <details class="collapsible-section dyn-section" data-modes="outreach">
+      <summary>Configurazione outreach</summary>
 
       <label>Subject email <span class="hint">Placeholder: <code>{display_name}</code>, <code>{source_domain}</code>, <code>{source_url}</code>, <code>{email}</code></span>
         <input type="text" name="message_subject" value="{{ p.get('message_subject','') or '' }}"
@@ -512,13 +400,13 @@
         <textarea name="message_template" rows="8"
                   placeholder="Ciao {display_name},&#10;&#10;ho visto la tua pagina su {source_url} e...">{{ p.get('message_template','') or '' }}</textarea>
       </label>
-    </fieldset>
+    </details>
 
     {# ============================================================
        SEZIONE 8: RESPONDER — solo responder
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="responder">
-      <legend>Configurazione responder</legend>
+    <details class="collapsible-section dyn-section" data-modes="responder">
+      <summary>Configurazione responder</summary>
 
       <label>System prompt LLM <span class="hint">Usato per generare le auto-reply ai messaggi inbound. Definisci tono, scopo, eventuali domande standard.</span>
         <textarea name="responder_system_prompt" rows="6"
@@ -529,13 +417,64 @@
         ⚠️ <strong>Auto-detect opt-out</strong>: messaggi che contengono <code>STOP</code>, <code>unsubscribe</code>,
         <code>rimuovimi</code>, ecc. NON ricevono risposta e il contatto viene marcato <code>optedout</code>.
       </p>
-    </fieldset>
+    </details>
+
+    </section>{# fine STEP 4 #}
+
+    {# ============================================================
+       STEP 3 — LLM (modello principale + browser LLM dedicato)
+       Nel DOM viene DOPO lo STEP 4 ma il wizard JS lo mostra come step 3.
+       ============================================================ #}
+    <section class="wizard-step" data-step="3" data-step-title="🧠 LLM">
+
+    {# Overview: tabella riepilogativa dei 3 ruoli LLM (Main / Discovery / Browser).
+       Va in cima allo step LLM così l'utente capisce subito cosa configurare. #}
+    <details class="llm-roles-overview">
+      <summary>🧠 <strong>Quali LLM vengono usati e per cosa</strong> <span class="hint">(panoramica — clicca per espandere)</span></summary>
+      <div class="llm-roles-box">
+        <p class="muted small" style="margin: 0 0 0.5rem 0">
+          Un task può usare fino a <strong>3 LLM separati</strong> per ruoli diversi.
+          <strong>Lascia vuoti gli slot opzionali</strong> se il modello principale ti basta —
+          è la scelta semplice e funziona nel 90% dei casi.
+        </p>
+        <table class="llm-roles">
+          <thead>
+            <tr><th>Slot</th><th>Quando viene chiamato</th><th>N° chiamate</th><th>Cosa serve</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Main</strong> (Modello LLM, sotto)<br><span class="muted small">obbligatorio</span></td>
+              <td>Per OGNI URL processato (estrae campi dal testo della pagina)</td>
+              <td><strong>N</strong> = URL discovered</td>
+              <td>Anche locale gratis se l'extraction è semplice (<code>llama3.1:8b</code>, <code>gpt-oss:20b</code>) o <code>gpt-4o-mini</code> per affidabilità</td>
+            </tr>
+            <tr>
+              <td><strong>Discovery</strong><br><span class="muted small">opzionale</span></td>
+              <td>Una volta all'inizio, per scegliere il pattern URL target nel crawler. <em>In <code>auto_extract</code> riusato anche dal profiler (1 chiamata per sito).</em></td>
+              <td>1 + N° siti</td>
+              <td>Capable: <code>gpt-4o-mini</code> (~$0.0003 per chiamata)</td>
+            </tr>
+            <tr>
+              <td><strong>Browser</strong><br><span class="muted small">opzionale</span></td>
+              <td>Solo per <code>browser_use</code> e per i siti che <code>auto_extract</code> instrada al browser. Tool-calling complesso + visione.</td>
+              <td>M = step browser-use</td>
+              <td><strong>Capable obbligatorio</strong>: <code>gpt-4o-mini</code> minimo. Modelli ≤8B falliscono il tool-calling.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="muted small" style="margin: 0.5rem 0 0 0">
+          💡 <strong>Strategia "mix"</strong>: Main locale gratis + Discovery capace cloud + Browser capace cloud →
+          paghi pochi centesimi e processi cataloghi grandi. <strong>Strategia semplice</strong>: tutti e 3 vuoti tranne Main =
+          <code>gpt-4o-mini</code> → un solo modello, costa poco, sempre OK.
+        </p>
+      </div>
+    </details>
 
     {# ============================================================
        SEZIONE 9: PROVIDER LLM — tutti tranne outreach (outreach è solo template-fill)
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="react browser_use bulk_extract auto_extract qualifier responder">
-      <legend>Modello LLM</legend>
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract qualifier responder">
+      <summary>Modello LLM</summary>
 
       <label>Provider
         {% set selected_provider = p.get('llm_provider') or 'ollama' %}
@@ -575,12 +514,125 @@
           {% include "partials/provider_model_field.html" %}
         {% endwith %}
       </div>
-    </fieldset>
+    </details>
 
     {# Per outreach: salviamo provider/model/key di default come hidden così non si perdono se l'utente cambia mode #}
     <div class="dyn-section" data-modes="outreach" style="display:none">
       <input type="hidden" name="_outreach_no_llm" value="1">
     </div>
+
+    {# ============================================================
+       SEZIONE 9a: DISCOVERY LLM — solo bulk_extract / auto_extract (LLM per auto-detect pattern URL)
+       Spostata qui (era dentro "Configurazione bulk") perché logicamente è uno dei 3 ruoli LLM.
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="bulk_extract auto_extract">
+      <summary>🔧 Discovery LLM <span class="hint">(opzionale — per auto-detect del pattern URL nel crawler)</span></summary>
+
+      <details class="optional-block">
+        <summary>🔧 <strong>Configura Discovery LLM</strong> (avanzato — clicca per espandere)</summary>
+        <p class="muted small" style="margin-top: 0.4rem">
+          Lascia vuoto per usare il modello principale. Compila solo se vuoi un modello diverso
+          (più capace) per la fase di Discovery — tipicamente <code>gpt-4o-mini</code>.
+        </p>
+
+        <div class="row">
+          <label>Discovery — Provider LLM <span class="hint">(opzionale)</span>
+            <select name="discovery_llm_provider">
+              <option value="" {% if not p.get('discovery_llm_provider') %}selected{% endif %}>— stesso del task (default) —</option>
+              {% for prov in llm_providers %}
+                <option value="{{ prov.key }}"
+                        {% if prov.key == p.get('discovery_llm_provider') %}selected{% endif %}>
+                  {{ prov.name }}{% if prov.needs_key and not env_key_status[prov.key] %} ⚠️{% endif %}
+                </option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Discovery — Modello <span class="hint">(opzionale, vuoto = stesso del task)</span>
+            <input type="text" name="discovery_llm_model"
+                   value="{{ p.get('discovery_llm_model','') or '' }}"
+                   placeholder="es. gpt-4o-mini">
+          </label>
+        </div>
+
+        <label>Discovery — API key
+          <span class="hint">
+            Necessaria solo se il <strong>Provider LLM Discovery</strong> richiede una chiave
+            (es. openai, anthropic, grok, gemini) ed è <em>diverso</em> dal provider principale.
+            Lascia vuoto per usare la variabile d'ambiente del provider scelto
+            (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, ecc.).
+            Se compilata, viene salvata nel DB del progetto.
+          </span>
+          {% if p.get('discovery_llm_api_key') %}
+            <span class="badge badge-ok"
+                  title="Una chiave è già stata salvata. Lascia il campo vuoto per mantenerla, scrivi una nuova per sovrascriverla. Per cancellarla, scrivi 'CLEAR' nel campo.">
+              ✓ chiave già salvata in DB ({{ p.get('discovery_llm_api_key')|length }} caratteri) — lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per rimuoverla
+            </span>
+          {% endif %}
+          <input type="password" name="discovery_llm_api_key" value=""
+                 placeholder="{% if p.get('discovery_llm_api_key') %}lascia vuoto per mantenere — o digita CLEAR per cancellarla{% else %}lascia vuoto per usare l'env var del provider{% endif %}"
+                 autocomplete="off" data-lpignore="true">
+        </label>
+      </details>
+    </details>
+
+    {# ============================================================
+       SEZIONE 9b: BROWSER LLM — solo browser_use / auto_extract (LLM dedicato per visione + tool-calling)
+       Subito dopo il modello principale, dato che è una variante "specializzata" del LLM.
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="browser_use auto_extract">
+      <summary>🖥️ Browser LLM <span class="hint">(opzionale)</span></summary>
+
+      <details class="optional-block">
+        <summary>🖥️ <strong>Configura Browser LLM</strong> (avanzato — clicca per espandere)</summary>
+        <p class="muted small" style="margin-top: 0.4rem">
+          Browser_use richiede tool-calling complesso. I modelli locali piccoli (≤ 8B) spesso falliscono.
+          Tipicamente serve <code>gpt-4o-mini</code>+ o <code>gpt-oss:20b</code>+ locale. Se il tuo modello
+          principale è già adeguato, lascia tutti questi campi vuoti.
+        </p>
+
+        <div class="row">
+          <label>Browser — Provider LLM
+            <select name="browser_llm_provider">
+              <option value="" {% if not p.get('browser_llm_provider') %}selected{% endif %}>— stesso del task (default) —</option>
+              {% for prov in llm_providers %}
+                <option value="{{ prov.key }}"
+                        {% if prov.key == p.get('browser_llm_provider') %}selected{% endif %}>
+                  {{ prov.name }}{% if prov.needs_key and not env_key_status[prov.key] %} ⚠️{% endif %}
+                </option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Browser — Modello
+            <input type="text" name="browser_llm_model"
+                   value="{{ p.get('browser_llm_model','') or '' }}"
+                   placeholder="es. gpt-4o-mini, gpt-oss:20b">
+          </label>
+        </div>
+
+        <label>Browser — API key
+          <span class="hint">
+            (opzionale — se vuoto viene letta dalla variabile d'ambiente del provider scelto;
+            se compilata viene <strong>salvata nel DB</strong>)
+          </span>
+          {% if p.get('browser_llm_api_key') %}
+            <span class="badge badge-ok"
+                  title="Una chiave è già stata salvata nel DB del task. Lascia il campo vuoto per mantenerla. Scrivi una nuova chiave per sovrascriverla. Per cancellarla, scrivi 'CLEAR' nel campo.">
+              ✓ chiave già salvata in DB ({{ p.get('browser_llm_api_key')|length }} caratteri) — lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per rimuoverla
+            </span>
+          {% endif %}
+          <input type="password" name="browser_llm_api_key" value=""
+                 placeholder="{% if p.get('browser_llm_api_key') %}lascia vuoto per mantenere — o digita CLEAR per cancellarla{% else %}lascia vuoto per usare l'env var del provider{% endif %}"
+                 autocomplete="off" data-lpignore="true">
+        </label>
+      </details>
+    </details>
+
+    </section>{# fine STEP 3 #}
+
+    {# ============================================================
+       STEP 5 — Pianificazione & valutazione (output format, cron, rating/note)
+       ============================================================ #}
+    <section class="wizard-step" data-step="5" data-step-title="📋 Pianificazione">
 
     {# ============================================================
        SEZIONE 10: OUTPUT FORMAT — sempre
@@ -606,7 +658,7 @@
     {# ============================================================
        SEZIONE 12: VALUTAZIONE PERSONALE — collassabile (chiusa di default)
        ============================================================ #}
-    <details class="optional-block rating-block" {% if p.get('rating') or p.get('notes') or p.get('status_tag') %}open{% endif %}>
+    <details class="optional-block rating-block">
       <summary>📋 <strong>Valutazione personale</strong> (rating, stato, note — facoltativo)</summary>
       <p class="muted small" style="margin-top: 0.4rem">Serve solo a te per ricordarti com'è andato il task.</p>
 
@@ -642,8 +694,15 @@
       </label>
     </details>
 
-    <div class="actions">
-      <button type="submit">{% if is_edit %}Salva modifiche{% else %}Crea task{% endif %}</button>
+    </section>{# fine STEP 5 #}
+
+    {# Bottoni del wizard: gestiti da JS. Il submit è abilitato solo all'ultimo step. #}
+    <div class="actions wizard-nav">
+      <button type="button" id="wizard-prev" class="btn-secondary">◀ Indietro</button>
+      <button type="button" id="wizard-next">Avanti ▶</button>
+      <button type="submit" id="wizard-submit" style="display:none">
+        {% if is_edit %}💾 Salva modifiche{% else %}✓ Crea task{% endif %}
+      </button>
       <a href="{% if is_edit %}/tasks/{{ task.id }}{% else %}/{% endif %}" class="link-cancel">Annulla</a>
     </div>
   </form>
@@ -709,8 +768,108 @@
     if (modeHint && modeHints[mode]) modeHint.textContent = modeHints[mode];
   }
 
-  sel.addEventListener('change', update);
+  sel.addEventListener('change', () => { update(); if (window.refreshWizard) window.refreshWizard(); });
   update(); // initial render
+})();
+</script>
+
+{# ============================================================
+   JS: Wizard a step (Cos'è il task → Target → LLM → Pipeline I/O → Pianificazione)
+   Gestisce navigazione avanti/indietro, stepper cliccabile, skip step vuoti
+   per la modalità corrente.
+   ============================================================ #}
+<script>
+(function () {
+  const stepperEl = document.getElementById('wizard-stepper');
+  const prevBtn   = document.getElementById('wizard-prev');
+  const nextBtn   = document.getElementById('wizard-next');
+  const submitBtn = document.getElementById('wizard-submit');
+  if (!stepperEl || !prevBtn || !nextBtn) return;
+
+  // Raccolgo gli step ordinati per data-step (1, 2, 3, 4, 5)
+  const allSteps = Array.from(document.querySelectorAll('section.wizard-step'))
+    .sort((a, b) => Number(a.dataset.step) - Number(b.dataset.step));
+
+  let currentIdx = 0; // indice nell'array degli step VISIBILI
+
+  function isStepVisible(stepEl) {
+    // Uno step è "visibile" se ha almeno un fieldset/label/details NON nascosto da data-modes
+    // Le 3 label di Step 1 (Nome/Mode/Objective) non hanno data-modes → sempre visibili.
+    // Per gli altri step, controlliamo i contenitori figli con data-modes.
+    const taggedChildren = stepEl.querySelectorAll('[data-modes]');
+    if (taggedChildren.length === 0) {
+      // niente data-modes interni → sempre visibile (es. Step 1)
+      return true;
+    }
+    // visibile se ALMENO uno dei figli con data-modes è display!=none
+    for (const ch of taggedChildren) {
+      if (ch.style.display !== 'none') return true;
+    }
+    // controlla anche figli SENZA data-modes (es. Output format / Cron / Valutazione in Step 5
+    // sono sempre presenti, niente data-modes su di loro)
+    const untaggedFields = stepEl.querySelectorAll('label:not([data-modes]), fieldset:not([data-modes]), details:not([data-modes])');
+    for (const ch of untaggedFields) {
+      if (ch.style.display !== 'none' && !ch.closest('[data-modes][style*="display: none"]')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function getVisibleSteps() {
+    return allSteps.filter(isStepVisible);
+  }
+
+  function renderStepper(visibleSteps) {
+    stepperEl.innerHTML = '';
+    visibleSteps.forEach((s, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'wizard-stepper-item' + (i === currentIdx ? ' active' : '');
+      btn.dataset.idx = i;
+      btn.innerHTML = `<span class="step-num">${i + 1}</span> <span class="step-title">${s.dataset.stepTitle || ('Step ' + s.dataset.step)}</span>`;
+      btn.addEventListener('click', () => goTo(i));
+      stepperEl.appendChild(btn);
+    });
+  }
+
+  function goTo(idx) {
+    const visibleSteps = getVisibleSteps();
+    if (visibleSteps.length === 0) return;
+    if (idx < 0) idx = 0;
+    if (idx >= visibleSteps.length) idx = visibleSteps.length - 1;
+    currentIdx = idx;
+    // Mostra solo lo step attivo
+    allSteps.forEach(s => { s.style.display = 'none'; });
+    visibleSteps[currentIdx].style.display = '';
+    // Aggiorna stepper + bottoni
+    renderStepper(visibleSteps);
+    prevBtn.style.display = (currentIdx === 0) ? 'none' : '';
+    if (currentIdx === visibleSteps.length - 1) {
+      nextBtn.style.display = 'none';
+      if (submitBtn) submitBtn.style.display = '';
+    } else {
+      nextBtn.style.display = '';
+      if (submitBtn) submitBtn.style.display = 'none';
+    }
+    // Scroll dolce verso l'inizio dello step
+    visibleSteps[currentIdx].scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  prevBtn.addEventListener('click', () => goTo(currentIdx - 1));
+  nextBtn.addEventListener('click', () => goTo(currentIdx + 1));
+
+  // Esposto per il listener della agent_mode (ricalcola gli step visibili
+  // quando l'utente cambia modalità)
+  window.refreshWizard = function () {
+    const visibleSteps = getVisibleSteps();
+    if (currentIdx >= visibleSteps.length) currentIdx = visibleSteps.length - 1;
+    if (currentIdx < 0) currentIdx = 0;
+    goTo(currentIdx);
+  };
+
+  // Render iniziale (dopo che l'altro IIFE ha già fatto update() per data-modes)
+  goTo(0);
 })();
 </script>
 {% endblock %}
