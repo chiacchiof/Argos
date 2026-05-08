@@ -1,0 +1,33 @@
+{% if active_run %}
+<h3>⏱️ Stato run corrente <small class="muted">(#{{ active_run.id }})</small></h3>
+<table class="data">
+  <thead>
+    <tr>
+      <th>Task</th>
+      <th>Modalità</th>
+      <th>Job</th>
+      <th>Stato</th>
+      <th>Avvio</th>
+      <th>Fine</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for at in active_tasks %}
+    <tr>
+      <td><a href="/tasks/{{ at.task_id }}">#{{ at.task_id }} {{ at.task_name }}</a></td>
+      <td><code>{{ at.agent_mode }}</code></td>
+      <td>{% if at.job_id %}<a href="/tasks/{{ at.task_id }}#job-{{ at.job_id }}">#{{ at.job_id }}</a>{% else %}—{% endif %}</td>
+      <td>
+        {% if at.status %}
+          <span class="status status-{{ at.status }}">{{ at.status }}</span>
+        {% else %}
+          <span class="muted">in attesa</span>
+        {% endif %}
+      </td>
+      <td><small>{{ at.started_at or "—" }}</small></td>
+      <td><small>{{ at.finished_at or "—" }}</small></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}

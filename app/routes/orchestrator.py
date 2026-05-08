@@ -13,7 +13,8 @@ import httpx
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
-from .. import db
+from .. import db, jobs
+from ..agent.extraction_templates import get_schema, list_templates
 from ..agent.llm_providers import (
     env_key_status,
     get_provider,
@@ -28,6 +29,10 @@ from ..config import UPLOADS_DIR, settings
 from ..orchestrator import (
     AUTONOMY_LEVELS,
     OrchestratorPlan,
+    PlannedEdge,
+    PlannedTask,
+    RISKY_AGENT_MODES,
+    _task_to_db_payload,
     autonomy_meta,
     build_plan,
     execute_plan,
@@ -100,6 +105,216 @@ CHAT_WEB_TOOLS_SPEC = [
     },
 ]
 
+CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tasks",
+            "description": "Lista i task del progetto. Ritorna id, name, agent_mode, model, status_tag.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Massimo task da ritornare (default 20)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_task",
+            "description": "Ritorna la configurazione completa di un task dato il suo id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"task_id": {"type": "integer"}},
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_workflows",
+            "description": "Lista i workflow del progetto (id, name, description).",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_jobs",
+            "description": "Lista i job di un task ordinati dal piu recente.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer"},
+                    "limit": {"type": "integer", "description": "Default 20"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_job_status",
+            "description": "Stato di un job (status, started_at, finished_at, result_path, error) e tail dei log (~80 righe).",
+            "parameters": {
+                "type": "object",
+                "properties": {"job_id": {"type": "integer"}},
+                "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_extraction_templates",
+            "description": "Lista i template di estrazione (key, name, description) usabili nei task scraping.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_chat_models",
+            "description": "Lista i modelli disponibili per un provider (default: provider corrente della chat).",
+            "parameters": {
+                "type": "object",
+                "properties": {"provider": {"type": "string"}},
+            },
+        },
+    },
+]
+
+CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_plan",
+            "description": (
+                "Costruisce un OrchestratorPlan dal brief usando il planner (heuristic + LLM). "
+                "Non committa nulla: ritorna il plan da mostrare all'utente prima di execute_plan."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"brief": {"type": "string"}},
+                "required": ["brief"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_plan",
+            "description": (
+                "Committa un OrchestratorPlan: crea task e workflow, opzionalmente avvia. "
+                "Per outreach/responder serve confirm_risky=true."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {"type": "object", "description": "OrchestratorPlan come dict (title, summary, tasks[], edges[], ...)"},
+                    "run_now": {"type": "boolean"},
+                    "confirm_risky": {"type": "boolean"},
+                },
+                "required": ["plan"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_task",
+            "description": (
+                "Crea un singolo task. Per piani multi-step preferisci propose_plan+execute_plan. "
+                "Campi minimi: name, agent_mode, objective."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "agent_mode": {"type": "string"},
+                    "objective": {"type": "string"},
+                    "model": {"type": "string"},
+                    "seed_queries": {"type": "array", "items": {"type": "string"}},
+                    "allowed_domains": {"type": "array", "items": {"type": "string"}},
+                    "max_iterations": {"type": "integer"},
+                    "extraction_template": {"type": "string"},
+                    "input_artifact_path": {"type": "string"},
+                    "message_subject": {"type": "string"},
+                    "message_template": {"type": "string"},
+                    "message_channels": {"type": "array", "items": {"type": "string"}},
+                    "responder_system_prompt": {"type": "string"},
+                },
+                "required": ["name", "agent_mode", "objective"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_workflow",
+            "description": "Crea un workflow vuoto (poi servono add_edge per collegare i task).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_edge",
+            "description": "Aggiunge un edge fra due task in un workflow (pass_artifact tipico: 'profiles.jsonl' o 'qualified.jsonl').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "integer"},
+                    "from_task_id": {"type": "integer"},
+                    "to_task_id": {"type": "integer"},
+                    "pass_artifact": {"type": "string"},
+                },
+                "required": ["workflow_id", "from_task_id", "to_task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_job",
+            "description": "Avvia un job per un task. Per task outreach/responder serve confirm_risky=true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer"},
+                    "confirm_risky": {"type": "boolean"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_workflow",
+            "description": "Avvia un workflow (lancia il primo task). Per workflow con outreach/responder serve confirm_risky=true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "integer"},
+                    "confirm_risky": {"type": "boolean"},
+                },
+                "required": ["workflow_id"],
+            },
+        },
+    },
+]
+
 CHAT_TOOL_CAPABLE_PROVIDERS = {"openai", "anthropic", "gemini", "grok", "custom"}
 CHAT_TOOL_CAPABLE_OLLAMA_MARKERS = (
     "qwen",
@@ -157,30 +372,44 @@ def _chat_model_capabilities(provider_key: str, model: str) -> dict[str, Any]:
         return {
             "web": False,
             "files": False,
+            "actions": False,
             "web_reason": "Modello non adatto alla chat testuale.",
             "files_reason": "Modello non adatto a leggere contesto testuale.",
+            "actions_reason": "Modello non adatto a chiamare tool.",
         }
 
     if provider_key == "ollama":
-        web_capable = any(marker in model_key for marker in CHAT_TOOL_CAPABLE_OLLAMA_MARKERS)
+        tool_capable = any(marker in model_key for marker in CHAT_TOOL_CAPABLE_OLLAMA_MARKERS)
         web_reason = (
             "Tool web disponibili per questo modello locale."
-            if web_capable
+            if tool_capable
             else "Questo modello locale non e riconosciuto come compatibile con tool calling."
         )
+        actions_reason = (
+            "Azioni disponibili: il modello puo usare tool di lettura e (se autorizzato) di scrittura."
+            if tool_capable
+            else "Modello locale senza tool calling: la chat resta read-only."
+        )
     else:
-        web_capable = provider_key in CHAT_TOOL_CAPABLE_PROVIDERS
+        tool_capable = provider_key in CHAT_TOOL_CAPABLE_PROVIDERS
         web_reason = (
             "Tool web disponibili tramite endpoint OpenAI-compatible."
-            if web_capable
+            if tool_capable
             else "Provider non riconosciuto come compatibile con tool calling."
+        )
+        actions_reason = (
+            "Azioni disponibili tramite tool calling sul provider corrente."
+            if tool_capable
+            else "Provider senza tool calling: la chat resta read-only."
         )
 
     return {
-        "web": web_capable,
+        "web": tool_capable,
         "files": True,
+        "actions": tool_capable,
         "web_reason": web_reason,
         "files_reason": "File testuali disponibili: il wrapper li converte in contesto per il modello.",
+        "actions_reason": actions_reason,
     }
 
 
@@ -211,10 +440,12 @@ async def _context(
     autonomy_level = autonomy_level or "builder"
     llm_provider = llm_provider or saved["llm_provider"]
     llm_base_url = saved["llm_base_url"] if llm_base_url is None else llm_base_url
-    use_llm = saved["use_llm"] if use_llm is None else use_llm
+    if use_llm is None:
+        use_llm = True
     models = await _models_for_provider(llm_provider)
     effective_model = planner_model or saved["planner_model"] or (models[0] if models else settings.default_model)
     chat_capabilities = _chat_model_capabilities(llm_provider, effective_model)
+    planner_model_warning = _planner_model_warning(effective_model)
     return {
         "brief": brief,
         "autonomy_level": autonomy_level,
@@ -229,12 +460,30 @@ async def _context(
         "models": models,
         "orchestrator_cfg": saved,
         "chat_capabilities": chat_capabilities,
+        "planner_model_warning": planner_model_warning,
         "plan": plan,
         "plan_b64": plan_b64,
         "chat_messages": db.list_orchestrator_messages(limit=80),
         "error": error,
         "flash": request.query_params.get("flash"),
     }
+
+
+def _planner_model_warning(model: str) -> str | None:
+    m = (model or "").lower()
+    if not m:
+        return None
+    if any(marker in m for marker in ("embed", "embedding", "clip", "whisper", "tts", "dall-e", "sdxl", "vision")):
+        return (
+            f"Modello '{model}' non adatto a planning testuale (embedding/vision/audio). "
+            "Cambialo in Settings con un modello chat."
+        )
+    if "coder" in m or "-code" in m or m.endswith("code") or m.startswith("code"):
+        return (
+            f"Modello '{model}' è code-tuned: poco adatto a pianificare workflow in linguaggio naturale. "
+            "Per piani migliori usa un modello chat (es. qwen3.5:latest, llama3.1, mistral)."
+        )
+    return None
 
 
 @router.get("/orchestrator", response_class=HTMLResponse)
@@ -363,7 +612,7 @@ async def orchestrator_execute(
 async def orchestrator_chat(
     message: str = Form(""),
     chat_web_enabled: str = Form(""),
-    chat_files_enabled: str = Form(""),
+    chat_actions_enabled: str = Form(""),
     attachment: UploadFile | None = File(None),
 ):
     message = (message or "").strip()
@@ -376,9 +625,9 @@ async def orchestrator_chat(
     capabilities = _chat_model_capabilities(provider_key, model)
     has_attachment = bool(attachment and attachment.filename)
     requested_web = bool(chat_web_enabled)
-    requested_files = bool(chat_files_enabled) or has_attachment
+    requested_actions = bool(chat_actions_enabled)
     allow_web = requested_web and bool(capabilities["web"])
-    allow_files = requested_files and bool(capabilities["files"])
+    allow_actions = requested_actions and bool(capabilities["actions"])
 
     if requested_web and not capabilities["web"]:
         db.add_orchestrator_message("user", message or "[Richiesta con navigazione web]")
@@ -394,11 +643,25 @@ async def orchestrator_chat(
             },
         )
         return RedirectResponse(url="/orchestrator#orchestrator-chat", status_code=303)
-    if requested_files and not capabilities["files"]:
-        db.add_orchestrator_message("user", message or "[Richiesta con file]")
+    if requested_actions and not capabilities["actions"]:
+        db.add_orchestrator_message("user", message or "[Richiesta con azioni]")
         db.add_orchestrator_message(
             "assistant",
-            f"Non posso attivare i file con il modello corrente ({provider_key}/{model}): {capabilities['files_reason']}",
+            f"Non posso attivare le azioni con il modello corrente ({provider_key}/{model}): {capabilities['actions_reason']}",
+            metadata={
+                "capability": "actions",
+                "requested": True,
+                "blocked": True,
+                "provider": provider_key,
+                "model": model,
+            },
+        )
+        return RedirectResponse(url="/orchestrator#orchestrator-chat", status_code=303)
+    if has_attachment and not capabilities["files"]:
+        db.add_orchestrator_message("user", message or "[Tentativo di allegare un file]")
+        db.add_orchestrator_message(
+            "assistant",
+            f"Non posso usare allegati con il modello corrente ({provider_key}/{model}): {capabilities['files_reason']}",
             metadata={
                 "capability": "files",
                 "requested": True,
@@ -412,7 +675,7 @@ async def orchestrator_chat(
     try:
         file_info = await _save_chat_attachment(
             attachment,
-            enabled=allow_files,
+            enabled=bool(capabilities["files"]),
         )
     except ValueError as e:
         user_body = message or "[Tentativo di allegare un file]"
@@ -439,7 +702,8 @@ async def orchestrator_chat(
             file_info=file_info,
             chat_options={
                 "web_enabled": allow_web,
-                "files_enabled": allow_files,
+                "files_enabled": bool(capabilities["files"]),
+                "actions_enabled": allow_actions,
                 "capabilities": capabilities,
             },
         )
@@ -458,7 +722,7 @@ async def orchestrator_chat(
 async def orchestrator_chat_stream(
     message: str = Form(""),
     chat_web_enabled: str = Form(""),
-    chat_files_enabled: str = Form(""),
+    chat_actions_enabled: str = Form(""),
     attachment: UploadFile | None = File(None),
 ):
     message = (message or "").strip()
@@ -472,9 +736,9 @@ async def orchestrator_chat_stream(
     capabilities = _chat_model_capabilities(provider_key, model)
     has_attachment = bool(attachment and attachment.filename)
     requested_web = bool(chat_web_enabled)
-    requested_files = bool(chat_files_enabled) or has_attachment
+    requested_actions = bool(chat_actions_enabled)
     allow_web = requested_web and bool(capabilities["web"])
-    allow_files = requested_files and bool(capabilities["files"])
+    allow_actions = requested_actions and bool(capabilities["actions"])
 
     if requested_web and not capabilities["web"]:
         user_body = message or "[Richiesta con navigazione web]"
@@ -496,10 +760,30 @@ async def orchestrator_chat_stream(
         )
         return _chat_stream_response(_text_event_stream(reply))
 
-    if requested_files and not capabilities["files"]:
-        user_body = message or "[Richiesta con file]"
+    if requested_actions and not capabilities["actions"]:
+        user_body = message or "[Richiesta con azioni]"
         reply = (
-            f"Non posso attivare i file con il modello corrente ({provider_key}/{model}): "
+            f"Non posso attivare le azioni con il modello corrente ({provider_key}/{model}): "
+            f"{capabilities['actions_reason']}"
+        )
+        db.add_orchestrator_message("user", user_body)
+        db.add_orchestrator_message(
+            "assistant",
+            reply,
+            metadata={
+                "capability": "actions",
+                "requested": True,
+                "blocked": True,
+                "provider": provider_key,
+                "model": model,
+            },
+        )
+        return _chat_stream_response(_text_event_stream(reply))
+
+    if has_attachment and not capabilities["files"]:
+        user_body = message or "[Tentativo di allegare un file]"
+        reply = (
+            f"Non posso usare allegati con il modello corrente ({provider_key}/{model}): "
             f"{capabilities['files_reason']}"
         )
         db.add_orchestrator_message("user", user_body)
@@ -517,7 +801,7 @@ async def orchestrator_chat_stream(
         return _chat_stream_response(_text_event_stream(reply))
 
     try:
-        file_info = await _save_chat_attachment(attachment, enabled=allow_files)
+        file_info = await _save_chat_attachment(attachment, enabled=bool(capabilities["files"]))
     except ValueError as e:
         user_body = message or "[Tentativo di allegare un file]"
         reply = f"Non ho caricato l'allegato: {e}"
@@ -548,7 +832,8 @@ async def orchestrator_chat_stream(
                 file_info=file_info,
                 chat_options={
                     "web_enabled": allow_web,
-                    "files_enabled": allow_files,
+                    "files_enabled": bool(capabilities["files"]),
+                    "actions_enabled": allow_actions,
                     "capabilities": capabilities,
                 },
                 metadata_out=metadata,
@@ -776,7 +1061,7 @@ async def _generate_chat_reply(
     file_info: dict[str, Any] | None = None,
     chat_options: dict[str, Any] | None = None,
 ) -> tuple[str, dict]:
-    base_url, api_key, payload, metadata, web_enabled = await _build_chat_payload(
+    base_url, api_key, payload, metadata, tools_active = await _build_chat_payload(
         latest_user_message,
         file_info=file_info,
         chat_options=chat_options,
@@ -792,7 +1077,7 @@ async def _generate_chat_reply(
                 metadata=metadata,
             )
         except httpx.HTTPStatusError as e:
-            if not web_enabled:
+            if not tools_active:
                 raise
             metadata["tool_error"] = f"{e.response.status_code}: {e.response.text[:300]}"
             payload.pop("tools", None)
@@ -801,8 +1086,8 @@ async def _generate_chat_reply(
                 {
                     "role": "system",
                     "content": (
-                        "Il provider non ha accettato i tool web. Rispondi senza navigazione "
-                        "e segnala che la capacita web non e disponibile per questa chiamata."
+                        "Il provider non ha accettato i tool. Rispondi senza tool calling "
+                        "e segnala che le capacita tool non sono disponibili per questa chiamata."
                     ),
                 }
             )
@@ -824,7 +1109,7 @@ async def _stream_chat_reply(
     chat_options: dict[str, Any] | None = None,
     metadata_out: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
-    base_url, api_key, payload, metadata, web_enabled = await _build_chat_payload(
+    base_url, api_key, payload, metadata, tools_active = await _build_chat_payload(
         latest_user_message,
         file_info=file_info,
         chat_options=chat_options,
@@ -834,7 +1119,7 @@ async def _stream_chat_reply(
 
     headers = {"Authorization": f"Bearer {api_key}"}
     async with httpx.AsyncClient(timeout=120) as client:
-        if web_enabled:
+        if tools_active:
             text, final_metadata = await _generate_chat_reply(
                 latest_user_message,
                 file_info=file_info,
@@ -890,6 +1175,8 @@ async def _build_chat_payload(
     )
     web_enabled = bool((chat_options or {}).get("web_enabled")) and bool(capabilities["web"])
     files_enabled = bool((chat_options or {}).get("files_enabled")) and bool(capabilities["files"])
+    actions_enabled = bool((chat_options or {}).get("actions_enabled")) and bool(capabilities["actions"])
+    tools_capable = bool(capabilities["actions"])
 
     history = db.list_orchestrator_messages(limit=30)
     messages: list[dict[str, Any]] = [
@@ -898,6 +1185,7 @@ async def _build_chat_payload(
             "content": _chat_system_prompt(
                 web_enabled=web_enabled,
                 files_enabled=files_enabled,
+                actions_enabled=actions_enabled,
                 capabilities=capabilities,
             ),
         }
@@ -925,6 +1213,7 @@ async def _build_chat_payload(
         "model": model,
         "web_enabled": web_enabled,
         "files_enabled": files_enabled,
+        "actions_enabled": actions_enabled,
         "capabilities": capabilities,
         "tool_calls": [],
     }
@@ -934,11 +1223,19 @@ async def _build_chat_payload(
         "temperature": 0.25,
         "max_tokens": CHAT_MAX_TOKENS,
     }
+    tools: list[dict[str, Any]] = []
     if web_enabled:
-        payload["tools"] = CHAT_WEB_TOOLS_SPEC
+        tools.extend(CHAT_WEB_TOOLS_SPEC)
+    if tools_capable:
+        tools.extend(CHAT_DOMAIN_READ_TOOLS_SPEC)
+        if actions_enabled:
+            tools.extend(CHAT_DOMAIN_WRITE_TOOLS_SPEC)
+    if tools:
+        payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    return base_url, api_key, payload, metadata, web_enabled
+    tools_active = bool(tools)
+    return base_url, api_key, payload, metadata, tools_active
 
 
 async def _stream_chat_completion_text(
@@ -1054,45 +1351,391 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
                 return "Errore: URL non valido. Usa http(s)."
             result = await fetch_http(url, max_chars=12_000)
             return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
+        if name == "list_tasks":
+            return _tool_list_tasks(args)
+        if name == "get_task":
+            return _tool_get_task(args)
+        if name == "list_workflows":
+            return _tool_list_workflows(args)
+        if name == "list_jobs":
+            return _tool_list_jobs(args)
+        if name == "get_job_status":
+            return _tool_get_job_status(args)
+        if name == "list_extraction_templates":
+            return _tool_list_extraction_templates()
+        if name == "list_chat_models":
+            return await _tool_list_chat_models(args)
+        if name == "propose_plan":
+            return await _tool_propose_plan(args)
+        if name == "execute_plan":
+            return _tool_execute_plan(args)
+        if name == "create_task":
+            return _tool_create_task(args)
+        if name == "create_workflow":
+            return _tool_create_workflow(args)
+        if name == "add_edge":
+            return _tool_add_edge(args)
+        if name == "start_job":
+            return _tool_start_job(args)
+        if name == "start_workflow":
+            return _tool_start_workflow(args)
         return f"Tool non supportato: {name}"
     except Exception as e:
         return f"Errore tool {name}: {type(e).__name__}: {e}"
+
+
+def _tool_list_tasks(args: dict[str, Any]) -> str:
+    limit = max(1, min(int(args.get("limit") or 20), 100))
+    tasks = db.list_tasks()[:limit]
+    slim = [
+        {
+            "id": t.get("id"),
+            "name": t.get("name"),
+            "agent_mode": t.get("agent_mode"),
+            "model": t.get("model"),
+            "status_tag": t.get("status_tag"),
+        }
+        for t in tasks
+    ]
+    return json.dumps({"ok": True, "tasks": slim}, ensure_ascii=False, indent=2)
+
+
+def _tool_get_task(args: dict[str, Any]) -> str:
+    task_id = int(args.get("task_id") or 0)
+    if task_id <= 0:
+        return json.dumps({"ok": False, "reason": "task_id mancante o non valido"})
+    t = db.get_task(task_id)
+    if not t:
+        return json.dumps({"ok": False, "reason": f"task #{task_id} non trovato"})
+    return json.dumps({"ok": True, "task": t}, ensure_ascii=False, indent=2, default=str)
+
+
+def _tool_list_workflows(args: dict[str, Any]) -> str:
+    workflows = db.list_workflows()
+    slim = [
+        {"id": w.get("id"), "name": w.get("name"), "description": w.get("description")}
+        for w in workflows
+    ]
+    return json.dumps({"ok": True, "workflows": slim}, ensure_ascii=False, indent=2)
+
+
+def _tool_list_jobs(args: dict[str, Any]) -> str:
+    task_id = int(args.get("task_id") or 0)
+    if task_id <= 0:
+        return json.dumps({"ok": False, "reason": "task_id mancante"})
+    limit = max(1, min(int(args.get("limit") or 20), 100))
+    rows = db.list_jobs(task_id)[:limit]
+    slim = [
+        {
+            "id": j.get("id"),
+            "status": j.get("status"),
+            "started_at": j.get("started_at"),
+            "finished_at": j.get("finished_at"),
+            "result_path": j.get("result_path"),
+            "error": (j.get("error") or "")[:200] if j.get("error") else None,
+        }
+        for j in rows
+    ]
+    return json.dumps({"ok": True, "task_id": task_id, "jobs": slim}, ensure_ascii=False, indent=2, default=str)
+
+
+def _tool_get_job_status(args: dict[str, Any]) -> str:
+    job_id = int(args.get("job_id") or 0)
+    if job_id <= 0:
+        return json.dumps({"ok": False, "reason": "job_id mancante"})
+    j = db.get_job(job_id)
+    if not j:
+        return json.dumps({"ok": False, "reason": f"job #{job_id} non trovato"})
+    log_lines = (j.get("log") or "").splitlines()
+    log_tail = "\n".join(log_lines[-80:]) if len(log_lines) > 80 else (j.get("log") or "")
+    out = {
+        "ok": True,
+        "job_id": job_id,
+        "task_id": j.get("task_id"),
+        "status": j.get("status"),
+        "started_at": j.get("started_at"),
+        "finished_at": j.get("finished_at"),
+        "result_path": j.get("result_path"),
+        "error": j.get("error"),
+        "log_tail": log_tail,
+    }
+    return json.dumps(out, ensure_ascii=False, indent=2, default=str)
+
+
+def _tool_list_extraction_templates() -> str:
+    return json.dumps({"ok": True, "templates": list_templates()}, ensure_ascii=False, indent=2)
+
+
+async def _tool_list_chat_models(args: dict[str, Any]) -> str:
+    cfg = _saved_orchestrator_config()
+    target = (str(args.get("provider") or "").strip()) or cfg["llm_provider"]
+    if target == "ollama":
+        try:
+            models = await list_models()
+        except Exception:
+            models = [settings.default_model]
+    else:
+        info = get_provider(target) or {}
+        models = [m["id"] for m in (info.get("suggested_models") or [])]
+    return json.dumps({"ok": True, "provider": target, "models": models}, ensure_ascii=False)
+
+
+async def _tool_propose_plan(args: dict[str, Any]) -> str:
+    brief = str(args.get("brief") or "").strip()
+    if not brief:
+        return json.dumps({"ok": False, "reason": "brief mancante"})
+    cfg = _saved_orchestrator_config()
+    try:
+        plan = await build_plan(
+            brief=brief,
+            autonomy_level="supervised",  # type: ignore[arg-type]
+            provider=cfg["llm_provider"],
+            model=cfg["planner_model"] or None,
+            llm_base_url=cfg["llm_base_url"] or None,
+            llm_api_key=cfg["llm_api_key"] or None,
+            use_llm=bool(cfg["use_llm"]),
+        )
+    except Exception as e:
+        return json.dumps({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+    return json.dumps(
+        {"ok": True, "plan": plan.model_dump()},
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+
+
+def _tool_execute_plan(args: dict[str, Any]) -> str:
+    plan_dict = args.get("plan")
+    if not isinstance(plan_dict, dict):
+        return json.dumps({"ok": False, "reason": "campo 'plan' deve essere un oggetto"})
+    plan_dict = dict(plan_dict)
+    plan_dict.setdefault("autonomy_level", "supervised")
+    try:
+        plan = OrchestratorPlan.model_validate(plan_dict)
+    except Exception as e:
+        return json.dumps({"ok": False, "reason": f"plan non valido: {type(e).__name__}: {e}"})
+    try:
+        result = execute_plan(
+            plan,
+            run_now=bool(args.get("run_now")),
+            confirm_risky=bool(args.get("confirm_risky")),
+        )
+    except ValueError as e:
+        return json.dumps({"ok": False, "reason": str(e)})
+    return json.dumps(
+        {"ok": True, "result": result.model_dump()},
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def _tool_create_task(args: dict[str, Any]) -> str:
+    name = str(args.get("name") or "").strip()
+    agent_mode = str(args.get("agent_mode") or "").strip()
+    objective = str(args.get("objective") or "").strip()
+    if not name or not agent_mode or not objective:
+        return json.dumps({"ok": False, "reason": "name, agent_mode e objective sono obbligatori"})
+    base_key = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "task"
+    extraction_template = args.get("extraction_template")
+    extraction_schema = get_schema(extraction_template) if extraction_template else None
+    try:
+        planned = PlannedTask(
+            key=base_key[:60],
+            name=name[:200],
+            agent_mode=agent_mode,  # type: ignore[arg-type]
+            objective=objective,
+            seed_queries=[str(s) for s in (args.get("seed_queries") or [])],
+            allowed_domains=[str(s).lower() for s in (args.get("allowed_domains") or [])],
+            max_iterations=int(args.get("max_iterations") or 10),
+            model=str(args.get("model") or settings.default_model),
+            extraction_template=extraction_template,
+            extraction_schema=extraction_schema,
+            input_artifact_path=args.get("input_artifact_path"),
+            message_subject=args.get("message_subject"),
+            message_template=args.get("message_template"),
+            message_channels=[str(s) for s in (args.get("message_channels") or [])],
+            responder_system_prompt=args.get("responder_system_prompt"),
+            notes="Creato da chat Orchestrator.",
+            status_tag="tuning",
+        )
+    except Exception as e:
+        return json.dumps({"ok": False, "reason": f"campi task non validi: {type(e).__name__}: {e}"})
+    payload = _task_to_db_payload(planned)
+    task_id = db.create_task(payload)
+    return json.dumps(
+        {"ok": True, "task_id": task_id, "name": planned.name, "agent_mode": planned.agent_mode}
+    )
+
+
+def _tool_create_workflow(args: dict[str, Any]) -> str:
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return json.dumps({"ok": False, "reason": "nome workflow mancante"})
+    description = str(args.get("description") or "").strip() or None
+    workflow_id = db.create_workflow(name, description)
+    return json.dumps({"ok": True, "workflow_id": workflow_id, "name": name})
+
+
+def _tool_add_edge(args: dict[str, Any]) -> str:
+    try:
+        workflow_id = int(args.get("workflow_id") or 0)
+        from_id = int(args.get("from_task_id") or 0)
+        to_id = int(args.get("to_task_id") or 0)
+    except (TypeError, ValueError):
+        return json.dumps({"ok": False, "reason": "id non validi"})
+    if not workflow_id or not from_id or not to_id:
+        return json.dumps({"ok": False, "reason": "workflow_id, from_task_id, to_task_id obbligatori"})
+    pass_artifact = args.get("pass_artifact") or None
+    try:
+        db.create_edge(
+            from_task_id=from_id,
+            to_task_id=to_id,
+            workflow_id=workflow_id,
+            pass_artifact=str(pass_artifact) if pass_artifact else None,
+            enabled=True,
+        )
+    except ValueError as e:
+        return json.dumps({"ok": False, "reason": str(e)})
+    return json.dumps(
+        {
+            "ok": True,
+            "workflow_id": workflow_id,
+            "from_task_id": from_id,
+            "to_task_id": to_id,
+            "pass_artifact": pass_artifact,
+        }
+    )
+
+
+def _tool_start_job(args: dict[str, Any]) -> str:
+    task_id = int(args.get("task_id") or 0)
+    if task_id <= 0:
+        return json.dumps({"ok": False, "reason": "task_id mancante"})
+    confirm_risky = bool(args.get("confirm_risky"))
+    task = db.get_task(task_id)
+    if not task:
+        return json.dumps({"ok": False, "reason": f"task #{task_id} non trovato"})
+    if task.get("agent_mode") in RISKY_AGENT_MODES and not confirm_risky:
+        return json.dumps(
+            {
+                "ok": False,
+                "reason": (
+                    f"task #{task_id} ha agent_mode={task.get('agent_mode')} (rischioso). "
+                    "Chiedi consenso esplicito all'utente in chat, poi richiama con confirm_risky=true."
+                ),
+            }
+        )
+    try:
+        job_id = jobs.start_job(task_id)
+        jobs.reload_schedules()
+    except Exception as e:
+        return json.dumps({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+    return json.dumps({"ok": True, "job_id": job_id, "task_id": task_id})
+
+
+def _tool_start_workflow(args: dict[str, Any]) -> str:
+    workflow_id = int(args.get("workflow_id") or 0)
+    if workflow_id <= 0:
+        return json.dumps({"ok": False, "reason": "workflow_id mancante"})
+    confirm_risky = bool(args.get("confirm_risky"))
+    edges = db.list_edges(workflow_id=workflow_id)
+    risky = False
+    seen_task_ids: set[int] = set()
+    for e in edges:
+        for tid_key in ("from_task_id", "to_task_id"):
+            tid = e.get(tid_key)
+            if not tid or tid in seen_task_ids:
+                continue
+            seen_task_ids.add(int(tid))
+            t = db.get_task(int(tid))
+            if t and t.get("agent_mode") in RISKY_AGENT_MODES:
+                risky = True
+                break
+        if risky:
+            break
+    if risky and not confirm_risky:
+        return json.dumps(
+            {
+                "ok": False,
+                "reason": (
+                    f"workflow #{workflow_id} contiene task rischiosi (outreach/responder). "
+                    "Chiedi consenso esplicito all'utente, poi richiama con confirm_risky=true."
+                ),
+            }
+        )
+    try:
+        result = jobs.start_workflow(workflow_id)
+        jobs.reload_schedules()
+    except Exception as e:
+        return json.dumps({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+    return json.dumps({"ok": True, "workflow_id": workflow_id, "result": result}, default=str)
 
 
 def _chat_system_prompt(
     *,
     web_enabled: bool,
     files_enabled: bool,
+    actions_enabled: bool,
     capabilities: dict[str, Any],
 ) -> str:
     snapshot = _orchestrator_snapshot()
     if web_enabled:
         web_line = (
-            "Navigazione web abilitata: se servono informazioni aggiornate usa web_search e fetch_url. "
-            "Cita gli URL usati nella risposta."
+            "Web abilitato: usa web_search e fetch_url per info aggiornate. Cita gli URL usati."
         )
     elif capabilities.get("web"):
-        web_line = "Navigazione web disponibile ma non attivata per questa richiesta."
+        web_line = "Web disponibile ma non attivato per questa richiesta."
     else:
-        web_line = f"Navigazione web non disponibile: {capabilities.get('web_reason')}"
+        web_line = f"Web non disponibile: {capabilities.get('web_reason')}"
 
     if files_enabled:
         files_line = (
-            "Allegati file abilitati: quando ricevi un blocco CONTESTO FILE ALLEGATO, usalo come fonte primaria."
+            "Allegati abilitati: usa il blocco CONTESTO FILE ALLEGATO come fonte primaria quando presente."
         )
     elif capabilities.get("files"):
-        files_line = "Allegati file disponibili ma non attivati per questa richiesta."
+        files_line = "Allegati disponibili ma non in uso per questa richiesta."
     else:
-        files_line = f"Allegati file non disponibili: {capabilities.get('files_reason')}"
+        files_line = f"Allegati non disponibili: {capabilities.get('files_reason')}"
+
+    if not capabilities.get("actions"):
+        actions_line = (
+            f"Azioni non disponibili: {capabilities.get('actions_reason')}. "
+            "Non puoi creare/lanciare task: descrivi e proponi soltanto."
+        )
+    elif actions_enabled:
+        actions_line = (
+            "AZIONI ABILITATE per questo turno. Puoi usare i tool di scrittura "
+            "(propose_plan, execute_plan, create_task, create_workflow, add_edge, start_job, start_workflow). "
+            "Per outreach/responder serve sempre confirm_risky=true E consenso esplicito dell'utente in chat."
+        )
+    else:
+        actions_line = (
+            "Azioni disabilitate per questo turno: hai solo i tool di lettura "
+            "(list_tasks, get_task, list_workflows, list_jobs, get_job_status, list_extraction_templates, list_chat_models). "
+            "Per agire l'utente deve abilitare il toggle 'Azioni'."
+        )
+
     return (
-        "Sei l'Orchestrator di AgentScraper. Parli in italiano, in modo operativo e concreto. "
-        "Stile hard-coded del progetto: risposte brevi, asciutte, massimo 4-6 righe salvo richiesta esplicita. "
-        "Niente introduzioni, niente riepiloghi ovvi, niente liste lunghe. Se servono dettagli, chiedi una sola "
-        "domanda o proponi il passo successivo. Aiuti l'utente a capire quali task creare, come collegarli, "
-        "che cosa sta succedendo nei job e quali rischi ci sono. Non dici di aver creato/lanciato nulla dalla "
-        "chat: per agire, invita l'utente a usare il Brief e Genera piano, oppure a premere i bottoni di "
-        "conferma gia presenti. Se l'utente chiede stato, usa lo snapshot qui sotto.\n\n"
-        f"CAPACITA CHAT:\n- {web_line}\n- {files_line}\n\n"
+        "Sei l'Orchestrator di AgentScraper, il meta-agente che progetta, costruisce, lancia e monitora "
+        "altri agenti per conto dell'utente. Italiano, operativo, asciutto: max 4-6 righe salvo richiesta esplicita. "
+        "Niente introduzioni, niente riepiloghi ovvi, niente liste lunghe.\n\n"
+        "MODALITA AGENTE DISPONIBILI (per pianificare task):\n"
+        "- react: ricerca web leggera con DDG+HTTP+readability, output report .md/.txt.\n"
+        "- bulk_extract: HTTP+readability per URL noti su sito statico, output profiles.jsonl.\n"
+        "- browser_use: Chromium reale, JS/login/scroll, output profiles.jsonl. Lento.\n"
+        "- auto_extract: profiler + dispatch automatico per liste eterogenee, output profiles.jsonl.\n"
+        "- qualifier: legge profiles.jsonl, produce qualified.jsonl.\n"
+        "- outreach: invia email/telegram. RISCHIOSO.\n"
+        "- responder: auto-reply inbound. RISCHIOSO.\n"
+        "Convenzione artifact: extract*->qualifier passa profiles.jsonl; qualifier->outreach/responder passa qualified.jsonl.\n\n"
+        "OPERATIVITA:\n"
+        "- Per costellazioni multi-task suggerisci di compilare il Brief e premere 'Genera piano' (canale canonico). "
+        "In alternativa, con Azioni ON, usa propose_plan + execute_plan.\n"
+        "- Per modifiche puntuali (lancia job 12, crea questo task, mostra stato workflow 4): usa direttamente i tool.\n"
+        "- Per stato dei job/agenti usa list_jobs / get_job_status / list_tasks invece di descrivere a vuoto.\n"
+        "- Per outreach/responder: chiedi consenso esplicito all'utente in chat PRIMA di passare confirm_risky=true.\n\n"
+        f"CAPACITA CHAT:\n- {web_line}\n- {files_line}\n- {actions_line}\n\n"
         f"SNAPSHOT SISTEMA:\n{snapshot}"
     )
 

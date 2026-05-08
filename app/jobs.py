@@ -273,9 +273,9 @@ async def _run_job(job_id: int, task_id: int) -> None:
         db.update_job(job_id, status="error", error=detail, finished_at=db.now_iso())
     finally:
         _running_tasks.pop(job_id, None)
+        cur = db.get_job(job_id)
         # Trigger downstream solo se job done
         try:
-            cur = db.get_job(job_id)
             if cur and (cur.get("status") or "") == "done":
                 _after_job_done(
                     job_id,
@@ -284,6 +284,43 @@ async def _run_job(job_id: int, task_id: int) -> None:
                 )
         except Exception:
             log.exception("trigger downstream failed")
+        # Aggiorna stato del workflow_run se questo era l'ultimo job in pendenza
+        try:
+            wfr_id = (cur or {}).get("workflow_run_id")
+            if wfr_id is not None:
+                _maybe_finalize_workflow_run(int(wfr_id))
+        except Exception:
+            log.exception("workflow_run finalize failed")
+
+
+def _maybe_finalize_workflow_run(workflow_run_id: int) -> None:
+    """Se tutti i job del workflow_run sono in stato finale, aggiorna lo stato del run.
+
+    Politica: any error -> error; any cancelled (e nessun error) -> cancelled; altrimenti done.
+    Idempotente: non fa nulla se il run e' gia' in stato finale.
+    """
+    jobs_in_run = db.list_jobs_for_workflow_run(workflow_run_id)
+    if not jobs_in_run:
+        return
+    finished = {"done", "error", "cancelled"}
+    if not all((j.get("status") or "") in finished for j in jobs_in_run):
+        return
+    statuses = {(j.get("status") or "") for j in jobs_in_run}
+    if "error" in statuses:
+        new_status = "error"
+    elif "cancelled" in statuses:
+        new_status = "cancelled"
+    else:
+        new_status = "done"
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT status FROM workflow_runs WHERE id = ?",
+            (workflow_run_id,),
+        ).fetchone()
+    if not row or (row["status"] or "") in finished:
+        return
+    db.update_workflow_run_status(workflow_run_id, new_status)
+    log.info("workflow_run #%s -> %s", workflow_run_id, new_status)
 
 
 def start_job(task_id: int, workflow_run_id: int | None = None) -> int:

@@ -1,0 +1,10 @@
+<div id="workflow-live"
+     {% if has_active %}
+     hx-get="/workflows/{{ workflow.id }}/runs"
+     hx-trigger="every 3s"
+     hx-swap="outerHTML"
+     {% endif %}>
+  {% include "partials/workflow_active_tasks.html" %}
+  <h3>📋 Esecuzioni recenti</h3>
+  {% include "partials/workflow_runs.html" %}
+</div>

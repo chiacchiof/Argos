@@ -113,7 +113,7 @@ async def workflow_detail(request: Request, workflow_id: int):
             "to_name": (tmap.get(e["to_task_id"]) or {}).get("name", f"#{e['to_task_id']}"),
         })
     roots = db.find_workflow_roots(workflow_id)
-    runs = db.list_workflow_runs(workflow_id, limit=20)
+    live = _workflow_live_view(workflow_id, edges)
     return templates.TemplateResponse(
         request,
         "workflow_detail.html",
@@ -122,9 +122,70 @@ async def workflow_detail(request: Request, workflow_id: int):
             "edges": edges_enriched,
             "tasks": all_tasks,
             "roots": roots,
-            "runs": runs,
+            **live,
         },
     )
+
+
+@router.get("/workflows/{workflow_id}/runs", response_class=HTMLResponse)
+async def workflow_runs_partial(request: Request, workflow_id: int):
+    w = db.get_workflow(workflow_id)
+    if not w:
+        raise HTTPException(status_code=404, detail="workflow non trovato")
+    edges = db.list_edges(workflow_id=workflow_id)
+    live = _workflow_live_view(workflow_id, edges)
+    return templates.TemplateResponse(
+        request,
+        "partials/workflow_runs_wrapper.html",
+        {"workflow": w, **live},
+    )
+
+
+def _workflow_live_view(workflow_id: int, edges: list[dict]) -> dict:
+    """Calcola runs + stato per task del run piu' recente attivo."""
+    runs = db.list_workflow_runs(workflow_id, limit=20)
+    has_active = any(r.get("status") in ("queued", "running") for r in runs)
+    active_run = next((r for r in runs if r.get("status") in ("queued", "running")), None)
+    active_tasks: list[dict] = []
+    if active_run:
+        task_ids: set[int] = set()
+        for e in edges:
+            if e.get("from_task_id"):
+                task_ids.add(int(e["from_task_id"]))
+            if e.get("to_task_id"):
+                task_ids.add(int(e["to_task_id"]))
+        for r in db.find_workflow_roots(workflow_id):
+            task_ids.add(int(r))
+        run_jobs = db.list_jobs_for_workflow_run(int(active_run["id"]))
+        latest_per_task: dict[int, dict] = {}
+        for j in run_jobs:
+            tid = j.get("task_id")
+            if tid is None:
+                continue
+            tid = int(tid)
+            prev = latest_per_task.get(tid)
+            if prev is None or int(j.get("id") or 0) > int(prev.get("id") or 0):
+                latest_per_task[tid] = j
+        for tid in sorted(task_ids):
+            t = db.get_task(tid)
+            j = latest_per_task.get(tid)
+            active_tasks.append(
+                {
+                    "task_id": tid,
+                    "task_name": (t or {}).get("name") or "(eliminato)",
+                    "agent_mode": (t or {}).get("agent_mode") or "?",
+                    "job_id": (j or {}).get("id"),
+                    "status": (j or {}).get("status"),
+                    "started_at": (j or {}).get("started_at"),
+                    "finished_at": (j or {}).get("finished_at"),
+                }
+            )
+    return {
+        "runs": runs,
+        "has_active": has_active,
+        "active_run": active_run,
+        "active_tasks": active_tasks,
+    }
 
 
 @router.post("/workflows/{workflow_id}/edges")

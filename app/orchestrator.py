@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, Field
 
 from . import db, jobs
-from .agent.extraction_templates import get_schema
-from .agent.llm_providers import resolve_api_key, resolve_base_url
+from .agent.extraction_templates import get_schema, list_templates
+from .agent.llm_providers import get_provider, resolve_api_key, resolve_base_url
+from .agent.ollama import list_models as ollama_list_models
 from .config import settings
 
 
@@ -54,6 +56,205 @@ AUTONOMY_LEVELS: dict[str, dict[str, Any]] = {
 }
 
 RISKY_AGENT_MODES = {"outreach", "responder"}
+
+PLANNER_TOOL_MAX_LOOPS = 3
+
+PLANNER_TOOLS_SPEC: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_extraction_templates",
+            "description": "Lista i template di estrazione disponibili (key, name, description). Usali per scegliere extraction_template nei task scraping.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_models",
+            "description": "Lista i modelli disponibili per il provider indicato (default: provider corrente del piano). Usalo per validare il campo 'model' di un task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {"type": "string", "description": "Chiave provider (ollama, openai, anthropic, ...). Omettilo per usare il provider corrente."}
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tasks",
+            "description": "Lista i task gia esistenti nel progetto (id, name, agent_mode, model). Usalo per evitare duplicati e mantenere coerenza naming.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Massimo task da ritornare", "default": 20}
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_workflows",
+            "description": "Lista i workflow gia esistenti (id, name, description). Usalo per capire quali pipeline sono gia in piedi.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+]
+
+
+_PLANNER_MANUAL = """\
+MANUALE OPERATIVO AGENTSCRAPER (per pianificare task e workflow)
+
+== Le 7 modalita di agente ==
+
+[react]
+Ricerca web leggera: DuckDuckGo + fetch HTTP + readability. Niente browser.
+Quando: sintesi/mini-report da fonti aperte, ricerche generiche.
+Campi rilevanti: objective, max_iterations (default 10), model (Ollama locale).
+Output: report .md/.txt in data/results/. Niente profiles.jsonl.
+
+[bulk_extract]
+HTTP + readability + 1 LLM call per URL, opzionale crawler statico.
+Quando: lista o pattern di URL noti su sito statico (cataloghi, listini, directory).
+Campi rilevanti: seed_queries (URL iniziali), extraction_template, allowed_domains, max_iterations (200), crawler_enabled+crawler_max_depth se serve scoprire pagine.
+Output: profiles.jsonl.
+
+[browser_use]
+Browser Chromium reale via browser-use, supporta JS, login, scroll, click. Lento e costoso.
+Quando: il brief dice javascript/dinamico/login/scroll/click oppure sai che HTTP statico non basta.
+Campi rilevanti: seed_queries, extraction_template, allowed_domains, max_iterations (30+).
+Output: profiles.jsonl.
+
+[auto_extract]
+Profiler iniziale + dispatch automatico fra bulk_extract / browser_use / skip per ogni dominio.
+Quando: lista eterogenea di siti diversi (non sai a priori se sono statici o dinamici).
+Campi rilevanti: seed_queries (lista URL siti), extraction_template, allowed_domains, max_iterations (200+).
+Output: profiles.jsonl.
+
+[qualifier]
+Legge profiles.jsonl in input, valuta ogni profilo via LLM, produce qualified.jsonl.
+Quando: filtrare lead validi prima di outreach, scorare per pertinenza.
+Campi rilevanti: input_artifact_path (collegato via edge upstream), objective (criteri di filtro), model.
+Output: qualified.jsonl.
+
+[outreach]   RISCHIOSO
+Invia email/telegram ai contatti in qualified.jsonl rispettando opt-out.
+Quando: il brief chiede esplicitamente messaggi/email/contattare/campagna.
+Campi rilevanti: input_artifact_path, message_subject, message_template, message_channels (es. ["email"]).
+Vincolo: SEMPRE preceduto da qualifier upstream, oppure warning esplicito + risk_level=high.
+
+[responder]   RISCHIOSO
+Auto-reply su messaggi inbound (email/telegram).
+Quando: brief chiede di rispondere automaticamente a chi scrive.
+Campi rilevanti: responder_system_prompt.
+Vincolo: warning consenso obbligatorio + risk_level=high.
+
+== Artifact convention sugli edge ==
+- bulk_extract / auto_extract / browser_use -> qualifier   ::   pass_artifact = "profiles.jsonl"
+- qualifier -> outreach                                    ::   pass_artifact = "qualified.jsonl"
+- qualifier -> responder                                   ::   pass_artifact = "qualified.jsonl"
+Per altre coppie pass_artifact puo essere null.
+
+== Regole di consistency ==
+1. outreach o responder => SEMPRE almeno un warning di consenso esplicito + risk_level="high".
+2. outreach senza qualifier upstream e ammesso solo se l'utente lo chiede esplicitamente; va dichiarato come warning.
+3. browser_use solo se il brief menziona javascript/dinamico/login/scroll/click; altrimenti preferisci bulk_extract o auto_extract.
+4. auto_extract per liste di siti diversi; bulk_extract per pattern URL chiari di un solo dominio.
+5. extraction_template: usa "profile_contacts" per lead/contatti/profili; "ecommerce_products" per prodotti; "real_estate" per case; "events" per eventi; "news_articles" per articoli; "job_listings" per lavoro. Se ambiguo, omettilo.
+6. Niente API key nel JSON. Niente campi inventati. Usa solo i nomi di agent_mode esistenti.
+7. Se il brief e ambiguo, fai un piano piccolo (1-2 task), non riempire di stadi inutili.
+
+== Tool disponibili (chiamali se servono) ==
+- list_extraction_templates() per scegliere il template giusto.
+- list_models(provider) per validare il modello di un task.
+- list_tasks(limit) per evitare duplicati e riusare naming coerenti.
+- list_workflows() per capire le pipeline gia presenti.
+"""
+
+
+_PLANNER_FEW_SHOT = """\
+== Esempi brief -> plan (formato target) ==
+
+ESEMPIO 1 (semplice scraping)
+Brief: "Estrai prodotti da example-shop.com per costruire il catalogo"
+Plan:
+{
+  "title": "Catalogo prodotti example-shop",
+  "summary": "Estrazione bulk dello shop, output profiles.jsonl per export.",
+  "risk_level": "low",
+  "assumptions": ["Sito statico server-rendered."],
+  "warnings": [],
+  "run_after_create": false,
+  "tasks": [{
+    "key": "extract", "name": "Estrazione prodotti", "agent_mode": "bulk_extract",
+    "objective": "Estrai pagine prodotto da example-shop.com.",
+    "seed_queries": ["https://example-shop.com/"],
+    "allowed_domains": ["example-shop.com"],
+    "extraction_template": "ecommerce_products",
+    "max_iterations": 200, "crawler_enabled": true, "crawler_max_depth": 3
+  }],
+  "edges": []
+}
+
+ESEMPIO 2 (pipeline con outreach: rischiosa)
+Brief: "Cerca freelance designer su 3-4 portali italiani e mandagli un'email solo a quelli con portfolio decente"
+Plan:
+{
+  "title": "Lead freelance designer italiani",
+  "summary": "auto_extract -> qualifier -> outreach. Filtro qualita prima dell'invio.",
+  "risk_level": "high",
+  "assumptions": [
+    "Portali freelance italiani: lista eterogenea, alcuni con JS.",
+    "Schema profile_contacts cattura i campi pubblici dei freelance."
+  ],
+  "warnings": [
+    "Il piano contiene outreach via email: serve consenso esplicito prima del lancio e rispetto opt-out."
+  ],
+  "run_after_create": false,
+  "tasks": [
+    {"key": "extract", "name": "Estrazione profili freelance", "agent_mode": "auto_extract",
+     "objective": "Estrai profili di designer freelance italiani con contatti pubblici.",
+     "seed_queries": ["https://portale-a.it/", "https://portale-b.it/"],
+     "allowed_domains": ["portale-a.it", "portale-b.it"],
+     "extraction_template": "profile_contacts", "max_iterations": 200},
+    {"key": "qualifier", "name": "Qualifica designer con portfolio", "agent_mode": "qualifier",
+     "objective": "Tieni solo profili con portfolio visibile e contatti email/whatsapp.",
+     "max_iterations": 10},
+    {"key": "outreach", "name": "Outreach email designer", "agent_mode": "outreach",
+     "objective": "Invia email ai designer qualificati, rispettando opt-out.",
+     "message_subject": "Una proposta per {display_name}",
+     "message_template": "Ciao {display_name},\\n\\nho visto il tuo portfolio su {source_url}...",
+     "message_channels": ["email"]}
+  ],
+  "edges": [
+    {"from_key": "extract", "to_key": "qualifier", "pass_artifact": "profiles.jsonl"},
+    {"from_key": "qualifier", "to_key": "outreach", "pass_artifact": "qualified.jsonl"}
+  ]
+}
+
+ESEMPIO 3 (ricerca leggera)
+Brief: "Voglio un report sulle ultime tendenze AI generativa"
+Plan:
+{
+  "title": "Report tendenze AI generativa",
+  "summary": "Ricerca web leggera con react + sintesi.",
+  "risk_level": "low",
+  "assumptions": ["Fonti pubbliche aperte, niente login."],
+  "warnings": [],
+  "run_after_create": false,
+  "tasks": [{
+    "key": "research", "name": "Ricerca tendenze AI", "agent_mode": "react",
+    "objective": "Cerca e sintetizza le ultime tendenze AI generativa con fonti citate.",
+    "max_iterations": 10
+  }],
+  "edges": []
+}
+"""
 
 
 class PlannedTask(BaseModel):
@@ -164,6 +365,35 @@ def _wants_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(k in t for k in keywords)
 
 
+def _detect_extraction_template(text: str) -> str:
+    t = (text or "").lower()
+    if any(k in t for k in (
+        "immobil", "casa ", "case ", "appartament", "villa", "annuncio immobil",
+        "annunci immobil", "real estate", "compravendita", "affitt",
+    )):
+        return "real_estate"
+    if any(k in t for k in (
+        "prodott", "ecommerc", "e-commerce", " shop", "catalog", "listino",
+        "sku", "carrello", "amazon", "shopify",
+    )):
+        return "ecommerce_products"
+    if any(k in t for k in (
+        "evento", "eventi", "concerto", "concerti", "conferenza", "conferenze",
+        "biglietti", "festival", "mostra",
+    )):
+        return "events"
+    if any(k in t for k in (
+        "articol", "blog", "news ", "post ", "post di", "rivista", "testata",
+    )):
+        return "news_articles"
+    if any(k in t for k in (
+        "lavoro", "lavori", "annunci di lavoro", "jobs ", "posizione apert",
+        "vacancy", "assunzioni", "ricerca personale",
+    )):
+        return "job_listings"
+    return "profile_contacts"
+
+
 def _safe_key(base: str, used: set[str]) -> str:
     key = re.sub(r"[^a-z0-9_]+", "_", base.lower()).strip("_") or "task"
     candidate = key
@@ -204,7 +434,8 @@ def _planned_task(
 ) -> PlannedTask:
     task_model = _default_model_for_mode(agent_mode, provider, model)
     llm_provider = "ollama" if agent_mode == "react" else provider
-    extraction_template = "profile_contacts" if agent_mode in {"browser_use", "bulk_extract", "auto_extract"} else None
+    is_extract_mode = agent_mode in {"browser_use", "bulk_extract", "auto_extract"}
+    extraction_template = _detect_extraction_template(brief) if is_extract_mode else None
     extraction_schema = get_schema(extraction_template) if extraction_template else None
     max_iterations = 10
     if agent_mode == "browser_use":
@@ -214,14 +445,20 @@ def _planned_task(
     elif agent_mode in {"qualifier", "outreach", "responder"}:
         max_iterations = 10
 
+    seed_queries: list[str] = []
+    if is_extract_mode:
+        seed_queries = list(urls)
+        if not seed_queries and domains:
+            seed_queries = [f"https://{d}" for d in domains[:5]]
+
     return PlannedTask(
         key=key,
         name=name,
         agent_mode=agent_mode,
         objective=objective,
         description=f"Creato da Orchestrator dal brief: {brief[:300]}",
-        seed_queries=urls if agent_mode in {"browser_use", "bulk_extract", "auto_extract"} else [],
-        allowed_domains=domains if agent_mode in {"browser_use", "bulk_extract", "auto_extract"} else [],
+        seed_queries=seed_queries,
+        allowed_domains=domains if is_extract_mode else [],
         max_iterations=max_iterations,
         model=task_model,
         output_format="md",
@@ -231,7 +468,7 @@ def _planned_task(
         llm_base_url=llm_base_url if llm_provider == "custom" else None,
         bulk_concurrency=5,
         bulk_rate_limit_per_sec=2.0,
-        crawler_enabled=agent_mode in {"bulk_extract", "auto_extract"} and bool(urls),
+        crawler_enabled=agent_mode in {"bulk_extract", "auto_extract"} and bool(seed_queries),
         crawler_max_depth=3,
         notes="Creato da Orchestrator. Verifica schema, modelli e limiti prima di produzioni grandi.",
         status_tag="tuning",
@@ -266,7 +503,38 @@ def build_heuristic_plan(
             "annunci",
         ),
     )
-    wants_qualifier = _wants_any(text, ("qualifica", "filtra", "scora", "score", "valuta", "validi"))
+    wants_qualifier = _wants_any(
+        text,
+        (
+            "qualifica",
+            "filtra",
+            "filtrare",
+            "scora",
+            "score",
+            "valuta",
+            "validi",
+            "selezion",
+            "criterio",
+            "criteri",
+            "soglia",
+            "tieni solo",
+            "solo quelli",
+            "solo quelle",
+            "solo i ",
+            "solo le ",
+            "almeno",
+            "massimo",
+            "minimo",
+            "maggiore di",
+            "minore di",
+            "sopra",
+            "sotto",
+            "prezzo >",
+            "prezzo <",
+            ">=",
+            "<=",
+        ),
+    )
     wants_outreach = _wants_any(text, ("outreach", "email", "telegram", "contatta", "messaggi", "campagna"))
     wants_responder = _wants_any(text, ("rispondi", "reply", "auto-reply", "inbound", "posta in arrivo"))
     wants_research = _wants_any(text, ("cerca", "ricerca", "report", "analizza", "trova informazioni"))
@@ -424,8 +692,11 @@ def build_heuristic_plan(
         )
     if any(t.agent_mode == "react" for t in tasks) and provider != "ollama":
         warnings.append("I task react usano Ollama locale anche se il planner usa un provider remoto.")
-    if any(t.agent_mode in {"bulk_extract", "auto_extract", "browser_use"} for t in tasks) and not urls:
+    extract_tasks = [t for t in tasks if t.agent_mode in {"bulk_extract", "auto_extract", "browser_use"}]
+    if extract_tasks and any(not t.seed_queries for t in extract_tasks):
         warnings.append("Non ho trovato URL nel brief: compila seed URL prima di lanciare lo scraping.")
+    elif extract_tasks and not urls and any(t.seed_queries for t in extract_tasks):
+        warnings.append("Seed URL sintetizzati dai domini citati nel brief: rivedili prima di lanciare.")
 
     run_after_create = autonomy_level in {"supervised", "autonomous"}
     if any(t.agent_mode in RISKY_AGENT_MODES for t in tasks):
@@ -489,72 +760,141 @@ async def _build_llm_plan(
     base_url = resolve_base_url(provider, llm_base_url)
     api_key = resolve_api_key(provider, llm_api_key)
     prompt = _planner_prompt(brief, autonomy_level, fallback)
-    payload = {
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "system",
+            "content": (
+                "Sei il Planner di AgentScraper. Progetti task e workflow usando solo le modalita esistenti. "
+                "Quando hai abbastanza contesto rispondi SOLO con il JSON del piano (niente prosa, niente markdown)."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+    payload: dict[str, Any] = {
         "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Sei l'orchestrator di AgentScraper. Devi progettare task e workflow "
-                    "usando solo le capacita disponibili. Rispondi sempre in JSON valido."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
+        "messages": messages,
         "temperature": 0.1,
         "max_tokens": 2200,
-        "response_format": {"type": "json_object"},
+        "tools": PLANNER_TOOLS_SPEC,
+        "tool_choice": "auto",
     }
     headers = {"Authorization": f"Bearer {api_key}"}
+    url = f"{base_url.rstrip('/')}/chat/completions"
+
+    raw = ""
+    tool_invocations = 0
     async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(f"{base_url.rstrip('/')}/chat/completions", json=payload, headers=headers)
-        r.raise_for_status()
-        data = r.json()
-    raw = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        for _ in range(PLANNER_TOOL_MAX_LOOPS + 1):
+            r = await client.post(url, json=payload, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            message = data.get("choices", [{}])[0].get("message", {}) or {}
+            tool_calls = message.get("tool_calls") or []
+            content = (message.get("content") or "").strip()
+            if not tool_calls:
+                raw = content
+                break
+            normalized: list[dict[str, Any]] = []
+            for call in tool_calls:
+                cp = dict(call)
+                cp.setdefault("id", f"call_{uuid.uuid4().hex[:8]}")
+                normalized.append(cp)
+            payload["messages"].append(
+                {"role": "assistant", "content": content, "tool_calls": normalized}
+            )
+            for call in normalized:
+                tool_name = (call.get("function") or {}).get("name") or ""
+                args = _decode_planner_tool_args((call.get("function") or {}).get("arguments"))
+                output = await _run_planner_tool(tool_name, args, provider=provider)
+                payload["messages"].append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "name": tool_name,
+                        "content": output[:8000],
+                    }
+                )
+                tool_invocations += 1
+        else:
+            raise ValueError("planner LLM ha esaurito i loop tool senza JSON finale")
+
+    if not raw:
+        raise ValueError("planner LLM non ha prodotto JSON")
     parsed = _parse_json_object(raw)
     plan = _normalize_llm_plan(parsed, fallback, provider, model, llm_base_url)
-    plan.planner_used = f"llm:{provider}/{model}"
+    suffix = f" (tools={tool_invocations})" if tool_invocations else ""
+    plan.planner_used = f"llm:{provider}/{model}{suffix}"
     return plan
+
+
+def _decode_planner_tool_args(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+async def _run_planner_tool(name: str, args: dict[str, Any], *, provider: str) -> str:
+    try:
+        if name == "list_extraction_templates":
+            return json.dumps(list_templates(), ensure_ascii=False, indent=2)
+        if name == "list_models":
+            target = (str(args.get("provider") or "").strip() or provider or "ollama")
+            if target == "ollama":
+                try:
+                    models = await ollama_list_models()
+                except Exception:
+                    models = [settings.default_model]
+            else:
+                info = get_provider(target) or {}
+                models = [m["id"] for m in (info.get("suggested_models") or [])]
+            return json.dumps({"provider": target, "models": models}, ensure_ascii=False)
+        if name == "list_tasks":
+            limit = max(1, min(int(args.get("limit") or 20), 100))
+            tasks = db.list_tasks()[:limit]
+            slim = [
+                {
+                    "id": t.get("id"),
+                    "name": t.get("name"),
+                    "agent_mode": t.get("agent_mode"),
+                    "model": t.get("model"),
+                    "status_tag": t.get("status_tag"),
+                }
+                for t in tasks
+            ]
+            return json.dumps(slim, ensure_ascii=False, indent=2)
+        if name == "list_workflows":
+            workflows = db.list_workflows()
+            slim = [
+                {"id": w.get("id"), "name": w.get("name"), "description": w.get("description")}
+                for w in workflows
+            ]
+            return json.dumps(slim, ensure_ascii=False, indent=2)
+        return f"Errore: tool sconosciuto {name!r}"
+    except Exception as e:
+        return f"Errore tool {name}: {type(e).__name__}: {e}"
 
 
 def _planner_prompt(brief: str, autonomy_level: str, fallback: OrchestratorPlan) -> str:
     return (
+        f"{_PLANNER_MANUAL}\n"
+        f"{_PLANNER_FEW_SHOT}\n"
+        "== Istruzioni per QUESTO brief ==\n"
         "Brief utente:\n"
         f"{brief}\n\n"
         f"Livello autonomia richiesto: {autonomy_level}\n\n"
-        "Capacita disponibili:\n"
-        "- react: ricerca web leggera con DuckDuckGo+HTTP, usa Ollama locale.\n"
-        "- browser_use: browser reale, siti dinamici, output profiles.jsonl.\n"
-        "- bulk_extract: URL noti/crawler statico, output profiles.jsonl.\n"
-        "- auto_extract: lista siti, decide bulk/browser/skip, output profiles.jsonl.\n"
-        "- qualifier: legge profiles.jsonl, produce qualified.jsonl e contacts.\n"
-        "- outreach: invia email/telegram ai contatti qualified. Rischioso.\n"
-        "- responder: auto-reply inbound. Rischioso.\n\n"
-        "Formato JSON richiesto:\n"
-        "{\n"
-        '  "title": "nome breve",\n'
-        '  "summary": "cosa fara il workflow",\n'
-        '  "risk_level": "low|medium|high",\n'
-        '  "assumptions": ["..."],\n'
-        '  "warnings": ["..."],\n'
-        '  "run_after_create": false,\n'
-        '  "tasks": [\n'
-        "    {\n"
-        '      "key": "extract", "name": "...", "agent_mode": "auto_extract",\n'
-        '      "objective": "...", "seed_queries": ["https://..."],\n'
-        '      "allowed_domains": ["example.com"], "max_iterations": 200,\n'
-        '      "extraction_template": "profile_contacts"\n'
-        "    }\n"
-        "  ],\n"
-        '  "edges": [{"from_key": "extract", "to_key": "qualifier", "pass_artifact": "profiles.jsonl"}]\n'
-        "}\n\n"
-        "Regole:\n"
-        "- Non inventare agent_mode inesistenti.\n"
-        "- Per extraction di contatti usa extraction_template=profile_contacts.\n"
-        "- Per outreach/responder aggiungi sempre warning di consenso.\n"
-        "- Non mettere API key nel JSON.\n"
-        "- Se il brief e ambiguo, tieni un piano piccolo.\n\n"
-        "Piano euristico di partenza che puoi migliorare:\n"
+        "Procedura:\n"
+        "1. Se serve, chiama list_extraction_templates / list_models / list_tasks / list_workflows per validare le scelte.\n"
+        "2. Produci un OrchestratorPlan in JSON valido (vedi formato negli esempi).\n"
+        "3. Quando hai finito, rispondi SOLO con il JSON del piano (niente prosa).\n\n"
+        "Piano euristico di partenza che puoi migliorare (non e obbligatorio seguirlo):\n"
         + fallback.model_dump_json(exclude={"planner_used"})
     )
 
@@ -664,6 +1004,8 @@ def _normalize_llm_plan(
     if any(t.agent_mode in RISKY_AGENT_MODES for t in tasks) and not warnings:
         warnings.append("Il piano contiene messaggistica: richiedi consenso prima di lanciare.")
 
+    tasks, warnings = _validate_llm_plan(tasks, edges, warnings)
+
     return OrchestratorPlan(
         title=str(raw.get("title") or fallback.title)[:120],
         summary=str(raw.get("summary") or fallback.summary),
@@ -676,6 +1018,54 @@ def _normalize_llm_plan(
         run_after_create=bool(raw.get("run_after_create", fallback.run_after_create)),
         planner_used="llm",
     )
+
+
+def _validate_llm_plan(
+    tasks: list[PlannedTask],
+    edges: list[PlannedEdge],
+    warnings: list[str],
+) -> tuple[list[PlannedTask], list[str]]:
+    out_warnings = list(warnings)
+    seen = {w.strip() for w in out_warnings if isinstance(w, str)}
+
+    def warn(msg: str) -> None:
+        if msg in seen:
+            return
+        out_warnings.append(msg)
+        seen.add(msg)
+
+    tasks_by_key = {t.key: t for t in tasks}
+
+    for t in tasks:
+        if t.agent_mode in {"bulk_extract", "auto_extract", "browser_use"} and not t.seed_queries:
+            warn(f"Task '{t.key}' ({t.agent_mode}): manca seed URL, da completare prima del lancio.")
+
+    for t in tasks:
+        if t.agent_mode == "outreach":
+            upstream_qualifier = any(
+                e.to_key == t.key
+                and (tasks_by_key.get(e.from_key) and tasks_by_key[e.from_key].agent_mode == "qualifier")
+                for e in edges
+            )
+            if not upstream_qualifier:
+                warn(
+                    f"Task '{t.key}' (outreach): nessun qualifier upstream, rischio invio a contatti non filtrati."
+                )
+
+    valid_templates = {tpl["key"] for tpl in list_templates()}
+    fixed: list[PlannedTask] = []
+    for t in tasks:
+        if t.extraction_template and t.extraction_template not in valid_templates:
+            warn(
+                f"Task '{t.key}': extraction_template '{t.extraction_template}' sconosciuto, rimosso."
+            )
+            data = t.model_dump()
+            data["extraction_template"] = None
+            data["extraction_schema"] = None
+            fixed.append(PlannedTask(**data))
+        else:
+            fixed.append(t)
+    return fixed, out_warnings
 
 
 def execute_plan(

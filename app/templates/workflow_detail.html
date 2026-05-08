@@ -113,23 +113,6 @@
   <p class="muted">Nessun edge. Aggiungi sopra.</p>
   {% endif %}
 
-  <h3>📋 Esecuzioni recenti</h3>
-  {% if runs %}
-  <table class="data">
-    <thead><tr><th>Run #</th><th>Stato</th><th>Avvio</th><th>Fine</th></tr></thead>
-    <tbody>
-      {% for r in runs %}
-      <tr>
-        <td>{{ r.id }}</td>
-        <td><span class="status status-{{ r.status }}">{{ r.status }}</span></td>
-        <td><small>{{ r.started_at }}</small></td>
-        <td><small>{{ r.finished_at or "—" }}</small></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="muted">Nessuna esecuzione ancora.</p>
-  {% endif %}
+  {% include "partials/workflow_runs_wrapper.html" %}
 </section>
 {% endblock %}

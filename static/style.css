@@ -37,6 +37,7 @@ button.danger { background: var(--danger); }
 .link-cancel { color: var(--muted); text-decoration: none; }
 
 .errors { background: #fff5f5; border: 1px solid #fed7d7; padding: 0.7rem; border-radius: 4px; color: var(--danger); }
+.warn-inline { background: #fffaf0; border: 1px solid #f6e05e; padding: 0.55rem 0.7rem; border-radius: 4px; color: #744210; font-size: 0.9em; margin: 0.4rem 0; }
 .empty, .muted { color: var(--muted); }
 
 dl.kv { display: grid; grid-template-columns: 180px 1fr; gap: 0.4rem 1rem; }

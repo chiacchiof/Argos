@@ -416,21 +416,20 @@ def test_orchestrator_plan_and_execute(monkeypatch, tmp_path):
         assert saved["config"]["llm_provider"] == "custom"
         assert saved["config"]["llm_api_key"] == "secret-test"
         assert "chat_web_enabled" not in saved["config"]
-        assert "chat_files_enabled" not in saved["config"]
+        assert "chat_actions_enabled" not in saved["config"]
 
         r = client.get("/orchestrator")
         assert r.status_code == 200
         assert "Orchestrator" in r.text
         assert "planner-test" in r.text
         assert 'name="chat_web_enabled"' in r.text
-        assert 'name="chat_files_enabled"' in r.text
+        assert 'name="chat_actions_enabled"' in r.text
 
         r = client.post(
             "/orchestrator/chat",
             data={
                 "message": "Leggi questo file.",
                 "chat_web_enabled": "on",
-                "chat_files_enabled": "on",
             },
             files={"attachment": ("brief.md", b"contenuto allegato", "text/markdown")},
             follow_redirects=False,

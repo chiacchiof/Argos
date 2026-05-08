@@ -33,8 +33,11 @@
         <p class="muted small">
           Usa il modello configurato in <a href="/settings">Settings</a>:
           <code>{{ llm_provider }}/{{ planner_model }}</code>.
-          Se lo lasci spento, il piano viene costruito con il planner euristico locale.
+          Se lo lasci spento, il piano viene costruito con il planner euristico locale (limitato).
         </p>
+        {% if planner_model_warning %}
+        <p class="warn-inline">{{ planner_model_warning }}</p>
+        {% endif %}
         <label>
           <input type="checkbox" name="use_llm" value="on" {% if use_llm %}checked{% endif %}>
           Usa Planner LLM per migliorare il piano di questo brief
@@ -75,6 +78,9 @@
                 </span>
                 <span class="badge badge-{{ 'ok' if chat_capabilities.files else 'warn' }}" title="{{ chat_capabilities.files_reason }}">
                   File {{ 'ok' if chat_capabilities.files else 'no' }}
+                </span>
+                <span class="badge badge-{{ 'ok' if chat_capabilities.actions else 'warn' }}" title="{{ chat_capabilities.actions_reason }}">
+                  Azioni {{ 'ok' if chat_capabilities.actions else 'no' }}
                 </span>
               </div>
             </div>
@@ -121,18 +127,18 @@
                      {% if not chat_capabilities.web %}disabled{% endif %}>
               <span>Web</span>
             </label>
-            <label class="chat-tool-toggle {% if not chat_capabilities.files %}is-disabled{% endif %}"
-                   title="{{ chat_capabilities.files_reason }}">
+            <label class="chat-tool-toggle chat-tool-toggle-actions {% if not chat_capabilities.actions %}is-disabled{% endif %}"
+                   title="{{ chat_capabilities.actions_reason }}">
               <input type="checkbox"
-                     name="chat_files_enabled"
+                     name="chat_actions_enabled"
                      value="on"
-                     data-chat-toggle="files"
-                     {% if not chat_capabilities.files %}disabled{% endif %}>
-              <span>File</span>
+                     data-chat-toggle="actions"
+                     {% if not chat_capabilities.actions %}disabled{% endif %}>
+              <span>Azioni</span>
             </label>
           </div>
           {% if chat_capabilities.files %}
-          <label class="chat-attach-button" title="Allega file testuale o PDF; attiva File per questo messaggio">
+          <label class="chat-attach-button" title="Allega file testuale o PDF (max 5 MB)">
             <span aria-hidden="true">+</span>
             <input type="file"
                    name="attachment"
@@ -276,7 +282,6 @@
       });
     });
     const fileInput = form.querySelector("[data-chat-file-input]");
-    const fileToggle = form.querySelector("[data-chat-toggle='files']");
     const attachmentPill = form.querySelector("[data-chat-attachment-pill]");
     const attachmentName = form.querySelector("[data-chat-attachment-name]");
     const attachmentSize = form.querySelector("[data-chat-attachment-size]");
@@ -311,15 +316,8 @@
       if (fileInput) fileInput.value = "";
       renderAttachment();
     };
-    if (fileInput && fileToggle && !fileToggle.disabled) {
+    if (fileInput) {
       fileInput.addEventListener("change", () => {
-        if (fileInput.files.length) {
-          fileToggle.checked = true;
-          localStorage.setItem(
-            `agentscraper.orchestrator.${modelKey}.files`,
-            "on"
-          );
-        }
         renderAttachment();
       });
     }

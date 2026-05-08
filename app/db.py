@@ -661,6 +661,15 @@ def list_jobs(task_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def list_jobs_for_workflow_run(workflow_run_id: int) -> list[dict[str, Any]]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT * FROM jobs WHERE workflow_run_id = ? ORDER BY id ASC",
+            (workflow_run_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def update_job(job_id: int, **fields: Any) -> None:
     if not fields:
         return
