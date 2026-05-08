@@ -265,6 +265,45 @@ def test_extract_json_dicts_robust():
     assert len(out) == 1
 
 
+def test_bulk_extract_url_collection_filters():
+    """Verifica che il runner bulk_extract raccolga URL da seed+artifact e applichi filtri."""
+    from app.agent.runner_bulk_extract import (
+        _normalize_url, _domain_allowed, _load_urls_from_artifact,
+    )
+    import json, tempfile
+    from pathlib import Path
+
+    # _normalize_url: aggiunge https://, gestisce vuoto
+    assert _normalize_url("https://a.com/x") == "https://a.com/x"
+    assert _normalize_url("a.com/x") == "https://a.com/x"
+    assert _normalize_url("  ") is None
+    assert _normalize_url("") is None
+
+    # _domain_allowed con whitelist
+    assert _domain_allowed("https://example.com/p", ["example.com"], [])
+    assert not _domain_allowed("https://other.com/p", ["example.com"], [])
+    assert _domain_allowed("https://sub.example.com/p", ["example.com"], [])  # subdomain
+
+    # blacklist
+    assert not _domain_allowed("https://bad.com/p", [], ["bad.com"])
+
+    # _load_urls_from_artifact: jsonl con url
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
+        f.write(json.dumps({"url": "https://a.com/1", "name": "x"}) + "\n")
+        f.write(json.dumps({"url": "https://b.com/2"}) + "\n")
+        f.write(json.dumps({"name": "noURL"}) + "\n")  # ignored
+        f.write("https://c.com/3\n")  # plain text URL
+        path = f.name
+
+    urls = _load_urls_from_artifact(path)
+    assert "https://a.com/1" in urls
+    assert "https://b.com/2" in urls
+    assert "https://c.com/3" in urls
+    assert len(urls) == 3
+
+    Path(path).unlink()
+
+
 def test_optout_detection():
     from app.agent.runner_responder import _is_opt_out
     assert _is_opt_out("STOP")

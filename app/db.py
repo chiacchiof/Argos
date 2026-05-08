@@ -36,6 +36,16 @@ CREATE TABLE IF NOT EXISTS tasks (
   message_subject TEXT,
   message_channels TEXT,
   responder_system_prompt TEXT,
+  bulk_concurrency INTEGER NOT NULL DEFAULT 5,
+  bulk_rate_limit_per_sec REAL NOT NULL DEFAULT 2.0,
+  bulk_extraction_method TEXT NOT NULL DEFAULT 'llm_per_page',
+  bulk_css_selectors TEXT,
+  crawler_enabled INTEGER NOT NULL DEFAULT 0,
+  crawler_url_pattern TEXT,
+  crawler_max_depth INTEGER NOT NULL DEFAULT 3,
+  discovery_llm_provider TEXT,
+  discovery_llm_model TEXT,
+  discovery_llm_api_key TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -216,6 +226,26 @@ def init_db() -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN message_channels TEXT")
         if "responder_system_prompt" not in cols:
             con.execute("ALTER TABLE tasks ADD COLUMN responder_system_prompt TEXT")
+        if "bulk_concurrency" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN bulk_concurrency INTEGER NOT NULL DEFAULT 5")
+        if "bulk_rate_limit_per_sec" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN bulk_rate_limit_per_sec REAL NOT NULL DEFAULT 2.0")
+        if "bulk_extraction_method" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN bulk_extraction_method TEXT NOT NULL DEFAULT 'llm_per_page'")
+        if "bulk_css_selectors" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN bulk_css_selectors TEXT")
+        if "crawler_enabled" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN crawler_enabled INTEGER NOT NULL DEFAULT 0")
+        if "crawler_url_pattern" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN crawler_url_pattern TEXT")
+        if "crawler_max_depth" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN crawler_max_depth INTEGER NOT NULL DEFAULT 3")
+        if "discovery_llm_provider" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN discovery_llm_provider TEXT")
+        if "discovery_llm_model" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN discovery_llm_model TEXT")
+        if "discovery_llm_api_key" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN discovery_llm_api_key TEXT")
         # jobs
         jcols = {r["name"] for r in con.execute("PRAGMA table_info(jobs)").fetchall()}
         if "control_signal" not in jcols:
@@ -424,8 +454,13 @@ def create_task(data: dict[str, Any]) -> int:
                                   llm_provider, llm_base_url, llm_api_key,
                                   input_artifact_path, message_template, message_subject,
                                   message_channels, responder_system_prompt,
+                                  bulk_concurrency, bulk_rate_limit_per_sec,
+                                  bulk_extraction_method, bulk_css_selectors,
+                                  crawler_enabled, crawler_url_pattern, crawler_max_depth,
+                                  discovery_llm_provider, discovery_llm_model,
+                                  discovery_llm_api_key,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -449,6 +484,16 @@ def create_task(data: dict[str, Any]) -> int:
                 data.get("message_subject") or None,
                 _dump_list(data.get("message_channels")),
                 data.get("responder_system_prompt") or None,
+                int(data.get("bulk_concurrency") or 5),
+                float(data.get("bulk_rate_limit_per_sec") or 2.0),
+                data.get("bulk_extraction_method") or "llm_per_page",
+                data.get("bulk_css_selectors") or None,
+                1 if data.get("crawler_enabled") else 0,
+                data.get("crawler_url_pattern") or None,
+                int(data.get("crawler_max_depth") or 3),
+                data.get("discovery_llm_provider") or None,
+                data.get("discovery_llm_model") or None,
+                data.get("discovery_llm_api_key") or None,
                 ts,
                 ts,
             ),
@@ -468,6 +513,11 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 llm_provider = ?, llm_base_url = ?, llm_api_key = ?,
                 input_artifact_path = ?, message_template = ?, message_subject = ?,
                 message_channels = ?, responder_system_prompt = ?,
+                bulk_concurrency = ?, bulk_rate_limit_per_sec = ?,
+                bulk_extraction_method = ?, bulk_css_selectors = ?,
+                crawler_enabled = ?, crawler_url_pattern = ?, crawler_max_depth = ?,
+                discovery_llm_provider = ?, discovery_llm_model = ?,
+                discovery_llm_api_key = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -493,6 +543,16 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 data.get("message_subject") or None,
                 _dump_list(data.get("message_channels")),
                 data.get("responder_system_prompt") or None,
+                int(data.get("bulk_concurrency") or 5),
+                float(data.get("bulk_rate_limit_per_sec") or 2.0),
+                data.get("bulk_extraction_method") or "llm_per_page",
+                data.get("bulk_css_selectors") or None,
+                1 if data.get("crawler_enabled") else 0,
+                data.get("crawler_url_pattern") or None,
+                int(data.get("crawler_max_depth") or 3),
+                data.get("discovery_llm_provider") or None,
+                data.get("discovery_llm_model") or None,
+                data.get("discovery_llm_api_key") or None,
                 now_iso(),
                 task_id,
             ),

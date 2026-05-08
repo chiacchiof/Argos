@@ -152,6 +152,27 @@ pre.log { max-height: 360px; overflow: auto; background: #1a1a1a; color: #eee;
 .model-picker { margin-bottom: 0.4rem; }
 .model-input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
+.llm-roles-box {
+  margin-top: 1rem;
+  padding: 0.7rem 1rem;
+  background: #fffaf0;
+  border-left: 3px solid #d69e2e;
+  border-radius: 4px;
+}
+.llm-roles {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85em;
+  margin-top: 0.3rem;
+}
+.llm-roles th, .llm-roles td {
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid #f0e9d8;
+  text-align: left;
+  vertical-align: top;
+}
+.llm-roles th { background: #fdf6e3; font-weight: 600; }
+
 fieldset.extraction-fieldset {
   margin-top: 1.5rem;
   border: 1px solid var(--border);

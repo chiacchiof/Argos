@@ -92,6 +92,16 @@ def _form_to_dict(
     message_subject: str = "",
     message_channels: str = "",
     responder_system_prompt: str = "",
+    bulk_concurrency: int = 5,
+    bulk_rate_limit_per_sec: float = 2.0,
+    bulk_extraction_method: str = "llm_per_page",
+    bulk_css_selectors: str = "",
+    crawler_enabled: str = "",
+    crawler_url_pattern: str = "",
+    crawler_max_depth: int = 3,
+    discovery_llm_provider: str = "",
+    discovery_llm_model: str = "",
+    discovery_llm_api_key: str = "",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -113,8 +123,18 @@ def _form_to_dict(
         "input_artifact_path": (input_artifact_path or "").strip() or None,
         "message_template": (message_template or "").strip() or None,
         "message_subject": (message_subject or "").strip() or None,
-        "message_channels": message_channels,  # validator del Pydantic lo splitta
+        "message_channels": message_channels,
         "responder_system_prompt": (responder_system_prompt or "").strip() or None,
+        "bulk_concurrency": bulk_concurrency,
+        "bulk_rate_limit_per_sec": bulk_rate_limit_per_sec,
+        "bulk_extraction_method": (bulk_extraction_method or "llm_per_page").strip(),
+        "bulk_css_selectors": (bulk_css_selectors or "").strip() or None,
+        "crawler_enabled": bool(crawler_enabled),
+        "crawler_url_pattern": (crawler_url_pattern or "").strip() or None,
+        "crawler_max_depth": crawler_max_depth,
+        "discovery_llm_provider": (discovery_llm_provider or "").strip() or None,
+        "discovery_llm_model": (discovery_llm_model or "").strip() or None,
+        "discovery_llm_api_key": (discovery_llm_api_key or "").strip() or None,
     }
 
 
@@ -151,6 +171,16 @@ async def create_task(
     message_subject: str = Form(""),
     message_channels: str = Form(""),
     responder_system_prompt: str = Form(""),
+    bulk_concurrency: int = Form(5),
+    bulk_rate_limit_per_sec: float = Form(2.0),
+    bulk_extraction_method: str = Form("llm_per_page"),
+    bulk_css_selectors: str = Form(""),
+    crawler_enabled: str = Form(""),
+    crawler_url_pattern: str = Form(""),
+    crawler_max_depth: int = Form(3),
+    discovery_llm_provider: str = Form(""),
+    discovery_llm_model: str = Form(""),
+    discovery_llm_api_key: str = Form(""),
 ):
     payload = _form_to_dict(
         name, description, objective, seed_queries, allowed_domains, blocked_domains,
@@ -158,6 +188,9 @@ async def create_task(
         extraction_template, extraction_schema, llm_provider, llm_base_url, llm_api_key,
         input_artifact_path, message_template, message_subject, message_channels,
         responder_system_prompt,
+        bulk_concurrency, bulk_rate_limit_per_sec, bulk_extraction_method, bulk_css_selectors,
+        crawler_enabled, crawler_url_pattern, crawler_max_depth,
+        discovery_llm_provider, discovery_llm_model, discovery_llm_api_key,
     )
     try:
         validated = TaskIn(**payload)
@@ -208,15 +241,49 @@ async def update_task(
     message_subject: str = Form(""),
     message_channels: str = Form(""),
     responder_system_prompt: str = Form(""),
+    bulk_concurrency: int = Form(5),
+    bulk_rate_limit_per_sec: float = Form(2.0),
+    bulk_extraction_method: str = Form("llm_per_page"),
+    bulk_css_selectors: str = Form(""),
+    crawler_enabled: str = Form(""),
+    crawler_url_pattern: str = Form(""),
+    crawler_max_depth: int = Form(3),
+    discovery_llm_provider: str = Form(""),
+    discovery_llm_model: str = Form(""),
+    discovery_llm_api_key: str = Form(""),
 ):
-    if not db.get_task(task_id):
+    existing = db.get_task(task_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="task non trovato")
+
+    # PRESERVE-ON-EMPTY per i campi sensibili (password): se il form li manda
+    # vuoti significa "non cambiare", non "azzera". I browser non ri-popolano
+    # i campi password per sicurezza, quindi un utente che modifica solo altri
+    # campi non perde le chiavi salvate.
+    # Per ESPLICITAMENTE cancellare una chiave salvata, l'utente scrive "CLEAR"
+    # nel campo (un sentinel pubblicizzato nella UI).
+    def _password_field_action(submitted: str, existing_value: str | None) -> str:
+        s = (submitted or "").strip()
+        if s.upper() == "CLEAR":
+            return ""  # azzeramento esplicito
+        if not s and existing_value:
+            return existing_value  # preserve
+        return s
+
+    llm_api_key = _password_field_action(llm_api_key, existing.get("llm_api_key"))
+    discovery_llm_api_key = _password_field_action(
+        discovery_llm_api_key, existing.get("discovery_llm_api_key")
+    )
+
     payload = _form_to_dict(
         name, description, objective, seed_queries, allowed_domains, blocked_domains,
         max_iterations, model, output_format, cron, agent_mode,
         extraction_template, extraction_schema, llm_provider, llm_base_url, llm_api_key,
         input_artifact_path, message_template, message_subject, message_channels,
         responder_system_prompt,
+        bulk_concurrency, bulk_rate_limit_per_sec, bulk_extraction_method, bulk_css_selectors,
+        crawler_enabled, crawler_url_pattern, crawler_max_depth,
+        discovery_llm_provider, discovery_llm_model, discovery_llm_api_key,
     )
     try:
         validated = TaskIn(**payload)

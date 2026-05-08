@@ -149,7 +149,164 @@ Questo dual-storage segue il pattern ETL: **file = artefatto immutabile della sp
 
 ---
 
-### 3.3 `qualifier` — Filtro/scoring contatti via LLM
+### 3.3 `bulk_extract` — Scraping massivo deterministico (lista URL)
+
+**Cosa fa**: per ogni URL della lista, fa fetch HTTP → estrae il testo principale (readability) → chiama l'LLM una volta con lo schema → salva il JSON in `profiles.jsonl`. **Niente loop agentico**, niente browser, niente decisioni step-by-step. Concorrenza configurabile + rate limit per host.
+
+**Quando usarlo**:
+- Quando hai già una **lista di URL** (da un `browser_use` upstream con scope "discovery", o copiata a mano)
+- Cataloghi grandi (centinaia–migliaia di URL) dove `browser_use` brucerebbe troppi step
+- Pagine **statiche** o moderatamente dinamiche (HTML server-side rendered)
+- Quando vuoi **velocità + costo basso** (10-30× più veloce di `browser_use`)
+
+**Quando NON usarlo**:
+- Pagine SPA che richiedono JS pesante per renderizzare il contenuto (usa `browser_use`)
+- Quando NON hai una lista di URL e devi prima scoprirla agenticamente
+
+**Configurazione**:
+- **Seed**: URL da processare, una per riga (oppure)
+- **Input artifact path**: file `profiles.jsonl` da un task upstream (legge il campo `url` di ogni riga). Le due fonti si **uniscono** + dedup automatico.
+- **Domini consentiti/bloccati**: safety filter post-merge
+- **Max URL**: cap di sicurezza (default 1000, max 100k). Se la lista combinata è più lunga, viene troncata.
+- **Schema di estrazione**: stesso template/textarea dei task `browser_use`
+- **Modello LLM**: provider qualsiasi. Usa modelli **economici** (`gpt-4o-mini`, `claude-haiku-4-5`, `gemini-2.5-flash`) — niente decisioni complesse, solo "estrai questi campi da questo testo".
+- **Configurazione bulk** (nuovo fieldset):
+  - **Concorrenza**: URL in parallelo (default 5, max ~10 per evitare di stressare il server target)
+  - **Rate limit per host**: req/secondo (default 2.0). Se il sito ha solo un dominio, questo è il throttle effettivo.
+  - **Strategia estrazione**: `llm_per_page` (default, 1 chiamata LLM per URL) o `css_selectors` (avanzato, futuro: zero LLM, mapping campo→selettore)
+  - **🕷️ Crawler dal seed (opzionale)**: vedi sotto
+
+#### Crawler dal seed (BFS deterministico + auto-detect pattern)
+
+Se vuoi partire da una **home/listing** e scoprire automaticamente tutti gli URL prodotto del sito (senza compilarli a mano), abilita il crawler. Il flusso è:
+
+1. **(facoltativo, default ON)** Una sola chiamata LLM analizza la home: vede i link presenti raggruppati per pattern strutturale (es. `/catalogue/{slug}/index.html`, `/page-{int}.html`) e, conoscendo lo schema target, ritorna la **regex del path** delle pagine target.
+2. **BFS deterministico**: il runner naviga il sito senza LLM, segue tutti i link interni fino a `Max profondità`, raccogliendo gli URL il cui path matcha la regex.
+3. **Bulk extraction** classico sugli URL discovered (1 chiamata LLM per URL).
+
+**Campi della UI**:
+- **Abilita crawler dal seed** (checkbox): attiva/disattiva il flusso
+- **URL pattern** (regex Python, opzionale): se vuoto → auto-detect via LLM (consigliato). Se compilato → bypassa l'LLM e usa la tua regex direttamente. Es. `^/catalogue/[^/]+/index\.html$`.
+- **Max profondità link-following**: hop massimi dal seed (default 3). Per cataloghi con molte pagine paginate aumenta a 5-7.
+- **Max URL totali** (riusa il campo "Max iterazioni"): cap di sicurezza globale (default 1000).
+
+**Esempio per `books.toscrape.com`** (1 task, niente workflow):
+
+- Modalità: `bulk_extract`
+- Seed: `https://books.toscrape.com/`
+- Schema: `ecommerce_products`
+- Provider: `openai`, Modello: `gpt-4o-mini`
+- Max URL: 1000
+- ☑ Abilita crawler dal seed
+- URL pattern: *(vuoto = auto-detect)*
+- Max profondità: 3
+
+Click ▶ Esegui ora. Nel job log vedrai:
+```
+crawler: auto-detect pattern via LLM (1 chiamata)...
+✅ pattern auto-detected: '^/catalogue/[^/]+/index\.html$'
+crawler depth 1/3: 1 URL da esplorare
+crawler depth 2/3: 71 URL da esplorare
+crawler depth 3/3: 350 URL da esplorare
+crawler ha esplorato ~450 pagine, scoperto 1000 URL target
+URL finali da processare con LLM extraction: 1000
+progress: 50/1000 (47 ok, 3 failed)
+...
+Run completata: 985 estratti, 15 falliti, 985 ingest. Report: ...
+```
+
+Tempo totale: ~6-10 min. Costo: 1 LLM (auto-detect) + 1000 LLM (extraction) ≈ $0.20-0.40 con `gpt-4o-mini`.
+
+**Quando il crawler NON funziona bene**:
+- L'auto-detect produce una regex troppo stretta o troppo larga → controlla nel log il pattern proposto, ricopialo nel campo **URL pattern** e aggiustalo
+- Il sito ha JS che genera link dinamicamente (i link appaiono solo dopo render) → usa `browser_use` invece
+- Il sito blocca scraping con anti-bot → idem
+
+#### 🧠 Mix di modelli LLM (capable + cheap)
+
+Quando il crawler è abilitato, `bulk_extract` fa **2 tipi di chiamate LLM** con difficoltà molto diverse:
+
+| Fase | N° chiamate | Difficoltà | Cosa serve |
+|---|---|---|---|
+| **Discovery** (auto-detect URL pattern) | 1 sola | 🔥 Alta — ragionare sulla struttura del sito + scegliere regex | modello capace |
+| **Extraction** (riempire schema da testo pagina) | N (= URL discovered) | 🟢 Bassa — "vedo questo testo, riempi il JSON" | modello qualsiasi (anche locale gratis) |
+
+Il task ha quindi **due slot LLM separati**:
+
+- **Modello principale** (campo "Modello" nella sezione "Modello LLM"): usato per le N chiamate di Extraction. Conviene economico/locale.
+- **Modello discovery** (campi "Discovery — Provider" e "Discovery — Modello", visibili solo per `bulk_extract`): usato SOLO per la chiamata di auto-detect. Conviene capace. Se vuoti, riusa il modello principale.
+
+**Esempio ottimale per `books.toscrape.com`** (1000 libri, costo minimizzato):
+
+| Slot | Provider | Modello | Chiamate | Costo |
+|---|---|---|---|---|
+| Discovery | `openai` | `gpt-4o-mini` | 1 | ~$0.0001 |
+| Extraction (principale) | `ollama` | `llama3.1:8b` | 1000 | $0 (locale) |
+| **Totale** | mix | | 1001 | **~$0.0001** |
+
+Confronta con tutto OpenAI: $0.30. Risparmio: 99.97%.
+
+> ⚠️ **Modelli Ollama da NON usare per l'Extraction**: tutti quelli con **thinking mode** acceso di default (`qwen3:*`, `qwen3.5:*`, `qwen3-coder:*`, `deepseek-r1:*`). Su Ollama OpenAI-compat il "ragionamento" finisce nel campo `reasoning` e brucia tutti i `max_tokens`, lasciando `content` vuoto → risultato: **0 estrazioni, 100% fallimenti**. Non c'è modo affidabile di disabilitarlo via API (`/no_think`, `think:false`, `chat_template_kwargs.enable_thinking=false` sono tutti ignorati su questi modelli).
+>
+> **Modelli Ollama testati e funzionanti per Extraction**: `llama3.1:8b` (rapido, qualità decente, può allucinare su pagine vuote), `mistral:latest` (rapido, JSON pulito), `gpt-oss:20b` (più qualitativo, un po' più lento). Per pagine "vuote" o ambigue, `gpt-4o-mini` resta la scelta più affidabile contro le allucinazioni.
+>
+> Verifica veloce: se nel job vedi `0 ok, N failed` e in `errors.jsonl` trovi `"raw_response": ""` su tutte le righe, è quasi sempre questo problema. Cambia modello.
+
+**Quando NON splittare**:
+- Cataloghi piccoli (≤50 URL): la differenza di costo è zero, lascia un solo modello.
+- Pagine complesse (siti senza struttura uniforme): l'Extraction richiede a volte ragionamento → usa modello capable per entrambi.
+- Macchina senza Ollama veloce: meglio rimanere su API (la latenza locale potrebbe essere più alta della rete).
+
+**Come si aziona nel form**:
+
+1. Compila il "Modello LLM" principale come sempre (es. `ollama` + `qwen3-coder:30b`)
+2. Spunta "Abilita crawler dal seed"
+3. Nel riquadro 🧠 "Quali LLM vengono usati e per cosa" che appare sotto, leggi i ruoli
+4. Compila i 3 campi "Discovery — ..." SOLO se vuoi splittare:
+   - **Discovery — Provider LLM**: es. `openai`
+   - **Discovery — Modello**: es. `gpt-4o-mini`
+   - **Discovery — API key** (campo password): solo se il provider scelto richiede chiave **e** non l'hai messa in env var. Se la metti in env (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ecc.) puoi lasciare vuoto. Se la compili qui, viene salvata nel DB del task (gitignorato).
+
+   Se lasci tutti e 3 vuoti, il modello principale fa entrambe le cose.
+
+Nel job log vedrai a inizio run:
+```
+🧠 Mix LLM attivo:
+  • Discovery (auto-detect pattern, 1× chiamata): openai/gpt-4o-mini
+  • Extraction (per URL, N× chiamate): ollama/qwen3-coder:30b
+```
+
+Se manca, significa che stai usando un solo modello per tutto.
+
+**Output (dual: file + DB)**:
+- `data/results/<task_id>/<ts>/profiles.jsonl` — UNA riga per URL processata con successo
+- `data/results/<task_id>/<ts>/errors.jsonl` — log di URL falliti con motivo
+- `data/results/<task_id>/<ts>/report.md` — riepilogo (totali, ok, fail, ingest)
+- Tabella `contacts` (DB) — ingest automatico se lo schema include `email`/`telegram`
+
+**Performance attesa** (esempio 1000 URL su `books.toscrape.com`):
+- Concorrenza 5, rate limit 2/s → ~3-5 min totali
+- 1000 chiamate LLM × `gpt-4o-mini` (~600 token/req) ≈ **$0.10-0.30 totali**
+- Confronto: `browser_use` per gli stessi 1000 libri richiederebbe ~5000 step LLM ≈ $5-10 e ~5h
+
+**Esempio — pipeline completa per `books.toscrape.com`**:
+
+1. **Task A `BookDiscovery`** (`browser_use`, max_iter=50)
+   - Obiettivo: "Naviga la paginazione del catalogo. Per ogni pagina-elenco estrai SOLO l'URL canonico di ogni libro"
+   - Schema: `{"url": "URL completo della pagina-libro"}`
+   - Output: `profiles.jsonl` con righe `{"url": "..."}`
+
+2. **Task B `BookExtract`** (`bulk_extract`)
+   - Input artifact: profiles.jsonl di A (passato via edge DAG)
+   - Schema: template `ecommerce_products` (full)
+   - Concorrenza: 5, rate: 2/s
+   - Modello: `gpt-4o-mini`
+
+3. **Workflow** edge A→B con `pass_artifact=profiles.jsonl`. Click ▶ Esegui workflow → A produce ~1000 URL in 5 min → B li processa in 3 min.
+
+---
+
+### 3.4 `qualifier` — Filtro/scoring contatti via LLM
 
 **Cosa fa**: legge un `profiles.jsonl` (di solito prodotto da un task `browser_use` upstream) e per ogni riga chiede a un LLM "questo profilo è valido per outreach? scora 0-10". Materializza i contatti in tabella `contacts` con `status='qualified'` o `'rejected'`.
 
@@ -176,7 +333,7 @@ Questo dual-storage segue il pattern ETL: **file = artefatto immutabile della sp
 
 ---
 
-### 3.4 `outreach` — Invio messaggi (email/telegram)
+### 3.5 `outreach` — Invio messaggi (email/telegram)
 
 **Cosa fa**: legge i contatti `qualified` (o `new`) dalla tabella `contacts`, instanzia il `message_template` con placeholder per ogni contatto, e invia su uno o più canali. Aggiorna `contact.status='contacted'`.
 
@@ -224,7 +381,7 @@ Questo dual-storage segue il pattern ETL: **file = artefatto immutabile della sp
 
 ---
 
-### 3.5 `responder` — Risposta automatica via LLM
+### 3.6 `responder` — Risposta automatica via LLM
 
 **Cosa fa**: prende tutti i messaggi inbound (email/telegram) **non ancora processati**, per ognuno genera una reply via LLM usando il `responder_system_prompt`, e la invia. **Detection automatica di opt-out**: se il messaggio contiene parole come `STOP`, `unsubscribe`, `disiscrivi`, `rimuovimi`, `opt-out`, `non contattarmi`, il sistema marca il contatto come `optedout` e NON risponde.
 
@@ -272,8 +429,9 @@ Selezionabili per task dal selettore "Provider LLM" nel form. Le API key vanno i
 | **`custom`** | Qualsiasi endpoint OpenAI-compat (es. proxy aziendale, llama.cpp server) | dipende | dipende |
 
 **Consigli**:
-- `react`: `qwen3.5:latest` o `llama3.1:8b` (ollama) bastano
-- `browser_use`: idealmente `gpt-4o-mini` (~$0.10/run) o `gpt-oss:20b`/`qwen3-coder:30b` se vuoi restare locale
+- `react`: `llama3.1:8b` o `mistral:latest` (ollama) bastano
+- `browser_use`: idealmente `gpt-4o-mini` (~$0.10/run) o `gpt-oss:20b` se vuoi restare locale
+- `bulk_extract`: per l'**Extraction** usa modelli **senza thinking mode** — `llama3.1:8b`, `mistral:latest`, `gpt-oss:20b` (ollama) o `gpt-4o-mini` (cloud). **Evita `qwen3*`, `qwen3.5*`, `qwen3-coder*`, `deepseek-r1*`**: il thinking mode brucia tutti i token e ritornano `content` vuoto. Per la **Discovery** (1 sola chiamata) usa pure un modello capace come `gpt-4o-mini`.
 - `qualifier`: `gpt-4o-mini` o anche locale (qualifier è leggero, una chiamata per profilo)
 - `responder`: medio-grande (la qualità della risposta scritta a un essere umano conta)
 - `outreach`: non usa LLM (è puro template fill + send)
@@ -539,6 +697,12 @@ URL principali:
 
 **Browser-use con Ollama qwen3.5 non estrae nulla**
 - Modelli ≤20B fanno fatica con il JSON tool-calling complesso di browser-use. Switcha a `gpt-4o-mini` o `gpt-oss:20b` (locale) o `claude-haiku-4-5`.
+
+**`bulk_extract`: tutte le URL falliscono con `raw_response: ""`**
+- È quasi certo un modello Ollama con **thinking mode** attivo (qwen3*, qwen3.5*, qwen3-coder*, deepseek-r1*). Il modello scrive nel campo `reasoning`, mai in `content`, e brucia tutti i `max_tokens` ragionando. Cambia il "Modello" del task in `llama3.1:8b`, `mistral:latest`, `gpt-oss:20b` o `gpt-4o-mini`. Vedi §3.3 per il dettaglio.
+
+**`bulk_extract` con `llama3.1:8b` allucina dati su pagine vuote**
+- Modelli da 8B parametri tendono a "completare" lo schema anche se la pagina non contiene i dati (es. inventa un titolo libro sulla home page). Mitigazioni: 1) usa un modello più grande (`gpt-oss:20b` locale o `gpt-4o-mini` cloud), 2) escludi gli URL "indice" dalla lista (home, categoria, paginazione), 3) post-filtra `profiles.jsonl` scartando righe con campi-chiave mancanti.
 
 **SMTP test fallisce con "auth"**
 - Per Gmail/Outlook NON usare la password normale. Crea una **App Password** dedicata.

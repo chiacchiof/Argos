@@ -6,7 +6,11 @@ from pydantic import BaseModel, Field, field_validator
 
 
 OutputFormat = Literal["txt", "md", "both"]
-AgentMode = Literal["react", "browser_use", "qualifier", "outreach", "responder"]
+AgentMode = Literal[
+    "react", "browser_use", "bulk_extract",
+    "qualifier", "outreach", "responder",
+]
+BulkExtractionMethod = Literal["llm_per_page", "css_selectors"]
 MessageChannel = Literal["email", "telegram"]
 
 
@@ -17,7 +21,7 @@ class TaskIn(BaseModel):
     seed_queries: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
     blocked_domains: list[str] = Field(default_factory=list)
-    max_iterations: int = Field(default=10, ge=1, le=100)
+    max_iterations: int = Field(default=10, ge=1, le=100000)
     model: str = "qwen3.5:latest"
     output_format: OutputFormat = "txt"
     cron: str | None = None
@@ -32,6 +36,16 @@ class TaskIn(BaseModel):
     message_subject: str | None = None
     message_channels: list[MessageChannel] = Field(default_factory=list)
     responder_system_prompt: str | None = None
+    bulk_concurrency: int = Field(default=5, ge=1, le=50)
+    bulk_rate_limit_per_sec: float = Field(default=2.0, ge=0.1, le=100.0)
+    bulk_extraction_method: BulkExtractionMethod = "llm_per_page"
+    bulk_css_selectors: str | None = None
+    crawler_enabled: bool = False
+    crawler_url_pattern: str | None = None
+    crawler_max_depth: int = Field(default=3, ge=1, le=10)
+    discovery_llm_provider: str | None = None
+    discovery_llm_model: str | None = None
+    discovery_llm_api_key: str | None = None
 
     @field_validator("message_channels", mode="before")
     @classmethod

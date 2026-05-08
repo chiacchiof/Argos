@@ -33,7 +33,8 @@
       <select name="agent_mode" id="agent-mode-select">
         {% set mode = p.get('agent_mode','react') %}
         <option value="react" {% if mode=='react' %}selected{% endif %}>react — ricerca leggera HTTP+DDG</option>
-        <option value="browser_use" {% if mode=='browser_use' %}selected{% endif %}>browser_use — scraping con browser reale</option>
+        <option value="browser_use" {% if mode=='browser_use' %}selected{% endif %}>browser_use — scraping con browser reale (agentico)</option>
+        <option value="bulk_extract" {% if mode=='bulk_extract' %}selected{% endif %}>bulk_extract — scraping massivo deterministico (lista URL)</option>
         <option value="qualifier" {% if mode=='qualifier' %}selected{% endif %}>qualifier — LLM filtra/scora contatti</option>
         <option value="outreach" {% if mode=='outreach' %}selected{% endif %}>outreach — invio email/telegram</option>
         <option value="responder" {% if mode=='responder' %}selected{% endif %}>responder — auto-reply LLM ai messaggi inbound</option>
@@ -64,17 +65,19 @@
        SEZIONE 4: SCRAPING — seed queries, domini, max iter
        Solo per react / browser_use
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="react browser_use">
+    <fieldset class="dyn-section" data-modes="react browser_use bulk_extract">
       <legend>Configurazione di ricerca</legend>
 
       <label>
         <span class="dyn-label"
               data-label-react="Seed queries"
-              data-label-browseruse="Seed URL">Seed</span>
+              data-label-browseruse="Seed URL"
+              data-label-bulkextract="URL da processare">Seed</span>
         <span class="hint dyn-hint"
               data-hint-react="Una query DuckDuckGo per riga. Se vuoto l'agente le deduce dall'obiettivo."
-              data-hint-browseruse="Una URL completa per riga (es. <code>https://example.com/categoria/1</code>). Ognuna è una sessione browser-use indipendente.">(una per riga, opzionale)</span>
-        <textarea name="seed_queries" rows="3">{% if p.get('seed_queries') %}{% if p.seed_queries is string %}{{ p.seed_queries }}{% else %}{{ p.seed_queries | join("\n") }}{% endif %}{% endif %}</textarea>
+              data-hint-browseruse="Una URL completa per riga (es. <code>https://example.com/categoria/1</code>). Ognuna è una sessione browser-use indipendente."
+              data-hint-bulkextract="Una URL completa per riga. Verranno unite agli URL trovati nell'<code>Input artifact path</code> (se presente). Dedup automatico.">(una per riga, opzionale)</span>
+        <textarea name="seed_queries" rows="4">{% if p.get('seed_queries') %}{% if p.seed_queries is string %}{{ p.seed_queries }}{% else %}{{ p.seed_queries | join("\n") }}{% endif %}{% endif %}</textarea>
       </label>
 
       <div class="row">
@@ -89,11 +92,13 @@
       <label>
         <span class="dyn-label"
               data-label-react="Max iterazioni totali"
-              data-label-browseruse="Max step PER seed">Max iterazioni</span>
+              data-label-browseruse="Max step PER seed"
+              data-label-bulkextract="Max URL totali (cap di sicurezza)">Max iterazioni</span>
         <span class="hint dyn-hint"
               data-hint-react="Numero massimo di tool-call totali (5–15 sufficienti per ricerche semplici)."
-              data-hint-browseruse="Step di browser-use per ogni seed URL. Con 5 seed e max 30 → 150 step totali. Per task complessi 30–50.">(numero massimo)</span>
-        <input type="number" name="max_iterations" min="1" max="100" value="{{ p.get('max_iterations', 10) }}">
+              data-hint-browseruse="Step di browser-use per ogni seed URL. Con 5 seed e max 30 → 150 step totali. Per task complessi 30–50."
+              data-hint-bulkextract="Cap di sicurezza: anche se la lista URL ne contiene di più, ne processiamo al massimo questo numero. Tipicamente 100–5000.">(numero massimo)</span>
+        <input type="number" name="max_iterations" min="1" max="100000" value="{{ p.get('max_iterations', 10) }}">
       </label>
     </fieldset>
 
@@ -107,7 +112,7 @@
     {# ============================================================
        SEZIONE 5: SCHEMA DI ESTRAZIONE — solo browser_use
        ============================================================ #}
-    <fieldset class="extraction-fieldset dyn-section" data-modes="browser_use">
+    <fieldset class="extraction-fieldset dyn-section" data-modes="browser_use bulk_extract">
       <legend>Schema di estrazione</legend>
 
       {% set selected_template = p.get('extraction_template') or 'profile_contacts' %}
@@ -140,11 +145,142 @@
     </fieldset>
 
     {# ============================================================
-       SEZIONE 6: INPUT UPSTREAM — solo qualifier / outreach / responder (responder lo usa indirettamente per filtri)
+       SEZIONE 5b: CONFIGURAZIONE BULK — solo bulk_extract
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="qualifier outreach">
+    <fieldset class="dyn-section" data-modes="bulk_extract">
+      <legend>Configurazione bulk</legend>
+
+      <div class="row three">
+        <label>Concorrenza <span class="hint">(URL in parallelo, max ~10)</span>
+          <input type="number" name="bulk_concurrency" min="1" max="50"
+                 value="{{ p.get('bulk_concurrency', 5) }}">
+        </label>
+        <label>Rate limit <span class="hint">(req/s per host)</span>
+          <input type="number" step="0.1" name="bulk_rate_limit_per_sec" min="0.1" max="100"
+                 value="{{ p.get('bulk_rate_limit_per_sec', 2.0) }}">
+        </label>
+        <label>Strategia estrazione
+          {% set bm = p.get('bulk_extraction_method') or 'llm_per_page' %}
+          <select name="bulk_extraction_method">
+            <option value="llm_per_page" {% if bm=='llm_per_page' %}selected{% endif %}>LLM per pagina (default)</option>
+            <option value="css_selectors" {% if bm=='css_selectors' %}selected{% endif %}>Selettori CSS (avanzato — non ancora implementato)</option>
+          </select>
+        </label>
+      </div>
+
+      <p class="muted small">
+        💡 <strong>llm_per_page</strong>: per ogni URL, fetch + readability + 1 chiamata LLM con lo schema sopra.
+        ~$0.0001-0.001/pagina con <code>gpt-4o-mini</code>. Robusto, niente configurazione di selettori.
+      </p>
+
+      <hr>
+      <h4 style="margin-top: 0.8rem">🕷️ Crawler dal seed (opzionale)</h4>
+      <p class="muted small">
+        Se attivo: il runner parte dai seed URL, naviga i link interni del sito (BFS) e
+        raccoglie tutti gli URL che corrispondono al pattern, poi li processa con LLM
+        extraction. <strong>Il pattern URL è auto-rilevato dall'agente</strong> partendo
+        dallo schema (1 chiamata LLM all'inizio): puoi sovrascriverlo manualmente con una
+        regex Python se vuoi.
+      </p>
+
+      <label>
+        <input type="checkbox" name="crawler_enabled"
+               {% if p.get('crawler_enabled') %}checked{% endif %}>
+        <strong>Abilita crawler dal seed</strong>
+      </label>
+
+      <div class="row">
+        <label>URL pattern (regex Python)
+          <span class="hint">vuoto = auto-detect tramite LLM (consigliato). Se compilato, il pattern viene applicato direttamente al path. Es. <code>^/catalogue/[^/]+/index\.html$</code></span>
+          <input type="text" name="crawler_url_pattern"
+                 value="{{ p.get('crawler_url_pattern','') or '' }}"
+                 placeholder="(vuoto = auto-detect)">
+        </label>
+        <label>Max profondità link-following
+          <span class="hint">N° hop massimo dal seed (default 3, max 10)</span>
+          <input type="number" name="crawler_max_depth" min="1" max="10"
+                 value="{{ p.get('crawler_max_depth', 3) }}">
+        </label>
+      </div>
+
+      <div class="llm-roles-box">
+        <h5 style="margin: 0 0 0.4rem 0">🧠 Quali LLM vengono usati e per cosa</h5>
+        <p class="muted small" style="margin: 0 0 0.5rem 0">
+          Quando il crawler è abilitato il task fa <strong>2 tipi di chiamate LLM</strong> molto diverse:
+        </p>
+        <table class="llm-roles">
+          <thead>
+            <tr><th>Fase</th><th>Quando</th><th>Difficoltà</th><th>Chi la fa di default</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>1. Discovery</strong> (auto-detect URL pattern)</td>
+              <td>1 sola volta, all'inizio</td>
+              <td>🔥 Alta — ragionare sulla struttura del sito</td>
+              <td>Il modello principale (sotto)</td>
+            </tr>
+            <tr>
+              <td><strong>2. Extraction</strong> (estrazione campi da pagina)</td>
+              <td>N volte (1 per URL discovered)</td>
+              <td>🟢 Bassa — riempire schema da testo</td>
+              <td>Il modello principale (sotto)</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="muted small" style="margin: 0.5rem 0 0 0">
+          💡 Per cataloghi grandi conviene usare un <strong>modello capace per Discovery</strong>
+          (es. <code>gpt-4o-mini</code>, ~$0.0001 per 1 chiamata) e un
+          <strong>modello locale gratis per Extraction</strong> (es. <code>qwen3-coder:30b</code>
+          su Ollama). Risparmi 99% del costo. Compila i campi sotto SOLO se vuoi
+          differenziarli; altrimenti lascia vuoti = il modello principale fa entrambe.
+        </p>
+      </div>
+
+      <div class="row">
+        <label>Discovery — Provider LLM <span class="hint">(opzionale)</span>
+          <select name="discovery_llm_provider">
+            <option value="" {% if not p.get('discovery_llm_provider') %}selected{% endif %}>— stesso del task (default) —</option>
+            {% for prov in llm_providers %}
+              <option value="{{ prov.key }}"
+                      {% if prov.key == p.get('discovery_llm_provider') %}selected{% endif %}>
+                {{ prov.name }}{% if prov.needs_key and not env_key_status[prov.key] %} ⚠️{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Discovery — Modello <span class="hint">(opzionale, vuoto = stesso del task)</span>
+          <input type="text" name="discovery_llm_model"
+                 value="{{ p.get('discovery_llm_model','') or '' }}"
+                 placeholder="es. gpt-4o-mini">
+        </label>
+      </div>
+
+      <label>Discovery — API key
+        <span class="hint">
+          Necessaria solo se il <strong>Provider LLM Discovery</strong> richiede una chiave
+          (es. openai, anthropic, grok, gemini) ed è <em>diverso</em> dal provider principale.
+          Lascia vuoto per usare la variabile d'ambiente del provider scelto
+          (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, ecc.).
+          Se compilata, viene salvata nel DB del progetto.
+        </span>
+        {% if p.get('discovery_llm_api_key') %}
+          <span class="badge badge-ok"
+                title="Una chiave è già stata salvata. Lascia il campo vuoto per mantenerla, scrivi una nuova per sovrascriverla. Per cancellarla, scrivi 'CLEAR' nel campo.">
+            ✓ chiave già salvata in DB ({{ p.get('discovery_llm_api_key')|length }} caratteri) — lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per rimuoverla
+          </span>
+        {% endif %}
+        <input type="password" name="discovery_llm_api_key" value=""
+               placeholder="{% if p.get('discovery_llm_api_key') %}lascia vuoto per mantenere — o digita CLEAR per cancellarla{% else %}lascia vuoto per usare l'env var del provider{% endif %}"
+               autocomplete="off" data-lpignore="true">
+      </label>
+    </fieldset>
+
+    {# ============================================================
+       SEZIONE 6: INPUT UPSTREAM — bulk_extract / qualifier / outreach
+       ============================================================ #}
+    <fieldset class="dyn-section" data-modes="bulk_extract qualifier outreach">
       <legend>Input upstream</legend>
-      <label>Input artifact path <span class="hint">(file <code>profiles.jsonl</code> da un task upstream. Vuoto se l'edge DAG lo passa automaticamente.)</span>
+      <label>Input artifact path <span class="hint">(file <code>profiles.jsonl</code> da un task upstream. Vuoto se l'edge DAG lo passa automaticamente. Per <code>bulk_extract</code> viene unito agli URL del campo Seed sopra.)</span>
         <input type="text" name="input_artifact_path" value="{{ p.get('input_artifact_path','') or '' }}"
                placeholder="data/results/3/20260601T../profiles.jsonl">
       </label>
@@ -194,7 +330,7 @@
     {# ============================================================
        SEZIONE 9: PROVIDER LLM — tutti tranne outreach (outreach è solo template-fill)
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="react browser_use qualifier responder">
+    <fieldset class="dyn-section" data-modes="react browser_use bulk_extract qualifier responder">
       <legend>Modello LLM</legend>
 
       <label>Provider

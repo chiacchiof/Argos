@@ -43,8 +43,24 @@ app.include_router(workflows_routes.router)
 
 
 def run() -> None:
-    """Entry point per lo script `agentscraper`. Reload attivo su modifiche di app/ e static/."""
+    """Entry point per lo script `agentscraper`. Reload attivo su modifiche di app/ e static/.
+
+    Forza line-buffering su stdout/stderr e PYTHONUNBUFFERED nell'env del child di reload,
+    così i log uvicorn appaiono in console immediatamente anche su Windows
+    (lo script `agentscraper.exe` non passa il flag -u).
+    """
+    import os
+    import sys
     import uvicorn
+
+    # Line-buffering del processo parent
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        pass
+    # Propagato al child del reloader
+    os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
     project_root = Path(__file__).resolve().parent.parent
     uvicorn.run(

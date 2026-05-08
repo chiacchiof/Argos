@@ -30,12 +30,22 @@ _active_jobs: dict[int, tuple[asyncio.AbstractEventLoop, asyncio.Task]] = {}
 
 
 def is_runner_alive(job_id: int) -> bool:
-    """Il runner per questo job è ancora vivo in questo processo?"""
+    """Il runner per questo job è ancora vivo in questo processo?
+
+    `_running_tasks` viene popolato sincronicamente in `start_job`, mentre
+    `_active_jobs` lo popola il thread proactor con un piccolo ritardo: senza
+    il primo controllo, la dashboard renderizzata subito dopo il POST /run
+    vede runner_alive=False e disabilita polling+controlli finché l'utente
+    non ricarica la pagina.
+    """
+    t = _running_tasks.get(job_id)
+    if t and not t.done():
+        return True
     entry = _active_jobs.get(job_id)
-    if not entry:
-        return False
-    _, task = entry
-    return not task.done()
+    if entry:
+        _, task = entry
+        return not task.done()
+    return False
 
 
 def hard_stop_job(job_id: int) -> bool:
@@ -230,6 +240,9 @@ async def _run_job(job_id: int, task_id: int) -> None:
         if mode == "browser_use":
             from .agent.runner_browseruse import run_agent as run_bu
             await _run_in_proactor_thread(lambda: run_bu(task, job_id), job_id)
+        elif mode == "bulk_extract":
+            from .agent.runner_bulk_extract import run_agent as run_bk
+            await run_bk(task, job_id)
         elif mode == "outreach":
             from .agent.runner_outreach import run_agent as run_o
             await run_o(task, job_id)

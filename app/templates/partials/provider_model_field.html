@@ -52,12 +52,16 @@
       <code>data/agentscraper.db</code> è gitignorato ma comunque accessibile a chi
       ha file system access alla macchina.)
     </span>
-    <input type="password" name="llm_api_key" value="{{ current_api_key or '' }}"
-           placeholder="lascia vuoto per usare {{ provider.env_key or 'env var' }}"
+    {% if current_api_key %}
+      <span class="badge badge-ok"
+            title="Una chiave è già stata salvata nel DB del task. Lascia il campo vuoto per mantenerla. Scrivi una nuova chiave per sovrascriverla. Per cancellarla, scrivi 'CLEAR' nel campo.">
+        ✓ chiave già salvata in DB ({{ current_api_key|length }} caratteri) — lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per rimuoverla
+      </span>
+    {% endif %}
+    <input type="password" name="llm_api_key" value=""
+           placeholder="{% if current_api_key %}lascia vuoto per mantenere — o digita CLEAR per cancellarla{% else %}lascia vuoto per usare {{ provider.env_key or 'env var' }}{% endif %}"
            autocomplete="off"
            data-lpignore="true">
   </label>
-  {% else %}
-    <input type="hidden" name="llm_api_key" value="{{ current_api_key or '' }}">
   {% endif %}
 </div>
