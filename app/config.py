@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 RESULTS_DIR = DATA_DIR / "results"
+UPLOADS_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "agentscraper.db"
 
 

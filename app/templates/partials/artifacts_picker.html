@@ -1,0 +1,26 @@
+{# Lista <select> dei file .jsonl disponibili in data/results/.
+   Onchange copia il path nel campo `input_artifact_path` adiacente. #}
+<div class="artifact-picker-block">
+  {% if not items %}
+    <p class="muted small">
+      Nessun file <code>.jsonl</code> trovato in <code>data/results/</code>.
+      Lancia prima un task di scraping (<code>bulk_extract</code>, <code>browser_use</code>,
+      <code>auto_extract</code>) per generarne uno.
+    </p>
+  {% else %}
+    <label class="picker-label">
+      Scegli un file da uno dei task precedenti
+      <span class="hint">({{ items|length }} disponibili, ordinati per data più recente)</span>
+      <select id="artifact-picker">
+        <option value="">— scegli un file —</option>
+        {% for it in items %}
+          <option value="{{ it.path }}">
+            [task#{{ it.task_id }} {{ it.task_name }}]
+            {{ it.run_dir }}/{{ it.filename }}
+            ({{ it.n_lines }} righe, {{ "%.1f"|format(it.size_bytes / 1024) }} KB)
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+  {% endif %}
+</div>

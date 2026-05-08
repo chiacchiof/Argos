@@ -66,22 +66,92 @@ L'app gira interamente sul tuo computer — la web UI è su `http://127.0.0.1:80
 | **Contact** | Riga della tabella `contacts`: rappresenta una persona/entità raggiungibile (email, telegram, ecc.). Materializzata dal `qualifier` o `outreach` partendo dai `profiles.jsonl`. |
 | **Thread** | Conversazione su un canale con un contact (es. tutti i messaggi email scambiati). |
 | **Message** | Singolo messaggio inbound o outbound dentro un thread. |
+| **Artifact** | File generato da un task — tipicamente un `.jsonl` (vedi sotto). È l'output di scraping (`profiles.jsonl`) o di qualificazione (`qualified.jsonl`). Viene passato come input ai task downstream. |
+
+### 2.1 Cos'è un file `.jsonl`
+
+Un file `.jsonl` ("**JSON Lines**", o NDJSON) è un formato testuale dove **ogni riga è un oggetto JSON valido**, separato dalle altre da un newline. Esempio di `profiles.jsonl`:
+
+```jsonl
+{"url": "https://alice.com", "email": "alice@x.it", "telegram": "@alice"}
+{"url": "https://bob.com", "email": null, "telegram": "@bob"}
+{"url": "https://carla.com", "email": "carla@y.com", "telegram": null}
+```
+
+3 righe = 3 oggetti = 3 profili. Vantaggi rispetto a un singolo array JSON:
+- **Streaming**: leggi/scrivi una riga alla volta, niente bisogno di tenere in memoria tutto
+- **Append-friendly**: aggiungi una riga in fondo senza riparsare il file
+- **Resiliente**: se una riga è corrotta, le altre restano valide
+
+In AgentScraper i `.jsonl` sono il **"currency" interno tra task**:
+- task scraping (`bulk_extract`/`browser_use`/`auto_extract`) **producono** `profiles.jsonl`
+- task downstream (`qualifier`/`outreach`/`responder`) **consumano** un `.jsonl` (e magari ne producono uno qualificato `qualified.jsonl`)
+
+Tutti i `.jsonl` vivono in `data/results/<task_id>/<timestamp>/`.
+
+### 2.2 Come scegliere l'input `.jsonl` di un task
+
+Quando crei un task della famiglia "Pipeline downstream" (qualifier/outreach/responder), o un `bulk_extract` con input pre-esistente, hai **3 modi per indicare il file di input**, nella sezione "📂 Input upstream" del form:
+
+1. **① File generato da un task precedente** (dropdown): elenco di tutti i `.jsonl` in `data/results/`, ordinati per data più recente, con info `[task#X nome] timestamp/filename (N righe, KB)`. Click → il file viene selezionato.
+
+2. **② Carica un file dal tuo computer** (file picker nativo del browser): per file `.jsonl` esterni — es. uno scaricato dal Downloads, ricevuto via email, esportato da un altro tool. Il file viene **caricato sul server** in `data/uploads/<timestamp>/<filename>` e selezionato automaticamente. Limiti: solo `.jsonl`/`.ndjson`, max 50 MB.
+
+3. **③ Workflow edge**: se il task è downstream in un workflow con `pass_artifact='profiles.jsonl'` sull'edge, il file viene compilato **automaticamente** quando l'upstream finisce — non devi fare niente.
+
+In ogni caso, dopo la selezione vedi un box verde **📁 File selezionato: \<path\>** con un bottone ✕ per rimuovere la selezione e ricominciare. Il path effettivo è gestito internamente come campo nascosto.
 
 ---
 
 ## 3. I 7 tipi di Task (`agent_mode`)
 
-Quando crei un task, il campo **Modalità agente** determina cosa farà. Ci sono 7 modalità: 4 per scraping (di cui 1 "auto" che sceglie da sola la strategia), 1 per qualificazione, 1 per outreach, 1 per risposta.
+Quando crei un task, il campo **Modalità agente** determina cosa farà. Le 7 modalità si dividono in **2 famiglie**:
 
-| Modalità | Quando usarla |
-|---|---|
-| `react` | Ricerche leggere via HTTP+DuckDuckGo, senza browser |
-| `browser_use` | Pagine JS-heavy, scroll/click, login, contenuto visivo |
-| `bulk_extract` | Cataloghi grandi su siti statici con pattern URL chiaro |
-| **`auto_extract`** | **Lista eterogenea di siti — il sistema sceglie la strategia per ognuno** |
-| `qualifier` | Filtra/scora contatti via LLM partendo da `profiles.jsonl` |
-| `outreach` | Invia email/telegram con template |
-| `responder` | Auto-reply ai messaggi inbound |
+- **Scraping** (4 modalità): trovano ed estraggono dati dal web → producono `profiles.jsonl`
+- **Pipeline downstream** (3 modalità): operano sui dati già estratti
+
+### 3.0 Albero decisionale "quale modalità mi serve?"
+
+```
+Devo estrarre dati dal web?
+├── SÌ — ho UN sito specifico che conosco bene
+│   ├── Sito statico, HTML server-rendered, pattern URL chiari
+│   │   (cataloghi, listini, directory) ─────────────► bulk_extract  (§3.3)
+│   ├── Sito SPA / JS-heavy / login / scroll dinamico ─► browser_use   (§3.2)
+│   └── Voglio solo riassumere info dal web ───────────► react         (§3.1)
+│
+├── SÌ — ho una LISTA di siti diversi
+│   └── Lascia che il sistema scelga la strategia per ognuno
+│       (con fallback automatico) ────────────────────► auto_extract  (§3.4)
+│
+└── NO — ho già un profiles.jsonl, devo lavorarci sopra
+    ├── Filtrare/scorare i contatti via LLM ──────────► qualifier     (§3.5)
+    ├── Mandare email/telegram ai contatti ───────────► outreach      (§3.6)
+    └── Rispondere automaticamente ai messaggi ricevuti ► responder    (§3.7)
+```
+
+### 3.0.1 Tabella sintetica di confronto
+
+#### Famiglia "Scraping"
+
+| Modalità | Cosa fa | Velocità | Costo per 1000 URL | Quando |
+|---|---|---|---|---|
+| `react` | HTTP + DuckDuckGo, niente browser | rapido | $0.05-0.20 | Ricerche generiche, sintesi |
+| `browser_use` | Pilota Chromium reale | LENTO (4-6h) | $5-10 (gpt-4o-mini) | Solo se HTML statico non basta |
+| `bulk_extract` | HTTP + readability + 1 LLM/URL | veloce (5-10 min) | $0.20 cloud, **$0 locale** | Cataloghi statici, pattern URL chiari |
+| **`auto_extract`** | **Profiler + dispatch automatico** | dipende | dipende dai siti | **Lista eterogenea di siti** |
+
+#### Famiglia "Pipeline downstream"
+
+| Modalità | Input | Output | Note |
+|---|---|---|---|
+| `qualifier` | `profiles.jsonl` da scraping | tabella `contacts` con score 0-10 + status `qualified`/`rejected` | 1 chiamata LLM per profilo |
+| `outreach` | `contacts` con `status='qualified'` | thread + messaggi inviati via canale | Usa template (no LLM) |
+| `responder` | inbox email/telegram | reply auto-generata e inviata | Auto-detect opt-out (STOP, unsubscribe) |
+
+### 3.0.2 Regola d'oro: bulk_extract prima di tutto
+
+**Prova sempre prima `bulk_extract`** se il sito target ha contenuto in HTML statico. È 50-100× più economico e veloce di `browser_use`. Passa a `browser_use` solo se: (a) il sito richiede JS per renderizzare il contenuto, (b) i dati sono dietro click/scroll, (c) il sito ha login obbligatorio. Se non sei sicuro, usa `auto_extract` che lo decide per te.
 
 ### 3.1 `react` — Ricerca leggera (HTTP + DuckDuckGo)
 

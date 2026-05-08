@@ -312,3 +312,66 @@ details.optional-block[open] > summary {
   padding-bottom: 0.4rem;
   border-bottom: 1px dashed #e2e8f0;
 }
+
+/* Artifact picker (file .jsonl) */
+.artifact-picker-block { margin-bottom: 0.6rem; }
+.artifact-picker-block .picker-label { display: block; }
+.artifact-picker-block select#artifact-picker {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 0.3rem;
+}
+
+/* Tre opzioni input upstream (file picker / upload / path manuale) */
+.input-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  margin-top: 0.5rem;
+}
+.input-option {
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  padding: 0.5rem 0.8rem;
+  background: #fafafa;
+}
+.input-option > h5 {
+  margin: 0 0 0.4rem 0;
+  font-size: 0.9em;
+  color: #374151;
+}
+#artifact-file-upload {
+  font-size: 0.9em;
+}
+#artifact-upload-status {
+  margin-top: 0.4rem;
+}
+
+/* Display read-only del file selezionato */
+.selected-artifact {
+  background: #ecfdf5;
+  border: 1px solid #6ee7b7;
+  border-radius: 4px;
+  padding: 0.5rem 0.8rem;
+  font-size: 0.9em;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.selected-artifact > code {
+  flex: 1;
+  background: transparent;
+  word-break: break-all;
+  font-size: 0.85em;
+}
+.selected-artifact > .btn-link {
+  background: transparent;
+  border: none;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 0.85em;
+  padding: 0.1rem 0.4rem;
+}
+.selected-artifact > .btn-link:hover { text-decoration: underline; }

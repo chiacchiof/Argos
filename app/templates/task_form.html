@@ -355,15 +355,140 @@
     </fieldset>
 
     {# ============================================================
-       SEZIONE 6: INPUT UPSTREAM — bulk_extract / qualifier / outreach
+       SEZIONE 6: INPUT UPSTREAM — bulk_extract / qualifier / outreach / responder
+       Permette di scegliere un file .jsonl come input dal filesystem (file picker)
+       oltre che inserire il path manualmente.
        ============================================================ #}
-    <fieldset class="dyn-section" data-modes="bulk_extract qualifier outreach">
-      <legend>Input upstream</legend>
-      <label>Input artifact path <span class="hint">(file <code>profiles.jsonl</code> da un task upstream. Vuoto se l'edge DAG lo passa automaticamente. Per <code>bulk_extract</code> viene unito agli URL del campo Seed sopra.)</span>
-        <input type="text" name="input_artifact_path" value="{{ p.get('input_artifact_path','') or '' }}"
-               placeholder="data/results/3/20260601T../profiles.jsonl">
-      </label>
+    <fieldset class="dyn-section" data-modes="bulk_extract qualifier outreach responder">
+      <legend>📂 Input upstream <span class="hint">(file <code>.jsonl</code>)</span></legend>
+
+      <p class="muted small">
+        Per <code>qualifier</code>/<code>outreach</code>/<code>responder</code>: <strong>obbligatorio</strong>
+        — è il file con i profili/contatti da elaborare.<br>
+        Per <code>bulk_extract</code>: opzionale — se compilato, gli URL del file vengono <strong>uniti</strong>
+        a quelli del campo "URL da processare" sopra.<br>
+        Se l'edge DAG di un workflow passa automaticamente l'artifact, lascia vuoto.
+      </p>
+
+      <div class="input-options">
+        {# Opzione 1: scegli da file generati dai task precedenti (sul server) #}
+        <div class="input-option">
+          <h5>① File generato da un task precedente</h5>
+          <div id="artifact-picker-slot"
+               hx-get="/artifacts/jsonl"
+               hx-trigger="load"
+               hx-swap="innerHTML">
+            <p class="muted small">caricamento elenco file…</p>
+          </div>
+        </div>
+
+        {# Opzione 2: carica un file dal tuo PC (file picker nativo del browser) #}
+        <div class="input-option">
+          <h5>② Carica un file dal tuo computer</h5>
+          <p class="muted small">
+            Scegli un <code>.jsonl</code> dal tuo filesystem locale. Verrà copiato in
+            <code>data/uploads/&lt;timestamp&gt;/</code> sul server.
+          </p>
+          <input type="file" id="artifact-file-upload" accept=".jsonl,.ndjson">
+          <div id="artifact-upload-status" class="muted small"></div>
+        </div>
+
+        {# Display del file selezionato (read-only) — il valore reale è nel hidden input #}
+        <div class="selected-artifact" id="selected-artifact-box"
+             {% if not p.get('input_artifact_path') %}style="display:none"{% endif %}>
+          <strong>📁 File selezionato:</strong>
+          <code id="selected-artifact-path">{{ p.get('input_artifact_path','') or '' }}</code>
+          <button type="button" id="clear-artifact-btn" class="btn-small btn-link"
+                  title="rimuovi la selezione">✕ rimuovi</button>
+        </div>
+
+        <input type="hidden" name="input_artifact_path"
+               value="{{ p.get('input_artifact_path','') or '' }}">
+      </div>
     </fieldset>
+
+    <script>
+    (function () {
+      const fileInput = document.getElementById('artifact-file-upload');
+      const status = document.getElementById('artifact-upload-status');
+      const pathInput = document.querySelector('input[name=input_artifact_path]');
+      const selectedBox = document.getElementById('selected-artifact-box');
+      const selectedPath = document.getElementById('selected-artifact-path');
+      const clearBtn = document.getElementById('clear-artifact-btn');
+      const picker = document.getElementById('artifact-picker'); // dropdown ①
+      if (!pathInput) return;
+
+      // Sincronizza il display read-only con il hidden input
+      function syncDisplay() {
+        const v = pathInput.value || '';
+        if (v) {
+          selectedPath.textContent = v;
+          selectedBox.style.display = '';
+        } else {
+          selectedPath.textContent = '';
+          selectedBox.style.display = 'none';
+        }
+      }
+      pathInput.addEventListener('change', syncDisplay);
+
+      // Bottone "✕ rimuovi"
+      if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+          pathInput.value = '';
+          if (fileInput) fileInput.value = '';
+          if (status) status.textContent = '';
+          if (picker) picker.value = '';
+          syncDisplay();
+        });
+      }
+
+      // Picker ① è caricato via HTMX → riaggancio l'event listener al load
+      document.body.addEventListener('htmx:afterSwap', (ev) => {
+        if (ev.target && ev.target.id === 'artifact-picker-slot') {
+          const p = document.getElementById('artifact-picker');
+          if (p) {
+            p.addEventListener('change', () => {
+              if (p.value) {
+                pathInput.value = p.value;
+                syncDisplay();
+              }
+            });
+          }
+        }
+      });
+
+      // Upload ②
+      if (fileInput) {
+        fileInput.addEventListener('change', async () => {
+          const f = fileInput.files && fileInput.files[0];
+          if (!f) return;
+          if (!/\.(jsonl|ndjson)$/i.test(f.name)) {
+            status.innerHTML = '<span style="color:#dc2626">⚠️ solo file .jsonl o .ndjson</span>';
+            fileInput.value = '';
+            return;
+          }
+          status.textContent = `Upload "${f.name}" in corso…`;
+          const fd = new FormData();
+          fd.append('file', f);
+          try {
+            const r = await fetch('/artifacts/upload', { method: 'POST', body: fd });
+            const data = await r.json();
+            if (!r.ok) {
+              status.innerHTML = `<span style="color:#dc2626">❌ ${data.error || 'errore upload'}</span>`;
+              return;
+            }
+            pathInput.value = data.path;
+            syncDisplay();
+            status.innerHTML = `<span style="color:#16a34a">✅ caricato: ${data.filename} (${data.n_lines} righe, ${(data.size_bytes/1024).toFixed(1)} KB)</span>`;
+          } catch (e) {
+            status.innerHTML = `<span style="color:#dc2626">❌ errore di rete: ${e.message}</span>`;
+          }
+        });
+      }
+
+      syncDisplay();
+    })();
+    </script>
 
     {# ============================================================
        SEZIONE 7: OUTREACH — solo outreach

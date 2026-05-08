@@ -1,8 +1,8 @@
 """Route per i Task (era 'projects'). Un task è un'attività autonoma."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from .. import db, jobs
@@ -410,6 +410,130 @@ async def template_schema_partial(request: Request, key: str = ""):
         request,
         "partials/extraction_schema_field.html",
         {"schema_text": schema_text, "selected_key": key},
+    )
+
+
+@router.post("/artifacts/upload")
+async def upload_artifact(file: UploadFile = File(...)) -> JSONResponse:
+    """Salva un file caricato dal browser in data/uploads/<ts>/<filename> e
+    ritorna il path assoluto. Usato dal file picker del form quando l'utente
+    sceglie un file dal proprio filesystem invece di selezionarlo dai task
+    già eseguiti.
+
+    Vincoli: solo file .jsonl o .ndjson, max 50 MB.
+    """
+    from datetime import datetime, timezone
+    import re
+    from ..config import UPLOADS_DIR
+
+    fname = (file.filename or "").strip()
+    if not fname:
+        return JSONResponse({"error": "filename mancante"}, status_code=400)
+    if not fname.lower().endswith((".jsonl", ".ndjson")):
+        return JSONResponse(
+            {"error": f"tipo file non supportato: {fname!r}. Solo .jsonl o .ndjson."},
+            status_code=400,
+        )
+
+    # Sanitizza il filename: tieni solo lettere/numeri/-_.
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", fname)[:120]
+    if not safe_name:
+        safe_name = "uploaded.jsonl"
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest_dir = UPLOADS_DIR / ts
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / safe_name
+
+    MAX_BYTES = 50 * 1024 * 1024
+    total = 0
+    try:
+        with dest_path.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 64)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_BYTES:
+                    out.close()
+                    dest_path.unlink(missing_ok=True)
+                    return JSONResponse(
+                        {"error": f"file troppo grande (>{MAX_BYTES // (1024*1024)} MB)"},
+                        status_code=413,
+                    )
+                out.write(chunk)
+    except Exception as e:
+        dest_path.unlink(missing_ok=True)
+        return JSONResponse({"error": f"upload fallito: {e}"}, status_code=500)
+
+    # Conta righe valide (validazione minima del formato jsonl)
+    n_lines = 0
+    try:
+        for line in dest_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.strip():
+                n_lines += 1
+    except Exception:
+        pass
+
+    return JSONResponse({
+        "path": str(dest_path),
+        "filename": safe_name,
+        "size_bytes": total,
+        "n_lines": n_lines,
+    })
+
+
+@router.get("/artifacts/jsonl", response_class=HTMLResponse)
+async def list_jsonl_artifacts(request: Request):
+    """Endpoint HTMX: lista i file .jsonl in data/results/ per il file picker.
+
+    Ritorna un <select> da swappare nel form. L'utente sceglie un file e il
+    suo path va a finire nel campo `input_artifact_path`.
+    """
+    from ..config import RESULTS_DIR
+    from pathlib import Path
+
+    items: list[dict] = []
+    if RESULTS_DIR.exists():
+        # struttura: data/results/<task_id>/<timestamp>/*.jsonl
+        for task_dir in RESULTS_DIR.iterdir():
+            if not task_dir.is_dir():
+                continue
+            try:
+                tid = int(task_dir.name)
+            except ValueError:
+                continue
+            t = db.get_task(tid)
+            task_name = t.get("name") if t else f"(task#{tid} eliminato)"
+            for run_dir in task_dir.iterdir():
+                if not run_dir.is_dir():
+                    continue
+                for f in run_dir.iterdir():
+                    if not f.is_file() or not f.name.endswith(".jsonl"):
+                        continue
+                    try:
+                        n_lines = sum(
+                            1 for line in f.read_text(encoding="utf-8").splitlines()
+                            if line.strip()
+                        )
+                    except Exception:
+                        n_lines = 0
+                    items.append({
+                        "path": str(f),
+                        "task_id": tid,
+                        "task_name": task_name,
+                        "run_dir": run_dir.name,
+                        "filename": f.name,
+                        "n_lines": n_lines,
+                        "size_bytes": f.stat().st_size,
+                        "mtime": f.stat().st_mtime,
+                    })
+    # ordina per mtime decrescente (più recenti prima)
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    return templates.TemplateResponse(
+        request,
+        "partials/artifacts_picker.html",
+        {"items": items[:200]},
     )
 
 

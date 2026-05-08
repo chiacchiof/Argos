@@ -640,15 +640,40 @@ def _collect_extracted_jsonl(history: Any, sub_dir: Path, jlog: Callable) -> int
 
     jlog(f"  history: {len(contents)} blocchi di contenuto da analizzare")
 
+    # Dedup: l'agente browser_use può rivisitare uno stesso profilo più volte
+    # (loop, "Add to favorites" che torna alla pagina, ecc.). Scartiamo le righe
+    # con source_url/url già visto in QUESTO sub_dir (carichiamo gli URL già scritti).
+    seen_urls: set[str] = set()
+    if profiles_path.exists():
+        for line in profiles_path.read_text(encoding="utf-8").splitlines():
+            try:
+                prev = _json.loads(line)
+                u = prev.get("source_url") or prev.get("url")
+                if isinstance(u, str) and u:
+                    seen_urls.add(u.strip().rstrip("/"))
+            except _json.JSONDecodeError:
+                continue
+
     n = 0
+    n_dups = 0
     with profiles_path.open("a", encoding="utf-8") as f:
         for text in contents:
             for obj in _extract_json_dicts(text):
                 # filtra dict troppo poveri (meno di 2 chiavi non significative)
                 if len(obj) < 2:
                     continue
+                u = obj.get("source_url") or obj.get("url")
+                if isinstance(u, str) and u:
+                    key = u.strip().rstrip("/")
+                    if key in seen_urls:
+                        n_dups += 1
+                        continue
+                    seen_urls.add(key)
                 f.write(_json.dumps(obj, ensure_ascii=False) + "\n")
                 n += 1
+
+    if n_dups:
+        jlog(f"  🔁 dedup: scartati {n_dups} profili duplicati (stesso source_url/url)")
 
     if n:
         jlog(f"  ✅ scritte {n} righe in {profiles_path.name} dall'history dell'agente")
