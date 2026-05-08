@@ -36,8 +36,6 @@ def _orchestrator_defaults() -> dict[str, Any]:
         "llm_provider": "ollama",
         "planner_model": "",
         "llm_base_url": "",
-        "chat_web_enabled": False,
-        "chat_files_enabled": False,
     }
 
 
@@ -104,8 +102,6 @@ async def orchestrator_model_field(
 @router.post("/settings/orchestrator")
 async def save_orchestrator_config(
     use_llm: str = Form(""),
-    chat_web_enabled: str = Form(""),
-    chat_files_enabled: str = Form(""),
     llm_provider: str = Form("ollama"),
     planner_model: str = Form(""),
     llm_base_url: str = Form(""),
@@ -117,8 +113,6 @@ async def save_orchestrator_config(
         "llm_provider": (llm_provider or "ollama").strip() or "ollama",
         "planner_model": planner_model.strip() or None,
         "llm_base_url": llm_base_url.strip() or None,
-        "chat_web_enabled": bool(chat_web_enabled),
-        "chat_files_enabled": bool(chat_files_enabled),
     }
     key_action = (llm_api_key or "").strip()
     if key_action.upper() == "CLEAR":

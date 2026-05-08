@@ -64,21 +64,24 @@
     <aside class="orchestrator-panel">
       <section id="orchestrator-chat" class="orchestrator-chat">
         <div class="chat-head">
-          <div>
-            <h3>Chat Orchestrator</h3>
-            <p class="muted small">Persistente su DB. Usa <code>{{ llm_provider }}/{{ planner_model }}</code>.</p>
-            <div class="chat-capabilities">
-              <span class="badge badge-{{ 'ok' if orchestrator_cfg.chat_web_enabled else 'warn' }}">
-                Web {{ 'ON' if orchestrator_cfg.chat_web_enabled else 'OFF' }}
-              </span>
-              <span class="badge badge-{{ 'ok' if orchestrator_cfg.chat_files_enabled else 'warn' }}">
-                File {{ 'ON' if orchestrator_cfg.chat_files_enabled else 'OFF' }}
-              </span>
+          <div class="chat-agent">
+            <span class="chat-avatar" aria-hidden="true">O</span>
+            <div>
+              <h3>Orchestrator</h3>
+              <p class="muted small">Chat persistente su <code>{{ llm_provider }}/{{ planner_model }}</code></p>
+              <div class="chat-capabilities">
+                <span class="badge badge-{{ 'ok' if chat_capabilities.web else 'warn' }}" title="{{ chat_capabilities.web_reason }}">
+                  Web {{ 'ok' if chat_capabilities.web else 'no' }}
+                </span>
+                <span class="badge badge-{{ 'ok' if chat_capabilities.files else 'warn' }}" title="{{ chat_capabilities.files_reason }}">
+                  File {{ 'ok' if chat_capabilities.files else 'no' }}
+                </span>
+              </div>
             </div>
           </div>
           {% if chat_messages %}
           <form method="post" action="/orchestrator/chat/clear">
-            <button type="submit" class="btn-small btn-link">pulisci</button>
+            <button type="submit" class="btn-small btn-link chat-clear" title="Pulisci chat">Pulisci</button>
           </form>
           {% endif %}
         </div>
@@ -87,36 +90,67 @@
           {% if chat_messages %}
             {% for m in chat_messages %}
             <div class="chat-message chat-{{ m.role }}">
-              <div class="chat-meta">
-                <strong>{% if m.role == 'assistant' %}Orchestrator{% else %}Tu{% endif %}</strong>
-                <small>{{ m.created_at }}</small>
+              <div class="chat-bubble">
+                <div class="chat-meta">
+                  <strong>{% if m.role == 'assistant' %}Orchestrator{% else %}Tu{% endif %}</strong>
+                  <small>{{ m.created_at }}</small>
+                </div>
+                <div class="chat-body">{{ m.body }}</div>
               </div>
-              <div class="chat-body">{{ m.body }}</div>
             </div>
             {% endfor %}
           {% else %}
             <div class="chat-empty">
-              Scrivi qui per ragionare prima di generare un piano, oppure chiedimi cosa sta succedendo nei task.
+              <span class="chat-avatar" aria-hidden="true">O</span>
+              <div>
+                <strong>Parliamone.</strong>
+                <p>Scrivi qui per ragionare prima di generare un piano, oppure chiedimi cosa sta succedendo nei task.</p>
+              </div>
             </div>
           {% endif %}
         </div>
 
-        <form method="post" action="/orchestrator/chat" class="chat-form" enctype="multipart/form-data">
-          <textarea name="message" rows="4"
-                    placeholder="Es. Ho questi tre siti: conviene auto_extract o bulk_extract?"></textarea>
-          {% if orchestrator_cfg.chat_files_enabled %}
-          <label class="chat-file-input">
-            <span>Allega file testuale</span>
+        <form method="post" action="/orchestrator/chat" class="chat-form chat-composer" enctype="multipart/form-data">
+          <div class="chat-tool-row">
+            <label class="chat-tool-toggle {% if not chat_capabilities.web %}is-disabled{% endif %}"
+                   title="{{ chat_capabilities.web_reason }}">
+              <input type="checkbox"
+                     name="chat_web_enabled"
+                     value="on"
+                     data-chat-toggle="web"
+                     {% if not chat_capabilities.web %}disabled{% endif %}>
+              <span>Web</span>
+            </label>
+            <label class="chat-tool-toggle {% if not chat_capabilities.files %}is-disabled{% endif %}"
+                   title="{{ chat_capabilities.files_reason }}">
+              <input type="checkbox"
+                     name="chat_files_enabled"
+                     value="on"
+                     data-chat-toggle="files"
+                     {% if not chat_capabilities.files %}disabled{% endif %}>
+              <span>File</span>
+            </label>
+          </div>
+          {% if chat_capabilities.files %}
+          <label class="chat-attach-button" title="Allega file testuale o PDF; attiva File per questo messaggio">
+            <span aria-hidden="true">+</span>
             <input type="file"
                    name="attachment"
-                   accept=".txt,.md,.csv,.json,.jsonl,.ndjson,.html,.htm,.xml,.log,.py,.js,.ts,.css,.sql,.yaml,.yml,text/*">
+                   data-chat-file-input
+                   accept=".txt,.md,.csv,.json,.jsonl,.ndjson,.html,.htm,.xml,.log,.py,.js,.ts,.css,.sql,.yaml,.yml,.pdf,application/pdf,text/*">
           </label>
           {% else %}
-          <p class="muted small chat-disabled-note">
-            Allegati disabilitati in <a href="/settings">Settings</a>.
-          </p>
+          <span class="chat-attach-button is-disabled" title="{{ chat_capabilities.files_reason }}" aria-disabled="true">+</span>
           {% endif %}
-          <button type="submit">Invia</button>
+          <textarea name="message" rows="2"
+                    placeholder="Scrivi un messaggio all'Orchestrator..."></textarea>
+          <button type="submit" class="chat-send">Invia</button>
+          <div class="chat-attachment-pill" data-chat-attachment-pill hidden>
+            <span class="chat-attachment-icon" aria-hidden="true" data-chat-attachment-icon>📎</span>
+            <span class="chat-attachment-name" data-chat-attachment-name></span>
+            <span class="chat-attachment-size muted small" data-chat-attachment-size></span>
+            <button type="button" class="chat-attachment-clear" data-chat-attachment-clear aria-label="Rimuovi allegato">×</button>
+          </div>
         </form>
       </section>
 
@@ -222,4 +256,234 @@
     </aside>
   </div>
 </section>
+<script>
+  (() => {
+    const transcript = document.querySelector(".chat-transcript");
+    if (transcript) transcript.scrollTop = transcript.scrollHeight;
+
+    const form = document.querySelector(".chat-composer");
+    if (!form) return;
+    const modelKey = {{ (llm_provider ~ ':' ~ planner_model)|tojson }};
+    const textarea = form.querySelector("textarea[name='message']");
+    const sendButton = form.querySelector(".chat-send");
+    const toggles = form.querySelectorAll("[data-chat-toggle]");
+    toggles.forEach((toggle) => {
+      if (toggle.disabled) return;
+      const key = `agentscraper.orchestrator.${modelKey}.${toggle.dataset.chatToggle}`;
+      toggle.checked = localStorage.getItem(key) === "on";
+      toggle.addEventListener("change", () => {
+        localStorage.setItem(key, toggle.checked ? "on" : "off");
+      });
+    });
+    const fileInput = form.querySelector("[data-chat-file-input]");
+    const fileToggle = form.querySelector("[data-chat-toggle='files']");
+    const attachmentPill = form.querySelector("[data-chat-attachment-pill]");
+    const attachmentName = form.querySelector("[data-chat-attachment-name]");
+    const attachmentSize = form.querySelector("[data-chat-attachment-size]");
+    const attachmentIcon = form.querySelector("[data-chat-attachment-icon]");
+    const attachmentClear = form.querySelector("[data-chat-attachment-clear]");
+    const formatFileSize = (bytes) => {
+      if (!Number.isFinite(bytes)) return "";
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    };
+    const iconForFile = (file) => {
+      const name = file.name || "";
+      const isPdf = /\.pdf$/i.test(name) || file.type === "application/pdf";
+      return isPdf ? "📄" : "📎";
+    };
+    const renderAttachment = () => {
+      if (!attachmentPill) return;
+      const file = fileInput?.files?.[0];
+      if (!file) {
+        attachmentPill.hidden = true;
+        if (attachmentName) attachmentName.textContent = "";
+        if (attachmentSize) attachmentSize.textContent = "";
+        return;
+      }
+      if (attachmentIcon) attachmentIcon.textContent = iconForFile(file);
+      if (attachmentName) attachmentName.textContent = file.name;
+      if (attachmentSize) attachmentSize.textContent = formatFileSize(file.size);
+      attachmentPill.hidden = false;
+    };
+    const clearAttachment = () => {
+      if (fileInput) fileInput.value = "";
+      renderAttachment();
+    };
+    if (fileInput && fileToggle && !fileToggle.disabled) {
+      fileInput.addEventListener("change", () => {
+        if (fileInput.files.length) {
+          fileToggle.checked = true;
+          localStorage.setItem(
+            `agentscraper.orchestrator.${modelKey}.files`,
+            "on"
+          );
+        }
+        renderAttachment();
+      });
+    }
+    if (attachmentClear) {
+      attachmentClear.addEventListener("click", () => {
+        clearAttachment();
+        textarea.focus();
+      });
+    }
+
+    const escapeText = (value) => value == null ? "" : String(value);
+    const nowLabel = () => new Date().toLocaleString("it-IT", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const removeEmptyState = () => {
+      const empty = transcript?.querySelector(".chat-empty");
+      if (empty) empty.remove();
+    };
+    const appendMessage = (role, body, typing = false) => {
+      removeEmptyState();
+      const row = document.createElement("div");
+      row.className = `chat-message chat-${role}`;
+      const bubble = document.createElement("div");
+      bubble.className = "chat-bubble";
+      const meta = document.createElement("div");
+      meta.className = "chat-meta";
+      const name = document.createElement("strong");
+      name.textContent = role === "assistant" ? "Orchestrator" : "Tu";
+      const time = document.createElement("small");
+      time.textContent = nowLabel();
+      const text = document.createElement("div");
+      text.className = "chat-body";
+      text.textContent = escapeText(body);
+      if (typing) {
+        bubble.classList.add("is-streaming");
+        text.dataset.placeholder = "true";
+      }
+      meta.append(name, time);
+      bubble.append(meta, text);
+      row.append(bubble);
+      transcript.append(row);
+      transcript.scrollTop = transcript.scrollHeight;
+      return { row, bubble, text };
+    };
+    const setBusy = (busy) => {
+      sendButton.disabled = busy;
+      textarea.disabled = busy;
+      if (fileInput) fileInput.disabled = busy;
+      sendButton.textContent = busy ? "..." : "Invia";
+    };
+
+    textarea.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+      event.preventDefault();
+      if (sendButton.disabled) return;
+      if (typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+      } else {
+        form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+      }
+    });
+
+    form.addEventListener("submit", async (event) => {
+      if (!window.fetch || !window.ReadableStream) return;
+      event.preventDefault();
+
+      const currentMessage = textarea.value.trim();
+      const attachedName = fileInput?.files?.[0]?.name;
+      if (!currentMessage && !attachedName) return;
+
+      const formData = new FormData(form);
+      const preview = attachedName
+        ? `${currentMessage || "Analizza l'allegato."}\n\n[Allegato: ${attachedName}]`
+        : currentMessage;
+      appendMessage("user", preview);
+
+      textarea.value = "";
+      clearAttachment();
+      const assistant = appendMessage("assistant", "", true);
+      assistant.text.textContent = "Sto pensando...";
+      setBusy(true);
+
+      let pending = "";
+      let typing = false;
+      let streamDone = false;
+      let received = false;
+      const baseDelayMs = 14;
+      const finalize = () => {
+        assistant.bubble.classList.remove("is-streaming");
+      };
+      const pumpTyper = () => {
+        if (typing) return;
+        typing = true;
+        const step = () => {
+          if (!pending) {
+            typing = false;
+            if (streamDone) finalize();
+            return;
+          }
+          const burst = Math.max(1, Math.min(pending.length, Math.ceil(pending.length / 60)));
+          assistant.text.textContent += pending.slice(0, burst);
+          pending = pending.slice(burst);
+          transcript.scrollTop = transcript.scrollHeight;
+          setTimeout(step, baseDelayMs);
+        };
+        step();
+      };
+
+      try {
+        const response = await fetch("/orchestrator/chat/stream", {
+          method: "POST",
+          body: formData,
+          headers: { "Accept": "application/x-ndjson" },
+        });
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const event = JSON.parse(line);
+            if (event.type === "token") {
+              if (!received) {
+                assistant.text.textContent = "";
+                assistant.text.removeAttribute("data-placeholder");
+                received = true;
+              }
+              pending += event.content || "";
+              pumpTyper();
+            }
+            if (event.type === "done") {
+              streamDone = true;
+            }
+          }
+        }
+        streamDone = true;
+        if (!received) {
+          assistant.text.textContent = "";
+          finalize();
+        } else if (!typing) {
+          finalize();
+        }
+      } catch (error) {
+        streamDone = true;
+        pending = "";
+        typing = false;
+        assistant.text.textContent = `Errore chat: ${error.message}`;
+        finalize();
+      } finally {
+        setBusy(false);
+        textarea.focus();
+      }
+    });
+  })();
+</script>
 {% endblock %}

@@ -26,6 +26,7 @@ dependencies = [
   "openai>=1.40",
   "aiosmtplib>=3.0",
   "imap-tools>=1.5",
+  "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]

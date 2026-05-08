@@ -373,21 +373,36 @@ def test_orchestrator_plan_and_execute(monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator_route, "UPLOADS_DIR", tmp_path / "uploads")
     db.init_db()
 
-    async def fake_chat_reply(latest_user_message, *, file_info=None):
+    async def fake_chat_reply(latest_user_message, *, file_info=None, chat_options=None):
         assert "Allegato" in latest_user_message
         assert file_info and file_info["filename"] == "brief.md"
         assert "contenuto allegato" in file_info["context_text"]
+        assert chat_options["web_enabled"] is True
+        assert chat_options["files_enabled"] is True
         return "Ho letto il file allegato.", {"fake": True}
 
+    async def fake_stream_reply(
+        latest_user_message,
+        *,
+        file_info=None,
+        chat_options=None,
+        metadata_out=None,
+    ):
+        assert "Risposta breve" in latest_user_message
+        assert chat_options["web_enabled"] is False
+        if metadata_out is not None:
+            metadata_out.update({"fake_stream": True})
+        yield "Certo, "
+        yield "breve."
+
     monkeypatch.setattr(orchestrator_route, "_generate_chat_reply", fake_chat_reply)
+    monkeypatch.setattr(orchestrator_route, "_stream_chat_reply", fake_stream_reply)
 
     with TestClient(app) as client:
         r = client.post(
             "/settings/orchestrator",
             data={
                 "use_llm": "on",
-                "chat_web_enabled": "on",
-                "chat_files_enabled": "on",
                 "llm_provider": "custom",
                 "planner_model": "planner-test",
                 "llm_base_url": "https://llm.example/v1",
@@ -400,19 +415,23 @@ def test_orchestrator_plan_and_execute(monkeypatch, tmp_path):
         assert saved["enabled"] == 1
         assert saved["config"]["llm_provider"] == "custom"
         assert saved["config"]["llm_api_key"] == "secret-test"
-        assert saved["config"]["chat_web_enabled"] is True
-        assert saved["config"]["chat_files_enabled"] is True
+        assert "chat_web_enabled" not in saved["config"]
+        assert "chat_files_enabled" not in saved["config"]
 
         r = client.get("/orchestrator")
         assert r.status_code == 200
         assert "Orchestrator" in r.text
         assert "planner-test" in r.text
-        assert "Web ON" in r.text
-        assert "File ON" in r.text
+        assert 'name="chat_web_enabled"' in r.text
+        assert 'name="chat_files_enabled"' in r.text
 
         r = client.post(
             "/orchestrator/chat",
-            data={"message": "Leggi questo file."},
+            data={
+                "message": "Leggi questo file.",
+                "chat_web_enabled": "on",
+                "chat_files_enabled": "on",
+            },
             files={"attachment": ("brief.md", b"contenuto allegato", "text/markdown")},
             follow_redirects=False,
         )
@@ -422,6 +441,15 @@ def test_orchestrator_plan_and_execute(monkeypatch, tmp_path):
         assert "brief.md" in chat[-2]["body"]
         assert chat[-2]["metadata"]["attachment"]["filename"] == "brief.md"
         assert chat[-1]["body"] == "Ho letto il file allegato."
+
+        r = client.post(
+            "/orchestrator/chat/stream",
+            data={"message": "Risposta breve"},
+        )
+        assert r.status_code == 200
+        assert '"type": "token"' in r.text
+        assert "Certo, " in r.text
+        assert db.list_orchestrator_messages()[-1]["metadata"]["fake_stream"] is True
 
         r = client.post(
             "/orchestrator/plan",

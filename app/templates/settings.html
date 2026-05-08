@@ -20,7 +20,7 @@
   <h3>Orchestrator</h3>
   <p class="muted small">
     Questi valori sono i default della pagina <code>/orchestrator</code>. Sono salvati nel DB locale:
-    uso del planner LLM, provider, modello, base URL, API key planner e capacita della chat.
+    uso del planner LLM, provider, modello, base URL e API key planner.
   </p>
   <form method="post" action="/settings/orchestrator" class="settings-form">
     <div class="row">
@@ -74,20 +74,6 @@
       <strong>Usa Planner LLM di default</strong>
       <span class="hint">se OFF, l'orchestrator usa il planner euristico locale.</span>
     </label>
-
-    <div class="settings-subsection">
-      <h4>Chat Orchestrator</h4>
-      <label>
-        <input type="checkbox" name="chat_web_enabled" {% if orchestrator_cfg.chat_web_enabled %}checked{% endif %}>
-        <strong>Consenti navigazione web</strong>
-        <span class="hint">abilita tool <code>web_search</code> e <code>fetch_url</code> per modelli compatibili con tool calling.</span>
-      </label>
-      <label>
-        <input type="checkbox" name="chat_files_enabled" {% if orchestrator_cfg.chat_files_enabled %}checked{% endif %}>
-        <strong>Consenti allegati file</strong>
-        <span class="hint">la chat puo leggere file testuali caricati e salvarli in <code>data/uploads</code>.</span>
-      </label>
-    </div>
 
     <div class="actions">
       <button type="submit">Salva configurazione orchestrator</button>

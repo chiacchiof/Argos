@@ -122,7 +122,7 @@ Livelli di autonomia:
 
 Il planner funziona anche senza LLM esterno usando una strategia euristica locale. Se abiliti **Planner LLM**, l'orchestrator chiede a un modello OpenAI-compatible un piano JSON; se la chiamata fallisce, torna automaticamente al piano euristico. La API key del planner serve solo a generare il piano e non viene salvata nei task creati.
 
-La colonna destra contiene una **chat persistente** salvata in DB. Usa lo stesso provider/modello configurato in Settings e puo essere abilitata, sempre da Settings, a usare tool web (`web_search`, `fetch_url`) oppure allegati file testuali. Gli allegati vengono salvati in `data/uploads/orchestrator/` e passati al modello come contesto della singola richiesta.
+La colonna destra contiene una **chat persistente** salvata in DB. Usa lo stesso provider/modello configurato in Settings; web (`web_search`, `fetch_url`) e file si attivano direttamente dal composer della chat, solo quando il modello selezionato risulta compatibile. Gli allegati vengono salvati in `data/uploads/orchestrator/` e passati al modello come contesto della richiesta.
 
 ### 2.2 Come scegliere l'input `.jsonl` di un task
 
