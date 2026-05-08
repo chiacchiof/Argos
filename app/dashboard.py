@@ -44,6 +44,42 @@ def _human_seconds(s: float) -> str:
     return f"{h}h {m:02d}m"
 
 
+def compute_task_health(task_id: int, last_n: int = 5) -> dict[str, Any]:
+    """Calcola un health score 0-100 basato sugli ultimi N job del task.
+
+    Ritorna sempre un dict (anche con N=0). I valori derivati sono pensati per
+    essere stampati come badge nella UI: `score`, `label`, `color`, e i conteggi.
+    """
+    jobs = db.list_jobs(task_id)[:last_n]
+    n = len(jobs)
+    if n == 0:
+        return {
+            "score": None, "label": "mai eseguito", "color": "muted",
+            "n_total": 0, "n_done": 0, "n_error": 0, "n_cancelled": 0,
+            "last_status": None,
+        }
+    n_done = sum(1 for j in jobs if (j.get("status") or "") == "done")
+    n_err = sum(1 for j in jobs if (j.get("status") or "") == "error")
+    n_cancel = sum(1 for j in jobs if (j.get("status") or "") == "cancelled")
+    score = int(round(100 * n_done / n))
+    if score >= 80:
+        label, color = "healthy", "ok"
+    elif score >= 50:
+        label, color = "flaky", "warn"
+    else:
+        label, color = "broken", "err"
+    return {
+        "score": score,
+        "label": label,
+        "color": color,
+        "n_total": n,
+        "n_done": n_done,
+        "n_error": n_err,
+        "n_cancelled": n_cancel,
+        "last_status": (jobs[0].get("status") or None) if jobs else None,
+    }
+
+
 def compute_dashboard(job_id: int) -> dict[str, Any] | None:
     """Ritorna un dict con le metriche per il dashboard panel."""
     job = db.get_job(job_id)

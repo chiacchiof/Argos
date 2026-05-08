@@ -22,10 +22,23 @@ router = APIRouter()
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def index(request: Request, status_tag: str = ""):
     tasks = db.list_tasks()
+    if status_tag:
+        if status_tag == "_unset":
+            tasks = [t for t in tasks if not t.get("status_tag")]
+        else:
+            tasks = [t for t in tasks if (t.get("status_tag") or "") == status_tag]
+    from ..dashboard import compute_task_health
+    health_by_task = {t["id"]: compute_task_health(t["id"]) for t in tasks}
     return templates.TemplateResponse(
-        request, "tasks_list.html", {"tasks": tasks}
+        request,
+        "tasks_list.html",
+        {
+            "tasks": tasks,
+            "health_by_task": health_by_task,
+            "active_status_tag": status_tag,
+        },
     )
 
 
@@ -102,6 +115,13 @@ def _form_to_dict(
     discovery_llm_provider: str = "",
     discovery_llm_model: str = "",
     discovery_llm_api_key: str = "",
+    max_discovery_retries: int = 3,
+    browser_llm_provider: str = "",
+    browser_llm_model: str = "",
+    browser_llm_api_key: str = "",
+    rating: str = "",
+    notes: str = "",
+    status_tag: str = "",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -135,6 +155,13 @@ def _form_to_dict(
         "discovery_llm_provider": (discovery_llm_provider or "").strip() or None,
         "discovery_llm_model": (discovery_llm_model or "").strip() or None,
         "discovery_llm_api_key": (discovery_llm_api_key or "").strip() or None,
+        "max_discovery_retries": max_discovery_retries,
+        "browser_llm_provider": (browser_llm_provider or "").strip() or None,
+        "browser_llm_model": (browser_llm_model or "").strip() or None,
+        "browser_llm_api_key": (browser_llm_api_key or "").strip() or None,
+        "rating": (rating or "").strip() or None,
+        "notes": (notes or "").strip() or None,
+        "status_tag": (status_tag or "").strip().lower() or None,
     }
 
 
@@ -181,6 +208,13 @@ async def create_task(
     discovery_llm_provider: str = Form(""),
     discovery_llm_model: str = Form(""),
     discovery_llm_api_key: str = Form(""),
+    max_discovery_retries: int = Form(3),
+    browser_llm_provider: str = Form(""),
+    browser_llm_model: str = Form(""),
+    browser_llm_api_key: str = Form(""),
+    rating: str = Form(""),
+    notes: str = Form(""),
+    status_tag: str = Form(""),
 ):
     payload = _form_to_dict(
         name, description, objective, seed_queries, allowed_domains, blocked_domains,
@@ -191,6 +225,9 @@ async def create_task(
         bulk_concurrency, bulk_rate_limit_per_sec, bulk_extraction_method, bulk_css_selectors,
         crawler_enabled, crawler_url_pattern, crawler_max_depth,
         discovery_llm_provider, discovery_llm_model, discovery_llm_api_key,
+        max_discovery_retries,
+        browser_llm_provider, browser_llm_model, browser_llm_api_key,
+        rating, notes, status_tag,
     )
     try:
         validated = TaskIn(**payload)
@@ -251,6 +288,13 @@ async def update_task(
     discovery_llm_provider: str = Form(""),
     discovery_llm_model: str = Form(""),
     discovery_llm_api_key: str = Form(""),
+    max_discovery_retries: int = Form(3),
+    browser_llm_provider: str = Form(""),
+    browser_llm_model: str = Form(""),
+    browser_llm_api_key: str = Form(""),
+    rating: str = Form(""),
+    notes: str = Form(""),
+    status_tag: str = Form(""),
 ):
     existing = db.get_task(task_id)
     if not existing:
@@ -274,6 +318,9 @@ async def update_task(
     discovery_llm_api_key = _password_field_action(
         discovery_llm_api_key, existing.get("discovery_llm_api_key")
     )
+    browser_llm_api_key = _password_field_action(
+        browser_llm_api_key, existing.get("browser_llm_api_key")
+    )
 
     payload = _form_to_dict(
         name, description, objective, seed_queries, allowed_domains, blocked_domains,
@@ -284,6 +331,9 @@ async def update_task(
         bulk_concurrency, bulk_rate_limit_per_sec, bulk_extraction_method, bulk_css_selectors,
         crawler_enabled, crawler_url_pattern, crawler_max_depth,
         discovery_llm_provider, discovery_llm_model, discovery_llm_api_key,
+        max_discovery_retries,
+        browser_llm_provider, browser_llm_model, browser_llm_api_key,
+        rating, notes, status_tag,
     )
     try:
         validated = TaskIn(**payload)
@@ -370,8 +420,9 @@ async def task_detail(request: Request, task_id: int):
         raise HTTPException(status_code=404, detail="task non trovato")
     task_jobs = db.list_jobs(task_id)
     latest = db.latest_job(task_id)
-    from ..dashboard import compute_dashboard
+    from ..dashboard import compute_dashboard, compute_task_health
     latest_dashboard = compute_dashboard(latest["id"]) if latest else None
+    health = compute_task_health(task_id)
     # Workflow in cui appare questo task
     edges_with_task = db.list_edges(from_task_id=task_id) + db.list_edges(to_task_id=task_id)
     workflow_ids = sorted({e["workflow_id"] for e in edges_with_task if e.get("workflow_id")})
@@ -383,6 +434,7 @@ async def task_detail(request: Request, task_id: int):
             "task": task,
             "jobs": task_jobs,
             "latest_dashboard": latest_dashboard,
+            "health": health,
             "related_workflows": related_workflows,
         },
     )

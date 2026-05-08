@@ -1,0 +1,37 @@
+{# Macro per badge "valutazione personale" + health score di un task. #}
+
+{% macro status_badge(status_tag) %}
+  {% if status_tag == 'tuning' %}
+    <span class="badge badge-tag tag-tuning" title="In tuning">🔧 tuning</span>
+  {% elif status_tag == 'working' %}
+    <span class="badge badge-tag tag-working" title="Funziona">✅ working</span>
+  {% elif status_tag == 'broken' %}
+    <span class="badge badge-tag tag-broken" title="Rotto">❌ broken</span>
+  {% elif status_tag == 'deprecated' %}
+    <span class="badge badge-tag tag-deprecated" title="Deprecato">🚫 deprecated</span>
+  {% elif status_tag == 'reference' %}
+    <span class="badge badge-tag tag-reference" title="Task di riferimento">📌 reference</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro rating_stars(rating) %}
+  {% if rating %}
+    <span class="rating-stars" title="Rating personale: {{ rating }}/5">
+      {%- for i in range(1, 6) -%}
+        {%- if i <= rating -%}★{%- else -%}☆{%- endif -%}
+      {%- endfor -%}
+    </span>
+  {% endif %}
+{% endmacro %}
+
+{% macro health_badge(h) %}
+  {% if h and h.score is not none %}
+    <span class="badge badge-health badge-health-{{ h.color }}"
+          title="Health: {{ h.n_done }}/{{ h.n_total }} job 'done' negli ultimi {{ h.n_total }} run">
+      {% if h.color == 'ok' %}✅{% elif h.color == 'warn' %}⚠️{% else %}❌{% endif %}
+      {{ h.score }}% ({{ h.label }})
+    </span>
+  {% else %}
+    <span class="badge badge-health badge-health-muted" title="Nessun job eseguito">— mai eseguito</span>
+  {% endif %}
+{% endmacro %}

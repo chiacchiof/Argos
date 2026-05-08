@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/task_rating_badges.html" import status_badge, rating_stars, health_badge %}
 {% block title %}Tasks — AgentScraper{% endblock %}
 {% block content %}
 <section>
@@ -8,16 +9,36 @@
     può essere lanciata indipendentemente, oppure orchestrata in cascata da un
     <a href="/workflows">🔗 workflow</a>.
   </p>
+
+  {# Filtro per status_tag — query string ?status_tag=... #}
+  <div class="task-filter">
+    {% set st = active_status_tag or '' %}
+    <span class="filter-label">Filtra:</span>
+    <a href="/" class="chip {% if not st %}chip-active{% endif %}">tutti</a>
+    <a href="/?status_tag=tuning"     class="chip chip-tag tag-tuning     {% if st=='tuning' %}chip-active{% endif %}">🔧 tuning</a>
+    <a href="/?status_tag=working"    class="chip chip-tag tag-working    {% if st=='working' %}chip-active{% endif %}">✅ working</a>
+    <a href="/?status_tag=broken"     class="chip chip-tag tag-broken     {% if st=='broken' %}chip-active{% endif %}">❌ broken</a>
+    <a href="/?status_tag=deprecated" class="chip chip-tag tag-deprecated {% if st=='deprecated' %}chip-active{% endif %}">🚫 deprecated</a>
+    <a href="/?status_tag=reference"  class="chip chip-tag tag-reference  {% if st=='reference' %}chip-active{% endif %}">📌 reference</a>
+    <a href="/?status_tag=_unset"     class="chip {% if st=='_unset' %}chip-active{% endif %}">non valutati</a>
+  </div>
+
   {% if tasks %}
   <table class="data">
     <thead>
-      <tr><th>#</th><th>Nome</th><th>Modalità</th><th>Modello</th><th>Cron</th><th>Aggiornato</th><th></th></tr>
+      <tr>
+        <th>#</th><th>Nome</th><th>Stato</th><th>Rating</th><th>Health</th>
+        <th>Modalità</th><th>Modello</th><th>Cron</th><th>Aggiornato</th><th></th>
+      </tr>
     </thead>
     <tbody>
       {% for t in tasks %}
       <tr>
         <td>{{ t.id }}</td>
         <td><a href="/tasks/{{ t.id }}">{{ t.name }}</a></td>
+        <td>{{ status_badge(t.status_tag) }}</td>
+        <td>{{ rating_stars(t.rating) }}</td>
+        <td>{{ health_badge(health_by_task.get(t.id)) }}</td>
         <td><code>{{ t.agent_mode }}</code></td>
         <td><code>{{ t.model }}</code></td>
         <td><code>{{ t.cron or "—" }}</code></td>
@@ -30,7 +51,13 @@
     </tbody>
   </table>
   {% else %}
-  <p class="empty">Nessun task. <a href="/tasks/new">Creane uno</a>.</p>
+  <p class="empty">
+    {% if active_status_tag %}
+      Nessun task con questo filtro. <a href="/">Mostra tutti</a>.
+    {% else %}
+      Nessun task. <a href="/tasks/new">Creane uno</a>.
+    {% endif %}
+  </p>
   {% endif %}
 </section>
 {% endblock %}

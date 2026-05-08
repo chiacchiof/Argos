@@ -243,6 +243,10 @@ async def _run_job(job_id: int, task_id: int) -> None:
         elif mode == "bulk_extract":
             from .agent.runner_bulk_extract import run_agent as run_bk
             await run_bk(task, job_id)
+        elif mode == "auto_extract":
+            from .agent.runner_auto_extract import run_agent as run_ae
+            # auto_extract può lanciare browser_use → serve il proactor thread
+            await _run_in_proactor_thread(lambda: run_ae(task, job_id), job_id)
         elif mode == "outreach":
             from .agent.runner_outreach import run_agent as run_o
             await run_o(task, job_id)

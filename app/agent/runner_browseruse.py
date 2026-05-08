@@ -225,29 +225,44 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
         raise RuntimeError(msg)
 
-    provider_key = task.get("llm_provider") or "ollama"
+    # Browser_use richiede tool-calling complesso + visione: se l'utente ha
+    # specificato un LLM dedicato `browser_llm_*` (modello capable, magari diverso
+    # dal main extraction), preferiamolo. Altrimenti fallback al main del task.
+    browser_provider = (task.get("browser_llm_provider") or "").strip()
+    browser_model = (task.get("browser_llm_model") or "").strip()
+    if browser_provider and browser_model:
+        provider_key = browser_provider
+        model_name = browser_model
+        api_key_override = task.get("browser_llm_api_key")
+        role_label = "🖥️ Browser LLM (override)"
+    else:
+        provider_key = task.get("llm_provider") or "ollama"
+        model_name = task["model"]
+        api_key_override = task.get("llm_api_key")
+        role_label = "Provider LLM"
+
     provider_info = get_provider(provider_key)
     try:
         base_url = resolve_base_url(provider_key, task.get("llm_base_url"))
-        api_key = resolve_api_key(provider_key, task.get("llm_api_key"))
+        api_key = resolve_api_key(provider_key, api_key_override)
     except RuntimeError as e:
         jlog(f"ERRORE configurazione provider: {e}")
         db.update_job(job_id, status="error", error=str(e), finished_at=db.now_iso())
         raise
     jlog(
-        f"Provider LLM: {provider_info['name']} ({provider_key}) "
-        f"@ {base_url} — modello {task['model']}"
+        f"{role_label}: {provider_info['name']} ({provider_key}) "
+        f"@ {base_url} — modello {model_name}"
     )
     try:
         llm = ChatOpenAI(
-            model=task["model"],
+            model=model_name,
             base_url=base_url,
             api_key=api_key,
             temperature=0.2,
         )
     except TypeError:
         llm = ChatOpenAI(
-            model=task["model"],
+            model=model_name,
             openai_api_base=base_url,
             openai_api_key=api_key,
             temperature=0.2,

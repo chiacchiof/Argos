@@ -1,9 +1,21 @@
 {% extends "base.html" %}
+{% from "partials/task_rating_badges.html" import status_badge, rating_stars, health_badge %}
 {% block title %}{{ task.name }} — AgentScraper{% endblock %}
 {% block content %}
 <section>
-  <h2>{{ task.name }} <small>#{{ task.id }}</small></h2>
+  <h2>
+    {{ task.name }} <small>#{{ task.id }}</small>
+    {{ status_badge(task.status_tag) }}
+    {{ rating_stars(task.rating) }}
+    {{ health_badge(health) }}
+  </h2>
   {% if task.description %}<p class="muted">{{ task.description }}</p>{% endif %}
+  {% if task.notes %}
+  <details class="task-notes">
+    <summary>📝 Note personali</summary>
+    <pre class="notes-body">{{ task.notes }}</pre>
+  </details>
+  {% endif %}
 
   <details open>
     <summary>Configurazione</summary>

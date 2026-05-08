@@ -246,6 +246,23 @@ def init_db() -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN discovery_llm_model TEXT")
         if "discovery_llm_api_key" not in cols:
             con.execute("ALTER TABLE tasks ADD COLUMN discovery_llm_api_key TEXT")
+        if "max_discovery_retries" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN max_discovery_retries INTEGER NOT NULL DEFAULT 3")
+        # LLM dedicato per browser_use (visione + tool-calling complesso): può
+        # essere diverso dal main extraction (che spesso è locale economico).
+        if "browser_llm_provider" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN browser_llm_provider TEXT")
+        if "browser_llm_model" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN browser_llm_model TEXT")
+        if "browser_llm_api_key" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN browser_llm_api_key TEXT")
+        # Valutazione personale dell'utente sul task
+        if "rating" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN rating INTEGER")
+        if "notes" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN notes TEXT")
+        if "status_tag" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN status_tag TEXT")
         # jobs
         jcols = {r["name"] for r in con.execute("PRAGMA table_info(jobs)").fetchall()}
         if "control_signal" not in jcols:
@@ -420,6 +437,27 @@ def _load_list(value: str | None) -> list[str]:
         return []
 
 
+VALID_STATUS_TAGS = {"tuning", "working", "broken", "deprecated", "reference"}
+
+
+def _coerce_rating(value: Any) -> int | None:
+    """Vincola il rating a 1-5 (null se vuoto/0/non-int)."""
+    if value in (None, "", "0", 0):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 5 else None
+
+
+def _coerce_status_tag(value: Any) -> str | None:
+    if not value:
+        return None
+    s = str(value).strip().lower()
+    return s if s in VALID_STATUS_TAGS else None
+
+
 def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["seed_queries"] = _load_list(d.get("seed_queries"))
@@ -458,9 +496,11 @@ def create_task(data: dict[str, Any]) -> int:
                                   bulk_extraction_method, bulk_css_selectors,
                                   crawler_enabled, crawler_url_pattern, crawler_max_depth,
                                   discovery_llm_provider, discovery_llm_model,
-                                  discovery_llm_api_key,
+                                  discovery_llm_api_key, max_discovery_retries,
+                                  browser_llm_provider, browser_llm_model, browser_llm_api_key,
+                                  rating, notes, status_tag,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -494,6 +534,13 @@ def create_task(data: dict[str, Any]) -> int:
                 data.get("discovery_llm_provider") or None,
                 data.get("discovery_llm_model") or None,
                 data.get("discovery_llm_api_key") or None,
+                int(data.get("max_discovery_retries") or 3),
+                data.get("browser_llm_provider") or None,
+                data.get("browser_llm_model") or None,
+                data.get("browser_llm_api_key") or None,
+                _coerce_rating(data.get("rating")),
+                (data.get("notes") or "").strip() or None,
+                _coerce_status_tag(data.get("status_tag")),
                 ts,
                 ts,
             ),
@@ -517,7 +564,9 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 bulk_extraction_method = ?, bulk_css_selectors = ?,
                 crawler_enabled = ?, crawler_url_pattern = ?, crawler_max_depth = ?,
                 discovery_llm_provider = ?, discovery_llm_model = ?,
-                discovery_llm_api_key = ?,
+                discovery_llm_api_key = ?, max_discovery_retries = ?,
+                browser_llm_provider = ?, browser_llm_model = ?, browser_llm_api_key = ?,
+                rating = ?, notes = ?, status_tag = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -553,6 +602,13 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 data.get("discovery_llm_provider") or None,
                 data.get("discovery_llm_model") or None,
                 data.get("discovery_llm_api_key") or None,
+                int(data.get("max_discovery_retries") or 3),
+                data.get("browser_llm_provider") or None,
+                data.get("browser_llm_model") or None,
+                data.get("browser_llm_api_key") or None,
+                _coerce_rating(data.get("rating")),
+                (data.get("notes") or "").strip() or None,
+                _coerce_status_tag(data.get("status_tag")),
                 now_iso(),
                 task_id,
             ),

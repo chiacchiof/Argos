@@ -187,3 +187,128 @@ textarea.schema-textarea {
   line-height: 1.4;
   background: #f6f8fa;
 }
+
+/* ===== Valutazione personale: status_tag, rating, health ===== */
+.badge.badge-tag {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.78em;
+  font-weight: 600;
+  margin-left: 0.4rem;
+  vertical-align: middle;
+  border: 1px solid transparent;
+}
+.tag-tuning     { background: #fef9c3; color: #854d0e; border-color: #fde68a; }
+.tag-working    { background: #dcfce7; color: #166534; border-color: #86efac; }
+.tag-broken     { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+.tag-deprecated { background: #f3f4f6; color: #6b7280; border-color: #d1d5db; }
+.tag-reference  { background: #e0e7ff; color: #3730a3; border-color: #a5b4fc; }
+
+.rating-stars {
+  color: #d97706;
+  font-size: 0.95em;
+  margin-left: 0.4rem;
+  letter-spacing: 1px;
+}
+
+.badge.badge-health {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.78em;
+  margin-left: 0.4rem;
+  vertical-align: middle;
+}
+.badge-health-ok    { background: #dcfce7; color: #166534; }
+.badge-health-warn  { background: #fef3c7; color: #92400e; }
+.badge-health-err   { background: #fee2e2; color: #991b1b; }
+.badge-health-muted { background: #f3f4f6; color: #6b7280; }
+
+/* Chip filtro nella lista task */
+.task-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin: 0.6rem 0 1rem 0;
+  font-size: 0.9em;
+}
+.task-filter .filter-label { color: #6b7280; margin-right: 0.3rem; }
+.chip {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 12px;
+  text-decoration: none;
+  font-size: 0.85em;
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #e5e7eb;
+}
+.chip:hover { background: #e5e7eb; }
+.chip-active {
+  background: #1f2937 !important;
+  color: #fff !important;
+  border-color: #1f2937;
+}
+.chip.chip-tag.tag-tuning.chip-active     { background: #f59e0b !important; border-color: #f59e0b; }
+.chip.chip-tag.tag-working.chip-active    { background: #16a34a !important; border-color: #16a34a; }
+.chip.chip-tag.tag-broken.chip-active     { background: #dc2626 !important; border-color: #dc2626; }
+.chip.chip-tag.tag-deprecated.chip-active { background: #6b7280 !important; border-color: #6b7280; }
+.chip.chip-tag.tag-reference.chip-active  { background: #4f46e5 !important; border-color: #4f46e5; }
+
+/* Note personali nel detail */
+details.task-notes {
+  margin: 0.6rem 0 1rem 0;
+  padding: 0.4rem 0.7rem;
+  background: #fffbeb;
+  border-left: 3px solid #f59e0b;
+  border-radius: 4px;
+}
+details.task-notes summary { font-weight: 600; cursor: pointer; }
+.notes-body {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  background: transparent;
+  margin: 0.4rem 0 0 0;
+  font-family: inherit;
+  font-size: 0.95em;
+}
+
+/* Sezione 'Valutazione personale' nel form */
+fieldset.rating-fieldset {
+  margin-top: 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.6rem 1rem 1rem 1rem;
+  background: #fffbeb;
+}
+fieldset.rating-fieldset legend { font-weight: 600; padding: 0 0.4rem; }
+
+
+/* Sezioni opzionali collassabili (details/summary) */
+details.optional-block {
+  margin: 0.8rem 0;
+  padding: 0.6rem 0.8rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+}
+details.optional-block[open] {
+  background: #fff;
+  border-color: #cbd5e1;
+}
+details.optional-block > summary {
+  cursor: pointer;
+  font-size: 0.95em;
+  padding: 0.2rem 0;
+  user-select: none;
+}
+details.optional-block > summary:hover {
+  color: #1f2937;
+}
+details.optional-block[open] > summary {
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px dashed #e2e8f0;
+}

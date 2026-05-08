@@ -132,6 +132,28 @@ class PerHostRateLimiter:
 # Crawler: BFS deterministico con auto-detect del URL pattern
 # --------------------------------------------------------------------------
 
+_GENERIC_SUBDOMAINS = {"www", "api", "cdn", "static", "media", "assets", "img", "images"}
+
+
+def _registrable_domain(host: str) -> str:
+    """Ritorna il 'registrable domain' (ultimi 2 livelli) di un host.
+
+    'teverina-hot.mondocamgirls.com' → 'mondocamgirls.com'
+    'www.example.com' → 'example.com'
+    'example.com' → 'example.com'
+
+    Limite noto: non gestisce public-suffix multi-livello (.co.uk, .com.au).
+    Per il 99% dei domini commerciali è sufficiente; per supportare PSL serve
+    la libreria `tldextract`.
+    """
+    if not host:
+        return ""
+    parts = host.lower().split(".")
+    if len(parts) <= 2:
+        return host.lower()
+    return ".".join(parts[-2:])
+
+
 def _segment_signature(seg: str) -> str:
     """Riconosce la 'forma' di un segmento di path per raggruppare URL simili."""
     if not seg:
@@ -151,33 +173,74 @@ def _segment_signature(seg: str) -> str:
     return seg  # tieni il segmento letterale se non riconosciuto
 
 
-def _url_to_pattern(url: str) -> str:
-    """Trasforma un URL in un pattern strutturale (per raggruppamento)."""
+def _url_match_key(url: str) -> str:
+    """Ritorna 'host+path' usato per pattern matching del crawler.
+
+    Includere l'host permette al crawler di distinguere sub-domini come
+    profili separati (es. <slug>.example.com) da sezioni della home.
+    Niente schema, niente query, niente fragment.
+    """
     try:
-        path = urlparse(url).path
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+        path = p.path or "/"
+        return host + path
     except Exception:
         return url
+
+
+def _url_to_pattern(url: str) -> str:
+    """Trasforma un URL in un pattern strutturale 'host+path' per raggruppamento.
+
+    Tokenizza il sub-dominio se è uno slug (es. nome modella):
+        'teverina-hot.mondocamgirls.com/en' → '{slug}.mondocamgirls.com/en'
+    Lascia intatti i sub-domini "generici" (www, api, cdn, ...) e i domini
+    a 2 livelli.
+    """
+    try:
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+        path = p.path or ""
+    except Exception:
+        return url
+
+    host_parts = host.split(".")
+    if len(host_parts) >= 3:
+        sub = host_parts[0]
+        if re.match(r"^[a-z0-9-]+$", sub) and sub not in _GENERIC_SUBDOMAINS:
+            host_pattern = "{slug}." + ".".join(host_parts[1:])
+        else:
+            host_pattern = host
+    else:
+        host_pattern = host
+
     if path.endswith("/"):
         path = path[:-1]
     segs = [s for s in path.split("/") if s]
     if not segs:
-        return "/"
+        return host_pattern + "/"
     pattern_segs = [_segment_signature(s) for s in segs]
-    return "/" + "/".join(pattern_segs)
+    return host_pattern + "/" + "/".join(pattern_segs)
 
 
 def _group_urls_by_pattern(urls: list[str]) -> dict[str, list[str]]:
-    """Raggruppa URL per pattern strutturale di path, ritorna {pattern: [urls]}."""
+    """Raggruppa URL per pattern strutturale 'host+path'."""
     groups: dict[str, list[str]] = defaultdict(list)
     for u in urls:
         groups[_url_to_pattern(u)].append(u)
-    # ordina per dimensione del gruppo decrescente (i pattern più frequenti prima)
     return dict(sorted(groups.items(), key=lambda kv: -len(kv[1])))
 
 
 def _extract_links(html: str, base_url: str, same_origin_only: bool = True) -> list[str]:
-    """Estrae tutti i link <a href> assoluti dalla pagina."""
-    base_host = urlparse(base_url).hostname or ""
+    """Estrae tutti i link <a href> assoluti dalla pagina.
+
+    Quando `same_origin_only` è True, accetta link verso lo stesso
+    'registrable domain' del seed (cioè anche sub-domini), in modo che siti
+    con profili in sub-domini distinti (`<slug>.sito.com`) siano scopribili
+    partendo dalla home `www.sito.com`.
+    """
+    base_host = (urlparse(base_url).hostname or "").lower()
+    base_reg = _registrable_domain(base_host)
     out: list[str] = []
     try:
         tree = HTMLParser(html)
@@ -190,12 +253,57 @@ def _extract_links(html: str, base_url: str, same_origin_only: bool = True) -> l
         absolute = urljoin(base_url, href)
         absolute = absolute.split("#")[0]  # strip fragment
         if same_origin_only:
-            host = urlparse(absolute).hostname or ""
-            if host != base_host and not host.endswith("." + base_host):
+            host = (urlparse(absolute).hostname or "").lower()
+            if _registrable_domain(host) != base_reg:
                 continue
         if absolute not in out:
             out.append(absolute)
     return out
+
+
+def _pattern_to_regex(pattern: str) -> str:
+    """Converte un pattern 'host+path' (con placeholder {slug}/{int}/...) in regex.
+
+    Es: '{slug}.mondocamgirls.com/'  →  '^[a-z0-9-]+\\.mondocamgirls\\.com/?$'
+        'www.example.com/p/{int}'    →  '^www\\.example\\.com/p/[0-9]+$'
+        'books.toscrape.com/catalogue/{slug}_{int}/{slug}.html'
+            → '^books\\.toscrape\\.com/catalogue/[a-z0-9-]+_[0-9]+/[a-z0-9-]+\\.html$'
+    """
+    placeholder_map = [
+        ("{slug}_{int}", "[a-z0-9-]+_[0-9]+"),
+        ("{int}.html", "[0-9]+\\.html"),
+        ("{slug}.html", "[a-z0-9-]+\\.html"),
+        ("{slug}", "[a-z0-9-]+"),
+        ("{int}", "[0-9]+"),
+        ("{file}", "[^/]+\\.[a-z0-9]+"),
+    ]
+    # Sentinella per ogni placeholder, escape del resto, ri-sostituzione.
+    sentinels: list[tuple[str, str]] = []
+    work = pattern
+    for i, (ph, rgx) in enumerate(placeholder_map):
+        s = f"\x00{i}\x00"
+        if ph in work:
+            work = work.replace(ph, s)
+            sentinels.append((s, rgx))
+    # Escape regex sul resto
+    escaped = re.escape(work)
+    # Ripristina sentinelle (re.escape non tocca \x00 ma può aver scappato i numeri attorno)
+    for s, rgx in sentinels:
+        # re.escape lascia \x00 invariato, quindi la sentinella esiste ancora
+        escaped = escaped.replace(s, rgx)
+    # Permetti slash finale opzionale
+    if escaped.endswith("/"):
+        return f"^{escaped[:-1]}/?$"
+    return f"^{escaped}$"
+
+
+def _count_pattern_matches(regex_str: str, urls: list[str]) -> int:
+    """Quanti URL della lista matchano la regex (su host+path)."""
+    try:
+        pat = re.compile(regex_str)
+    except re.error:
+        return 0
+    return sum(1 for u in urls if pat.search(_url_match_key(u)))
 
 
 async def _auto_detect_pattern_via_llm(
@@ -206,34 +314,68 @@ async def _auto_detect_pattern_via_llm(
     seed_url: str,
     sample_links: list[str],
     schema_text: str,
-) -> str | None:
-    """Chiede all'LLM quale pattern di URL contiene le pagine target."""
+    user_objective: str = "",
+    excluded_patterns: list[str] | None = None,
+) -> tuple[str | None, str | None]:
+    """L'LLM sceglie quale pattern URL contiene le pagine target.
+
+    Ritorna (pattern_str, reason) — il caller converte pattern_str in regex
+    via `_pattern_to_regex`. L'LLM sceglie l'INDICE da una lista numerata
+    invece di generare regex (modelli piccoli sbagliano la regex).
+
+    Args:
+        user_objective: testo libero dell'obiettivo del task (in italiano);
+          è il "perché" dell'utente, va a guidare la scelta dell'LLM. Non
+          contiene istruzioni hard-coded.
+        excluded_patterns: pattern già provati senza successo, vengono RIMOSSI
+          dai candidati così l'LLM non può ripeterli.
+    """
+    excluded_patterns = excluded_patterns or []
     groups = _group_urls_by_pattern(sample_links)
-    # Mostriamo i primi 12 pattern (con ≥2 URL ciascuno) e qualche esempio per gruppo
+    candidates: list[tuple[str, list[str]]] = [
+        (pat, urls) for pat, urls in groups.items() if pat not in excluded_patterns
+    ]
+    candidates = candidates[:14]
+
+    if not candidates:
+        return None, "nessun pattern candidato disponibile"
+
     summary_lines = []
-    shown = 0
-    for pat, urls in groups.items():
-        if len(urls) < 2 and shown >= 6:
-            continue
-        examples = urls[:2]
-        summary_lines.append(f'  "{pat}"  → {len(urls)} URL  (es. {", ".join(examples)})')
-        shown += 1
-        if shown >= 12:
-            break
+    for i, (pat, urls) in enumerate(candidates, start=1):
+        examples = urls[:4]
+        summary_lines.append(
+            f"[{i}] PATTERN: {pat}  ({len(urls)} URL)\n"
+            + "\n".join(f"      • {u}" for u in examples)
+        )
+
+    objective_block = ""
+    if user_objective.strip():
+        objective_block = (
+            "\nOBIETTIVO DELL'UTENTE (cosa cerca, in italiano):\n"
+            f"  {user_objective.strip()[:600]}\n"
+        )
+
+    excluded_block = ""
+    if excluded_patterns:
+        excluded_block = (
+            "\nPATTERN GIÀ PROVATI E SCARTATI (non hanno trovato URL target):\n"
+            + "\n".join(f"  - {p}" for p in excluded_patterns)
+            + "\n"
+        )
 
     user_prompt = (
-        f"Ho fatto fetch di un seed URL: {seed_url}\n\n"
-        f"Trovati questi pattern di URL nella pagina:\n"
+        f"Ho fatto fetch del seed: {seed_url}\n"
+        + objective_block
+        + excluded_block
+        + "\nPattern di URL trovati nella pagina (formato 'host+path'):\n\n"
         + "\n".join(summary_lines)
         + "\n\n"
-        f"Devo estrarre dati che corrispondono a questo schema:\n{schema_text[:1500]}\n\n"
-        "QUALE pattern URL contiene le pagine-DETTAGLIO che corrispondono allo schema "
-        "(le pagine da cui estrarre i dati richiesti)?\n\n"
-        "Rispondi in JSON con questa forma ESATTA:\n"
-        '{"regex": "<regex Python che matcha il path delle pagine target>", '
-        '"reason": "<una frase breve>"}\n\n'
-        'La regex deve matchare il PATH (es. "^/catalogue/[^/]+/index\\\\.html$"), '
-        "non l'URL completo. Solo JSON, niente prosa."
+        f"Schema dei dati da estrarre:\n{schema_text[:1500]}\n\n"
+        "DOMANDA: qual è il NUMERO del pattern che contiene le pagine-DETTAGLIO "
+        "da cui posso estrarre i dati dello schema?\n\n"
+        "Rispondi in JSON ESATTO:\n"
+        '{"index": <numero>, "reason": "<una frase breve in italiano>"}\n'
+        "Solo JSON, niente prosa."
     )
 
     payload = {
@@ -242,8 +384,13 @@ async def _auto_detect_pattern_via_llm(
             {
                 "role": "system",
                 "content": (
-                    "Sei un classificatore di URL. Identifichi quale pattern di "
-                    "path contiene le pagine-dettaglio in un sito web."
+                    "Sei un classificatore di URL. Devi scegliere, da una lista "
+                    "numerata di pattern URL osservati in una pagina web, quello "
+                    "che corrisponde alle pagine-dettaglio richieste dall'utente. "
+                    "Pondera obiettivo dell'utente, schema dei dati, e plausibilità "
+                    "del pattern (URL con segmenti variabili tipicamente sono "
+                    "pagine-dettaglio; URL con nomi fissi tipicamente sono "
+                    "pagine di navigazione)."
                 ),
             },
             {"role": "user", "content": user_prompt},
@@ -263,30 +410,31 @@ async def _auto_detect_pattern_via_llm(
         raw = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
     except Exception as e:
         log.warning("auto-detect pattern fallito: %s", e)
-        return None
+        return None, f"errore HTTP: {e}"
 
-    # parse JSON o fallback regex extraction
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError:
         m = re.search(r"\{[\s\S]+?\}", raw)
         if not m:
-            return None
+            return None, "JSON non parseable"
         try:
             obj = json.loads(m.group(0))
         except json.JSONDecodeError:
-            return None
+            return None, "JSON malformato"
 
-    regex_str = obj.get("regex") if isinstance(obj, dict) else None
-    if not regex_str:
-        return None
-    # validate regex compila
+    if not isinstance(obj, dict):
+        return None, "risposta non-dict"
+    idx = obj.get("index")
+    reason = (obj.get("reason") or "").strip()
     try:
-        re.compile(regex_str)
-    except re.error:
-        log.warning("auto-detected regex non compila: %r", regex_str)
-        return None
-    return regex_str
+        idx = int(idx)
+    except (TypeError, ValueError):
+        return None, f"indice non numerico: {idx!r}"
+    if idx < 1 or idx > len(candidates):
+        return None, f"indice fuori range: {idx} (candidates: {len(candidates)})"
+    chosen_pattern, _ = candidates[idx - 1]
+    return chosen_pattern, reason
 
 
 async def _bfs_crawl(
@@ -343,9 +491,10 @@ async def _bfs_crawl(
             for link in links:
                 if not _domain_allowed(link, allowed, blocked):
                     continue
-                # Match contro il path
-                path = urlparse(link).path or "/"
-                if pattern_re.search(path):
+                # Match contro 'host+path' (così sub-domini come profili sono
+                # distinguibili da sezioni del sito principale).
+                key = _url_match_key(link)
+                if pattern_re.search(key):
                     if link not in discovered_set:
                         discovered.append(link)
                         discovered_set.add(link)
@@ -582,25 +731,68 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             # Auto-detect pattern se non specificato dall'utente
             effective_pattern = crawler_pattern
             if not effective_pattern:
-                jlog("  crawler: auto-detect pattern via LLM (1 chiamata)...")
-                # Fai un fetch del primo seed per ottenere link sample
+                # Auto-detect con retry loop: il discovery LLM sceglie un pattern,
+                # verifichiamo che matchi almeno un link diretto del seed; se 0
+                # match, escludiamo quel pattern e ri-chiamiamo il discovery.
+                # Loop fino a `max_discovery_retries + 1` tentativi totali.
+                max_retries = int(task.get("max_discovery_retries") or 3)
+                user_objective = task.get("objective") or ""
                 try:
                     seed0 = filtered[0]
                     r0 = await crawl_client.get(seed0, timeout=20)
                     sample_links = _extract_links(r0.text, seed0, same_origin_only=True)
-                    if sample_links:
-                        effective_pattern = await _auto_detect_pattern_via_llm(
-                            crawl_client, discovery_base_url, discovery_api_key,
-                            discovery_model, seed0, sample_links, schema_text,
-                        )
-                        if effective_pattern:
-                            jlog(f"  ✅ pattern auto-detected: {effective_pattern!r}")
-                        else:
-                            jlog("  ⚠️ auto-detect fallito: il crawler verrà saltato")
-                    else:
+                    if not sample_links:
                         jlog("  ⚠️ seed non ha link interni: crawler saltato")
+                    else:
+                        groups_dbg = _group_urls_by_pattern(sample_links)
+                        jlog(
+                            f"  crawler: trovati {len(sample_links)} link interni nel seed, "
+                            f"{len(groups_dbg)} pattern distinti:"
+                        )
+                        for pat, urls in list(groups_dbg.items())[:10]:
+                            jlog(f"    • {pat}  ({len(urls)} URL, es. {urls[0]})")
+
+                        excluded_patterns: list[str] = []
+                        for attempt in range(max_retries + 1):
+                            if attempt == 0:
+                                jlog(f"  discovery: tentativo 1 (objective + schema → LLM)...")
+                            else:
+                                jlog(
+                                    f"  discovery: retry #{attempt} "
+                                    f"(scartati {len(excluded_patterns)}: {excluded_patterns})"
+                                )
+                            pattern_str, reason = await _auto_detect_pattern_via_llm(
+                                crawl_client, discovery_base_url, discovery_api_key,
+                                discovery_model, seed0, sample_links, schema_text,
+                                user_objective=user_objective,
+                                excluded_patterns=excluded_patterns,
+                            )
+                            if not pattern_str:
+                                jlog(f"  ⚠️ discovery non ha proposto un pattern: {reason}")
+                                break
+                            regex_str = _pattern_to_regex(pattern_str)
+                            n_match = _count_pattern_matches(regex_str, sample_links)
+                            jlog(
+                                f"    → scelto: {pattern_str!r} → regex {regex_str!r} "
+                                f"(reason: {reason})"
+                            )
+                            jlog(
+                                f"    sanity check: matcha {n_match}/{len(sample_links)} "
+                                f"link diretti del seed"
+                            )
+                            if n_match > 0:
+                                effective_pattern = regex_str
+                                jlog(f"  ✅ pattern accettato dopo {attempt + 1} tentativo/i")
+                                break
+                            excluded_patterns.append(pattern_str)
+                        if not effective_pattern:
+                            jlog(
+                                f"  ⚠️ discovery ha esaurito i tentativi "
+                                f"({max_retries + 1}/{max_retries + 1}): nessun pattern matcha. "
+                                f"Crawler saltato."
+                            )
                 except Exception as e:
-                    jlog(f"  ⚠️ errore fetching seed per auto-detect: {e}")
+                    jlog(f"  ⚠️ errore durante discovery: {e}")
             else:
                 jlog(f"  crawler: pattern manuale: {effective_pattern!r}")
 

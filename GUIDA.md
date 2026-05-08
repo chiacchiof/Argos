@@ -69,9 +69,19 @@ L'app gira interamente sul tuo computer — la web UI è su `http://127.0.0.1:80
 
 ---
 
-## 3. I 5 tipi di Task (`agent_mode`)
+## 3. I 7 tipi di Task (`agent_mode`)
 
-Quando crei un task, il campo **Modalità agente** determina cosa farà. Ci sono 5 modalità: 2 per scraping, 1 per qualificazione, 1 per outreach, 1 per risposta.
+Quando crei un task, il campo **Modalità agente** determina cosa farà. Ci sono 7 modalità: 4 per scraping (di cui 1 "auto" che sceglie da sola la strategia), 1 per qualificazione, 1 per outreach, 1 per risposta.
+
+| Modalità | Quando usarla |
+|---|---|
+| `react` | Ricerche leggere via HTTP+DuckDuckGo, senza browser |
+| `browser_use` | Pagine JS-heavy, scroll/click, login, contenuto visivo |
+| `bulk_extract` | Cataloghi grandi su siti statici con pattern URL chiaro |
+| **`auto_extract`** | **Lista eterogenea di siti — il sistema sceglie la strategia per ognuno** |
+| `qualifier` | Filtra/scora contatti via LLM partendo da `profiles.jsonl` |
+| `outreach` | Invia email/telegram con template |
+| `responder` | Auto-reply ai messaggi inbound |
 
 ### 3.1 `react` — Ricerca leggera (HTTP + DuckDuckGo)
 
@@ -306,7 +316,62 @@ Se manca, significa che stai usando un solo modello per tutto.
 
 ---
 
-### 3.4 `qualifier` — Filtro/scoring contatti via LLM
+### 3.4 `auto_extract` — Il dispatcher "intelligente" per liste eterogenee
+
+**Cosa fa**: ricevi una **lista di siti diversi** e ti chiedi "quale strategia per ognuno?". `auto_extract` decide DA SOLO. Per ogni URL della lista:
+
+1. **Profiler LLM** (`app/agent/site_profiler.py`): fa fetch della home, calcola signals deterministiche (text-to-html ratio, link patterns, login forms, JS-heaviness, lingua) e con UNA chiamata LLM "capable" produce un JSON:
+   ```
+   {strategy: "bulk_extract" | "browser_use" | "http_llm_guided" | "skip",
+    promising: "yes" | "maybe" | "no",
+    reason: "...", target_hint: "...", expected_yield: 0-N}
+   ```
+2. **Dispatch**: instrada al runner corrispondente (con la stessa configurazione del task — schema, modello, browser_llm, ecc.)
+3. **Fallback automatico**: se la strategia primaria produce 0 profili e non era già `browser_use`, ritenta UNA volta con `browser_use` (cap a 1 fallback per sito per non bruciare costi)
+4. **Aggrega** tutti gli output in un unico `profiles.jsonl` consolidato + report.
+
+**Quando usarlo**:
+- Hai una lista di **N siti diversi** (B2B lead gen, monitoraggio, audit) e non vuoi creare un task `bulk_extract` o `browser_use` per ognuno
+- Non sai a priori se i siti sono statici, JS-heavy, o non scrappabili affatto
+- Vuoi che il sistema **salti automaticamente** i siti off-topic (il profiler identifica "questo sito non c'entra con il tuo obiettivo" e mette `skip`)
+
+**Quando NON usarlo**:
+- Hai un solo sito che conosci bene → meglio `bulk_extract` o `browser_use` direttamente, è più prevedibile
+- Hai bisogno di output deterministico (es. confronto con run precedenti): l'auto-detect del profiler può variare leggermente tra run
+
+**Configurazione**:
+- **Lista siti** (campo "Seed", una URL per riga): es. `https://sito1.com`, `https://sito2.com`, ...
+- **Schema**: lo schema dei dati che vuoi estrarre — il profiler lo USA per giudicare se il sito è "promettente"
+- **Obiettivo**: in italiano, descrive cosa cerchi. **Il profiler lo legge e lo usa per decidere skip/process**. Es: *"Trovare profili pubblici con email/telegram di freelance professionisti"*. Se metti uno schema dei prodotti e nell'obiettivo dici "voglio scarpe", il profiler scarterà siti di mobili.
+- **Modello principale** (per Extraction): es. `gpt-4o-mini` o `llama3.1:8b` locale
+- **Discovery LLM** (opzionale): per l'auto-detect del pattern URL nei siti `bulk_extract` — viene riusato anche dal profiler se compilato
+- **Browser LLM** (opzionale): per i siti instradati a `browser_use` (sia primaria che fallback) — vedi §4.1
+- **Crawler config + max_iterations**: applicate ai siti instradati a `bulk_extract`
+
+**Output**:
+- `data/results/<task_id>/<ts>/profiles.jsonl` — tutti i profili aggregati da TUTTI i siti
+- `data/results/<task_id>/<ts>/auto_extract_report.json` — strutturato, una entry per sito con strategia/profili/reason
+- `data/results/<task_id>/<ts>/report.md` — markdown leggibile con tabella per sito
+- I sub-job (uno per ogni strategia/sito) restano nei loro timestamp accanto, per ispezionare il dettaglio
+
+**Esempio per una lead gen B2B**:
+- Lista siti: 50 URL di directory professionisti
+- Obiettivo: *"Trovare freelance italiani con email pubblica visibile sulla pagina-profilo"*
+- Schema: `profile_contacts`
+- Modello: `gpt-4o-mini`
+
+Il sistema processerà i 50 siti, scarterà quelli off-topic (che non ospitano profili pubblici), tenterà bulk_extract per ognuno, e fa fallback su browser_use solo dove necessario. Costo tipico: ~$0.30-2 per 50 siti.
+
+**Costo del profiling**: 1 chiamata LLM per sito (~1500 token IN + 200 OUT) ≈ **$0.0003 per sito** con `gpt-4o-mini`. Una lista di 100 siti ti costa 3 centesimi solo per il triage iniziale. Trascurabile.
+
+**Limiti noti**:
+- Il profiler usa un User-Agent generico → siti con anti-bot stretto (Wikipedia, alcuni LinkedIn-style) ritornano HTTP 403 e vengono `skip`. Per gestirli serve `browser_use` esplicito o un UA realistico.
+- Il `target_hint` ritornato dal profiler è solo indicativo: il discovery LLM dei sub-runner lo ricalcola (con il proprio retry loop) — niente single-point-of-failure.
+- `http_llm_guided` non è ancora implementato → fallback su `bulk_extract` se il profiler lo sceglie.
+
+---
+
+### 3.5 `qualifier` — Filtro/scoring contatti via LLM
 
 **Cosa fa**: legge un `profiles.jsonl` (di solito prodotto da un task `browser_use` upstream) e per ogni riga chiede a un LLM "questo profilo è valido per outreach? scora 0-10". Materializza i contatti in tabella `contacts` con `status='qualified'` o `'rejected'`.
 
@@ -443,6 +508,25 @@ ANTHROPIC_API_KEY=sk-ant-...
 XAI_API_KEY=xai-...
 GEMINI_API_KEY=AIzaSy...
 ```
+
+### 4.1 I 3 ruoli LLM in un task: Main / Discovery / Browser
+
+Per `bulk_extract` e `auto_extract` un task può avere **fino a 3 LLM separati**, ognuno per un ruolo diverso. Questo permette di **mixare un modello capace per i task difficili con un modello locale gratis per i task ripetitivi**.
+
+| Slot | Quando viene chiamato | N° chiamate per task | Modello consigliato |
+|---|---|---|---|
+| **Main / Extraction** | 1 volta per ogni URL processato (legge testo pagina + schema → JSON estratto) | **N** (= URL discovered) | Locale gratis (`llama3.1:8b`, `gpt-oss:20b`) o `gpt-4o-mini` se vuoi affidabilità |
+| **Discovery** (opzionale) | 1 volta all'inizio per scegliere il pattern URL target nel crawler. In `auto_extract` viene riusato anche dal **profiler** (1 chiamata per sito) | 1 + numero siti | Capace: `gpt-4o-mini` (ottimo cost/quality, ~$0.0003 per chiamata) |
+| **Browser** (opzionale) | Solo per `browser_use` o per i siti che `auto_extract` instrada al browser. Tool-calling complesso + visione | M chiamate (browser-use steps) | **Capable obbligatorio**: `gpt-4o-mini` minimo, meglio `gpt-4o`. Modelli ≤ 8B falliscono il tool-calling complesso. |
+
+**Quando lasciare vuoti gli slot Discovery / Browser**: se il main è già adeguato per quel ruolo. Esempio: se main = `gpt-4o-mini`, lasciare vuoti Discovery e Browser → tutti e 3 i ruoli usano lo stesso. Costo unico, configurazione minima.
+
+**Quando splittarli**: quando il main è locale gratis ma fallisce sui task complessi. Esempio:
+- Main: `ollama/llama3.1:8b` (per le N chiamate di extraction, gratis)
+- Discovery: `openai/gpt-4o-mini` (per la scelta del pattern URL — 1 chiamata, capable)
+- Browser: `openai/gpt-4o-mini` (per i siti che richiedono Playwright)
+
+**API key**: ogni slot ha il proprio campo password nel form. Se compili, viene salvata nel DB del task; altrimenti viene letta dall'env var del provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ecc.).
 
 ---
 
@@ -703,6 +787,12 @@ URL principali:
 
 **`bulk_extract` con `llama3.1:8b` allucina dati su pagine vuote**
 - Modelli da 8B parametri tendono a "completare" lo schema anche se la pagina non contiene i dati (es. inventa un titolo libro sulla home page). Mitigazioni: 1) usa un modello più grande (`gpt-oss:20b` locale o `gpt-4o-mini` cloud), 2) escludi gli URL "indice" dalla lista (home, categoria, paginazione), 3) post-filtra `profiles.jsonl` scartando righe con campi-chiave mancanti.
+
+**`auto_extract` mette `skip` su tutti i siti**
+- Il profiler decide sulla base di `objective` + `extraction_schema`. Se il tuo objective è generico ("estrai dati") e lo schema è generico, il profiler non capisce cosa cerchi e tende a `skip`. Soluzioni: 1) scrivi un objective specifico in italiano (chi/cosa/dove cerchi), 2) compila lo schema con campi precisi, 3) verifica che i siti seed siano raggiungibili (HTTP 200 senza UA filter — alcuni anti-bot bloccano lo UA generico del profiler → `skip` per HTTP 403).
+
+**`auto_extract` con HTTP 403 sul profiler**
+- Wikipedia, ResearchGate, LinkedIn e altri grandi player bloccano user agent generici → il profiler riceve 403 → `skip`. Workaround: crea un task `browser_use` esplicito per quei siti specifici (Playwright passa indenne). In futuro: UA realistico configurabile.
 
 **SMTP test fallisce con "auth"**
 - Per Gmail/Outlook NON usare la password normale. Crea una **App Password** dedicata.

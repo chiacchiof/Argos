@@ -7,11 +7,12 @@ from pydantic import BaseModel, Field, field_validator
 
 OutputFormat = Literal["txt", "md", "both"]
 AgentMode = Literal[
-    "react", "browser_use", "bulk_extract",
+    "react", "browser_use", "bulk_extract", "auto_extract",
     "qualifier", "outreach", "responder",
 ]
 BulkExtractionMethod = Literal["llm_per_page", "css_selectors"]
 MessageChannel = Literal["email", "telegram"]
+StatusTag = Literal["tuning", "working", "broken", "deprecated", "reference"]
 
 
 class TaskIn(BaseModel):
@@ -46,6 +47,27 @@ class TaskIn(BaseModel):
     discovery_llm_provider: str | None = None
     discovery_llm_model: str | None = None
     discovery_llm_api_key: str | None = None
+    max_discovery_retries: int = Field(default=3, ge=0, le=10)
+    browser_llm_provider: str | None = None
+    browser_llm_model: str | None = None
+    browser_llm_api_key: str | None = None
+    rating: int | None = Field(default=None, ge=1, le=5)
+    notes: str | None = None
+    status_tag: StatusTag | None = None
+
+    @field_validator("rating", mode="before")
+    @classmethod
+    def parse_rating(cls, v):
+        if v in (None, "", "0", 0):
+            return None
+        return v
+
+    @field_validator("status_tag", mode="before")
+    @classmethod
+    def parse_status_tag(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @field_validator("message_channels", mode="before")
     @classmethod
