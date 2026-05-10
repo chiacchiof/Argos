@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}Assets — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>📦 Assets</h2>
+  <p class="muted">Tutto il materiale estratto dai task (annunci, prodotti, profili, eventi, articoli, ...). Filtra per tipo o tag.</p>
+
+  {% if request.query_params.get('flash') %}
+  <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
+  {% endif %}
+
+  <form method="get" action="/assets" class="assets-filter">
+    <div class="row">
+      <label>Tipo
+        <select name="asset_type">
+          <option value="">— tutti ({{ types_in_use | sum(attribute='count') }})</option>
+          {% for t in types_in_use %}
+          <option value="{{ t.asset_type }}" {% if t.asset_type == filter_type %}selected{% endif %}>
+            {{ t.asset_type }} ({{ t.count }})
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Stato
+        <select name="status">
+          <option value="">— tutti</option>
+          {% for s in ["new", "qualified", "rejected", "archived"] %}
+          <option value="{{ s }}" {% if s == filter_status %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <input type="hidden" name="tags" value="{{ filter_tags_str }}">
+      <button type="submit">Filtra</button>
+      {% if filter_type or filter_status or filter_tags_str %}
+        <a href="/assets" class="link-cancel">Reset</a>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if filter_tags %}
+  <div class="active-tags">
+    <strong>Tag attivi:</strong>
+    {% for k, v in filter_tags %}
+      {% set remaining = filter_tags | reject("equalto", (k, v)) | list %}
+      {% set rem_str = remaining | map("join", ":") | join(",") %}
+      <span class="tag-chip">
+        {{ k }}: {{ v }}
+        <a href="/assets?asset_type={{ filter_type }}&status={{ filter_status }}&tags={{ rem_str }}"
+           title="Rimuovi questo filtro">×</a>
+      </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if facet_values %}
+  <details class="facets" {% if filter_tags %}open{% endif %}>
+    <summary><strong>Filtra per tag</strong></summary>
+    <div class="facets-grid">
+    {% for key, values in facet_values.items() %}
+      {% if values %}
+      <div class="facet-block">
+        <h4>{{ key }}</h4>
+        <ul>
+          {% for v in values[:12] %}
+            {% set already = (key, v.value) in filter_tags %}
+            {% set base_pairs = filter_tags if already else (filter_tags + [(key, v.value)]) %}
+            {% set base_pairs = base_pairs | reject("equalto", (key, v.value)) | list if already else base_pairs %}
+            {% set pairs_str = base_pairs | map("join", ":") | join(",") %}
+            <li>
+              <a href="/assets?asset_type={{ filter_type }}&status={{ filter_status }}&tags={{ pairs_str }}"
+                 class="{% if already %}tag-active{% endif %}">
+                {{ v.value }} <small class="muted">({{ v.count }})</small>
+              </a>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+
+  {% if assets %}
+  <form method="post" action="/assets/delete-bulk" class="bulk-action-form" data-bulk-form
+        onsubmit="return window.bulkConfirmDelete(this, 'asset')">
+    <input type="hidden" name="redirect_to" value="/assets?asset_type={{ filter_type }}&status={{ filter_status }}&tags={{ filter_tags_str }}">
+    <div class="bulk-action-bar">
+      <label class="bulk-select-all-label">
+        <input type="checkbox" data-bulk-select-all> Seleziona tutti
+      </label>
+      <span class="bulk-count" data-bulk-count>0 selezionati</span>
+      <button type="submit" class="btn-danger-inline" data-bulk-submit disabled>🗑️ Cancella selezionati</button>
+    </div>
+  <table class="data assets-table">
+    <thead>
+      <tr>
+        <th class="bulk-col"><span class="visually-hidden">Seleziona</span></th>
+        <th>#</th>
+        <th>Tipo</th>
+        <th>Titolo</th>
+        <th>Dominio</th>
+        <th>Tag</th>
+        <th>Stato</th>
+        <th>Origine</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in assets %}
+      <tr>
+        <td><input type="checkbox" name="asset_ids" value="{{ a.id }}" data-bulk-row></td>
+        <td>{{ a.id }}</td>
+        <td><code>{{ a.asset_type }}</code></td>
+        <td><a href="/assets/{{ a.id }}">{{ a.title or "(senza titolo)" }}</a></td>
+        <td>
+          {% if a.source_url %}
+          <a href="{{ a.source_url }}" target="_blank" rel="noopener">{{ a.source_domain or "—" }}</a>
+          {% else %}{{ a.source_domain or "—" }}{% endif %}
+        </td>
+        <td class="tags-cell">
+          {% for k, vs in a.tags.items() %}
+            {% for v in vs %}
+              <span class="tag-chip-mini">{{ k }}:{{ v }}</span>
+            {% endfor %}
+          {% endfor %}
+        </td>
+        <td><span class="status status-{{ a.status }}">{{ a.status }}</span></td>
+        <td>
+          {% if a.source_task_id %}
+          <a href="/tasks/{{ a.source_task_id }}">task #{{ a.source_task_id }}</a>
+          {% endif %}
+        </td>
+        <td>
+          <button type="submit" formaction="/assets/{{ a.id }}/delete"
+                  class="btn-small btn-danger"
+                  formnovalidate
+                  onclick="return confirm('Cancellare l\'asset #{{ a.id }}?');">🗑️</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </form>
+  <p class="muted small">{{ assets | length }} asset (max 300).</p>
+  {% else %}
+  <p class="muted">Nessun asset corrisponde ai filtri.</p>
+  {% endif %}
+</section>
+
+<script>
+(function () {
+  // Wiring "select all" + counter + bottone abilitato solo se >0 selezionati
+  function wire(form) {
+    const all = form.querySelector('[data-bulk-select-all]');
+    const rows = form.querySelectorAll('[data-bulk-row]');
+    const submit = form.querySelector('[data-bulk-submit]');
+    const counter = form.querySelector('[data-bulk-count]');
+    if (!rows.length) return;
+    function refresh() {
+      const sel = Array.from(rows).filter(c => c.checked).length;
+      if (counter) counter.textContent = `${sel} selezionati`;
+      if (submit) submit.disabled = sel === 0;
+      if (all) {
+        all.checked = sel === rows.length;
+        all.indeterminate = sel > 0 && sel < rows.length;
+      }
+    }
+    if (all) all.addEventListener('change', () => {
+      rows.forEach(c => { c.checked = all.checked; });
+      refresh();
+    });
+    rows.forEach(c => c.addEventListener('change', refresh));
+    refresh();
+  }
+  document.querySelectorAll('[data-bulk-form]').forEach(wire);
+
+  // Confirm + label generica per submit bulk
+  window.bulkConfirmDelete = function (form, label) {
+    const sel = form.querySelectorAll('[data-bulk-row]:checked').length;
+    if (!sel) return false;
+    return confirm(`Cancellare ${sel} ${label}${sel === 1 ? '' : 's'}? L'azione è permanente.`);
+  };
+})();
+</script>
+{% endblock %}

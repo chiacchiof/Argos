@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Asset #{{ asset.id }} — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <p><a href="/assets">← Assets</a></p>
+  <h2>📦 Asset #{{ asset.id }} <small class="muted">{{ asset.asset_type }}</small></h2>
+
+  {% if request.query_params.get('flash') %}
+  <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
+  {% endif %}
+
+  <h3>{{ asset.title or "(senza titolo)" }}</h3>
+  {% if asset.source_url %}
+  <p>
+    <a href="{{ asset.source_url }}" target="_blank" rel="noopener">{{ asset.source_url }}</a>
+    {% if asset.source_domain %}<small class="muted">· {{ asset.source_domain }}</small>{% endif %}
+  </p>
+  {% endif %}
+
+  <dl class="kv">
+    <dt>Stato</dt><dd><span class="status status-{{ asset.status }}">{{ asset.status }}</span></dd>
+    <dt>Origine</dt>
+    <dd>
+      {% if asset.source_task_id %}
+      <a href="/tasks/{{ asset.source_task_id }}">task #{{ asset.source_task_id }}</a>
+      {% endif %}
+      {% if asset.source_job_id %}<small class="muted">· job #{{ asset.source_job_id }}</small>{% endif %}
+    </dd>
+    <dt>Creato</dt><dd><small>{{ asset.created_at }}</small></dd>
+    <dt>Aggiornato</dt><dd><small>{{ asset.updated_at }}</small></dd>
+    {% if asset.qualifier_score is not none %}
+    <dt>Qualifier score</dt><dd>{{ asset.qualifier_score }}</dd>
+    {% endif %}
+  </dl>
+
+  <h4>Tag</h4>
+  {% if asset.tags %}
+  <div class="tags-cell">
+    {% for k, vs in asset.tags.items() %}
+      {% for v in vs %}
+      <a href="/assets?asset_type={{ asset.asset_type }}&tags={{ k }}:{{ v }}" class="tag-chip-mini">{{ k }}:{{ v }}</a>
+      {% endfor %}
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">Nessun tag derivato.</p>
+  {% endif %}
+
+  <h4>Aggiorna stato</h4>
+  <form method="post" action="/assets/{{ asset.id }}/status" class="settings-form">
+    <label>Nuovo stato
+      <select name="status">
+        {% for s in ["new", "qualified", "rejected", "archived"] %}
+        <option value="{{ s }}" {% if s == asset.status %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Note
+      <input type="text" name="notes" value="{{ asset.notes or '' }}" placeholder="opzionali">
+    </label>
+    <button type="submit">Salva</button>
+  </form>
+
+  <h4>Raw JSON</h4>
+  <pre class="code-block">{{ asset.raw_json }}</pre>
+</section>
+{% endblock %}

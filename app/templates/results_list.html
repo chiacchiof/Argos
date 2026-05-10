@@ -1,25 +1,41 @@
 {% extends "base.html" %}
-{% block title %}Risultati di {{ task.name }} — AgentScraper{% endblock %}
+{% block title %}Risultati di {{ task.name }} - AgentScraper{% endblock %}
 {% block content %}
 <section>
   <h2>Risultati salvati</h2>
-  <p><a href="/tasks/{{ task.id }}">← {{ task.name }}</a></p>
+  <p><a href="/tasks/{{ task.id }}">&larr; {{ task.name }}</a></p>
   {% if items %}
   <table class="data">
-    <thead><tr><th>Tipo</th><th>Nome</th><th>Contenuto</th><th>Dimensione</th></tr></thead>
+    <thead>
+      <tr><th>Tipo</th><th>Nome</th><th>Contenuto</th><th>Dimensione</th><th>Azioni</th></tr>
+    </thead>
     <tbody>
       {% for it in items %}
       <tr>
         {% if it.type == "dir" %}
-          <td>📁 run</td>
+          <td>run</td>
           <td><a href="/tasks/{{ task.id }}/results/{{ it.name }}">{{ it.name }}</a></td>
           <td><small>{{ it.files_count }} file</small></td>
           <td><small>{{ it.size }} byte</small></td>
+          <td><a href="/tasks/{{ task.id }}/results/{{ it.name }}">Apri cartella</a></td>
         {% else %}
-          <td>📄 file</td>
-          <td><a href="/tasks/{{ task.id }}/results/{{ it.name }}">{{ it.name }}</a></td>
-          <td><small>—</small></td>
+          <td>file</td>
+          <td>
+            {% if it.name.endswith(".jsonl") or it.name.endswith(".ndjson") %}
+              <a href="/tasks/{{ task.id }}/results/{{ it.name }}/view" target="_blank" rel="noopener">{{ it.name }}</a>
+            {% else %}
+              <a href="/tasks/{{ task.id }}/results/{{ it.name }}">{{ it.name }}</a>
+            {% endif %}
+          </td>
+          <td><small>-</small></td>
           <td><small>{{ it.size }} byte</small></td>
+          <td>
+            {% if it.name.endswith(".jsonl") or it.name.endswith(".ndjson") %}
+              <a href="/tasks/{{ task.id }}/results/{{ it.name }}/view" target="_blank" rel="noopener">Apri</a>
+              &middot;
+            {% endif %}
+            <a href="/tasks/{{ task.id }}/results/{{ it.name }}">Download</a>
+          </td>
         {% endif %}
       </tr>
       {% endfor %}

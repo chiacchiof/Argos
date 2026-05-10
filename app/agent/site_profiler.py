@@ -120,6 +120,19 @@ def _detect_signals(html: str, base_url: str) -> dict[str, Any]:
             {"pattern": pat, "count": len(urls), "examples": urls[:3]}
             for pat, urls in list(groups.items())[:8]
         ]
+        # Segnale derivato: c'e' un pattern ricorrente "tipo target" (con placeholder
+        # {slug}/{int}) con almeno 10 URL? Se si', il sito ha link diretti a pagine
+        # dettaglio ed e' candidato naturale a bulk_extract anche con text_ratio basso.
+        recurring = False
+        top_count = 0
+        for pat, urls in groups.items():
+            if len(urls) > top_count:
+                top_count = len(urls)
+            if len(urls) >= 10 and ("{slug}" in pat or "{int}" in pat):
+                recurring = True
+                break
+        signals["has_recurring_target_pattern"] = recurring
+        signals["top_pattern_count"] = top_count
 
     # forms
     forms = tree.css("form")
@@ -137,32 +150,51 @@ PROFILER_SYSTEM = """Sei un agente di pre-analisi web. Ricevi la home page di un
 dell'utente + lo schema dei dati richiesti. Devi scegliere la strategia di scraping migliore.
 
 STRATEGIE DISPONIBILI:
-- "bulk_extract": HTML statico, pattern URL chiaro nei link interni, contenuto leggibile direttamente
-  dal raw HTML. È la strategia più veloce ed economica. Sceglila quando vedi pattern URL ricorrenti
-  con segmenti variabili ({slug}/{int}) e text_to_html_ratio decente (≥0.05).
-- "http_llm_guided": HTML statico ma URL senza pattern chiaro (slug random, hash). Serve un crawler
-  che ad ogni hop chiede a un LLM "questo link è target?". Costo medio.
+- "bulk_extract": HTML statico, contenuto leggibile direttamente dal raw HTML. È la strategia
+  più veloce ed economica. Sceglila quando vedi un pattern ricorrente CHIARO con placeholder
+  {slug}/{int} che porta direttamente alle pagine target (≥10 URL del pattern nel sample del seed).
+- "site_explorer": agente ReAct intelligente. Apre la home, capisce la struttura, naviga
+  step-by-step verso la sezione giusta (es. /vendita/<citta>/), poi estrae i target. Sceglilo
+  quando: il sito ha contenuto HTML statico decente MA i target NON sono linkati direttamente
+  dalla home (sono dentro listing o sub-categorie), oppure il pattern URL non è ovvio. Costo
+  medio (~$0.05-0.20/sito), molto più affidabile di bulk_extract su siti con struttura complessa.
 - "browser_use": il sito richiede JavaScript per renderizzare il contenuto, oppure i dati sono dietro
   scroll dinamico, click, login, o richiedono visione del layout. Sceglila quando text_to_html_ratio
-  è molto bassa (<0.03), o quando ci sono indizi forti di JS-rendering, login obbligatorio, ecc.
+  è molto bassa (<0.03), o quando ci sono indizi forti di JS-rendering, login obbligatorio. Lento
+  e costoso: usalo come ULTIMA scelta.
 - "skip": il sito NON è adatto a fornire i dati richiesti per uno qualsiasi di questi motivi:
   paywall completo, dati dietro registrazione obbligatoria, contenuti irrilevanti rispetto
-  all'obiettivo, sito di errore/parking, contenuti illegali o che violano ToS. Non vale la pena
-  spendere tempo/$. Indica chiaramente il motivo.
+  all'obiettivo, sito di errore/parking, contenuti illegali o che violano ToS.
 
-CRITERI:
-1. Match obiettivo ↔ contenuto: il title/meta/snippet del sito c'entra con quello che cerca l'utente?
-   Se NO → skip.
-2. Disponibilità dei dati richiesti: i campi dello schema (es. email, telegram, prezzo, ecc.) sembrano
-   pubblicamente visibili nelle pagine di dettaglio? Se sembrano dietro login/registrazione → skip
-   o browser_use con caveat esplicito.
-3. Tipo di rendering: HTML statico vs JS-heavy. Bassissimo text_to_html_ratio + tanti forms = JS o login.
-4. Qualità del pattern URL: presenza di pattern ricorrenti con placeholder {slug}/{int} = bulk_extract.
-   Slug fissi (about.html, privacy.html) NON sono target. Slug variabili nei sub-domini sono profili.
+CRITERI di scelta (in ordine):
+1. Match obiettivo ↔ contenuto: il title/meta/snippet c'entra? Se NO → skip.
+2. JS-rendering vero (text_to_html_ratio<0.03 E body quasi vuoto E nessun pattern ricorrente)
+   → browser_use.
+3. Pattern target CHIARO sulla home (`has_recurring_target_pattern=True` E top_pattern_count≥10
+   E URL del pattern includono keyword target tipo /annuncio/, /product/, /profilo/) → bulk_extract.
+4. Tutti gli altri casi con HTML statico (text_to_html_ratio ≥0.05) ma struttura "navigabile"
+   (sezioni /vendita-case/<citta>/, /categoria/<x>/, sub-domini come slug, ecc.) → **site_explorer**.
+5. site_explorer è anche la scelta giusta quando il pattern target non è ovvio dalla home ma il
+   sito ha contenuti pubblici accessibili: l'agente naviga e li trova.
+6. Slug fissi (about.html, privacy.html, /chi-siamo/) NON sono target; servono solo a navigare.
+
+QUANDO SCEGLIERE site_explorer (default per siti "non banali"):
+- text_to_html_ratio decente (≥0.05) ma pattern target non chiaro dalla home.
+- Sito con sub-domini come slug per profilo (`<modella>.example.com/`).
+- Sito con multi-livello di listing (categoria → sotto-categoria → annuncio).
+- Sito grande dove bulk_extract potrebbe perdere il pattern.
+
+QUANDO SCEGLIERE bulk_extract:
+- Pattern ricorrente CHIARO sul sample del seed (≥10 URL coerenti con il template).
+- Sito flat o catalogo con listing diretto.
+
+QUANDO SCEGLIERE browser_use:
+- Solo se text_to_html_ratio<0.03 + body quasi vuoto in raw HTML (vero JS-render).
+- È costoso e lento: meglio site_explorer come prima scelta su HTML decente.
 
 Rispondi in JSON ESATTO:
 {
-  "strategy": "bulk_extract" | "browser_use" | "http_llm_guided" | "skip",
+  "strategy": "bulk_extract" | "site_explorer" | "browser_use" | "skip",
   "promising": "yes" | "maybe" | "no",
   "reason": "<2-3 frasi in italiano: COSA vedi e PERCHÉ scegli quella strategia>",
   "target_hint": "<eventuale pattern host+path con placeholder, oppure stringa vuota>",
@@ -171,7 +203,8 @@ Rispondi in JSON ESATTO:
 Solo JSON, niente prosa."""
 
 
-_VALID_STRATEGIES = {"bulk_extract", "browser_use", "http_llm_guided", "skip"}
+_VALID_STRATEGIES = {"bulk_extract", "site_explorer", "browser_use", "skip"}
+_LEGACY_STRATEGY_ALIASES = {"http_llm_guided": "site_explorer"}
 _VALID_PROMISING = {"yes", "maybe", "no"}
 
 
@@ -190,9 +223,16 @@ async def profile_site(
     Ritorna sempre un dict con almeno {url, strategy, promising, reason, signals}.
     Se l'errore è bloccante (sito down, LLM giù), strategy='skip' con error spiegato.
     """
+    # Normalizzazione URL: aggiungi schema se mancante (es. utente ha scritto
+    # "example.it" invece di "https://example.it"). Stessa logica di
+    # bulk_extract._normalize_url.
+    url_normalized = (url or "").strip()
+    if url_normalized and not url_normalized.startswith(("http://", "https://")):
+        url_normalized = "https://" + url_normalized
+
     result: dict[str, Any] = {
-        "url": url,
-        "final_url": url,
+        "url": url_normalized,
+        "final_url": url_normalized,
         "http_status": None,
         "strategy": "skip",
         "promising": "no",
@@ -204,6 +244,10 @@ async def profile_site(
         "llm_raw": None,
     }
 
+    if not url_normalized:
+        result["reason"] = "URL vuoto."
+        return result
+
     # 1. Fetch home
     try:
         async with httpx.AsyncClient(
@@ -211,10 +255,22 @@ async def profile_site(
             follow_redirects=True,
             timeout=timeout,
         ) as client:
-            r = await client.get(url)
+            r = await client.get(url_normalized)
             result["http_status"] = r.status_code
             result["final_url"] = str(r.url)
             if r.status_code >= 400:
+                # 401/403/429 = anti-bot/auth: il PROFILER non passa, ma un browser
+                # reale potrebbe (UA, cookie, JS challenge). Non skip-pare a vuoto:
+                # instrada a browser_use che ha realistic UA + Playwright.
+                if r.status_code in (401, 403, 429):
+                    result["strategy"] = "browser_use"
+                    result["promising"] = "maybe"
+                    result["error"] = f"HTTP {r.status_code}"
+                    result["reason"] = (
+                        f"HTTP {r.status_code} sul profiler (probabile anti-bot). "
+                        f"Tento con browser_use che usa UA realistico e JS."
+                    )
+                    return result
                 result["error"] = f"HTTP {r.status_code}"
                 result["reason"] = f"Sito non raggiungibile (HTTP {r.status_code})"
                 return result
@@ -225,12 +281,12 @@ async def profile_site(
         return result
 
     # 2. Detect signals (deterministico)
-    signals = _detect_signals(html, url)
+    signals = _detect_signals(html, url_normalized)
     result["signals"] = signals
 
     # 3. LLM classification
     user_prompt_parts = [
-        f"URL analizzato: {url}",
+        f"URL analizzato: {url_normalized}",
         f"OBIETTIVO UTENTE (italiano): {(objective or '').strip()[:600] or '(non specificato)'}",
         "",
         f"SCHEMA dei dati richiesti:\n{(schema_text or '').strip()[:1000] or '(nessuno)'}",
@@ -310,6 +366,8 @@ async def profile_site(
         return result
 
     s = obj.get("strategy")
+    if s in _LEGACY_STRATEGY_ALIASES:
+        s = _LEGACY_STRATEGY_ALIASES[s]
     p = obj.get("promising")
     result["strategy"] = s if s in _VALID_STRATEGIES else "skip"
     result["promising"] = p if p in _VALID_PROMISING else "no"

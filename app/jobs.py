@@ -64,6 +64,28 @@ def hard_stop_job(job_id: int) -> bool:
         return False
 
 
+def register_subjob(job_id: int) -> None:
+    """Registra in `_active_jobs` il job_id di un sub-runner (es. sub-job di
+    auto_extract → browser_use o bulk_extract).
+
+    Senza questa registrazione, `hard_stop_job` cliccato sul sub-job in UI non
+    troverebbe nessun task da cancellare. Punta allo stesso `current_task()` del
+    parent: cancellarlo cancella anche il parent (ok, e' il comportamento atteso).
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+    except RuntimeError:
+        return
+    if task is None:
+        return
+    _active_jobs[job_id] = (loop, task)
+
+
+def unregister_subjob(job_id: int) -> None:
+    _active_jobs.pop(job_id, None)
+
+
 def reconcile_orphan_jobs() -> int:
     """A startup: ogni job in stato attivo (queued/running/paused) è orfano.
 
@@ -247,6 +269,9 @@ async def _run_job(job_id: int, task_id: int) -> None:
             from .agent.runner_auto_extract import run_agent as run_ae
             # auto_extract può lanciare browser_use → serve il proactor thread
             await _run_in_proactor_thread(lambda: run_ae(task, job_id), job_id)
+        elif mode == "site_explorer":
+            from .agent.runner_site_explorer import run_agent as run_se
+            await run_se(task, job_id)
         elif mode == "outreach":
             from .agent.runner_outreach import run_agent as run_o
             await run_o(task, job_id)

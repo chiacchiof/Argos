@@ -122,7 +122,16 @@ Livelli di autonomia:
 
 Il planner funziona anche senza LLM esterno usando una strategia euristica locale. Se abiliti **Planner LLM**, l'orchestrator chiede a un modello OpenAI-compatible un piano JSON; se la chiamata fallisce, torna automaticamente al piano euristico. La API key del planner serve solo a generare il piano e non viene salvata nei task creati.
 
-La colonna destra contiene una **chat persistente** salvata in DB. Usa lo stesso provider/modello configurato in Settings; web (`web_search`, `fetch_url`) e file si attivano direttamente dal composer della chat, solo quando il modello selezionato risulta compatibile. Gli allegati vengono salvati in `data/uploads/orchestrator/` e passati al modello come contesto della richiesta.
+La colonna destra contiene una **chat persistente** salvata in DB. Usa lo stesso provider/modello configurato in Settings.
+
+Toggle del composer:
+- **Web** (per-messaggio): se attivo e il modello supporta tool-calling, l'orchestrator può usare `web_search` e `fetch_url` per recuperare contesto aggiornato.
+- **Azioni** (per-messaggio): se attivo, l'orchestrator può **chiamare gli endpoint del progetto come tool** — `propose_plan`, `execute_plan`, `create_task`, `create_workflow`, `add_edge`, `start_job`, `start_workflow`, `update_asset_status`, `set_site_pattern_status`. Senza Azioni la chat è solo lettura/ragionamento.
+- Allegati `+`: file `.txt`, `.md`, `.csv`, `.json/jsonl`, `.html`, `.pdf` (max 5 MB). I PDF vengono estratti server-side con `pypdf`. Gli allegati storici dei messaggi precedenti vengono ri-iniettati come contesto.
+
+Tool sempre disponibili in chat (lettura, anche con Azioni OFF, se il modello supporta tool-calling): `list_tasks`, `get_task`, `list_workflows`, `list_jobs`, `get_job_status`, `list_extraction_templates`, `list_chat_models`, `list_assets`, `get_asset`, `list_site_patterns`.
+
+Per outreach/responder serve sempre `confirm_risky=true` esplicito quando l'orchestrator chiama `start_job` / `start_workflow` / `execute_plan(run_now=true)`.
 
 ### 2.2 Come scegliere l'input `.jsonl` di un task
 
@@ -159,6 +168,10 @@ Devo estrarre dati dal web?
 │   └── Lascia che il sistema scelga la strategia per ognuno
 │       (con fallback automatico) ────────────────────► auto_extract  (§3.4)
 │
+├── SÌ — ho UN sito MA la struttura non è ovvia
+│   (home non linka i target, listing nascoste,
+│    navigazione multi-livello) ─────────────────────► site_explorer (§3.4.1)
+│
 └── NO — ho già un profiles.jsonl, devo lavorarci sopra
     ├── Filtrare/scorare i contatti via LLM ──────────► qualifier     (§3.5)
     ├── Mandare email/telegram ai contatti ───────────► outreach      (§3.6)
@@ -174,7 +187,8 @@ Devo estrarre dati dal web?
 | `react` | HTTP + DuckDuckGo, niente browser | rapido | $0.05-0.20 | Ricerche generiche, sintesi |
 | `browser_use` | Pilota Chromium reale | LENTO (4-6h) | $5-10 (gpt-4o-mini) | Solo se HTML statico non basta |
 | `bulk_extract` | HTTP + readability + 1 LLM/URL | veloce (5-10 min) | $0.20 cloud, **$0 locale** | Cataloghi statici, pattern URL chiari |
-| **`auto_extract`** | **Profiler + dispatch automatico** | dipende | dipende dai siti | **Lista eterogenea di siti** |
+| `auto_extract` | Profiler + dispatch automatico | dipende | dipende dai siti | Lista eterogenea di siti |
+| **`site_explorer`** | **Agente ReAct: LLM decide ogni step** | medio (5-15 min/sito) | **$0.05-0.20 per sito** | **Siti dove la struttura non è ovvia: scende automaticamente nelle listing giuste** |
 
 #### Famiglia "Pipeline downstream"
 
@@ -425,15 +439,29 @@ Se manca, significa che stai usando un solo modello per tutto.
 
 **Cosa fa**: ricevi una **lista di siti diversi** e ti chiedi "quale strategia per ognuno?". `auto_extract` decide DA SOLO. Per ogni URL della lista:
 
-1. **Profiler LLM** (`app/agent/site_profiler.py`): fa fetch della home, calcola signals deterministiche (text-to-html ratio, link patterns, login forms, JS-heaviness, lingua) e con UNA chiamata LLM "capable" produce un JSON:
+1. **Profiler LLM** (`app/agent/site_profiler.py`): fa fetch della home, calcola signals deterministiche (text-to-html ratio, link patterns, login forms, JS-heaviness, lingua, `has_recurring_target_pattern`) e con UNA chiamata LLM "capable" produce un JSON:
    ```
-   {strategy: "bulk_extract" | "browser_use" | "http_llm_guided" | "skip",
+   {strategy: "bulk_extract" | "site_explorer" | "browser_use" | "skip",
     promising: "yes" | "maybe" | "no",
     reason: "...", target_hint: "...", expected_yield: 0-N}
    ```
-2. **Dispatch**: instrada al runner corrispondente (con la stessa configurazione del task — schema, modello, browser_llm, ecc.)
-3. **Fallback automatico**: se la strategia primaria produce 0 profili e non era già `browser_use`, ritenta UNA volta con `browser_use` (cap a 1 fallback per sito per non bruciare costi)
+2. **Dispatch**: instrada al runner corrispondente (con la stessa configurazione del task — schema, modello, browser_llm, ecc.). Per `browser_use` cap `max_iterations` a 25; per `site_explorer` cap a 50.
+3. **Fallback automatico bidirezionale**: se la strategia primaria produce 0 profili, ritenta UNA volta con la strategia complementare (cap 1 fallback per sito):
+   - `bulk_extract` → `site_explorer` (agente ReAct: trova listing nascoste, drill-down)
+   - `site_explorer` → `bulk_extract` (caso raro: pattern semplice non rilevato)
+   - `browser_use` → `site_explorer` (agente HTTP intelligente, più rapido di un secondo browser)
 4. **Aggrega** tutti gli output in un unico `profiles.jsonl` consolidato + report.
+
+**Matrice di scelta del profiler (post-2026-05-09)**:
+
+| Segnali del sito | Strategia |
+|---|---|
+| `text_to_html_ratio<0.03` E body raw vuoto E nessun pattern ricorrente → vero JS-render | `browser_use` |
+| `has_recurring_target_pattern=True` E ≥10 URL del pattern target sulla home | `bulk_extract` |
+| HTML decente ma pattern target non chiaro / multi-livello / sub-domini come slug | **`site_explorer`** |
+| Sito off-topic (title/contenuto non c'entra con l'obiettivo) | `skip` |
+| Paywall completo / login obbligatorio per i dati | `skip` |
+| HTTP 401/403/429 sul profiler (anti-bot blocca lo User-Agent) | `browser_use` (UA realistico + JS, prima di rinunciare) |
 
 **Quando usarlo**:
 - Hai una lista di **N siti diversi** (B2B lead gen, monitoraggio, audit) e non vuoi creare un task `bulk_extract` o `browser_use` per ognuno
@@ -473,6 +501,167 @@ Il sistema processerà i 50 siti, scarterà quelli off-topic (che non ospitano p
 - Il profiler usa un User-Agent generico → siti con anti-bot stretto (Wikipedia, alcuni LinkedIn-style) ritornano HTTP 403 e vengono `skip`. Per gestirli serve `browser_use` esplicito o un UA realistico.
 - Il `target_hint` ritornato dal profiler è solo indicativo: il discovery LLM dei sub-runner lo ricalcola (con il proprio retry loop) — niente single-point-of-failure.
 - `http_llm_guided` non è ancora implementato → fallback su `bulk_extract` se il profiler lo sceglie.
+
+---
+
+### 3.4.1 `site_explorer` — Agente ReAct vero per navigazione di siti
+
+**Cosa fa**: a differenza di `bulk_extract` (pipeline rigida discovery+crawler) e `auto_extract` (dispatcher di sub-runner), `site_explorer` usa un **LLM agentico** per decidere step-per-step come navigare un sito, esattamente come farebbe un umano:
+
+> "Apro la home. Vedo nel menu un link `Vendita case` con sotto-link per zona fra cui Acireale. Quella è ovviamente la sezione che mi interessa. Apro `vendita-case/acireale/`. Vedo 30 schede annuncio. Provo a estrarne una per verificare il pattern. OK, sono pagine annuncio. Estraggo le altre. Pagine successive del paginatore? Se sì, vado avanti."
+
+**Quando usarlo**:
+- Siti dove `bulk_extract` con discovery automatica fallisce perché la home **non linka direttamente** le pagine target (es. yescasa.it, pcase.it: gli annunci sono dentro `/vendita-case/<citta>/`, non sulla home).
+- Siti con struttura non ovvia / multi-livello / dove il pattern URL non si capisce a prima vista.
+- Quando vuoi essere SICURO che l'agente esplori l'obiettivo dichiarato nel `objective` invece di vagare alla cieca.
+
+**Architettura ReAct con 3 tool**:
+- `fetch_page(url)` → ritorna `{title, n_internal_links, link_patterns: [{pattern, count, examples}], text_preview}`. Output compatto pensato per LLM (no HTML grezzo).
+- `extract_target(url)` → fetch + LLM extractor con il template del task. Ritorna `{ok: true, asset_summary: "..."}` se la pagina è un target valido (post-`_has_minimal_data_for`), `{ok: false, reason: "..."}` se non lo è. Permette al LLM di **verificare in vivo** se un URL è un target, prima di sprecare 200 chiamate su URL fasulle.
+- `done(reason)` → termina graceful.
+
+**DOM enrichment automatico (2026-05-10)**: dopo che il LLM extractor produce il JSON, prima della validazione, il runner applica `_enrich_obj_from_dom(html, template)` che cerca nel raw HTML **pattern di contatto canonici** e popola i campi che il LLM ha lasciato vuoti:
+
+| Campo | Pattern riconosciuti |
+|---|---|
+| `email` | `mailto:...` (preferito), o email inline nel testo se il LLM non ne ha trovata |
+| `whatsapp` | `wa.me/<numero>`, `api.whatsapp.com/send?phone=<numero>` |
+| `telegram` | `t.me/<handle>` |
+| `social` | `instagram.com/<handle>`, `tiktok.com/@<handle>`, `twitter.com / x.com / facebook.com / youtube.com / linkedin.com/in/<...>`, `onlyfans.com / linktr.ee` |
+
+Filtri anti-spam: vengono scartate email su domini palesemente di servizio (`sentry.io`, `wixpress.com`, `example.com`, `*.local`) e local-part chiaramente automatici (`noreply`, `no-reply`, `do-not-reply`, `donotreply`).
+
+**Razionale**: i LLM piccoli (anche i coder 7B) tendono a "leggere" il testo ma a saltare gli `href` e gli attributi HTML. Un mailto del profilo molto spesso non finisce nel JSON estratto. Il DOM enrichment recupera quei dati gratis in O(1) regex sul main-content che il runner ha già in mano dopo `fetch_page`. Il LLM resta autoritativo (non sovrascrive mai un campo già pieno), il regex riempie solo i buchi.
+
+**Scope dell'enrichment (2026-05-10, rev. 2)**: il regex viene applicato all'HTML grezzo **privato di header/footer/nav** (zone "globali del sito"). Il pre-processing avviene tramite [`_strip_global_chrome`](app/agent/runner_site_explorer.py): `selectolax` rimuove i tag semantici (`<header>`, `<footer>`, `<nav>`), gli ARIA roles (`banner`, `navigation`, `contentinfo`) e le class names comuni (`.site-header`, `.site-footer`, `.main-nav`, ...).
+
+Razionale: avevamo prima provato a usare il `summary_html` di Readability (main-content), ma Readability spesso butta i blocchi link social del profilo perché non sono "narrativa" — perdevamo i contatti veri del singolo profilo (es. `t.me/MissGiadina`). All'opposto, il raw HTML grezzo include footer/header del sito → false attribuzioni (`info@mondocamgirls.com`, `twitter/MondoCamGirls`). La via di mezzo "raw HTML privato delle zone globali" tiene tutto il body del profilo (incluse sidebar e blocchi link) e taglia solo le zone notoriamente di sistema.
+
+**Filtro anti-brand**: in più, ogni handle social estratto viene confrontato col primo segmento del registrable_domain del sito ([`_is_brand_handle`](app/agent/runner_site_explorer.py)). Esempio: su `mondocamgirls.com`, l'handle `MondoCamGirls` viene scartato (è il brand), mentre `MissGiadina` viene tenuto. Email con dominio uguale a quello del sito (`info@mondocamgirls.com` su `mondocamgirls.com`) sono pure scartate. Doppia rete di sicurezza contro le attribuzioni globali.
+
+**Soglia `is_complete` per template (2026-05-10)**: il flag `is_complete` ritornato da `extract_target` non significa "tutti i campi-chiave popolati" (definizione troppo stretta che era impossibile da raggiungere su profili reali). Significa "soglia minima sufficiente":
+
+| Template | `is_complete=true` quando |
+|---|---|
+| `profile_contacts` | `display_name` + ALMENO 1 fra `email/whatsapp/telegram/social/sitoweb` |
+| `real_estate` | `prezzo_eur` + (`citta` o `indirizzo`) + (`categoria` o `tipo`) |
+| `ecommerce_products` | `name` + `price_amount` |
+| `events` | `title` + (`start_datetime` o (`city` E `venue`)) |
+| `news_articles` | `title` + (`author` o `published_at`) |
+| `job_listings` | `title` + `company` |
+
+**Importante**: anche con `is_complete=false`, l'asset viene SALVATO (perché ha già passato la validazione `_has_minimal_data_for`). `is_complete` serve solo a guidare il LLM su _quando_ tentare drill-down e a sbloccare il pattern learning sotto. Il prompt è esplicito: "INCOMPLETO ≠ scartabile, vai avanti — il qualifier filtrerà dopo".
+
+**Pattern learning sub-pagina (2026-05-10)**: il runner traccia un `learned_subpath` per-job. Funziona così:
+
+1. L'agente fa `extract_target(alice.example.com/)` → `is_complete=false` (mancano email/social).
+2. L'agente esplora, fa `fetch_page(alice.example.com/social-links/)`, poi `extract_target(alice.example.com/social-links/)` → `is_complete=true`.
+3. **Il runner deriva**: il path "/social-links" è ciò che ha trasformato un incompleto in completo → `learned_subpath = "/social-links"`. Log: `💡 PATTERN IMPARATO: target completi su questo sito vivono in '/social-links/'`.
+4. Per i profili successivi (bob, charlie, ...), ogni `fetch_page` o `extract_target` su una URL che non contiene già `/social-links` riceve nel proprio output un campo `hint` che dice all'agente: "vai diretto a `<profile_url>/social-links/`, evita di esplorare la home del profilo".
+5. L'agente legge l'hint e va dritto al subpath utile per gli altri profili. Risultato: ~1 step in meno per profilo, su un sito da 25 profili sono 25 step risparmiati (cioè spesso la differenza fra "raggiunge il cap target" e "sfora `max_iterations` con metà cap fatto").
+
+Il subpath imparato è **per-job** (resetta a fine task) e si "blocca" sul primo che funziona. Gestisce siti omogenei (tutti i profili in `/social-links/`); non gestisce siti misti (alice→`/social-links/`, charlie→`/contatti/`) — in quei casi resta valida la strategia di esplorazione del LLM.
+
+Filtri sul subpath: i segmenti puramente numerici sono scartati (es. `/12345` non viene mai imparato come pattern: è un ID, non una sezione).
+
+Il LLM tiene memoria implicita degli URL visitati e degli asset estratti tramite il context window (gpt-4o-mini regge facilmente 30 step).
+
+**Configurazione del task**:
+
+| Campo | Cosa metterci |
+|---|---|
+| `seed_queries` | **Un solo URL** per task: la home del sito o una sezione di alto livello. Non serve la listing precisa: il LLM la trova. |
+| `extraction_template` | Obbligatorio: `real_estate`, `ecommerce_products`, ecc. Lo schema viene incluso nel system prompt. |
+| `objective` | **CRUCIALE**: scrivilo specifico ("annunci immobiliari Acireale > 200k", non "annunci immobiliari"). Il LLM usa l'obiettivo per decidere quali sezioni esplorare. |
+| `model` | Vedi sezione "Scelta del modello" sotto. **Importante**: i modelli code-tuned (qwen3-coder, deepseek-coder) battono i chat per questo loop. |
+| `max_iterations` | Cap step LLM. Default 30. Aumentare a 50 per siti grandi. |
+| `target_cap_per_site` | **Cap target per sito** (default 30, max 200). Quando l'agente arriva a N asset estratti, termina. Campo dedicato nel form (sezione "Configurazione site_explorer"). |
+| `llm_provider` | OpenAI o Ollama vanno entrambi bene. La differenza vera è il modello, non il provider. |
+
+> **Nota (2026-05-10)**: prima del 2026-05-10 il `target_cap_per_site` era riusato dal campo `bulk_concurrency`, creando ambiguità (concorrenza HTTP vs cap target). Ora `bulk_concurrency` significa SOLO concorrenza HTTP per `bulk_extract`, e `target_cap_per_site` è un campo separato nel DB e nel form. La migrazione è idempotente (`ALTER TABLE ADD COLUMN ... DEFAULT 30`): i task pre-2026-05-10 ereditano automaticamente il default 30.
+
+**Scelta del modello (lezione dal campo, 2026-05-09)**:
+
+L'aspettativa intuitiva era "modello chat = ragionamento naturale = vince". È sbagliata. Risultati reali sul medesimo task (yescasa.it, brief "annunci Acireale > 200k"):
+
+| Modello | Step | Asset estratti | Note |
+|---|---|---|---|
+| `qwen3.5:latest` (~7B chat) | 9 | **0** | Si è perso al 9° step emettendo testo invece di tool_call. Non è mai arrivato a `extract_target`. |
+| `qwen3-coder:30b` (30B code-tuned) | 11 | **2** | Ha capito subito la struttura, fatto il drill-down corretto, estratto 2 annunci. (Si è fermato presto — vedi reminder "non chiudere a 2" nel system prompt.) |
+| `gpt-4o-mini` (OpenAI) | tipicamente 25-30 | 15-25 | Riferimento di robustezza. ~$0.05-0.20 per sito. |
+
+**Perché i coder vincono qui**: tool-calling è essenzialmente "emetti JSON conforme a uno schema". I modelli code-tuned sono allenati a farlo a occhi chiusi (è il loro mestiere). I modelli chat su loop ReAct di 10+ step tendono a:
+- emettere `tool_calls` malformati che il dispatcher salta;
+- generare risposte in linguaggio naturale ("ora dovrei chiamare fetch_page...") **invece** del tool_call vero;
+- "perdere il filo" del context dopo 5-10 turni.
+
+**Raccomandazione operativa**:
+- **Locale**: `qwen3-coder:30b` (se hai HW per 30B). In subordine: `deepseek-coder:6.7b` o `llama3.1:8b`.
+- **Cloud**: `gpt-4o-mini` (riferimento), `gpt-4o` per siti molto difficili.
+- **Sconsigliati per site_explorer**: modelli chat <8B (qwen3.5:latest, mistral:7b). Per **chat conversazionale** generale (es. orchestrator chat) restano invece la scelta giusta.
+
+**Costo tipico**:
+- Step LLM: ~$0.001-0.003 con gpt-4o-mini.
+- Step `extract_target`: 1 fetch HTTP + 1 chiamata LLM extractor (~$0.005).
+- **Totale per sito**: 30 step × $0.005 medio = **$0.05-0.20 per sito**, decisamente meno di `browser_use` ($5-10).
+
+**Output**: `profiles.jsonl` (compatibile con qualifier downstream) + `report.md` con la cronologia dei passi.
+
+**Esempio: yescasa.it brief "annunci Acireale > 200k"**:
+- Step 1: `fetch_page(https://www.yescasa.it/)` → vede link `/vendita-case/<citta>/` (tante città).
+- Step 2: il LLM ragiona "Acireale è in Sicilia, cerco /vendita-case/acireale/" → `fetch_page(https://www.yescasa.it/vendita-case/acireale/)`.
+- Step 3: vede 30 link `/annuncio/<id>/` → prova `extract_target` su uno → `ok: true, asset_summary: "appartamento · Acireale · €250000"`.
+- Step 4-25: itera `extract_target` sugli altri annunci della listing.
+- Step 26: `done(reason: "raggiunto cap di 25 target")`.
+
+**Cosa vedi nei log durante l'esecuzione** (logging dettagliato):
+
+Ogni step del loop ReAct produce una riga compatta con tool + URL + outcome:
+```
+📄 step 1: fetch_page(https://www.yescasa.it/) → 47 link, 5 pattern, top: yescasa.it/{slug}/{slug} (30 URL) "Yescasa - Annunci Immobiliari"
+📄 step 2: fetch_page(https://www.yescasa.it/vendita-case/acireale/) → 28 link, 2 pattern, top: yescasa.it/annuncio/{int} (24 URL)
+✅ step 3: extract_target(https://www.yescasa.it/annuncio/658565/) → ok: appartamento · Acireale · €250000 [totale: 1/25]
+✅ step 4: extract_target(https://www.yescasa.it/annuncio/657550/) → ok: villa · Acireale · €380000 [totale: 2/25]
+⛔ step 5: extract_target(https://www.yescasa.it/agenzie-immobiliari/) → no: campi-chiave del template real_estate tutti vuoti
+💭 step 6: Ho già estratto 2 annunci, vado avanti sulla listing principale.
+📄 step 6: fetch_page(https://www.yescasa.it/vendita-case/acireale/?p=2) → 24 link, 1 pattern...
+🏁 step 30: done → raggiunti 25 target sulla listing acireale
+```
+
+I prefissi:
+- `📄` fetch_page: riassunto title + n. link + top pattern
+- `✅` extract_target ok: asset estratto, sintesi del contenuto
+- `⛔` extract_target no: motivo del fallimento (es. campi vuoti)
+- `🏁` done: motivazione finale dell'agente
+- `💭` thought: i "pensieri" del modello quando emette content + tool_call insieme
+- `↩` se il modello smette di chiamare tool (problema, vedi "Scelta del modello" sopra)
+
+**Few-shot nel system prompt**:
+
+Al modello viene mostrato un esempio concreto di "traiettoria buona" all'interno del system prompt:
+```
+ESEMPIO DI TRAIETTORIA (per orientarti, NON copiare gli URL):
+  step 1: fetch_page(home) → vede link /vendita-case/{citta}/
+  step 2: fetch_page(/vendita-case/acireale/) → vede 25 link /annuncio/{int}
+  step 3-N: extract_target sui restanti URL
+  step N+1: done(...)
+```
+
+E due regole anti-fallimento osservate sul campo:
+- **"DEVI sempre emettere un tool_call ad ogni turno (mai solo testo)"** — per i modelli chat che tendono a passare in modalità prosa.
+- **"NON fermarti dopo aver estratto solo 2-3 target se la listing ne contiene di più"** — per i coder che tendono a chiudere troppo presto.
+
+**Limiti**:
+- Anche `site_explorer` NON supera anti-bot (Cloudflare, hCaptcha) di portali grandi.
+- Se il sito è **completamente JS-rendered** e l'HTML iniziale è vuoto, l'agente vede una pagina vuota e termina; ricorri a `browser_use`.
+- Costa più di `bulk_extract` (in cambio di intelligenza vera).
+- Su siti **enormi e malstrutturati** può girare in tondo: il cap di `max_iterations` lo ferma comunque.
+
+**Quando preferirlo agli altri**:
+- ❌ `react`: site_explorer è specializzato per estrazione da un **singolo sito**, react fa ricerca multi-sito via DDG.
+- ✅ vs `bulk_extract`: usa site_explorer quando la home non linka i target o quando bulk_extract estrae spazzatura.
+- ✅ vs `browser_use`: usa site_explorer quando il sito è statico (HTML completo a fetch HTTP). Se il sito richiede JS, browser_use.
+- 🔄 **vs `auto_extract`**: dal 2026-05-09 `auto_extract` include `site_explorer` come **terza strategia** scelta dal profiler, oltre a `bulk_extract` e `browser_use`. Quindi puoi anche metterti su `auto_extract` con una lista mista di siti, e il profiler decide caso-per-caso (bulk per pattern chiari, site_explorer per struttura non ovvia, browser_use solo per JS pesante, skip per siti irrecuperabili). Vedi §3.4 per la nuova matrice di scelta del profiler.
 
 ---
 
@@ -598,13 +787,19 @@ Selezionabili per task dal selettore "Provider LLM" nel form. Le API key vanno i
 | **`gemini`** | Google, contesto enorme (utile su pagine lunghe) | basso | Buono |
 | **`custom`** | Qualsiasi endpoint OpenAI-compat (es. proxy aziendale, llama.cpp server) | dipende | dipende |
 
-**Consigli**:
+**Consigli per agent_mode**:
 - `react`: `llama3.1:8b` o `mistral:latest` (ollama) bastano
 - `browser_use`: idealmente `gpt-4o-mini` (~$0.10/run) o `gpt-oss:20b` se vuoi restare locale
 - `bulk_extract`: per l'**Extraction** usa modelli **senza thinking mode** — `llama3.1:8b`, `mistral:latest`, `gpt-oss:20b` (ollama) o `gpt-4o-mini` (cloud). **Evita `qwen3*`, `qwen3.5*`, `qwen3-coder*`, `deepseek-r1*`**: il thinking mode brucia tutti i token e ritornano `content` vuoto. Per la **Discovery** (1 sola chiamata) usa pure un modello capace come `gpt-4o-mini`.
+- **`site_explorer`**: agent loop ReAct multi-step → preferisci modelli **code-tuned** robusti sul tool-calling: **`qwen3-coder:30b`** (locale, raccomandato), `gpt-4o-mini` (cloud, riferimento). I chat <8B (`qwen3.5:latest`, `mistral:7b`) **falliscono spesso**: emettono prosa invece di tool_call dopo qualche step. Vedi §3.4.1 per i benchmark reali.
 - `qualifier`: `gpt-4o-mini` o anche locale (qualifier è leggero, una chiamata per profilo)
 - `responder`: medio-grande (la qualità della risposta scritta a un essere umano conta)
 - `outreach`: non usa LLM (è puro template fill + send)
+
+**Regola generale (lezione dal campo)**:
+- **Agent loop multi-step con tool-calling** (`site_explorer`, `browser_use`, chat orchestrator con Azioni ON): preferisci **modelli code-tuned** o cloud capable. Il modello deve emettere JSON conforme a uno schema turno dopo turno; i coder lo fanno meglio dei chat di pari taglia.
+- **Ragionamento aperto / sintesi prosaica** (chat orchestrator senza Azioni, `react`, `responder`): preferisci modelli **chat generalisti**.
+- **Estrazione strutturata one-shot** (`bulk_extract` extraction, `qualifier` judging): qualunque modello ragionevole va bene, evita il thinking-mode.
 
 **Setup chiavi** (in `.env`):
 ```
@@ -732,7 +927,268 @@ L'auto-reply funziona solo se hai un task `responder` che gira (manualmente o vi
 
 ---
 
-## 9. Casi d'uso completi
+## 9. Asset, tag e memoria pattern
+
+A partire dall'iterazione 2026-05-09 il modello dati e il runtime hanno **due strati nuovi** che generalizzano il vecchio "tutto è un contatto" e dotano il sistema di una memoria di apprendimento per dominio.
+
+### 9.1 Asset come modello dati generalizzato
+
+Ogni riga di `profiles.jsonl` prodotta da un runner viene ingestata in tabella `assets`, indipendentemente dal template di estrazione:
+
+| Asset type | Da cosa nasce | Tag derivati tipici |
+|---|---|---|
+| `real_estate` | template `real_estate` (case/ville) | `tipo` (vendita/affitto), `categoria`, `citta`, `price_band`, `mq_band`, `locali`, `classe_energetica` |
+| `ecommerce_products` | template `ecommerce_products` | `category`, `brand`, `availability`, `price_band`, `rating_band` |
+| `events` | template `events` | `category`, `city`, `country`, `is_free`, `availability` |
+| `news_articles` | template `news_articles` | `category`, `author`, `topic`, `length_band` |
+| `job_listings` | template `job_listings` | `company`, `location`, `remote_policy`, `employment_type`, `experience_level`, `salary_band` |
+| `profile_contacts` | template `profile_contacts` | `contact` (email/whatsapp/telegram), `social`, `source_domain`, `lang` |
+
+I tag sono derivati **dichiarativamente** (niente LLM) dal modulo [`app/agent/asset_tags.py`](app/agent/asset_tags.py) tramite `derive_tags(asset_type, raw_json)`. Sono indicizzati in tabella `asset_tags(asset_id, tag_key, tag_value)` con vincolo UNIQUE.
+
+L'asset nasce con `status='new'` e può essere promosso a `qualified|rejected|archived` (manualmente da UI o tramite il qualifier downstream / chat orchestrator).
+
+**`profile_contacts` resta speciale**: continua a essere ingestato anche in tabella `contacts` (con filtro email/telegram) per alimentare outreach. Per tutti gli altri template, l'ingest in `contacts` viene saltato (filtro "no email/telegram" non si applica più erroneamente a immobili/prodotti/eventi/articoli/lavoro).
+
+### 9.2 La pagina `/assets`
+
+`📦 Assets` nella nav. Fornisce:
+- **Filtro tipo**: dropdown con tutti gli `asset_type` presenti in DB + count.
+- **Filtro stato**: `new | qualified | rejected | archived`.
+- **Filtri tag a faceting**: per ogni `tag_key` rilevante per il tipo selezionato, top 30 valori con count cliccabili. Multi-tag funziona come AND.
+- **Tabella**: `id | tipo | titolo | dominio | tag (mini-chip) | stato | task origine`.
+- Detail asset: `raw_json` completo, lista tag, form di promozione stato, link al task/job di origine.
+
+Esempi di query URL:
+- `/assets?asset_type=real_estate&tags=citta:Acireale,price_band:200-300k`
+- `/assets?asset_type=job_listings&tags=remote_policy:remote,salary_band:60-90k`
+
+### 9.3 Memoria pattern per dominio (`site_patterns`)
+
+`bulk_extract` ora memorizza in DB i pattern URL "target" che ha imparato per ogni dominio.
+
+Tabella `site_patterns`:
+| Colonna | Significato |
+|---|---|
+| `registrable_domain` | es. `yescasa.it` |
+| `pattern` | forma simbolica, es. `www.yescasa.it/annuncio/{int}` |
+| `regex` | regex generata da `_pattern_to_regex` |
+| `asset_type` | template per cui il pattern è valido (`real_estate`, ecc.) |
+| `status` | `candidate` → `confirmed` → `rejected` |
+| `hits` | URL del crawler che hanno matchato il pattern |
+| `successes` / `failures` | quanti URL matchati hanno prodotto un'estrazione valida |
+
+**Flusso**:
+1. **All'inizio del crawler** in `runner_bulk_extract`: query `find_site_patterns(domain, asset_type, status='confirmed')`. Se trovato → riusa, salta la discovery LLM. **Risparmio**: ~2-8s + 1 chiamata LLM per dominio.
+2. **Quando il discovery LLM trova un pattern accettato dal sanity check**: salvato come `candidate` (idempotente per `(domain, pattern)`).
+3. **A fine run** (DOPO l'ingest in `assets`): `record_pattern_run(pattern_id, hits, successes, failures)` con contatori **post-validation**.
+4. **Promozione automatica**: `maybe_promote_pattern` verifica le soglie:
+   - candidate → confirmed: `successes >= 3` E `successes/(successes+failures) >= 0.4`.
+   - confirmed → candidate (retrocesso): se `(successes+failures) >= 5` E ratio < 0.2.
+
+**Cosa conta come `success` (importante!)**:
+- `success` = **asset realmente valido** che è entrato in tabella `assets` dopo aver superato il filtro `_has_minimal_data_for` ([runner_browseruse.py](app/agent/runner_browseruse.py)).
+- `failure` = URL processato dal pattern che ha prodotto un asset scartato (campi-chiave del template tutti vuoti) o ha fallito l'extraction LLM.
+- **NON** è "extraction LLM ha emesso JSON parseable": un pattern che produce 200 JSON tutti vuoti conta 200 failures, non 200 successes. Questo evita che pattern fasulli (es. quelli che matchano pagine indice anziché annunci) vengano promossi a `confirmed` e poi riusati.
+
+I log del runner mostrano:
+- `📌 memoria DB: riuso pattern confermato per 'yescasa.it' [hits=20 successes=15]` → riuso.
+- `📌 memoria DB: salvato pattern come 'candidate' (id=N)` → primo apprendimento.
+- `📌 memoria DB: pattern id=N -> status='confirmed' (post-validation: 12 successes / 3 failures)` → promozione.
+
+**Tool chat per ispezione/cleanup**: `list_site_patterns(domain?)` per leggere, `set_site_pattern_status(pattern_id, 'rejected')` per scartare manualmente un pattern fasullo (vedi 9.6).
+
+### 9.3.1 Discovery multi-step: drill-down nelle listing intermediarie
+
+I siti reali raramente espongono i link agli annunci/prodotti **direttamente dalla home**. Tipicamente la home ha solo un menu di sezioni (`/vendita-case/`, `/categoria/`, `/account/`, ecc.) e i target stanno **un livello più giù**, dentro le listing per zona/categoria (es. `/vendita-case/acireale/` linka i singoli annunci `/annuncio/<id>/`).
+
+Il discovery del runner [`runner_bulk_extract.py`](app/agent/runner_bulk_extract.py) lavora su **due passate**:
+
+1. **Pass 1 — discovery sul seed** (come prima): il LLM analizza i link interni del seed e propone un pattern target. Sanity check sui link diretti del seed: `n_match`.
+2. **Pass 2 — drill-down nelle listing** (nuovo): se `n_match < 3` (pattern dubbio dal seed), il runner identifica fra i link del seed delle "candidate listing pages" e ci scende dentro:
+   - **Step 2.1 — euristica keyword** [`_identify_candidate_listings`](app/agent/runner_bulk_extract.py): seleziona top 6 candidate URL dal sample del seed con uno score basato su:
+     - **+3** se l'URL contiene una keyword di listing (`vendit`, `annunci`, `case`, `categori`, `catalog`, `prodott`, `elenco`, `directory`, `ricerc`, `comuni`, `regioni`, `zone`, ...).
+     - **+2** se il pattern strutturale dell'URL ha ≥5 URL nel sample (pattern ricorrente).
+     - **+1** se il path è corto (≤3 segmenti).
+   - **Step 2.2 — rerank LLM** [`_rerank_listings_via_llm`](app/agent/runner_bulk_extract.py): chiede al modello di riordinare i 6 candidate secondo la coerenza semantica con l'**obiettivo del task** + lo **schema target**. Il modello vede una stringa tipo:
+     > "OBIETTIVO: estrai annunci immobiliari Acireale > 200k. SCHEMA: real_estate (prezzo, mq, città, ...). Quali tra questi 6 URL sono LISTING che linkano i target?"
+     
+     Ritorna ordine top-N. Costo: 1 chiamata LLM extra per sito (solo quando il drill-down si attiva). Se il rerank fallisce silenziosamente, ricade sull'ordine euristico keyword.
+   - **Step 2.3 — visita top 4** dopo rerank: il runner fa GET, estrae i link interni e ri-chiama il discovery LLM su ognuno.
+   - Se trova un pattern con `n_match` migliore di quello del seed: lo adotta, **aggiunge la listing al seed** (così il crawler la visita), e aggiorna la memoria pattern in DB.
+   - Si ferma appena trova un pattern con `n_match >= 5` (fortemente confermato).
+
+Esempio concreto (yescasa.it, brief "annunci immobiliari Acireale"):
+- Pass 1: home `https://www.yescasa.it`, link diretti tipo `/account/accedi/`, `/calcola-mutuo/`, `/vendita-case/<citta>/`. LLM propone pattern dubbio (perché gli annunci concreti `/annuncio/<id>/` non sono linkati direttamente).
+- Pass 2.1: `_identify_candidate_listings` filtra top 6 (keyword euristica): `/vendita-case/acireale/`, `/vendita-case/catania/`, `/calcola-mutuo/`, `/agenzie-immobiliari/<citta>/`, ecc.
+- Pass 2.2: `_rerank_listings_via_llm` con obiettivo "annunci Acireale" → mette `/vendita-case/acireale/` in cima (semanticamente più coerente di "calcola-mutuo" o "agenzie").
+- Pass 2.3: visita `vendita-case/acireale/`, vede link `/annuncio/<id>/`. LLM propone pattern `www.yescasa.it/{slug}/{int}` con `n_match >> 5`.
+- Pattern adottato. Listing aggiunta come seed. Crawler estrae i veri annunci.
+
+Log diagnostici attivati nel job log:
+```
+🔍 pattern dal seed debole (1 match). Esploro 4 candidate listing (LLM-ranked)...
+   listing candidate: https://www.yescasa.it/vendita-case/acireale/
+     → pattern 'www.yescasa.it/{slug}/{int}': matcha 18/47 link della listing
+✅ pattern migliorato dalla listing https://www.yescasa.it/vendita-case/acireale/: ... (18 match)
+➕ listing aggiunta come seed: https://www.yescasa.it/vendita-case/acireale/
+📌 memoria DB: pattern aggiornato dopo drill-down
+```
+
+**Costo**: 1 chiamata LLM extra per il rerank + fino a 4 fetch HTTP + 4 chiamate LLM aggiuntive per la discovery, **solo quando** il pattern dal seed è debole. Se il seed è già buono (`n_match >= 3`), il drill-down è skippato — costo zero.
+
+### 9.3.2 Qualifier ora opera su `assets`, non su `profiles.jsonl` raw
+
+Il runner [`runner_qualifier.py`](app/agent/runner_qualifier.py) ora ha **due sorgenti di input**, in ordine di priorità:
+
+1. **Sorgente primaria — tabella `assets`** (default in workflow):
+   - Il runner cerca i task **upstream** via `db.list_edges(to_task_id=<qualifier_task_id>)`.
+   - Per ogni task upstream, carica `db.list_assets(source_task_id=src, status='new', limit=10000)`.
+   - Valuta SOLO gli asset post-validation (non più 90% di pagine indice).
+   - A ogni judgment, scrive `qualifier_score` + `status` direttamente sull'asset (`db.update_asset_qualifier`).
+   - I qualified vengono anche scritti in `qualified.jsonl` per outreach/responder downstream (compat).
+
+2. **Fallback — `input_artifact_path` (profiles.jsonl)**: se non ci sono asset upstream (es. task standalone, task lanciato manualmente senza workflow, dati importati da file esterno), il runner ricade sul comportamento legacy.
+
+Il log mostra esplicitamente quale sorgente sta usando:
+```
+Sorgente: tabella `assets` (task upstream [22]): 18 asset 'new' da valutare.
+```
+oppure:
+```
+Sorgente: profiles.jsonl fallback (`/data/results/22/.../profiles.jsonl`).
+```
+
+**Conseguenze pratiche per la configurazione del task**:
+- Se il qualifier è dentro un workflow (collegato via edge a un task upstream `auto_extract`/`bulk_extract`/`browser_use`): non serve impostare `input_artifact_path`. Il runner pesca dagli `assets`.
+- Se il qualifier è standalone o vuoi forzare un file specifico: imposta `input_artifact_path` nel form del task. Il fallback parte solo se la sorgente primaria è vuota.
+
+**Effetto sui numeri**: i contatori `qualified` / `rejected` adesso sono **onesti** — sono la frazione su asset reali validi, non su righe spazzatura. Prima del fix, un run poteva mostrare "qualified=42" su 401 ma 388 dei 401 erano pagine indice scartate dal validator; ora `qualified=N` significa N asset realmente promossi a `status='qualified'` in tabella `assets`.
+
+### 9.3.3 Validation di completezza all'ingest
+
+Prima di scrivere un `asset` in DB, [`_ingest_to_assets`](app/agent/runner_browseruse.py) verifica che il `raw_json` abbia almeno i **campi minimi** del template:
+
+| Template | Campi minimi (almeno uno true) |
+|---|---|
+| `real_estate` | `prezzo_eur`, `metri_quadri`, `locali`, `indirizzo`, `agenzia` |
+| `ecommerce_products` | `name` o `price_amount` |
+| `events` | `title` o `start_datetime` |
+| `news_articles` | `title` E almeno uno tra `author`, `published_at`, `summary` |
+| `job_listings` | `title` E almeno uno tra `company`, `apply_url` |
+| `profile_contacts` | `display_name`, `username`, `email`, `whatsapp`, `telegram` |
+| `generic` | sempre accettato |
+
+Le righe scartate vengono loggate come `⏭️ N righe scartate (campi-chiave del template '...' tutti vuoti)`. Risultato: niente più asset-fantasma da pagine indice processate per errore.
+
+### 9.4 Cambio strategia automatico (cascading) e anti-loop
+
+`auto_extract` adesso fa **cascading 3-via** quando una strategia produce 0 profili. Massimo 1 retry per sito (cap 1 fallback per non bruciare costi).
+
+| Strategia primaria (profiler) | Fallback automatico | Razionale |
+|---|---|---|
+| `bulk_extract` → 0 profili | `site_explorer` | Pattern URL non chiaro: serve un agente che esplori semanticamente |
+| `site_explorer` → 0 profili | `browser_use` | Caso "JS pesante non rilevato": l'agente ReAct su HTTP non vede contenuto, salgo a browser reale |
+| `browser_use` → 0 profili o timeout | `site_explorer` | Browser pesante è inutile, agente ReAct su HTTP è più rapido |
+| `skip` | nessun fallback | Decisione del profiler (sito off-topic) |
+
+> **Nota (2026-05-09)**: il fallback di `site_explorer` ora va a `browser_use` (non più a `bulk_extract`). Razionale: se un agente ReAct con LLM tool-calling **non riesce a estrarre nulla** da un sito, è quasi certo che il problema è JS-render o anti-bot, non un pattern bulk-friendly che il LLM non ha colto. Saltare a un crawler deterministico è quasi sempre tempo sprecato.
+
+La logica vive in [`runner_auto_extract.py`](app/agent/runner_auto_extract.py).
+
+Il **profiler** distribuisce le 4 strategie con questa logica (vedi anche §3.4):
+- **`browser_use`** SOLO se vero JS-render (`text_to_html_ratio<0.03` E body raw quasi vuoto E nessun pattern ricorrente).
+- **`bulk_extract`** se `has_recurring_target_pattern=True` (≥10 URL target sul sample della home, es. `/annuncio/{int}`, `/product/{slug}`).
+- **`site_explorer`** in tutti gli altri casi con HTML decente: pattern non chiaro, struttura multi-livello, sub-domini come slug, ecc. È la **scelta predefinita per siti "non banali"**.
+- **`skip`** se off-topic o paywall completo.
+
+**Anti-loop**: per evitare che gli agenti girino all'infinito, il runner applica cinture di sicurezza per modalità:
+1. `max_iterations` cappato per i sub-job che hanno semantica "step LLM" invece di "URL processati":
+   - `browser_use`: cap 25 step (prima ereditava 200 step di auto_extract → loop di minuti).
+   - `site_explorer`: cap **min 50 / max 200** step (`max(50, min(inherited, 200))`). Il default ReAct è 30, ma se l'utente sa di voler estrarre molti profili (es. `target_cap_per_site=100`) può alzare `max_iterations` del task fino a 200. Cap minimo 50 protegge da impostazioni sbagliate (es. `max_iterations=10`).
+2. Browser-use `step_timeout=180s` (default). Step più lento di 3 min = abort.
+3. `asyncio.wait_for` esterno a `agent.run()` con timeout `max(180, max_steps*15+60)`. Su TimeoutError salva quanto raccolto e passa al seed successivo.
+4. Site_explorer: validation completezza degli asset post-extract (vedi §9.3.3) impedisce ingest di JSON vuoti.
+
+### 9.5 Pulsante Stop davvero affidabile
+
+Click "Stop" su un job (sia entry-point sia sub-job) ora:
+1. Scrive `control_signal='stop'` in DB.
+2. Risolve il task asyncio in `_active_jobs[job_id]` (anche per i sub-job, che ora si registrano: in [`runner_browseruse.run_agent`](app/agent/runner_browseruse.py) e [`runner_bulk_extract.run_agent`](app/agent/runner_bulk_extract.py) si fa `register_subjob` all'ingresso, `unregister_subjob` in `finally`).
+3. Chiama `task.cancel()` cross-thread → propagazione `CancelledError` alla prossima `await` interna → httpx chiude TCP → OpenAI interrompe la generation lato server (best effort).
+
+Per browser_use specificamente, `register_should_stop_callback` viene cablato a `db.get_control_signal(job_id) == 'stop'`: browser-use lo invoca **tra una step e l'altra**. Quindi anche senza task.cancel(), basta che il control_signal vada a 'stop' e l'agent termina graceful entro 1 step (~10s).
+
+Il timeout della singola chiamata LLM è ora `60s` esplicito sul `ChatOpenAI`: limita la finestra di esposizione su completion in volo dopo un Stop.
+
+### 9.6 Tool chat orchestrator per asset e pattern
+
+Quando il toggle Azioni è ON, l'orchestrator può anche:
+- `list_assets({asset_type, status, tags: ["citta:Acireale","price_band:200-300k"], limit})`
+- `get_asset({asset_id})` — dettaglio + tag + raw_json.
+- `update_asset_status({asset_id, status, notes})`
+- `list_site_patterns({registrable_domain, status, limit})`
+- `set_site_pattern_status({pattern_id, status})` — utile per `'rejected'` un pattern sbagliato.
+
+Esempi da chat:
+- "elenca gli annunci immobiliari ad Acireale sopra 200k" → l'orchestrator chiama `list_assets(asset_type='real_estate', tags=['citta:Acireale','price_band:200-300k'])`.
+- "ho già un pattern confirmed per yescasa.it?" → `list_site_patterns(registrable_domain='yescasa.it')`.
+
+### 9.7 Modalità d'uso aggiornate (best practice)
+
+Linee guida pratiche dopo i fix di affidabilità. Seguile per evitare i tre problemi tipici (asset spazzatura, pattern fasulli in memoria, qualifier che valuta rumore).
+
+#### Configurare bene un task scraping (`bulk_extract` / `auto_extract` / `site_explorer`)
+
+| Cosa | Suggerimento |
+|---|---|
+| **Seed URL** | Preferisci sempre la **listing page della tua zona/categoria** (`https://sito.it/vendita/acireale/`), non la home (`https://sito.it/`). Quando proprio non sai la listing, lascia comunque la home: il drill-down LLM-ranked (9.3.1, e su `site_explorer` il navigatore ReAct) prova a scendere automaticamente. |
+| **`extraction_template`** | Sceglilo coerente coi dati che ti aspetti: `real_estate` per annunci immobili, `ecommerce_products` per shop, ecc. La validation post-ingest (9.3.3) usa questo per scartare le pagine "spazzatura". Se metti il template sbagliato, asset validi vengono scartati. |
+| **`crawler_enabled`** | Lascialo **ON** quando vuoi che il sito venga esplorato in profondità (solo `bulk_extract`). Per `site_explorer` non si applica: il LLM esplora step-per-step. |
+| **`max_iterations`** | Per `bulk_extract` / `auto_extract`: 100-200 (cap totale di URL processati). Per `site_explorer`: 30-50 (cap step LLM). Per `browser_use`: 25 (oltre, entra in loop). |
+| **`bulk_concurrency`** | **Solo `bulk_extract`**: concorrenza HTTP fetch (URL paralleli). 3-5 default. Se i siti rispondono lenti, abbassa a 2. Non si applica a `site_explorer`. |
+| **`target_cap_per_site`** | **Solo `site_explorer` / `auto_extract`→`site_explorer`**: massimo asset estratti per sito (default 30, max 200). Alza a 50-100 per directory grandi. Non si applica a `bulk_extract` (che processa la lista intera). |
+| **Modello** | `gpt-4o-mini` è ottimo rapporto qualità/costo. Per `site_explorer` locale preferisci modelli code-tuned (`qwen3-coder`, `deepseek-coder`): battono i chat sui loop di tool-calling. Per tasks `react` resta su Ollama locale (gratis). |
+
+#### Configurare bene un workflow `extract → qualifier`
+
+1. Crea il task `extract` (`auto_extract` o `bulk_extract`) con seed e template come sopra.
+2. Crea il task `qualifier`:
+   - `agent_mode = qualifier`
+   - `objective` = istruzioni specifiche per il filtro (es. "Tieni solo annunci con prezzo > 200000 EUR E località in provincia di Catania (Acireale, Catania, Aci Castello, ...)").
+   - `input_artifact_path`: **lascia vuoto** se è dentro a un workflow con edge dall'extract. Il qualifier ora pesca direttamente dalla tabella `assets` (vedi 9.3.2).
+   - Modello: anche un Ollama locale tool-capable va bene per il judging.
+3. In `/workflows/<id>`, aggiungi un edge `extract → qualifier` (con `pass_artifact='profiles.jsonl'` opzionale, retrocompat).
+4. Lancia il workflow. Il qualifier ora opererà SOLO sugli asset validati (post-`_has_minimal_data_for`), non sulle pagine indice spazzatura.
+
+#### Quando rilanciare/cancellare un pattern dalla memoria
+
+La memoria pattern impara progressivamente. Comportamento atteso:
+- **Primo run su un dominio**: pattern salvato come `candidate`, hits/successes accumulati.
+- **Run successivi**: se `successes >= 3` E ratio `successes/(successes+failures) >= 0.4` → promosso a `confirmed`. Da quel momento il discovery LLM viene saltato per quel dominio (risparmio tempo+$).
+- **Pattern fallato**: se confirmed e poi `(successes+failures) >= 5` con ratio < 0.2 → retrocesso automaticamente a `candidate`.
+
+**Manualmente**: se ti accorgi che un pattern è proprio sbagliato (es. punta a pagine `/account/` invece che ad annunci), apri la chat orchestrator (con Azioni ON) e di' "metti `rejected` il pattern X di yescasa.it". L'LLM chiamerà `set_site_pattern_status`. Da quel momento il pattern non verrà più riusato.
+
+#### Quando lanciare un task standalone (senza workflow)
+
+Pratico per: test rapidi, riusare un `profiles.jsonl` esistente, valutare un set di profili importati da fuori.
+
+- Task `bulk_extract` standalone: imposta `seed_queries`, lascia `crawler_enabled=on`, lancialo.
+- Task `qualifier` standalone: imposta `input_artifact_path` (puoi caricarlo dalla UI o sceglierlo dal dropdown). Il fallback profiles.jsonl si attiva solo in questo caso.
+- Task `outreach` / `responder`: sempre richiedono task upstream (qualifier) o dati importati.
+
+#### Stop pulito di un job che gira male
+
+Se un job `auto_extract` o `bulk_extract` sta producendo solo rumore (lo vedi nei progress: `0 ok / X failed`), **clicca Stop sul sub-job** o sul job parent dalla UI:
+- Il control_signal viene scritto in DB.
+- Il task asyncio viene cancellato (Fix sub-job in `_active_jobs` sempre attivo).
+- Browser-use viene fermato dalla callback `register_should_stop_callback` entro pochi secondi (non aspetta la fine della seed).
+- httpx chiude il TCP a OpenAI: il completion in volo viene interrotto sul server (best effort, qualche cent di token già emessi possono essere fatturati).
+
+---
+
+## 10. Casi d'uso completi
 
 ### Caso 1 — Lead generation B2B end-to-end
 
@@ -850,7 +1306,7 @@ Click ▶ Esegui workflow → A parte, poi B e C in parallelo, poi D e E in para
 
 ---
 
-## 10. Comandi utili
+## 11. Comandi utili
 
 ```powershell
 # Avvio (con auto-reload)
@@ -877,7 +1333,7 @@ URL principali:
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 **Job rimane "running" per ore senza progredire**
 - Click ⏹ Stop (hard cancel del task asyncio)
@@ -915,7 +1371,7 @@ URL principali:
 
 ---
 
-## 12. Considerazioni etiche e legali
+## 13. Considerazioni etiche e legali
 
 ⚠️ **AgentScraper è dual-use**. È legittimo per content audit, monitoraggio competitor, ricerca, lead generation B2B. È invece **rischioso** per:
 
@@ -928,7 +1384,7 @@ L'app fornisce gli strumenti tecnici. La conformità legale e l'etica sono respo
 
 ---
 
-## 13. Cosa NON fa (ancora)
+## 14. Cosa NON fa (ancora)
 
 - **WhatsApp**: scartato (Meta Cloud API troppo costosa/burocratica per single-user)
 - **Webhook pubblici**: solo polling. Per webhook reali servirebbe tunneling HTTPS (ngrok/cloudflare).

@@ -162,6 +162,38 @@ def test_new_tables_created(monkeypatch, tmp_path):
     assert db.list_orchestrator_messages() == []
 
 
+def test_jsonl_results_viewer(monkeypatch, tmp_path):
+    from app import config, db, storage
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
+    db.init_db()
+
+    task_id = db.create_task({"name": "Viewer", "objective": "x"})
+    run_dir = tmp_path / "results" / str(task_id) / "run-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "profiles.jsonl").write_text(
+        '{"name":"Alice","score":9}\nnot-json\n{"name":"Bob"}\n',
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        r = client.get(f"/tasks/{task_id}/results/run-1")
+        assert r.status_code == 200
+        assert f"/tasks/{task_id}/results-view/run-1/profiles.jsonl" in r.text
+        assert 'target="_blank"' in r.text
+
+        r = client.get(f"/tasks/{task_id}/results-view/run-1/profiles.jsonl?limit=2")
+        assert r.status_code == 200
+        assert "Alice" in r.text
+        assert "JSON non valido" in r.text
+        assert "Successive" in r.text
+
+
 def test_workflow_dag_create_and_cycle(monkeypatch, tmp_path):
     from app import config, db, storage
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)

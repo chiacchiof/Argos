@@ -107,3 +107,36 @@ async def contact_optout(contact_id: int):
 async def contact_reset(contact_id: int):
     db.update_contact_status(contact_id, "qualified", notes="Reset manuale (re-contattabile)")
     return RedirectResponse(url="/inbox/contacts", status_code=303)
+
+
+@router.post("/inbox/contacts/{contact_id}/delete")
+async def contact_delete(contact_id: int):
+    db.delete_contact(contact_id)
+    return RedirectResponse(
+        url=f"/inbox/contacts?flash=Contatto+%23{contact_id}+cancellato",
+        status_code=303,
+    )
+
+
+@router.post("/inbox/contacts/delete-bulk")
+async def contacts_delete_bulk(
+    request: Request,
+    redirect_to: str = Form("/inbox/contacts"),
+):
+    form = await request.form()
+    raw_ids = form.getlist("contact_ids") if hasattr(form, "getlist") else form.get("contact_ids")
+    if not isinstance(raw_ids, list):
+        raw_ids = [raw_ids] if raw_ids else []
+    ids: list[int] = []
+    for v in raw_ids:
+        try:
+            ids.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    n = db.delete_contacts_bulk(ids) if ids else 0
+    target = redirect_to if redirect_to.startswith("/") else "/inbox/contacts"
+    sep = "&" if "?" in target else "?"
+    return RedirectResponse(
+        url=f"{target}{sep}flash={n}+contatti+cancellati",
+        status_code=303,
+    )

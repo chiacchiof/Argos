@@ -29,7 +29,6 @@ from ..config import UPLOADS_DIR, settings
 from ..orchestrator import (
     AUTONOMY_LEVELS,
     OrchestratorPlan,
-    PlannedEdge,
     PlannedTask,
     RISKY_AGENT_MODES,
     _task_to_db_payload,
@@ -185,6 +184,93 @@ CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_guide_topics",
+            "description": (
+                "Lista tutte le sezioni della guida ufficiale del progetto (GUIDA.md). "
+                "Usalo PRIMA di rispondere a domande tipo 'come configuro X', 'qual e' la "
+                "differenza fra Y e Z', 'quale modello usare per W' — la guida contiene "
+                "best practice e dettagli operativi specifici di AgentScraper. "
+                "Ritorna [{id, level, title}] di tutte le sezioni."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_guide_section",
+            "description": (
+                "Legge una sezione della guida ufficiale del progetto (GUIDA.md). "
+                "Query per id esatto (es. '3-4-1-site-explorer-agente-react') oppure "
+                "per parole chiave nel titolo (es. 'site_explorer', 'workflow', 'qualifier'). "
+                "Se la query e' ambigua ritorna lista candidati. "
+                "Usalo per leggere la documentazione vera prima di consigliare/configurare un task."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "id sezione o keyword (es. 'site_explorer', 'auto_extract')",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_assets",
+            "description": (
+                "Lista asset (annunci/prodotti/profili/...) estratti dai task. "
+                "Filtra per asset_type, status e tag. Tag come array di 'key:value'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "asset_type": {"type": "string"},
+                    "status": {"type": "string"},
+                    "source_task_id": {"type": "integer"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "es. ['tipo:vendita','citta:Acireale']"},
+                    "limit": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_asset",
+            "description": "Dettaglio completo di un asset (incluso raw_json e tag).",
+            "parameters": {
+                "type": "object",
+                "properties": {"asset_id": {"type": "integer"}},
+                "required": ["asset_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_site_patterns",
+            "description": (
+                "Lista i pattern URL appresi per dominio (memoria pattern). "
+                "Filtri: registrable_domain (es. 'yescasa.it'), status ('candidate'|'confirmed'|'rejected')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "registrable_domain": {"type": "string"},
+                    "status": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
+            },
+        },
+    },
 ]
 
 CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
@@ -310,6 +396,41 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                     "confirm_risky": {"type": "boolean"},
                 },
                 "required": ["workflow_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_asset_status",
+            "description": "Aggiorna stato di un asset (new|qualified|rejected|archived) con note opzionali.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "asset_id": {"type": "integer"},
+                    "status": {"type": "string"},
+                    "notes": {"type": "string"},
+                },
+                "required": ["asset_id", "status"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_site_pattern_status",
+            "description": (
+                "Imposta lo status di un pattern in memoria DB ('candidate'|'confirmed'|'rejected'). "
+                "Usa 'rejected' per scartare definitivamente un pattern sbagliato."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern_id": {"type": "integer"},
+                    "status": {"type": "string"},
+                    "notes": {"type": "string"},
+                },
+                "required": ["pattern_id", "status"],
             },
         },
     },
@@ -1365,6 +1486,10 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
             return _tool_list_extraction_templates()
         if name == "list_chat_models":
             return await _tool_list_chat_models(args)
+        if name == "list_guide_topics":
+            return _tool_list_guide_topics()
+        if name == "read_guide_section":
+            return _tool_read_guide_section(args)
         if name == "propose_plan":
             return await _tool_propose_plan(args)
         if name == "execute_plan":
@@ -1379,6 +1504,16 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
             return _tool_start_job(args)
         if name == "start_workflow":
             return _tool_start_workflow(args)
+        if name == "list_assets":
+            return _tool_list_assets(args)
+        if name == "get_asset":
+            return _tool_get_asset(args)
+        if name == "update_asset_status":
+            return _tool_update_asset_status(args)
+        if name == "list_site_patterns":
+            return _tool_list_site_patterns(args)
+        if name == "set_site_pattern_status":
+            return _tool_set_site_pattern_status(args)
         return f"Tool non supportato: {name}"
     except Exception as e:
         return f"Errore tool {name}: {type(e).__name__}: {e}"
@@ -1478,6 +1613,155 @@ async def _tool_list_chat_models(args: dict[str, Any]) -> str:
         info = get_provider(target) or {}
         models = [m["id"] for m in (info.get("suggested_models") or [])]
     return json.dumps({"ok": True, "provider": target, "models": models}, ensure_ascii=False)
+
+
+# ---------- Guide (GUIDA.md) parsing + tool helpers ---------------------------
+
+_GUIDE_PATH = Path(__file__).resolve().parent.parent.parent / "GUIDA.md"
+_GUIDE_CACHE: tuple[list[dict[str, Any]], float] | None = None
+
+
+def _slugify(text: str) -> str:
+    s = text.lower()
+    s = re.sub(r"[^\w\s-]", "", s, flags=re.UNICODE)
+    s = re.sub(r"[\s_-]+", "-", s).strip("-")
+    return s[:90]
+
+
+def _parse_guide_sections(md_text: str) -> list[dict[str, Any]]:
+    """Parsa GUIDA.md in sezioni piatte. Ogni header (## / ### / ####) inizia una
+    nuova sezione che termina al prossimo header di QUALSIASI livello.
+    """
+    out: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    in_code_fence = False
+    for line in md_text.split("\n"):
+        if line.startswith("```"):
+            in_code_fence = not in_code_fence
+        is_header = (not in_code_fence) and bool(re.match(r"^(#{2,4})\s+\S", line))
+        if is_header:
+            if cur:
+                cur["content"] = cur["_buf"].strip()
+                del cur["_buf"]
+                out.append(cur)
+            m = re.match(r"^(#{2,4})\s+(.+?)\s*$", line)
+            assert m  # non dovrebbe fallire grazie al check is_header
+            level = len(m.group(1))
+            title = m.group(2).strip()
+            cur = {
+                "id": _slugify(title),
+                "level": level,
+                "title": title,
+                "_buf": "",
+            }
+        else:
+            if cur is not None:
+                cur["_buf"] += line + "\n"
+    if cur is not None:
+        cur["content"] = cur["_buf"].strip()
+        del cur["_buf"]
+        out.append(cur)
+    # Dedup ID identici (capita su sezioni con titolo simile, es. "3.5" doppio)
+    seen: dict[str, int] = {}
+    for s in out:
+        base = s["id"]
+        if base in seen:
+            seen[base] += 1
+            s["id"] = f"{base}-{seen[base]}"
+        else:
+            seen[base] = 1
+    return out
+
+
+def _guide_sections() -> list[dict[str, Any]]:
+    global _GUIDE_CACHE
+    if not _GUIDE_PATH.exists():
+        return []
+    try:
+        mtime = _GUIDE_PATH.stat().st_mtime
+    except OSError:
+        return []
+    if _GUIDE_CACHE is None or _GUIDE_CACHE[1] != mtime:
+        try:
+            text = _GUIDE_PATH.read_text(encoding="utf-8")
+        except OSError:
+            return []
+        _GUIDE_CACHE = (_parse_guide_sections(text), mtime)
+    return _GUIDE_CACHE[0]
+
+
+def _tool_list_guide_topics() -> str:
+    secs = _guide_sections()
+    if not secs:
+        return json.dumps(
+            {"ok": False, "reason": f"GUIDA.md non trovata o vuota ({_GUIDE_PATH})"}
+        )
+    listing = [
+        {"id": s["id"], "level": s["level"], "title": s["title"]}
+        for s in secs
+    ]
+    return json.dumps({"ok": True, "count": len(listing), "topics": listing}, ensure_ascii=False, indent=2)
+
+
+def _tool_read_guide_section(args: dict[str, Any]) -> str:
+    query = (str(args.get("query") or "").strip()).lower()
+    if not query:
+        return json.dumps({"ok": False, "reason": "query mancante"})
+    secs = _guide_sections()
+    if not secs:
+        return json.dumps({"ok": False, "reason": "GUIDA.md non trovata"})
+
+    # 1. Match per id esatto
+    exact = [s for s in secs if s["id"] == query]
+    if len(exact) == 1:
+        s = exact[0]
+        return json.dumps(
+            {"ok": True, "id": s["id"], "title": s["title"], "level": s["level"], "content": s["content"][:6000]},
+            ensure_ascii=False,
+        )
+
+    # 2. Match per substring nel titolo (case-insensitive)
+    title_matches = [s for s in secs if query in s["title"].lower()]
+    if len(title_matches) == 1:
+        s = title_matches[0]
+        return json.dumps(
+            {"ok": True, "id": s["id"], "title": s["title"], "level": s["level"], "content": s["content"][:6000]},
+            ensure_ascii=False,
+        )
+    if len(title_matches) > 1:
+        return json.dumps(
+            {
+                "ok": False,
+                "reason": f"piu' sezioni hanno '{query}' nel titolo. Specifica con un id esatto.",
+                "candidates": [{"id": s["id"], "title": s["title"]} for s in title_matches[:10]],
+            },
+            ensure_ascii=False,
+        )
+
+    # 3. Match per substring nel contenuto (fallback)
+    body_matches = [s for s in secs if query in s["content"].lower()]
+    if len(body_matches) == 1:
+        s = body_matches[0]
+        return json.dumps(
+            {"ok": True, "id": s["id"], "title": s["title"], "level": s["level"], "content": s["content"][:6000]},
+            ensure_ascii=False,
+        )
+    if len(body_matches) > 1:
+        return json.dumps(
+            {
+                "ok": False,
+                "reason": f"piu' sezioni contengono '{query}' nel testo. Specifica con un id esatto o un titolo piu' preciso.",
+                "candidates": [{"id": s["id"], "title": s["title"]} for s in body_matches[:10]],
+            },
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        {
+            "ok": False,
+            "reason": f"nessuna sezione matcha '{query}'. Usa list_guide_topics() per vedere i titoli disponibili.",
+        }
+    )
 
 
 async def _tool_propose_plan(args: dict[str, Any]) -> str:
@@ -1672,6 +1956,132 @@ def _tool_start_workflow(args: dict[str, Any]) -> str:
     return json.dumps({"ok": True, "workflow_id": workflow_id, "result": result}, default=str)
 
 
+def _parse_tag_pairs(raw: Any) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    if not raw:
+        return out
+    items: list[Any] = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+    for item in items:
+        if isinstance(item, dict):
+            for k, v in item.items():
+                if k and v:
+                    out.append((str(k).lower(), str(v)))
+            continue
+        if not isinstance(item, str):
+            continue
+        if ":" not in item:
+            continue
+        k, _, v = item.partition(":")
+        k = k.strip().lower()
+        v = v.strip()
+        if k and v:
+            out.append((k, v))
+    return out
+
+
+def _tool_list_assets(args: dict[str, Any]) -> str:
+    asset_type = (str(args.get("asset_type") or "").strip()) or None
+    status = (str(args.get("status") or "").strip()) or None
+    source_task_id = args.get("source_task_id")
+    if source_task_id is not None:
+        try:
+            source_task_id = int(source_task_id)
+        except (TypeError, ValueError):
+            source_task_id = None
+    tag_filters = _parse_tag_pairs(args.get("tags"))
+    limit = max(1, min(int(args.get("limit") or 30), 200))
+    rows = db.list_assets(
+        asset_type=asset_type,
+        status=status,
+        source_task_id=source_task_id,
+        tag_filters=tag_filters or None,
+        limit=limit,
+    )
+    slim = [
+        {
+            "id": r.get("id"),
+            "asset_type": r.get("asset_type"),
+            "title": r.get("title"),
+            "source_url": r.get("source_url"),
+            "source_domain": r.get("source_domain"),
+            "status": r.get("status"),
+            "tags": r.get("tags") or {},
+        }
+        for r in rows
+    ]
+    return json.dumps(
+        {"ok": True, "count": len(slim), "assets": slim, "filters": {
+            "asset_type": asset_type, "status": status, "tags": tag_filters,
+        }},
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+
+
+def _tool_get_asset(args: dict[str, Any]) -> str:
+    asset_id = int(args.get("asset_id") or 0)
+    if asset_id <= 0:
+        return json.dumps({"ok": False, "reason": "asset_id mancante"})
+    a = db.get_asset(asset_id)
+    if not a:
+        return json.dumps({"ok": False, "reason": f"asset #{asset_id} non trovato"})
+    return json.dumps({"ok": True, "asset": a}, ensure_ascii=False, indent=2, default=str)
+
+
+def _tool_update_asset_status(args: dict[str, Any]) -> str:
+    asset_id = int(args.get("asset_id") or 0)
+    status = str(args.get("status") or "").strip()
+    notes = args.get("notes")
+    if asset_id <= 0:
+        return json.dumps({"ok": False, "reason": "asset_id mancante"})
+    if status not in {"new", "qualified", "rejected", "archived"}:
+        return json.dumps({"ok": False, "reason": "status deve essere new|qualified|rejected|archived"})
+    if not db.get_asset(asset_id):
+        return json.dumps({"ok": False, "reason": f"asset #{asset_id} non trovato"})
+    db.update_asset_status(asset_id, status, notes=notes)
+    return json.dumps({"ok": True, "asset_id": asset_id, "status": status})
+
+
+def _tool_list_site_patterns(args: dict[str, Any]) -> str:
+    domain = (str(args.get("registrable_domain") or "").strip()) or None
+    status = (str(args.get("status") or "").strip()) or None
+    limit = max(1, min(int(args.get("limit") or 50), 200))
+    rows = db.list_site_patterns(registrable_domain=domain, status=status, limit=limit)
+    slim = [
+        {
+            "id": r.get("id"),
+            "registrable_domain": r.get("registrable_domain"),
+            "pattern": r.get("pattern"),
+            "regex": r.get("regex"),
+            "asset_type": r.get("asset_type"),
+            "status": r.get("status"),
+            "hits": r.get("hits"),
+            "successes": r.get("successes"),
+            "failures": r.get("failures"),
+        }
+        for r in rows
+    ]
+    return json.dumps(
+        {"ok": True, "count": len(slim), "patterns": slim},
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+
+
+def _tool_set_site_pattern_status(args: dict[str, Any]) -> str:
+    pattern_id = int(args.get("pattern_id") or 0)
+    status = str(args.get("status") or "").strip()
+    notes = args.get("notes")
+    if pattern_id <= 0:
+        return json.dumps({"ok": False, "reason": "pattern_id mancante"})
+    if status not in {"candidate", "confirmed", "rejected"}:
+        return json.dumps({"ok": False, "reason": "status deve essere candidate|confirmed|rejected"})
+    db.set_site_pattern_status(pattern_id, status, notes=notes)
+    return json.dumps({"ok": True, "pattern_id": pattern_id, "status": status})
+
+
 def _chat_system_prompt(
     *,
     web_enabled: bool,
@@ -1706,13 +2116,16 @@ def _chat_system_prompt(
     elif actions_enabled:
         actions_line = (
             "AZIONI ABILITATE per questo turno. Puoi usare i tool di scrittura "
-            "(propose_plan, execute_plan, create_task, create_workflow, add_edge, start_job, start_workflow). "
+            "(propose_plan, execute_plan, create_task, create_workflow, add_edge, start_job, start_workflow, "
+            "update_asset_status, set_site_pattern_status). "
             "Per outreach/responder serve sempre confirm_risky=true E consenso esplicito dell'utente in chat."
         )
     else:
         actions_line = (
             "Azioni disabilitate per questo turno: hai solo i tool di lettura "
-            "(list_tasks, get_task, list_workflows, list_jobs, get_job_status, list_extraction_templates, list_chat_models). "
+            "(list_tasks, get_task, list_workflows, list_jobs, get_job_status, list_extraction_templates, "
+            "list_chat_models, list_assets, get_asset, list_site_patterns, "
+            "list_guide_topics, read_guide_section). "
             "Per agire l'utente deve abilitare il toggle 'Azioni'."
         )
 
@@ -1725,10 +2138,26 @@ def _chat_system_prompt(
         "- bulk_extract: HTTP+readability per URL noti su sito statico, output profiles.jsonl.\n"
         "- browser_use: Chromium reale, JS/login/scroll, output profiles.jsonl. Lento.\n"
         "- auto_extract: profiler + dispatch automatico per liste eterogenee, output profiles.jsonl.\n"
+        "- site_explorer: agente ReAct che naviga il sito intelligentemente (LLM decide ogni step). Per siti dove la struttura non e' ovvia.\n"
         "- qualifier: legge profiles.jsonl, produce qualified.jsonl.\n"
         "- outreach: invia email/telegram. RISCHIOSO.\n"
         "- responder: auto-reply inbound. RISCHIOSO.\n"
         "Convenzione artifact: extract*->qualifier passa profiles.jsonl; qualifier->outreach/responder passa qualified.jsonl.\n\n"
+        "FONTE PRIMARIA DI VERITA' — GUIDA.md:\n"
+        "Hai accesso alla guida completa del progetto via i tool `list_guide_topics()` e "
+        "`read_guide_section(query)`. La guida contiene best practice, configurazioni "
+        "consigliate, regole d'oro, quale modello usare per quale task, casi d'uso "
+        "completi. **PRIMA di consigliare un workflow o configurare un task complesso, "
+        "leggi la sezione pertinente della guida** invece di tirare a indovinare.\n"
+        "Esempi di flusso corretto:\n"
+        "  • Utente chiede 'come configuro un site_explorer per un sito immobiliare':\n"
+        "    1) read_guide_section('site_explorer') → leggi la sez. 3.4.1\n"
+        "    2) sintetizzi i parametri consigliati\n"
+        "    3) se Azioni ON, costruisci e proponi il task con propose_plan/create_task.\n"
+        "  • Utente chiede 'quale modello usare per qualifier':\n"
+        "    1) read_guide_section('qualifier') o read_guide_section('provider LLM')\n"
+        "    2) sintesi 1-2 righe.\n"
+        "Non inventare configurazioni: se la guida lo dice, citala.\n\n"
         "OPERATIVITA:\n"
         "- Per costellazioni multi-task suggerisci di compilare il Brief e premere 'Genera piano' (canale canonico). "
         "In alternativa, con Azioni ON, usa propose_plan + execute_plan.\n"

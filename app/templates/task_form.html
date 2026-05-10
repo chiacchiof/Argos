@@ -44,6 +44,7 @@
         <option value="browser_use" {% if mode=='browser_use' %}selected{% endif %}>browser_use — scraping con browser reale (agentico)</option>
         <option value="bulk_extract" {% if mode=='bulk_extract' %}selected{% endif %}>bulk_extract — scraping massivo deterministico (lista URL)</option>
         <option value="auto_extract" {% if mode=='auto_extract' %}selected{% endif %}>auto_extract — agente decide la strategia per ogni sito (consigliato per liste eterogenee)</option>
+        <option value="site_explorer" {% if mode=='site_explorer' %}selected{% endif %}>site_explorer — agente ReAct che naviga il sito intelligentemente (LLM decide ogni step)</option>
         <option value="qualifier" {% if mode=='qualifier' %}selected{% endif %}>qualifier — LLM filtra/scora contatti</option>
         <option value="outreach" {% if mode=='outreach' %}selected{% endif %}>outreach — invio email/telegram</option>
         <option value="responder" {% if mode=='responder' %}selected{% endif %}>responder — auto-reply LLM ai messaggi inbound</option>
@@ -81,7 +82,7 @@
        SEZIONE 4: SCRAPING — seed queries, domini, max iter
        Solo per react / browser_use
        ============================================================ #}
-    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract">
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer">
       <summary>Configurazione di ricerca</summary>
 
       <label>
@@ -112,12 +113,14 @@
               data-label-react="Max iterazioni totali"
               data-label-browseruse="Max step PER seed"
               data-label-bulkextract="Max URL totali (cap di sicurezza)"
-              data-label-autoextract="Max URL per sito (cap di sicurezza)">Max iterazioni</span>
+              data-label-autoextract="Max URL per sito (cap di sicurezza)"
+              data-label-siteexplorer="Max step LLM">Max iterazioni</span>
         <span class="hint dyn-hint"
               data-hint-react="Numero massimo di tool-call totali (5–15 sufficienti per ricerche semplici)."
               data-hint-browseruse="Step di browser-use per ogni seed URL. Con 5 seed e max 30 → 150 step totali. Per task complessi 30–50."
               data-hint-bulkextract="Cap di sicurezza: anche se la lista URL ne contiene di più, ne processiamo al massimo questo numero. Tipicamente 100–5000."
-              data-hint-autoextract="Cap di URL processate per ogni singolo sito della lista (vale per la fase bulk_extract; per i siti instradati a browser_use è il N° max di step).">(numero massimo)</span>
+              data-hint-autoextract="Cap di URL/step per sito della lista. Per sub-job <code>bulk_extract</code>: max URL processate. Per sub-job <code>site_explorer</code>: max step LLM (cap-pato fra 50 e 200). Per <code>browser_use</code>: max step (cap 25)."
+              data-hint-siteexplorer="Cap totale di step LLM. 1 step = 1 fetch_page o 1 extract_target. Per estrarre ~100 profili servono ~150 step (100 extract + ~30 fetch + retry). Default 30, alza fino a 200.">(numero massimo)</span>
         <input type="number" name="max_iterations" min="1" max="100000" value="{{ p.get('max_iterations', 10) }}">
       </label>
     </details>
@@ -132,7 +135,7 @@
     {# ============================================================
        SEZIONE 5: SCHEMA DI ESTRAZIONE — solo browser_use
        ============================================================ #}
-    <details class="collapsible-section extraction-fieldset dyn-section" data-modes="browser_use bulk_extract auto_extract">
+    <details class="collapsible-section extraction-fieldset dyn-section" data-modes="browser_use bulk_extract auto_extract site_explorer">
       <summary>Schema di estrazione</summary>
 
       {% set selected_template = p.get('extraction_template') or 'profile_contacts' %}
@@ -171,7 +174,7 @@
       <summary>Configurazione bulk <span class="hint">(per <code>auto_extract</code> queste impostazioni si applicano ai siti dove il profiler sceglie <code>bulk_extract</code>)</span></summary>
 
       <div class="row three">
-        <label>Concorrenza <span class="hint">(URL in parallelo, max ~10)</span>
+        <label>Concorrenza HTTP <span class="hint">(URL fetch in parallelo per <code>bulk_extract</code>; non si applica a <code>site_explorer</code>)</span>
           <input type="number" name="bulk_concurrency" min="1" max="50"
                  value="{{ p.get('bulk_concurrency', 5) }}">
         </label>
@@ -232,6 +235,29 @@
         </label>
       </div>
 
+    </details>
+
+    {# ============================================================
+       SEZIONE 5c: CONFIGURAZIONE SITE_EXPLORER — agente ReAct
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="site_explorer auto_extract">
+      <summary>Configurazione site_explorer <span class="hint">(per <code>auto_extract</code> si applica ai siti dove il profiler sceglie <code>site_explorer</code>)</span></summary>
+
+      <label>Cap target per sito <span class="hint">(massimo asset estratti per ciascun sito; il runner termina al raggiungimento)</span>
+        <input type="number" name="target_cap_per_site" min="1" max="200"
+               value="{{ p.get('target_cap_per_site', 30) }}">
+      </label>
+
+      <p class="muted small">
+        💡 Il runner ReAct di <code>site_explorer</code> naviga il sito step-per-step con un LLM e si ferma a:
+        <strong>(a)</strong> raggiungimento del <strong>cap target</strong> (campo qui sopra),
+        <strong>(b)</strong> esaurimento del <strong>max step LLM</strong> (campo "Max iterazioni" nello <strong>Step 1</strong>),
+        oppure <strong>(c)</strong> il modello chiama <code>done()</code>.
+      </p>
+      <p class="muted small">
+        Regola empirica: per estrarre N target servono <strong>~N + 30%</strong> step LLM (es. 100 target → 130 step).
+        Dentro <code>auto_extract</code> il max step è cap-pato fra <strong>50</strong> e <strong>200</strong>.
+      </p>
     </details>
 
     </section>{# fine STEP 2 #}
@@ -473,7 +499,7 @@
     {# ============================================================
        SEZIONE 9: PROVIDER LLM — tutti tranne outreach (outreach è solo template-fill)
        ============================================================ #}
-    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract qualifier responder">
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer qualifier responder">
       <summary>Modello LLM</summary>
 
       <label>Provider
@@ -548,9 +574,28 @@
             </select>
           </label>
           <label>Discovery — Modello <span class="hint">(opzionale, vuoto = stesso del task)</span>
+            <select class="model-picker" data-target="input[name='discovery_llm_model']"
+                    onchange="if(this.value){this.parentElement.querySelector('input[name=discovery_llm_model]').value=this.value;}">
+              <option value="">— scegli un modello suggerito —</option>
+              {% if models %}
+              <optgroup label="Ollama (installati in locale)">
+                {% for m in models %}
+                <option value="{{ m }}" {% if m == p.get('discovery_llm_model') %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </optgroup>
+              {% endif %}
+              {% for prov in llm_providers if prov.key != 'ollama' and prov.suggested_models %}
+              <optgroup label="{{ prov.name }}">
+                {% for m in prov.suggested_models %}
+                <option value="{{ m.id }}" {% if m.id == p.get('discovery_llm_model') %}selected{% endif %}>{{ m.id }} — {{ m.desc }}</option>
+                {% endfor %}
+              </optgroup>
+              {% endfor %}
+            </select>
             <input type="text" name="discovery_llm_model"
                    value="{{ p.get('discovery_llm_model','') or '' }}"
-                   placeholder="es. gpt-4o-mini">
+                   placeholder="es. gpt-4o-mini (oppure scegli sopra)"
+                   autocomplete="off">
           </label>
         </div>
 
@@ -603,9 +648,28 @@
             </select>
           </label>
           <label>Browser — Modello
+            <select class="model-picker" data-target="input[name='browser_llm_model']"
+                    onchange="if(this.value){this.parentElement.querySelector('input[name=browser_llm_model]').value=this.value;}">
+              <option value="">— scegli un modello suggerito —</option>
+              {% if models %}
+              <optgroup label="Ollama (installati in locale)">
+                {% for m in models %}
+                <option value="{{ m }}" {% if m == p.get('browser_llm_model') %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </optgroup>
+              {% endif %}
+              {% for prov in llm_providers if prov.key != 'ollama' and prov.suggested_models %}
+              <optgroup label="{{ prov.name }}">
+                {% for m in prov.suggested_models %}
+                <option value="{{ m.id }}" {% if m.id == p.get('browser_llm_model') %}selected{% endif %}>{{ m.id }} — {{ m.desc }}</option>
+                {% endfor %}
+              </optgroup>
+              {% endfor %}
+            </select>
             <input type="text" name="browser_llm_model"
                    value="{{ p.get('browser_llm_model','') or '' }}"
-                   placeholder="es. gpt-4o-mini, gpt-oss:20b">
+                   placeholder="es. gpt-4o-mini, gpt-oss:20b (oppure scegli sopra)"
+                   autocomplete="off">
           </label>
         </div>
 
@@ -761,6 +825,7 @@
       browser_use: "Pilota un browser reale (Chromium): scrolla, clicca, gestisce JS. Per scraping serio.",
       bulk_extract: "Scraping massivo deterministico (HTTP+readability+LLM). 1 chiamata LLM per URL. Per cataloghi grandi e siti statici.",
       auto_extract: "Per ogni sito della lista, un profiler LLM decide la strategia (bulk_extract o browser_use) o salta se non promettente. Consigliato per liste eterogenee di siti.",
+      site_explorer: "Agente ReAct: il LLM decide ogni step (apri pagina X, scendi nella sezione Y, estrai questa scheda). Naviga il sito intelligentemente partendo dal seed. Perfetto per siti dove la struttura non è ovvia.",
       qualifier: "Legge un profiles.jsonl e filtra i contatti via LLM, scorando 0-10.",
       outreach: "Manda email/telegram ai contatti qualified. Usa il template che definisci sotto.",
       responder: "Risponde automaticamente ai messaggi inbound usando un LLM. Opt-out detection inclusa."

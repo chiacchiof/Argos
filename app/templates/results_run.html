@@ -10,12 +10,25 @@
   </p>
   {% if files %}
   <table class="data">
-    <thead><tr><th>File</th><th>Dimensione</th></tr></thead>
+    <thead><tr><th>File</th><th>Dimensione</th><th>Azioni</th></tr></thead>
     <tbody>
       {% for f in files %}
       <tr>
-        <td><a href="/tasks/{{ task.id }}/results/{{ run_name }}/{{ f.path }}">{{ f.path }}</a></td>
+        <td>
+          {% if f.path.endswith(".jsonl") or f.path.endswith(".ndjson") %}
+            <a href="/tasks/{{ task.id }}/results-view/{{ run_name }}/{{ f.path }}" target="_blank" rel="noopener">{{ f.path }}</a>
+          {% else %}
+            <a href="/tasks/{{ task.id }}/results/{{ run_name }}/{{ f.path }}">{{ f.path }}</a>
+          {% endif %}
+        </td>
         <td><small>{{ f.size }} byte</small></td>
+        <td>
+          {% if f.path.endswith(".jsonl") or f.path.endswith(".ndjson") %}
+            <a href="/tasks/{{ task.id }}/results-view/{{ run_name }}/{{ f.path }}" target="_blank" rel="noopener">Apri</a>
+            &middot;
+          {% endif %}
+          <a href="/tasks/{{ task.id }}/results/{{ run_name }}/{{ f.path }}">Download</a>
+        </td>
       </tr>
       {% endfor %}
     </tbody>

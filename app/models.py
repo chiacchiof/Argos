@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 OutputFormat = Literal["txt", "md", "both"]
 AgentMode = Literal[
-    "react", "browser_use", "bulk_extract", "auto_extract",
+    "react", "browser_use", "bulk_extract", "auto_extract", "site_explorer",
     "qualifier", "outreach", "responder",
 ]
 BulkExtractionMethod = Literal["llm_per_page", "css_selectors"]
@@ -38,6 +38,7 @@ class TaskIn(BaseModel):
     message_channels: list[MessageChannel] = Field(default_factory=list)
     responder_system_prompt: str | None = None
     bulk_concurrency: int = Field(default=5, ge=1, le=50)
+    target_cap_per_site: int = Field(default=30, ge=1, le=200)
     bulk_rate_limit_per_sec: float = Field(default=2.0, ge=0.1, le=100.0)
     bulk_extraction_method: BulkExtractionMethod = "llm_per_page"
     bulk_css_selectors: str | None = None

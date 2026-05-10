@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   message_channels TEXT,
   responder_system_prompt TEXT,
   bulk_concurrency INTEGER NOT NULL DEFAULT 5,
+  target_cap_per_site INTEGER NOT NULL DEFAULT 30,
   bulk_rate_limit_per_sec REAL NOT NULL DEFAULT 2.0,
   bulk_extraction_method TEXT NOT NULL DEFAULT 'llm_per_page',
   bulk_css_selectors TEXT,
@@ -172,6 +173,58 @@ CREATE TABLE IF NOT EXISTS orchestrator_messages (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_orchestrator_messages_id ON orchestrator_messages(id);
+
+-- Asset generalizzati: ogni profilo/annuncio/prodotto/articolo estratto dai runner
+-- diventa una riga qui, con tag derivati dichiarativamente dai campi del template.
+-- Sostituisce/affianca `contacts` come inbox principale dei dati estratti.
+CREATE TABLE IF NOT EXISTS assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_type        TEXT NOT NULL,
+  source_task_id    INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+  source_job_id     INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  source_url        TEXT,
+  source_domain     TEXT,
+  title             TEXT,
+  raw_json          TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'new',
+  qualifier_score   INTEGER,
+  notes             TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assets_type_status ON assets(asset_type, status);
+CREATE INDEX IF NOT EXISTS idx_assets_url ON assets(source_url);
+CREATE INDEX IF NOT EXISTS idx_assets_source ON assets(source_task_id);
+
+CREATE TABLE IF NOT EXISTS asset_tags (
+  asset_id  INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  tag_key   TEXT NOT NULL,
+  tag_value TEXT NOT NULL,
+  PRIMARY KEY (asset_id, tag_key, tag_value)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_tags_lookup ON asset_tags(tag_key, tag_value);
+
+-- Memoria pattern per dominio: i pattern URL "target" scoperti dai task in passato.
+-- Permette ai task futuri di saltare la discovery LLM se gia' confermato.
+CREATE TABLE IF NOT EXISTS site_patterns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  registrable_domain TEXT NOT NULL,
+  pattern            TEXT NOT NULL,
+  regex              TEXT NOT NULL,
+  asset_type         TEXT,
+  status             TEXT NOT NULL DEFAULT 'candidate',
+  hits               INTEGER NOT NULL DEFAULT 0,
+  successes          INTEGER NOT NULL DEFAULT 0,
+  failures           INTEGER NOT NULL DEFAULT 0,
+  source_task_id     INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+  source_job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  notes              TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  UNIQUE (registrable_domain, pattern)
+);
+CREATE INDEX IF NOT EXISTS idx_site_patterns_domain_status ON site_patterns(registrable_domain, status);
+CREATE INDEX IF NOT EXISTS idx_site_patterns_asset_type ON site_patterns(asset_type);
 """
 
 
@@ -238,6 +291,8 @@ def init_db() -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN responder_system_prompt TEXT")
         if "bulk_concurrency" not in cols:
             con.execute("ALTER TABLE tasks ADD COLUMN bulk_concurrency INTEGER NOT NULL DEFAULT 5")
+        if "target_cap_per_site" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN target_cap_per_site INTEGER NOT NULL DEFAULT 30")
         if "bulk_rate_limit_per_sec" not in cols:
             con.execute("ALTER TABLE tasks ADD COLUMN bulk_rate_limit_per_sec REAL NOT NULL DEFAULT 2.0")
         if "bulk_extraction_method" not in cols:
@@ -502,7 +557,7 @@ def create_task(data: dict[str, Any]) -> int:
                                   llm_provider, llm_base_url, llm_api_key,
                                   input_artifact_path, message_template, message_subject,
                                   message_channels, responder_system_prompt,
-                                  bulk_concurrency, bulk_rate_limit_per_sec,
+                                  bulk_concurrency, target_cap_per_site, bulk_rate_limit_per_sec,
                                   bulk_extraction_method, bulk_css_selectors,
                                   crawler_enabled, crawler_url_pattern, crawler_max_depth,
                                   discovery_llm_provider, discovery_llm_model,
@@ -510,7 +565,7 @@ def create_task(data: dict[str, Any]) -> int:
                                   browser_llm_provider, browser_llm_model, browser_llm_api_key,
                                   rating, notes, status_tag,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -535,6 +590,7 @@ def create_task(data: dict[str, Any]) -> int:
                 _dump_list(data.get("message_channels")),
                 data.get("responder_system_prompt") or None,
                 int(data.get("bulk_concurrency") or 5),
+                int(data.get("target_cap_per_site") or 30),
                 float(data.get("bulk_rate_limit_per_sec") or 2.0),
                 data.get("bulk_extraction_method") or "llm_per_page",
                 data.get("bulk_css_selectors") or None,
@@ -570,7 +626,7 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 llm_provider = ?, llm_base_url = ?, llm_api_key = ?,
                 input_artifact_path = ?, message_template = ?, message_subject = ?,
                 message_channels = ?, responder_system_prompt = ?,
-                bulk_concurrency = ?, bulk_rate_limit_per_sec = ?,
+                bulk_concurrency = ?, target_cap_per_site = ?, bulk_rate_limit_per_sec = ?,
                 bulk_extraction_method = ?, bulk_css_selectors = ?,
                 crawler_enabled = ?, crawler_url_pattern = ?, crawler_max_depth = ?,
                 discovery_llm_provider = ?, discovery_llm_model = ?,
@@ -603,6 +659,7 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 _dump_list(data.get("message_channels")),
                 data.get("responder_system_prompt") or None,
                 int(data.get("bulk_concurrency") or 5),
+                int(data.get("target_cap_per_site") or 30),
                 float(data.get("bulk_rate_limit_per_sec") or 2.0),
                 data.get("bulk_extraction_method") or "llm_per_page",
                 data.get("bulk_css_selectors") or None,
@@ -1063,6 +1120,437 @@ def set_contact_telegram_chat(contact_id: int, chat_id: str) -> None:
             "UPDATE contacts SET telegram_chat_id = ?, updated_at = ? WHERE id = ?",
             (str(chat_id), now_iso(), contact_id),
         )
+
+
+def delete_contact(contact_id: int) -> int:
+    """Cancella un contatto. Threads e messages cascade-deletono per FK ON DELETE CASCADE."""
+    with connect() as con:
+        cur = con.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
+        return cur.rowcount
+
+
+def delete_contacts_bulk(contact_ids: list[int]) -> int:
+    ids = [int(i) for i in contact_ids if i]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    with connect() as con:
+        cur = con.execute(f"DELETE FROM contacts WHERE id IN ({placeholders})", ids)
+        return cur.rowcount
+
+
+# ===========================================================================
+# Assets — modello generale per profili/annunci/prodotti/articoli/eventi/...
+# ===========================================================================
+
+def upsert_asset(
+    data: dict[str, Any],
+    tags: dict[str, list[str]] | None = None,
+) -> int:
+    """Inserisce o aggiorna un asset (chiave: source_url se presente, altrimenti
+    insert nuovo). Ritorna asset_id. I tag sostituiscono quelli precedenti.
+    """
+    asset_type = (data.get("asset_type") or "").strip() or "generic"
+    source_url = (data.get("source_url") or "").strip() or None
+    raw_json = data.get("raw_json") or "{}"
+    if not isinstance(raw_json, str):
+        raw_json = json.dumps(raw_json, ensure_ascii=False)
+    title = data.get("title")
+    source_domain = data.get("source_domain")
+    source_task_id = data.get("source_task_id")
+    source_job_id = data.get("source_job_id")
+    notes = data.get("notes")
+    ts = now_iso()
+
+    with connect() as con:
+        existing = None
+        if source_url:
+            row = con.execute(
+                "SELECT id FROM assets WHERE source_url = ? AND asset_type = ? LIMIT 1",
+                (source_url, asset_type),
+            ).fetchone()
+            existing = int(row["id"]) if row else None
+
+        if existing:
+            con.execute(
+                """
+                UPDATE assets SET
+                  source_task_id = COALESCE(?, source_task_id),
+                  source_job_id  = COALESCE(?, source_job_id),
+                  source_domain  = COALESCE(?, source_domain),
+                  title          = COALESCE(?, title),
+                  raw_json       = ?,
+                  notes          = COALESCE(?, notes),
+                  updated_at     = ?
+                WHERE id = ?
+                """,
+                (
+                    source_task_id,
+                    source_job_id,
+                    source_domain,
+                    title,
+                    raw_json,
+                    notes,
+                    ts,
+                    existing,
+                ),
+            )
+            asset_id = existing
+        else:
+            cur = con.execute(
+                """
+                INSERT INTO assets (
+                  asset_type, source_task_id, source_job_id, source_url, source_domain,
+                  title, raw_json, status, qualifier_score, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'new', NULL, ?, ?, ?)
+                """,
+                (
+                    asset_type,
+                    source_task_id,
+                    source_job_id,
+                    source_url,
+                    source_domain,
+                    title,
+                    raw_json,
+                    notes,
+                    ts,
+                    ts,
+                ),
+            )
+            asset_id = int(cur.lastrowid)
+
+        # Tag: sostituiamo l'intero set per asset (semantica idempotente)
+        if tags is not None:
+            con.execute("DELETE FROM asset_tags WHERE asset_id = ?", (asset_id,))
+            seen: set[tuple[str, str]] = set()
+            for tag_key, tag_values in (tags or {}).items():
+                if not tag_key:
+                    continue
+                tk = str(tag_key).strip().lower()
+                if not tk:
+                    continue
+                for v in tag_values or []:
+                    if v is None:
+                        continue
+                    tv = str(v).strip()
+                    if not tv:
+                        continue
+                    pair = (tk, tv)
+                    if pair in seen:
+                        continue
+                    seen.add(pair)
+                    con.execute(
+                        "INSERT OR IGNORE INTO asset_tags (asset_id, tag_key, tag_value) VALUES (?, ?, ?)",
+                        (asset_id, tk, tv),
+                    )
+
+    return asset_id
+
+
+def get_asset(asset_id: int) -> dict[str, Any] | None:
+    with connect() as con:
+        row = con.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        if not row:
+            return None
+        asset = dict(row)
+        tag_rows = con.execute(
+            "SELECT tag_key, tag_value FROM asset_tags WHERE asset_id = ? ORDER BY tag_key, tag_value",
+            (asset_id,),
+        ).fetchall()
+    tags: dict[str, list[str]] = {}
+    for t in tag_rows:
+        tags.setdefault(t["tag_key"], []).append(t["tag_value"])
+    asset["tags"] = tags
+    return asset
+
+
+def list_assets(
+    asset_type: str | None = None,
+    status: str | None = None,
+    source_task_id: int | None = None,
+    tag_filters: list[tuple[str, str]] | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    sql = "SELECT a.* FROM assets a"
+    args: list[Any] = []
+    if tag_filters:
+        # Ogni filtro (k, v) richiede una JOIN distinta
+        for i, (k, v) in enumerate(tag_filters):
+            alias = f"t{i}"
+            sql += (
+                f" JOIN asset_tags {alias} ON {alias}.asset_id = a.id "
+                f"AND {alias}.tag_key = ? AND {alias}.tag_value = ?"
+            )
+            args.extend([k.lower(), v])
+    sql += " WHERE 1=1"
+    if asset_type:
+        sql += " AND a.asset_type = ?"
+        args.append(asset_type)
+    if status:
+        sql += " AND a.status = ?"
+        args.append(status)
+    if source_task_id is not None:
+        sql += " AND a.source_task_id = ?"
+        args.append(source_task_id)
+    sql += " ORDER BY a.id DESC LIMIT ?"
+    args.append(limit)
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+        results = [dict(r) for r in rows]
+        if results:
+            ids = [r["id"] for r in results]
+            placeholders = ",".join("?" for _ in ids)
+            tag_rows = con.execute(
+                f"SELECT asset_id, tag_key, tag_value FROM asset_tags "
+                f"WHERE asset_id IN ({placeholders}) ORDER BY tag_key",
+                ids,
+            ).fetchall()
+        else:
+            tag_rows = []
+    by_id: dict[int, dict[str, list[str]]] = {}
+    for t in tag_rows:
+        d = by_id.setdefault(int(t["asset_id"]), {})
+        d.setdefault(t["tag_key"], []).append(t["tag_value"])
+    for a in results:
+        a["tags"] = by_id.get(int(a["id"]), {})
+    return results
+
+
+def update_asset_status(asset_id: int, status: str, notes: str | None = None) -> None:
+    with connect() as con:
+        if notes is not None:
+            con.execute(
+                "UPDATE assets SET status = ?, notes = ?, updated_at = ? WHERE id = ?",
+                (status, notes, now_iso(), asset_id),
+            )
+        else:
+            con.execute(
+                "UPDATE assets SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now_iso(), asset_id),
+            )
+
+
+def delete_asset(asset_id: int) -> int:
+    with connect() as con:
+        cur = con.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+        return cur.rowcount
+
+
+def delete_assets_bulk(asset_ids: list[int]) -> int:
+    """Cancella in massa gli asset indicati. Le `asset_tags` cascade-deletono per FK.
+    Ritorna il numero di righe rimosse.
+    """
+    ids = [int(i) for i in asset_ids if i]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    with connect() as con:
+        cur = con.execute(f"DELETE FROM assets WHERE id IN ({placeholders})", ids)
+        return cur.rowcount
+
+
+def update_asset_qualifier(asset_id: int, score: int, status: str, notes: str | None = None) -> None:
+    """Aggiorna asset.qualifier_score + status (qualified/rejected) in un colpo."""
+    with connect() as con:
+        if notes is not None:
+            con.execute(
+                "UPDATE assets SET qualifier_score = ?, status = ?, notes = ?, updated_at = ? WHERE id = ?",
+                (int(score), status, notes, now_iso(), asset_id),
+            )
+        else:
+            con.execute(
+                "UPDATE assets SET qualifier_score = ?, status = ?, updated_at = ? WHERE id = ?",
+                (int(score), status, now_iso(), asset_id),
+            )
+
+
+def list_asset_types_in_use() -> list[dict[str, Any]]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT asset_type, COUNT(*) AS n FROM assets GROUP BY asset_type ORDER BY n DESC"
+        ).fetchall()
+    return [{"asset_type": r["asset_type"], "count": int(r["n"])} for r in rows]
+
+
+def list_asset_tag_keys(asset_type: str | None = None) -> list[str]:
+    sql = (
+        "SELECT DISTINCT t.tag_key FROM asset_tags t "
+        "JOIN assets a ON a.id = t.asset_id"
+    )
+    args: list[Any] = []
+    if asset_type:
+        sql += " WHERE a.asset_type = ?"
+        args.append(asset_type)
+    sql += " ORDER BY t.tag_key"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [r["tag_key"] for r in rows]
+
+
+def list_asset_tag_values(tag_key: str, asset_type: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    sql = (
+        "SELECT t.tag_value AS v, COUNT(*) AS n FROM asset_tags t "
+        "JOIN assets a ON a.id = t.asset_id WHERE t.tag_key = ?"
+    )
+    args: list[Any] = [tag_key.lower()]
+    if asset_type:
+        sql += " AND a.asset_type = ?"
+        args.append(asset_type)
+    sql += " GROUP BY t.tag_value ORDER BY n DESC, t.tag_value LIMIT ?"
+    args.append(limit)
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [{"value": r["v"], "count": int(r["n"])} for r in rows]
+
+
+# ===========================================================================
+# Site patterns — memoria pattern URL "target" per dominio
+# ===========================================================================
+
+def find_site_patterns(
+    registrable_domain: str,
+    asset_type: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM site_patterns WHERE registrable_domain = ?"
+    args: list[Any] = [registrable_domain.lower()]
+    if asset_type:
+        sql += " AND (asset_type = ? OR asset_type IS NULL)"
+        args.append(asset_type)
+    if status:
+        sql += " AND status = ?"
+        args.append(status)
+    sql += " ORDER BY (status='confirmed') DESC, successes DESC, hits DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_site_pattern(
+    registrable_domain: str,
+    pattern: str,
+    regex: str,
+    asset_type: str | None = None,
+    source_task_id: int | None = None,
+    source_job_id: int | None = None,
+    notes: str | None = None,
+) -> int:
+    """Inserisce un pattern se nuovo (status='candidate'); altrimenti ritorna l'id esistente
+    e aggiorna asset_type/regex se erano vuoti.
+    """
+    ts = now_iso()
+    rd = registrable_domain.lower()
+    with connect() as con:
+        row = con.execute(
+            "SELECT id, asset_type, regex FROM site_patterns "
+            "WHERE registrable_domain = ? AND pattern = ?",
+            (rd, pattern),
+        ).fetchone()
+        if row:
+            pid = int(row["id"])
+            updates: list[str] = []
+            args: list[Any] = []
+            if not row["asset_type"] and asset_type:
+                updates.append("asset_type = ?")
+                args.append(asset_type)
+            if (not row["regex"]) and regex:
+                updates.append("regex = ?")
+                args.append(regex)
+            if updates:
+                args.extend([ts, pid])
+                con.execute(
+                    f"UPDATE site_patterns SET {', '.join(updates)}, updated_at = ? WHERE id = ?",
+                    args,
+                )
+            return pid
+        cur = con.execute(
+            """
+            INSERT INTO site_patterns (
+              registrable_domain, pattern, regex, asset_type, status,
+              hits, successes, failures,
+              source_task_id, source_job_id, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'candidate', 0, 0, 0, ?, ?, ?, ?, ?)
+            """,
+            (rd, pattern, regex, asset_type, source_task_id, source_job_id, notes, ts, ts),
+        )
+        return int(cur.lastrowid)
+
+
+def record_pattern_run(pattern_id: int, hits: int = 0, successes: int = 0, failures: int = 0) -> None:
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE site_patterns
+               SET hits      = hits + ?,
+                   successes = successes + ?,
+                   failures  = failures + ?,
+                   updated_at = ?
+             WHERE id = ?
+            """,
+            (int(hits), int(successes), int(failures), now_iso(), pattern_id),
+        )
+
+
+def set_site_pattern_status(pattern_id: int, status: str, notes: str | None = None) -> None:
+    with connect() as con:
+        if notes is not None:
+            con.execute(
+                "UPDATE site_patterns SET status = ?, notes = ?, updated_at = ? WHERE id = ?",
+                (status, notes, now_iso(), pattern_id),
+            )
+        else:
+            con.execute(
+                "UPDATE site_patterns SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now_iso(), pattern_id),
+            )
+
+
+def list_site_patterns(
+    registrable_domain: str | None = None,
+    status: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM site_patterns WHERE 1=1"
+    args: list[Any] = []
+    if registrable_domain:
+        sql += " AND registrable_domain = ?"
+        args.append(registrable_domain.lower())
+    if status:
+        sql += " AND status = ?"
+        args.append(status)
+    sql += " ORDER BY registrable_domain, (status='confirmed') DESC, successes DESC, id DESC LIMIT ?"
+    args.append(limit)
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def maybe_promote_pattern(pattern_id: int, min_successes: int = 3, min_ratio: float = 0.4) -> str | None:
+    """Promuove a 'confirmed' un pattern candidate se ha abbastanza successi.
+    Retrocede a 'candidate' un confirmed che inizia ad accumulare failures.
+    Ritorna lo stato nuovo se cambia, altrimenti None.
+    """
+    with connect() as con:
+        row = con.execute(
+            "SELECT id, status, hits, successes, failures FROM site_patterns WHERE id = ?",
+            (pattern_id,),
+        ).fetchone()
+    if not row:
+        return None
+    status = row["status"]
+    successes = int(row["successes"])
+    failures = int(row["failures"])
+    total = successes + failures
+    ratio = (successes / total) if total else 0.0
+    new_status: str | None = None
+    if status == "candidate" and successes >= min_successes and ratio >= min_ratio:
+        new_status = "confirmed"
+    elif status == "confirmed" and total >= 5 and ratio < 0.2:
+        new_status = "candidate"
+    if new_status and new_status != status:
+        set_site_pattern_status(pattern_id, new_status)
+        return new_status
+    return None
 
 
 # ===========================================================================

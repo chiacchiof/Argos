@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} - JSONL - AgentScraper{% endblock %}
+{% block content %}
+<section class="jsonl-viewer">
+  <div class="jsonl-head">
+    <div>
+      <h2>{{ title }}</h2>
+      <p class="muted small">
+        {{ page.total }} righe · {{ page.valid }} valide · {{ page.invalid }} non valide
+      </p>
+    </div>
+    <div class="actions">
+      <a href="/tasks/{{ task.id }}/results">&larr; Risultati</a>
+      <a href="{{ download_url }}">Download</a>
+    </div>
+  </div>
+
+  <div class="jsonl-pager">
+    {% if page.has_prev %}
+      <a href="{{ viewer_url }}?offset={{ page.prev_offset }}&limit={{ page.limit }}">Precedenti</a>
+    {% else %}
+      <span class="muted">Precedenti</span>
+    {% endif %}
+    <span>Righe {{ page.offset + 1 if page.total else 0 }}-{{ page.end_index }} di {{ page.total }}</span>
+    {% if page.has_next %}
+      <a href="{{ viewer_url }}?offset={{ page.next_offset }}&limit={{ page.limit }}">Successive</a>
+    {% else %}
+      <span class="muted">Successive</span>
+    {% endif %}
+  </div>
+
+  {% if page.rows %}
+    <div class="jsonl-lines">
+      {% for row in page.rows %}
+      <article class="jsonl-row {% if not row.ok %}jsonl-row-invalid{% endif %}">
+        <div class="jsonl-row-meta">
+          <strong>#{{ row.line_no }}</strong>
+          {% if row.ok %}
+            <span class="badge badge-ok">JSON</span>
+          {% else %}
+            <span class="badge badge-err">Errore</span>
+            <small>{{ row.error }}</small>
+          {% endif %}
+        </div>
+        <pre><code>{{ row.pretty }}</code></pre>
+      </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">Nessuna riga da mostrare.</p>
+  {% endif %}
+</section>
+{% endblock %}

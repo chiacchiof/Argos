@@ -45,6 +45,19 @@ async def _execute_strategy(
     sub_task = dict(task)
     sub_task["seed_queries"] = [site_url]
     sub_task["agent_mode"] = strategy
+    # Cap max_iterations per i sub-job che hanno semantica "step LLM" invece di
+    # "URL processati": auto_extract puo' avere max_iterations=200/500 (URL crawled),
+    # ma per browser_use e site_explorer e' il numero di step LLM e va cappato.
+    if strategy == "browser_use":
+        inherited = int(sub_task.get("max_iterations") or 25)
+        sub_task["max_iterations"] = min(inherited, 25)
+    elif strategy == "site_explorer":
+        # Cap anti-loop alto: site_explorer e' un agente ReAct controllato (1 step LLM
+        # = 1 fetch_page o 1 extract_target), quindi 200 step bastano per estrarre
+        # ~150 profili da una directory grande. Cap minimo 50 per non scendere sotto
+        # il default sensato anche se l'utente ha messo max_iterations=10 nel task.
+        inherited = int(sub_task.get("max_iterations") or 50)
+        sub_task["max_iterations"] = max(50, min(inherited, 200))
     # Estendi allowed_domains con il registrable domain del sito (per supportare
     # sub-domini come profili). Se l'utente ha già messo qualcosa, mantienilo
     # ma aggiungi il registrable se mancante.
@@ -66,17 +79,13 @@ async def _execute_strategy(
         if strategy == "bulk_extract":
             from .runner_bulk_extract import run_agent as run_bk
             await run_bk(sub_task, sub_job_id)
+        elif strategy in ("site_explorer", "http_llm_guided"):
+            from .runner_site_explorer import run_agent as run_se
+            await run_se(sub_task, sub_job_id)
         elif strategy == "browser_use":
             from .runner_browseruse import run_agent as run_bu
             # Già dentro ProactorEventLoop (auto_extract è chiamato così), ok.
             await run_bu(sub_task, sub_job_id)
-        elif strategy == "http_llm_guided":
-            jlog(
-                "  ⚠️ strategy 'http_llm_guided' non ancora implementata: "
-                "uso 'bulk_extract' al suo posto."
-            )
-            from .runner_bulk_extract import run_agent as run_bk
-            await run_bk(sub_task, sub_job_id)
         else:
             jlog(f"  ⚠️ strategy '{strategy}' sconosciuta, salto")
             return 0, None
@@ -220,7 +229,9 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             f"http={decision.get('http_status')}  "
             f"text_ratio={sigs.get('text_to_html_ratio')}  "
             f"login_form={sigs.get('has_login_form')}  "
-            f"signup_kw={sigs.get('has_signup_keywords')}"
+            f"signup_kw={sigs.get('has_signup_keywords')}  "
+            f"recurring_pattern={sigs.get('has_recurring_target_pattern')}  "
+            f"top_pattern_count={sigs.get('top_pattern_count')}"
         )
         jlog(f"           reason: {decision['reason']}")
         if decision.get("target_hint"):
@@ -244,19 +255,28 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         n_aggregated = _aggregate_profiles(sub_report, main_profiles)
         n_primary = n_aggregated  # uso il count effettivo dopo aggregazione
 
-        # FALLBACK: se 0 profili e la strategia non era già browser_use, ritenta
+        # FALLBACK: se 0 profili, prova la strategia complementare (1 retry max per sito).
+        # bulk_extract  -> site_explorer (agente ReAct: trova listing nascoste, drill-down)
+        # site_explorer -> browser_use   (HTTP statico non e' bastato: serve JS/click reveal)
+        # browser_use   -> site_explorer (agente HTTP intelligente, piu' rapido di un altro browser)
+        fallback_map = {
+            "bulk_extract": "site_explorer",
+            "site_explorer": "browser_use",
+            "browser_use": "site_explorer",
+        }
         fallback_used = None
         n_final = n_primary
-        if n_primary == 0 and decision["strategy"] != "browser_use":
+        fb_strategy = fallback_map.get(decision["strategy"])
+        if n_primary == 0 and fb_strategy:
             jlog(
                 f"  ⚠️ {decision['strategy']} ha prodotto 0 profili. "
-                f"Tento fallback → browser_use (1 retry max per sito)."
+                f"Tento fallback → {fb_strategy} (1 retry max per sito)."
             )
             n_fb, fb_report = await _execute_strategy(
-                task, "browser_use", site_url, job_id, jlog,
+                task, fb_strategy, site_url, job_id, jlog,
             )
             n_aggregated_fb = _aggregate_profiles(fb_report, main_profiles)
-            fallback_used = "browser_use"
+            fallback_used = fb_strategy
             n_final = n_aggregated_fb
 
         total_profiles += n_final

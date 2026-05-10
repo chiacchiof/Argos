@@ -180,6 +180,8 @@ async def _wait_if_paused_or_stop(job_id: int, jlog: Callable) -> None:
 
 
 async def run_agent(task: dict[str, Any], job_id: int) -> str:
+    from .. import jobs as _jobs
+
     def jlog(line: str) -> None:
         db.append_job_log(job_id, line)
 
@@ -193,9 +195,14 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     if prev_level == logging.NOTSET or prev_level > logging.INFO:
         bu_logger.setLevel(logging.INFO)
 
+    # Registra anche il sub-job in `_active_jobs` cosi' Stop su questo specifico
+    # job_id (es. sub-job di auto_extract) lo cancella davvero.
+    _jobs.register_subjob(job_id)
+
     try:
         return await _run_agent_inner(task, job_id, jlog)
     finally:
+        _jobs.unregister_subjob(job_id)
         bu_logger.removeHandler(handler)
         if prev_level != logging.NOTSET:
             bu_logger.setLevel(prev_level)
@@ -253,20 +260,35 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
         f"{role_label}: {provider_info['name']} ({provider_key}) "
         f"@ {base_url} — modello {model_name}"
     )
+    # timeout per chiamata LLM: limita il "window" di esposizione su completion
+    # in volo. Quando lo Stop chiude il TCP, OpenAI smette al token successivo
+    # (best effort). 60s e' largo per gpt-4o-mini ma non lascia run da minuti.
+    llm_request_timeout = 60
     try:
         llm = ChatOpenAI(
             model=model_name,
             base_url=base_url,
             api_key=api_key,
             temperature=0.2,
+            timeout=llm_request_timeout,
         )
     except TypeError:
-        llm = ChatOpenAI(
-            model=model_name,
-            openai_api_base=base_url,
-            openai_api_key=api_key,
-            temperature=0.2,
-        )
+        try:
+            llm = ChatOpenAI(
+                model=model_name,
+                openai_api_base=base_url,
+                openai_api_key=api_key,
+                temperature=0.2,
+                request_timeout=llm_request_timeout,
+            )
+        except TypeError:
+            # ultimo fallback senza timeout esplicito
+            llm = ChatOpenAI(
+                model=model_name,
+                openai_api_base=base_url,
+                openai_api_key=api_key,
+                temperature=0.2,
+            )
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = RESULTS_DIR / str(task["id"]) / ts
@@ -308,11 +330,25 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
             sub_dir = run_dir
 
         task_text = _build_seed_task(live_task, seed, max_steps)
-        agent = _make_agent(Agent, task_text, llm, sub_dir, jlog)
+        agent = _make_agent(
+            Agent,
+            task_text,
+            llm,
+            sub_dir,
+            jlog,
+            should_stop_cb=_make_stop_signal_callback(job_id),
+        )
 
         history_obj = None
         try:
-            history_obj = await agent.run(max_steps=max_steps)
+            # Timeout difensivo: anche se max_steps e' settato, browser-use puo'
+            # entrare in loop di scroll/no-progress che consuma molto tempo (e $).
+            # Stima: ~12s/step in media -> max_steps * 15s + overhead 60s.
+            timeout_s = max(180, max_steps * 15 + 60)
+            history_obj = await asyncio.wait_for(
+                agent.run(max_steps=max_steps),
+                timeout=timeout_s,
+            )
             final = _extract_final(history_obj)
             label = seed or "task generico"
             summaries.append(f"## {label}\n\n{final or '(nessun output)'}")
@@ -329,6 +365,22 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
             except Exception:
                 pass
             break
+        except asyncio.TimeoutError:
+            jlog(
+                f"Seed '{seed}' TIMEOUT dopo {timeout_s}s "
+                f"(max_steps={max_steps}). Browser-use bloccato in loop senza progresso. "
+                f"Salvo quanto raccolto e passo oltre."
+            )
+            summaries.append(f"## {seed}\n\nTIMEOUT: browser-use bloccato senza progresso.")
+            n_failed += 1
+            try:
+                if history_obj is not None:
+                    _collect_extracted_jsonl(history_obj, sub_dir, jlog)
+                _maybe_collect_agent_files(agent, sub_dir, jlog)
+                _consolidate_jsonl(sub_dir, consolidated_jsonl, jlog)
+            except Exception:
+                pass
+            continue
         except Exception as e:
             tb = traceback.format_exc()
             jlog(f"Seed '{seed}' FALLITA ({type(e).__name__}): {e or repr(e)}")
@@ -351,7 +403,20 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
     # potrà promuoverli a 'qualified' o 'rejected' aggiornando in-place.
     # I dati restano comunque nel file profiles.jsonl come artefatto della run.
     # ============================================================
-    n_ingested = _ingest_to_contacts(consolidated_jsonl, task["id"], job_id, jlog)
+    n_ingested = _ingest_to_contacts(
+        consolidated_jsonl,
+        task["id"],
+        job_id,
+        jlog,
+        extraction_template=task.get("extraction_template"),
+    )
+    n_assets = _ingest_to_assets(
+        consolidated_jsonl,
+        task["id"],
+        job_id,
+        jlog,
+        extraction_template=task.get("extraction_template"),
+    )
 
     # report finale (anche dopo stop, quello che hai raccolto è già su disco)
     n_profiles = _count_lines(consolidated_jsonl)
@@ -389,15 +454,39 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
     return str(report_path)
 
 
-def _make_agent(Agent, task_text: str, llm: Any, run_dir: Path, jlog: Callable) -> Any:
-    """Inizializza Agent provando i nomi alternativi del kwarg per il file_system_path."""
-    base = {"task": task_text, "llm": llm}
+def _make_agent(
+    Agent,
+    task_text: str,
+    llm: Any,
+    run_dir: Path,
+    jlog: Callable,
+    should_stop_cb: Callable[[], Any] | None = None,
+) -> Any:
+    """Inizializza Agent provando i nomi alternativi del kwarg per il file_system_path.
+
+    Se `should_stop_cb` (async, ritorna bool) e' fornita, la registriamo come
+    `register_should_stop_callback` cosi' browser-use la chiama tra uno step e
+    l'altro: se True, l'agent.run termina graceful.
+    """
+    base: dict[str, Any] = {"task": task_text, "llm": llm}
+    if should_stop_cb is not None:
+        base["register_should_stop_callback"] = should_stop_cb
     for kw in ("file_system_path", "files_path", "agent_data_dir"):
         try:
             return Agent(**base, **{kw: str(run_dir)})
         except TypeError:
             continue
     return Agent(**base)
+
+
+def _make_stop_signal_callback(job_id: int):
+    """Costruisce il callback async che browser-use chiama per sapere se fermarsi."""
+    async def _should_stop() -> bool:
+        try:
+            return (db.get_control_signal(job_id) or "") == "stop"
+        except Exception:
+            return False
+    return _should_stop
 
 
 def _extract_final(history: Any) -> str:
@@ -451,7 +540,16 @@ def _consolidate_jsonl(sub_dir: Path, dest: Path, jlog: Callable) -> None:
         jlog(f"Consolidate {appended} righe da {sub_dir.name}/.../profiles.jsonl → profiles.jsonl")
 
 
-def _ingest_to_contacts(jsonl_path: Path, task_id: int, job_id: int, jlog: Callable) -> int:
+CONTACTS_TEMPLATES = {"profile_contacts"}
+
+
+def _ingest_to_contacts(
+    jsonl_path: Path,
+    task_id: int,
+    job_id: int,
+    jlog: Callable,
+    extraction_template: str | None = None,
+) -> int:
     """Legge profiles.jsonl consolidato e fa upsert su `contacts` con status='new'.
 
     Idempotente: se un contatto (matching email o telegram_username) esiste già,
@@ -459,11 +557,22 @@ def _ingest_to_contacts(jsonl_path: Path, task_id: int, job_id: int, jlog: Calla
     'qualified'/'contacted'/'optedout' non torna indietro a 'new'.
 
     Filtra righe che non hanno né email né telegram (non sono contattabili).
+
+    L'ingest in tabella `contacts` viene eseguito SOLO se l'extraction_template
+    e' incentrato sui contatti (profile_contacts). Per template come real_estate,
+    ecommerce_products, events, news_articles, job_listings i dati restano nel
+    profiles.jsonl ma non vengono ingestiti come contatti contattabili.
     """
     import json as _json
     from urllib.parse import urlparse
 
     if not jsonl_path.exists():
+        return 0
+    if extraction_template and extraction_template not in CONTACTS_TEMPLATES:
+        jlog(
+            f"  ℹ️ ingest contacts saltato: extraction_template={extraction_template!r} "
+            f"non e' centrato sui contatti. I dati restano in profiles.jsonl."
+        )
         return 0
 
     n_ingested = 0
@@ -533,6 +642,151 @@ def _ingest_to_contacts(jsonl_path: Path, task_id: int, job_id: int, jlog: Calla
     if n_skipped_invalid:
         jlog(f"  ⏭️ {n_skipped_invalid} righe scartate (JSON invalido)")
     return n_ingested
+
+
+def _ingest_to_assets(
+    jsonl_path: Path,
+    task_id: int,
+    job_id: int,
+    jlog: Callable,
+    extraction_template: str | None = None,
+) -> int:
+    """Legge profiles.jsonl consolidato e fa upsert in tabella `assets` con tag derivati.
+
+    Funziona per tutti i template (real_estate, ecommerce_products, events, news_articles,
+    job_listings, profile_contacts, ...). Niente filtri "no email": ogni riga estratta
+    diventa un asset, con tag derivati dichiarativamente da `derive_tags`.
+
+    **Validation di completezza**: se i campi-chiave del template sono tutti null/empty
+    (es. raw_json di una pagina indice processata erroneamente), la riga viene scartata
+    invece di finire in DB come asset-fantasma. Per `generic` (template ignoto) si tiene
+    tutto.
+    """
+    import json as _json
+    from urllib.parse import urlparse
+
+    from .asset_tags import derive_tags, derive_title
+
+    if not jsonl_path.exists():
+        return 0
+
+    asset_type = (extraction_template or "generic").strip() or "generic"
+    n_ingested = 0
+    n_skipped_invalid = 0
+    n_skipped_empty = 0
+
+    try:
+        with jsonl_path.open(encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = _json.loads(raw)
+                except _json.JSONDecodeError:
+                    n_skipped_invalid += 1
+                    continue
+                if not isinstance(obj, dict):
+                    n_skipped_invalid += 1
+                    continue
+
+                if not _has_minimal_data_for(asset_type, obj):
+                    n_skipped_empty += 1
+                    continue
+
+                source_url = obj.get("url") or obj.get("source_url")
+                source_domain = obj.get("source_domain")
+                if not source_domain and source_url:
+                    try:
+                        source_domain = (urlparse(source_url).hostname or "").lower() or None
+                    except Exception:
+                        source_domain = None
+
+                tags = derive_tags(asset_type, obj)
+                title = derive_title(asset_type, obj)
+
+                db.upsert_asset(
+                    {
+                        "asset_type": asset_type,
+                        "source_task_id": task_id,
+                        "source_job_id": job_id,
+                        "source_url": source_url,
+                        "source_domain": source_domain,
+                        "title": title,
+                        "raw_json": raw,
+                    },
+                    tags=tags,
+                )
+                n_ingested += 1
+    except Exception as e:
+        jlog(f"  ⚠️ errore durante ingest assets: {type(e).__name__}: {e}")
+        return n_ingested
+
+    if n_ingested:
+        jlog(
+            f"  💾 ingest DB: {n_ingested} asset di tipo '{asset_type}' "
+            f"(tabella `assets`, status='new')"
+        )
+    if n_skipped_empty:
+        jlog(
+            f"  ⏭️ {n_skipped_empty} righe scartate (campi-chiave del template "
+            f"'{asset_type}' tutti vuoti: probabilmente pagine indice processate "
+            f"per errore dal pattern del crawler)"
+        )
+    if n_skipped_invalid:
+        jlog(f"  ⏭️ {n_skipped_invalid} righe scartate (JSON invalido)")
+    return n_ingested
+
+
+def _is_truthy(v: Any) -> bool:
+    """Considera 'vuoto' None, stringhe vuote/whitespace, liste/dict vuoti, 0/False."""
+    if v is None:
+        return False
+    if isinstance(v, str):
+        return bool(v.strip())
+    if isinstance(v, (list, dict, tuple)):
+        return bool(v)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    return True
+
+
+def _has_minimal_data_for(asset_type: str, obj: dict) -> bool:
+    """Ritorna True se l'oggetto ha i campi minimi popolati per essere un asset
+    'reale' del template, altrimenti False (probabilmente pagina indice processata).
+
+    Per `generic` (no template) si tiene sempre.
+    """
+    if asset_type == "real_estate":
+        # Almeno uno dei campi numerici fondamentali: prezzo, mq, locali.
+        return any(
+            _is_truthy(obj.get(k))
+            for k in ("prezzo_eur", "metri_quadri", "locali", "indirizzo", "agenzia")
+        )
+    if asset_type == "ecommerce_products":
+        return _is_truthy(obj.get("name")) or _is_truthy(obj.get("price_amount"))
+    if asset_type == "events":
+        return _is_truthy(obj.get("title")) or _is_truthy(obj.get("start_datetime"))
+    if asset_type == "news_articles":
+        return _is_truthy(obj.get("title")) and (
+            _is_truthy(obj.get("author"))
+            or _is_truthy(obj.get("published_at"))
+            or _is_truthy(obj.get("summary"))
+        )
+    if asset_type == "job_listings":
+        return _is_truthy(obj.get("title")) and (
+            _is_truthy(obj.get("company")) or _is_truthy(obj.get("apply_url"))
+        )
+    if asset_type == "profile_contacts":
+        # Per lead-gen serve almeno UN contatto reale, NON solo il nome.
+        # Display_name/username sono identificatori utili ma senza contatto sono inutilizzabili.
+        return any(
+            _is_truthy(obj.get(k))
+            for k in ("email", "whatsapp", "telegram", "sitoweb", "social")
+        )
+    return True
 
 
 def _extract_json_dicts(text: str) -> list[dict]:

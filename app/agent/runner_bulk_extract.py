@@ -178,12 +178,16 @@ def _url_match_key(url: str) -> str:
 
     Includere l'host permette al crawler di distinguere sub-domini come
     profili separati (es. <slug>.example.com) da sezioni della home.
-    Niente schema, niente query, niente fragment.
+    Niente schema, niente query, niente fragment. Trailing slash rimosso
+    per coerenza con `_url_to_pattern` e con i regex generati da
+    `_pattern_to_regex` (che ancorano con `$`).
     """
     try:
         p = urlparse(url)
         host = (p.hostname or "").lower()
         path = p.path or "/"
+        if len(path) > 1 and path.endswith("/"):
+            path = path[:-1]
         return host + path
     except Exception:
         return url
@@ -304,6 +308,172 @@ def _count_pattern_matches(regex_str: str, urls: list[str]) -> int:
     except re.error:
         return 0
     return sum(1 for u in urls if pat.search(_url_match_key(u)))
+
+
+_LISTING_KEYWORDS = (
+    "vendit", "annunci", "annunc", "case", "casa-",
+    "categori", "catalog", "prodott", "elenco", "directory",
+    "ricerc", "search", "result", "list", "items",
+    "all", "comuni", "regioni", "zone", "quartier",
+    "marche", "brand", "sezion", "area",
+)
+
+
+def _identify_candidate_listings(
+    sample_links: list[str],
+    excluded_pattern_str: str | None = None,
+    top_n: int = 4,
+) -> list[str]:
+    """Identifica candidate listing pages tra i link interni del seed.
+
+    Una "listing" e' una pagina che NON e' target ma probabilmente CONTIENE link
+    a pagine target (es. /vendita-case/{citta}/ o /annunci/categoria/<x>).
+
+    Score euristico per ciascun URL del sample:
+    - +3 se URL contiene keyword listing (vendita, annunci, case, categoria, ...)
+    - +2 se il suo pattern ha >= 5 URL nel sample (= pattern ricorrente)
+      (+1 se ha 2-4 URL)
+    - +1 se il path e' corto (<=3 segmenti).
+
+    `excluded_pattern_str` e' rispettato per evitare di pescare un URL gia'
+    classificato come target. NON esclude pattern simili: gli URL `/vendita-case/X/`
+    e `/annuncio/X/` possono condividere `{slug}/{slug}` ma essere semanticamente
+    diversi — la keyword nello score discrimina.
+
+    Ritorna URL singoli (non pattern), deduplicati, ordinati per score
+    discendente. Path piu' corto come tie-breaker.
+    """
+    if not sample_links:
+        return []
+    groups = _group_urls_by_pattern(sample_links)
+    target_regex: re.Pattern | None = None
+    if excluded_pattern_str:
+        try:
+            target_regex = re.compile(_pattern_to_regex(excluded_pattern_str))
+        except re.error:
+            target_regex = None
+    candidates: list[tuple[int, int, str]] = []  # (score_neg, path_len, url)
+    for pat, urls in groups.items():
+        pat_count = len(urls)
+        # Per ogni pattern strutturale scelgo l'URL "migliore": quello con score
+        # piu' alto (privilegiando keyword listing). Senza questa scelta interna,
+        # un URL come /account/accedi/ verrebbe scelto come rappresentante del
+        # pattern {slug}/{slug} mentre /vendita-case/acireale/ (stesso pattern,
+        # ma listing reale) verrebbe ignorato.
+        best_url: str | None = None
+        best_score = 0
+        best_path_len = 9999
+        for url in urls:
+            if target_regex and target_regex.search(_url_match_key(url)):
+                continue
+            url_lower = url.lower()
+            score = 0
+            if any(kw in url_lower for kw in _LISTING_KEYWORDS):
+                score += 3
+            if pat_count >= 5:
+                score += 2
+            elif pat_count >= 2:
+                score += 1
+            path_len = len([s for s in urlparse(url).path.split("/") if s])
+            if 1 <= path_len <= 3:
+                score += 1
+            if score > best_score or (score == best_score and path_len < best_path_len):
+                best_url = url
+                best_score = score
+                best_path_len = path_len
+        if best_url and best_score > 0:
+            candidates.append((-best_score, best_path_len, best_url))
+    candidates.sort()
+    out: list[str] = []
+    seen: set[str] = set()
+    for _s, _pl, url in candidates:
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+        if len(out) >= top_n:
+            break
+    return out
+
+
+async def _rerank_listings_via_llm(
+    client: httpx.AsyncClient,
+    base_url: str,
+    api_key: str,
+    model: str,
+    candidates: list[str],
+    user_objective: str,
+    schema_text: str,
+) -> list[str]:
+    """Chiede all'LLM di riordinare i candidate URL secondo la probabilita' che
+    siano LISTING che linkano i target dell'obiettivo (es. annunci, prodotti).
+
+    Non hallucina: ritorna SOLO sottoinsiemi della lista candidate input. In caso
+    di errore fallback restituisce l'ordine originale.
+    """
+    if len(candidates) <= 1:
+        return list(candidates)
+    numbered = "\n".join(f"  {i+1}. {u}" for i, u in enumerate(candidates))
+    prompt = (
+        "Sei un agente che decide la PRIORITA' di esplorazione di pagine web.\n\n"
+        "OBIETTIVO UTENTE:\n"
+        f"{user_objective[:1500]}\n\n"
+        "SCHEMA DATI TARGET (cosa stiamo cercando di estrarre):\n"
+        f"{schema_text[:1500]}\n\n"
+        "URL candidate (pagine intermedie del sito):\n"
+        f"{numbered}\n\n"
+        "Quali di questi URL e' piu' probabile che siano LISTING che linkano "
+        "alle pagine-target (annunci, prodotti, articoli, ecc.) coerenti con "
+        "l'obiettivo? Considera la coerenza semantica (zona, categoria, tipo) "
+        "fra l'obiettivo e l'URL.\n\n"
+        "Rispondi SOLO con un JSON di questa forma:\n"
+        "{\n"
+        '  "ranked": [<numero>, <numero>, ...]\n'
+        "}\n"
+        "dove i numeri sono gli indici (1-based) della lista, ordinati dal piu' "
+        "promettente al meno. Niente prosa."
+    )
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+        "max_tokens": 200,
+        "response_format": {"type": "json_object"},
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        r = await client.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=30,
+        )
+        r.raise_for_status()
+        raw = (r.json().get("choices", [{}])[0].get("message", {}) or {}).get("content") or ""
+    except Exception:
+        return list(candidates)
+    try:
+        import json as _json
+
+        obj = _json.loads(raw)
+        ranked_idx = obj.get("ranked") or []
+    except Exception:
+        return list(candidates)
+    out: list[str] = []
+    seen: set[int] = set()
+    for x in ranked_idx:
+        try:
+            i = int(x) - 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < len(candidates) and i not in seen:
+            seen.add(i)
+            out.append(candidates[i])
+    # eventuale residuo che il modello ha omesso, in coda con ordine originale
+    for i, u in enumerate(candidates):
+        if i not in seen:
+            out.append(u)
+    return out
 
 
 async def _auto_detect_pattern_via_llm(
@@ -619,6 +789,19 @@ def _resolve_extraction_schema(task: dict[str, Any]) -> str:
 
 
 async def run_agent(task: dict[str, Any], job_id: int) -> str:
+    """Entry-point. Registra il job_id in `_active_jobs` cosi' che il bottone Stop
+    sull'UI del singolo job (anche sub-job di auto_extract) lo cancelli davvero.
+    """
+    from .. import jobs as _jobs
+
+    _jobs.register_subjob(job_id)
+    try:
+        return await _run_agent_inner(task, job_id)
+    finally:
+        _jobs.unregister_subjob(job_id)
+
+
+async def _run_agent_inner(task: dict[str, Any], job_id: int) -> str:
     def jlog(line: str) -> None:
         db.append_job_log(job_id, line)
 
@@ -722,6 +905,9 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     )
 
     # 3b. CRAWLER (opzionale): scopre URL navigando dal seed
+    crawler_pattern_id: int | None = None
+    crawler_pattern_reused: bool = False
+    crawler_pattern_hits: int = 0
     if crawler_on and filtered:
         limiter_for_crawl = PerHostRateLimiter(rate_per_sec)
         async with httpx.AsyncClient(
@@ -730,6 +916,30 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         ) as crawl_client:
             # Auto-detect pattern se non specificato dall'utente
             effective_pattern = crawler_pattern
+            asset_type_for_pattern = task.get("extraction_template") or None
+            seed0 = filtered[0]
+            seed_domain = _registrable_domain((urlparse(seed0).hostname or "").lower())
+            # Memoria DB: se ho gia' un pattern confirmed per questo dominio+template, riusalo.
+            if not effective_pattern and seed_domain:
+                try:
+                    saved_patterns = db.find_site_patterns(
+                        seed_domain,
+                        asset_type=asset_type_for_pattern,
+                        status="confirmed",
+                    )
+                except Exception as e:
+                    jlog(f"  ⚠️ memoria pattern non disponibile: {type(e).__name__}: {e}")
+                    saved_patterns = []
+                if saved_patterns:
+                    sp = saved_patterns[0]
+                    effective_pattern = sp.get("regex") or None
+                    crawler_pattern_id = int(sp["id"]) if sp.get("id") else None
+                    crawler_pattern_reused = True
+                    jlog(
+                        f"  📌 memoria DB: riuso pattern confermato per '{seed_domain}' "
+                        f"(asset_type={asset_type_for_pattern}): {sp.get('pattern')!r} "
+                        f"[hits={sp.get('hits')} successes={sp.get('successes')}]"
+                    )
             if not effective_pattern:
                 # Auto-detect con retry loop: il discovery LLM sceglie un pattern,
                 # verifichiamo che matchi almeno un link diretto del seed; se 0
@@ -738,7 +948,6 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 max_retries = int(task.get("max_discovery_retries") or 3)
                 user_objective = task.get("objective") or ""
                 try:
-                    seed0 = filtered[0]
                     r0 = await crawl_client.get(seed0, timeout=20)
                     sample_links = _extract_links(r0.text, seed0, same_origin_only=True)
                     if not sample_links:
@@ -753,6 +962,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                             jlog(f"    • {pat}  ({len(urls)} URL, es. {urls[0]})")
 
                         excluded_patterns: list[str] = []
+                        seed_pattern_str: str | None = None
+                        seed_n_match: int = 0
                         for attempt in range(max_retries + 1):
                             if attempt == 0:
                                 jlog(f"  discovery: tentativo 1 (objective + schema → LLM)...")
@@ -782,9 +993,147 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                             )
                             if n_match > 0:
                                 effective_pattern = regex_str
+                                seed_pattern_str = pattern_str
+                                seed_n_match = n_match
                                 jlog(f"  ✅ pattern accettato dopo {attempt + 1} tentativo/i")
+                                # Persisto il pattern come 'candidate' nella memoria DB
+                                if seed_domain:
+                                    try:
+                                        crawler_pattern_id = db.upsert_site_pattern(
+                                            registrable_domain=seed_domain,
+                                            pattern=pattern_str,
+                                            regex=regex_str,
+                                            asset_type=asset_type_for_pattern,
+                                            source_task_id=task.get("id"),
+                                            source_job_id=job_id,
+                                        )
+                                        jlog(
+                                            f"  📌 memoria DB: salvato pattern come 'candidate' "
+                                            f"(id={crawler_pattern_id}) per '{seed_domain}'"
+                                        )
+                                    except Exception as e:
+                                        jlog(f"  ⚠️ memoria DB: salvataggio pattern fallito: {type(e).__name__}: {e}")
                                 break
                             excluded_patterns.append(pattern_str)
+
+                        # DRILL-DOWN: se il pattern dal seed e' debole (<3 link target diretti),
+                        # cerca pagine listing intermediarie (es. /vendita-case/{citta}/) che
+                        # potrebbero contenere link target piu' specifici, e ri-fai discovery li'.
+                        # Questo gestisce il caso in cui la home non linka direttamente le
+                        # pagine target ma ha solo un menu di sezioni.
+                        if effective_pattern and seed_n_match < 3:
+                            # Non escludiamo il pattern del seed: dato che e' debole
+                            # (n_match<3), un URL che lo matcha potrebbe in realta'
+                            # essere una listing utile, non un target affidabile.
+                            candidate_listings = _identify_candidate_listings(
+                                sample_links,
+                                excluded_pattern_str=None,
+                                top_n=6,  # piu' alto: il rerank LLM filtrera' meglio
+                            )
+                            if candidate_listings:
+                                # Rerank LLM: chiede al modello "quali sono LISTING
+                                # plausibili dato l'obiettivo?". Se il rerank fallisce
+                                # silenziosamente, ricade sull'ordine euristico keyword.
+                                try:
+                                    candidate_listings = await _rerank_listings_via_llm(
+                                        crawl_client,
+                                        discovery_base_url,
+                                        discovery_api_key,
+                                        discovery_model,
+                                        candidate_listings,
+                                        user_objective=user_objective,
+                                        schema_text=schema_text,
+                                    )
+                                except Exception as e:
+                                    jlog(
+                                        f"  ⚠️ rerank LLM fallito ({type(e).__name__}: {e}). "
+                                        f"Uso ordine euristico."
+                                    )
+                                # Limito a 4 dopo il rerank per non visitare troppe pagine
+                                candidate_listings = candidate_listings[:4]
+                                jlog(
+                                    f"  🔍 pattern dal seed debole ({seed_n_match} match). "
+                                    f"Esploro {len(candidate_listings)} candidate listing "
+                                    f"(LLM-ranked) per cercare un pattern piu' ricco."
+                                )
+                                best_pattern_str = seed_pattern_str
+                                best_regex = effective_pattern
+                                best_n = seed_n_match
+                                best_listing_url: str | None = None
+                                for listing_url in candidate_listings:
+                                    jlog(f"    listing candidate: {listing_url}")
+                                    try:
+                                        rl = await crawl_client.get(listing_url, timeout=20)
+                                        listing_links = _extract_links(
+                                            rl.text, listing_url, same_origin_only=True
+                                        )
+                                    except Exception as e:
+                                        jlog(f"      errore fetch ({type(e).__name__}: {e})")
+                                        continue
+                                    if not listing_links:
+                                        jlog("      no link interni nella listing")
+                                        continue
+                                    try:
+                                        new_pattern, new_reason = await _auto_detect_pattern_via_llm(
+                                            crawl_client, discovery_base_url, discovery_api_key,
+                                            discovery_model, listing_url, listing_links, schema_text,
+                                            user_objective=user_objective,
+                                            excluded_patterns=[],
+                                        )
+                                    except Exception as e:
+                                        jlog(f"      errore discovery LLM ({type(e).__name__}: {e})")
+                                        continue
+                                    if not new_pattern:
+                                        jlog(f"      LLM non ha proposto pattern ({new_reason})")
+                                        continue
+                                    new_regex = _pattern_to_regex(new_pattern)
+                                    new_n = _count_pattern_matches(new_regex, listing_links)
+                                    jlog(
+                                        f"      → pattern {new_pattern!r}: matcha "
+                                        f"{new_n}/{len(listing_links)} link della listing"
+                                    )
+                                    if new_n > best_n:
+                                        best_pattern_str = new_pattern
+                                        best_regex = new_regex
+                                        best_n = new_n
+                                        best_listing_url = listing_url
+                                        if best_n >= 5:
+                                            break  # pattern fortemente confermato
+                                if best_listing_url and best_pattern_str != seed_pattern_str:
+                                    jlog(
+                                        f"  ✅ pattern migliorato dalla listing {best_listing_url}: "
+                                        f"{best_pattern_str!r} ({best_n} match)"
+                                    )
+                                    effective_pattern = best_regex
+                                    if best_listing_url not in seen:
+                                        seen.add(best_listing_url)
+                                        filtered.append(best_listing_url)
+                                        jlog(
+                                            f"  ➕ listing aggiunta come seed: {best_listing_url}"
+                                        )
+                                    if seed_domain:
+                                        try:
+                                            crawler_pattern_id = db.upsert_site_pattern(
+                                                registrable_domain=seed_domain,
+                                                pattern=best_pattern_str,
+                                                regex=best_regex,
+                                                asset_type=asset_type_for_pattern,
+                                                source_task_id=task.get("id"),
+                                                source_job_id=job_id,
+                                                notes=f"Migliorato via drill-down su {best_listing_url}",
+                                            )
+                                            jlog(
+                                                f"  📌 memoria DB: pattern aggiornato (id={crawler_pattern_id}) "
+                                                f"per '{seed_domain}' dopo drill-down"
+                                            )
+                                        except Exception as e:
+                                            jlog(f"  ⚠️ memoria DB drill-down save fallito: {e}")
+                                else:
+                                    jlog(
+                                        f"  ↩ drill-down: nessun candidate ha prodotto un pattern "
+                                        f"migliore. Tengo quello del seed."
+                                    )
+
                         if not effective_pattern:
                             jlog(
                                 f"  ⚠️ discovery ha esaurito i tentativi "
@@ -820,6 +1169,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         if u not in seen:
                             seen.add(u)
                             filtered.append(u)
+                    crawler_pattern_hits = len(discovered)
                     jlog(
                         f"  crawler: {len(discovered)} URL nuovi aggiunti alla lista "
                         f"(totale ora: {len(filtered)})"
@@ -941,8 +1291,49 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         errors_f.close()
 
     # 5. Ingest in DB (riusa lo stesso meccanismo del browser_use runner)
-    from .runner_browseruse import _ingest_to_contacts
-    n_ingested = _ingest_to_contacts(profiles_path, task["id"], job_id, jlog)
+    # IMPORTANTE: facciamo l'ingest PRIMA delle stats del pattern, cosi' possiamo
+    # contare i veri "successes" (asset validi post-validation) invece dei semplici
+    # "extraction LLM ok" — un pattern che produce 200 JSON parseable ma tutti vuoti
+    # NON e' un successo, e non deve essere promosso a 'confirmed' nella memoria.
+    from .runner_browseruse import _ingest_to_assets, _ingest_to_contacts
+    n_ingested = _ingest_to_contacts(
+        profiles_path,
+        task["id"],
+        job_id,
+        jlog,
+        extraction_template=task.get("extraction_template"),
+    )
+    n_assets = _ingest_to_assets(
+        profiles_path,
+        task["id"],
+        job_id,
+        jlog,
+        extraction_template=task.get("extraction_template"),
+    )
+
+    # 5b. Memoria pattern: aggiorna stats POST-VALIDATION e prova promozione.
+    # `successes` = asset realmente validi (post-filtro completezza), non
+    # extraction LLM "ok". Cosi' un pattern che produce 200 JSON parseable
+    # ma tutti vuoti diventa 200 failures invece che 200 successes.
+    if crawler_pattern_id is not None:
+        try:
+            real_successes = int(n_assets)
+            real_failures = max(0, int(n_done) - real_successes)
+            db.record_pattern_run(
+                crawler_pattern_id,
+                hits=int(crawler_pattern_hits),
+                successes=real_successes,
+                failures=real_failures,
+            )
+            new_status = db.maybe_promote_pattern(crawler_pattern_id)
+            if new_status:
+                jlog(
+                    f"  📌 memoria DB: pattern id={crawler_pattern_id} -> "
+                    f"status='{new_status}' (post-validation: "
+                    f"{real_successes} successes / {real_failures} failures)"
+                )
+        except Exception as e:
+            jlog(f"  ⚠️ memoria DB stats fallito: {type(e).__name__}: {e}")
 
     # 6. Report finale
     fmt = task.get("output_format") or "md"
@@ -954,6 +1345,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         f"- **Estrazioni OK**: {n_ok}\n"
         f"- **Fallite**: {n_failed} (vedi `errors.jsonl`)\n"
         f"- **Contatti ingestiti in DB**: {n_ingested}\n"
+        f"- **Asset ingestiti in DB**: {n_assets}\n"
         f"- **Strategia**: `{method}`, concorrenza={concurrency}, rate={rate_per_sec}/s/host\n"
         f"- **Provider/Modello**: {provider_key} / {task['model']}\n\n"
         f"Vedi `profiles.jsonl` per i dati strutturati.\n"

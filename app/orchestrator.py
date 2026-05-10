@@ -20,6 +20,7 @@ AgentMode = Literal[
     "browser_use",
     "bulk_extract",
     "auto_extract",
+    "site_explorer",
     "qualifier",
     "outreach",
     "responder",
@@ -168,6 +169,11 @@ Per altre coppie pass_artifact puo essere null.
 5. extraction_template: usa "profile_contacts" per lead/contatti/profili; "ecommerce_products" per prodotti; "real_estate" per case; "events" per eventi; "news_articles" per articoli; "job_listings" per lavoro. Se ambiguo, omettilo.
 6. Niente API key nel JSON. Niente campi inventati. Usa solo i nomi di agent_mode esistenti.
 7. Se il brief e ambiguo, fai un piano piccolo (1-2 task), non riempire di stadi inutili.
+8. **Pipeline discovery+extract**: se il brief chiede di "estrarre" / "raccogliere lead" / "trovare profili" / "scrapare" MA non contiene URL ne' domini specifici (es. "trova le agenzie immobiliari di Acireale e estrai gli annunci"), preferisci una pipeline a 2 task:
+   - Task 1: `react` con objective "scopri URL di siti pertinenti e produci un elenco".
+   - Task 2: `auto_extract` con `seed_queries=[]` (l'utente popolera' manualmente dopo la run di react).
+   - **NON creare un edge** tra i due task: react produce un report .md, non un file di seed; il passaggio degli URL e' manuale.
+   - Aggiungi al piano un warning chiaro che spiega il passaggio manuale all'utente.
 
 == Tool disponibili (chiamali se servono) ==
 - list_extraction_templates() per scegliere il template giusto.
@@ -254,6 +260,42 @@ Plan:
   }],
   "edges": []
 }
+
+ESEMPIO 4 (discovery + extract: nessun URL noto a priori)
+Brief: "Trovami da solo i siti delle agenzie immobiliari di Acireale e poi estrai gli annunci con prezzo > 200000"
+Plan:
+{
+  "title": "Lead immobiliari Acireale via discovery agenzie",
+  "summary": "Step 1 react scopre URL di agenzie locali, step 2 auto_extract estrae gli annunci, step 3 qualifier filtra prezzo > 200k.",
+  "risk_level": "low",
+  "assumptions": [
+    "Le agenzie immobiliari indipendenti pubblicano annunci su siti propri statici, accessibili senza login.",
+    "Lo schema real_estate cattura prezzo/mq/citta/contatti agenzia."
+  ],
+  "warnings": [
+    "Pipeline discovery+extract: lancia prima il task react. Quando completa, apri il report e copia gli URL trovati nel campo 'Seed URL' del task auto_extract a valle. Solo dopo lancia auto_extract."
+  ],
+  "run_after_create": false,
+  "tasks": [
+    {"key": "research", "name": "Discovery agenzie immobiliari Acireale",
+     "agent_mode": "react",
+     "objective": "Cerca e produci un elenco di URL di siti di agenzie immobiliari indipendenti che operano nella zona di Acireale. Per ogni fonte: URL canonico + breve nota di rilevanza.",
+     "max_iterations": 10},
+    {"key": "extract", "name": "Estrazione annunci dalle agenzie scoperte",
+     "agent_mode": "auto_extract",
+     "objective": "Estrai annunci immobiliari dai siti delle agenzie scoperte nello step di discovery.",
+     "seed_queries": [],
+     "extraction_template": "real_estate", "max_iterations": 200},
+    {"key": "qualifier", "name": "Qualifica annunci sopra 200k",
+     "agent_mode": "qualifier",
+     "objective": "Tieni solo annunci con prezzo > 200000 EUR.",
+     "max_iterations": 10}
+  ],
+  "edges": [
+    {"from_key": "extract", "to_key": "qualifier", "pass_artifact": "profiles.jsonl"}
+  ]
+}
+Nota: l'edge tra `research` e `extract` non esiste perche' react produce report.md, non un file di seed. L'utente popola manualmente seed_queries di `extract` dopo aver visto il report.
 """
 
 
@@ -279,6 +321,7 @@ class PlannedTask(BaseModel):
     message_channels: list[str] = Field(default_factory=list)
     responder_system_prompt: str | None = None
     bulk_concurrency: int = 5
+    target_cap_per_site: int = 30
     bulk_rate_limit_per_sec: float = 2.0
     crawler_enabled: bool = False
     crawler_max_depth: int = 3
@@ -467,6 +510,7 @@ def _planned_task(
         llm_provider=llm_provider,
         llm_base_url=llm_base_url if llm_provider == "custom" else None,
         bulk_concurrency=5,
+        target_cap_per_site=30,
         bulk_rate_limit_per_sec=2.0,
         crawler_enabled=agent_mode in {"bulk_extract", "auto_extract"} and bool(seed_queries),
         crawler_max_depth=3,
@@ -538,6 +582,39 @@ def build_heuristic_plan(
     wants_outreach = _wants_any(text, ("outreach", "email", "telegram", "contatta", "messaggi", "campagna"))
     wants_responder = _wants_any(text, ("rispondi", "reply", "auto-reply", "inbound", "posta in arrivo"))
     wants_research = _wants_any(text, ("cerca", "ricerca", "report", "analizza", "trova informazioni"))
+    wants_discovery = _wants_any(
+        text,
+        (
+            "scopri sit",
+            "scopri font",
+            "scopri portal",
+            "trova sit",
+            "trova font",
+            "trova portal",
+            "trova agenzi",
+            "elenca sit",
+            "elenca font",
+            "elenca portal",
+            "fonti pertinenti",
+            "fonti rilevanti",
+            "siti pertinenti",
+            "siti tematici",
+            "siti rilevanti",
+            "raccogli sit",
+            "raccogli font",
+            "ricerca sit",
+            "ricerca font",
+            "cerca da solo",
+            "trova da solo",
+            "trova le fonti",
+            "fonti web",
+        ),
+    )
+    needs_discovery_pipeline = (
+        (wants_extract or wants_discovery)
+        and not urls
+        and not domains
+    )
 
     if wants_responder and not wants_extract:
         key = _safe_key("responder", used)
@@ -557,6 +634,51 @@ def build_heuristic_plan(
                 ),
                 notes="Creato da Orchestrator. Modalita rischiosa: controlla bene prima di lanciare.",
                 status_tag="tuning",
+            )
+        )
+    elif needs_discovery_pipeline:
+        # PIPELINE DISCOVERY + EXTRACT (2 task):
+        # nessun URL/dominio nel brief → step 1 react cerca le fonti, step 2 auto_extract
+        # estrae i dati dalle fonti scoperte. L'utente popola manualmente seed_queries
+        # del task downstream dopo aver visto il report di react.
+        research_key = _safe_key("research", used)
+        tasks.append(
+            PlannedTask(
+                key=research_key,
+                name="Discovery fonti",
+                agent_mode="react",
+                objective=(
+                    "Cerca e produci un elenco di URL di siti/portali pertinenti per il seguente brief. "
+                    "Per ogni fonte includi URL canonico e una breve nota di rilevanza. "
+                    "Niente sintesi prosaica: serve una lista pulita.\n\nBrief: " + text
+                ),
+                description="Step 1: discovery delle fonti web (output: report con elenco URL).",
+                seed_queries=[],
+                max_iterations=10,
+                model=settings.default_model,
+                output_format="md",
+                llm_provider="ollama",
+                notes=(
+                    "Step 1 della pipeline discovery+extract. Quando completa, "
+                    "apri il report e copia gli URL nel campo seed_queries del task "
+                    "'Estrazione dati dalle fonti scoperte'."
+                ),
+                status_tag="tuning",
+            )
+        )
+        extract_key = _safe_key("extract", used)
+        tasks.append(
+            _planned_task(
+                key=extract_key,
+                name="Estrazione dati dalle fonti scoperte",
+                agent_mode="auto_extract",
+                objective=text,
+                brief=text,
+                urls=[],  # popolati manualmente dall'utente dopo la run di research
+                domains=[],
+                provider=provider,
+                model=model,
+                llm_base_url=llm_base_url,
             )
         )
     elif wants_extract or urls:
@@ -676,14 +798,22 @@ def build_heuristic_plan(
             )
         )
 
-    edges = [
-        PlannedEdge(
-            from_key=tasks[i].key,
-            to_key=tasks[i + 1].key,
-            pass_artifact=_edge_artifact(tasks[i].agent_mode, tasks[i + 1].agent_mode),
+    edges: list[PlannedEdge] = []
+    extract_modes = {"bulk_extract", "auto_extract", "browser_use"}
+    for i in range(len(tasks) - 1):
+        from_t = tasks[i]
+        to_t = tasks[i + 1]
+        # Pipeline discovery+extract: react -> auto_extract NON ha edge automatico,
+        # il passaggio degli URL e' manuale (react produce report.md, non un file di seed).
+        if from_t.agent_mode == "react" and to_t.agent_mode in extract_modes:
+            continue
+        edges.append(
+            PlannedEdge(
+                from_key=from_t.key,
+                to_key=to_t.key,
+                pass_artifact=_edge_artifact(from_t.agent_mode, to_t.agent_mode),
+            )
         )
-        for i in range(len(tasks) - 1)
-    ]
 
     warnings: list[str] = []
     if any(t.agent_mode in RISKY_AGENT_MODES for t in tasks):
@@ -693,7 +823,12 @@ def build_heuristic_plan(
     if any(t.agent_mode == "react" for t in tasks) and provider != "ollama":
         warnings.append("I task react usano Ollama locale anche se il planner usa un provider remoto.")
     extract_tasks = [t for t in tasks if t.agent_mode in {"bulk_extract", "auto_extract", "browser_use"}]
-    if extract_tasks and any(not t.seed_queries for t in extract_tasks):
+    if needs_discovery_pipeline and extract_tasks and any(not t.seed_queries for t in extract_tasks):
+        warnings.append(
+            "Pipeline discovery+extract: lancia prima il task react per scoprire le fonti, "
+            "poi copia gli URL dal report nel campo 'Seed URL' del task auto_extract a valle."
+        )
+    elif extract_tasks and any(not t.seed_queries for t in extract_tasks):
         warnings.append("Non ho trovato URL nel brief: compila seed URL prima di lanciare lo scraping.")
     elif extract_tasks and not urls and any(t.seed_queries for t in extract_tasks):
         warnings.append("Seed URL sintetizzati dai domini citati nel brief: rivedili prima di lanciare.")
@@ -1165,6 +1300,7 @@ def _task_to_db_payload(task: PlannedTask) -> dict[str, Any]:
         "message_channels": task.message_channels,
         "responder_system_prompt": task.responder_system_prompt,
         "bulk_concurrency": task.bulk_concurrency,
+        "target_cap_per_site": task.target_cap_per_site,
         "bulk_rate_limit_per_sec": task.bulk_rate_limit_per_sec,
         "bulk_extraction_method": "llm_per_page",
         "bulk_css_selectors": None,

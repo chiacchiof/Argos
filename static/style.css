@@ -38,6 +38,33 @@ button.danger { background: var(--danger); }
 
 .errors { background: #fff5f5; border: 1px solid #fed7d7; padding: 0.7rem; border-radius: 4px; color: var(--danger); }
 .warn-inline { background: #fffaf0; border: 1px solid #f6e05e; padding: 0.55rem 0.7rem; border-radius: 4px; color: #744210; font-size: 0.9em; margin: 0.4rem 0; }
+.bulk-action-bar { display: flex; align-items: center; gap: 0.8rem; padding: 0.5rem 0.7rem; margin: 0.6rem 0; background: #f9fafb; border: 1px solid var(--border); border-radius: 4px; }
+.bulk-action-bar .bulk-select-all-label { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0; font-size: 0.92em; cursor: pointer; }
+.bulk-action-bar .bulk-count { color: var(--muted); font-size: 0.9em; flex: 1; }
+.bulk-action-bar button[disabled] { opacity: 0.4; cursor: not-allowed; }
+.bulk-col { width: 1.8rem; text-align: center; }
+.row-actions { display: flex; gap: 0.3rem; align-items: center; white-space: nowrap; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.assets-filter { margin: 0.8rem 0; }
+.assets-filter .row { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; }
+.assets-filter label { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.85em; }
+.active-tags { margin: 0.5rem 0 0.8rem; }
+.tag-chip { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.18rem 0.5rem; background: #e8f1ff; border: 1px solid #93c5fd; color: #1d4ed8; border-radius: 999px; font-size: 0.82em; margin-right: 0.3rem; }
+.tag-chip a { color: #1d4ed8; text-decoration: none; font-weight: bold; padding-left: 0.2rem; }
+.tag-chip a:hover { color: #b91c1c; }
+.tag-chip-mini { display: inline-block; padding: 0.1rem 0.45rem; background: #f3f4f6; border: 1px solid #e5e7eb; color: #374151; border-radius: 999px; font-size: 0.78em; margin: 0.05rem 0.1rem 0.05rem 0; text-decoration: none; }
+a.tag-chip-mini:hover { background: #e8f1ff; border-color: #93c5fd; color: #1d4ed8; }
+.tag-active { background: #1d4ed8; color: #fff !important; padding: 0.05rem 0.45rem; border-radius: 999px; }
+.facets { margin: 0.5rem 0 1rem; padding: 0.5rem 0.8rem; background: #fafbfc; border: 1px solid var(--border); border-radius: 4px; }
+.facets-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.8rem; margin-top: 0.5rem; }
+.facet-block h4 { margin: 0 0 0.3rem; font-size: 0.9em; color: #374151; }
+.facet-block ul { list-style: none; margin: 0; padding: 0; }
+.facet-block li { margin: 0.15rem 0; font-size: 0.86em; }
+.assets-table .tags-cell { max-width: 280px; }
+.code-block { background: #f9fafb; border: 1px solid var(--border); border-radius: 4px; padding: 0.8rem; font-size: 0.82em; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 0.8rem; margin: 0.6rem 0; }
+.kv dt { color: var(--muted); font-size: 0.86em; }
+.kv dd { margin: 0; }
 .empty, .muted { color: var(--muted); }
 
 dl.kv { display: grid; grid-template-columns: 180px 1fr; gap: 0.4rem 1rem; }
@@ -800,6 +827,60 @@ details.optional-block[open] > summary {
 .chat-attachment-clear:hover {
   background: #c7d2fe;
   color: #1e3a8a;
+}
+
+.jsonl-viewer {
+  max-width: 1180px;
+}
+.jsonl-head,
+.jsonl-pager,
+.jsonl-row-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.jsonl-head {
+  margin-bottom: 1rem;
+}
+.jsonl-head h2 {
+  margin-bottom: 0.2rem;
+  word-break: break-word;
+}
+.jsonl-pager {
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.9rem;
+}
+.jsonl-lines {
+  display: grid;
+  gap: 0.75rem;
+}
+.jsonl-row {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+}
+.jsonl-row-invalid {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+.jsonl-row-meta {
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+.jsonl-row pre {
+  margin: 0;
+  padding: 0.75rem;
+  max-height: 520px;
+  overflow: auto;
+  background: #0f172a;
+  color: #e5e7eb;
+  font-size: 0.86em;
+  line-height: 1.45;
+  border-radius: 0 0 6px 6px;
 }
 .plan-card {
   margin-top: 1rem;

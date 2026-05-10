@@ -7,6 +7,10 @@
     <a href="/inbox">← Inbox</a>
   </p>
 
+  {% if request.query_params.get('flash') %}
+  <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
+  {% endif %}
+
   <form method="get" class="filters">
     <label>Stato
       <select name="status" onchange="this.form.submit()">
@@ -22,9 +26,20 @@
   </form>
 
   {% if contacts %}
+  <form method="post" action="/inbox/contacts/delete-bulk" class="bulk-action-form" data-bulk-form
+        onsubmit="return window.bulkConfirmDelete(this, 'contatto')">
+    <input type="hidden" name="redirect_to" value="/inbox/contacts?status={{ filter_status }}">
+    <div class="bulk-action-bar">
+      <label class="bulk-select-all-label">
+        <input type="checkbox" data-bulk-select-all> Seleziona tutti
+      </label>
+      <span class="bulk-count" data-bulk-count>0 selezionati</span>
+      <button type="submit" class="btn-danger-inline" data-bulk-submit disabled>🗑️ Cancella selezionati</button>
+    </div>
   <table class="data">
     <thead>
       <tr>
+        <th class="bulk-col"><span class="visually-hidden">Seleziona</span></th>
         <th>#</th><th>Nome</th><th>Email</th><th>Telegram</th>
         <th>Status</th><th>Score</th><th>Sorgente</th><th></th>
       </tr>
@@ -32,6 +47,7 @@
     <tbody>
       {% for c in contacts %}
       <tr>
+        <td><input type="checkbox" name="contact_ids" value="{{ c.id }}" data-bulk-row></td>
         <td>{{ c.id }}</td>
         <td>{{ c.display_name or '—' }}</td>
         <td>{% if c.email %}<code>{{ c.email }}</code>{% else %}—{% endif %}</td>
@@ -43,23 +59,60 @@
         <td><span class="status status-{{ c.status }}">{{ c.status }}</span></td>
         <td>{% if c.qualifier_score is not none %}{{ c.qualifier_score }}/10{% else %}—{% endif %}</td>
         <td><small>{% if c.source_url %}<a href="{{ c.source_url }}" target="_blank" rel="noopener">{{ c.source_domain or 'link' }}</a>{% else %}—{% endif %}</small></td>
-        <td>
+        <td class="row-actions">
           {% if c.status != 'optedout' %}
-            <form method="post" action="/inbox/contacts/{{ c.id }}/optout" style="display:inline" onsubmit="return confirm('Opt-out manuale?');">
-              <button type="submit" class="btn-small btn-danger">🚫</button>
-            </form>
+            <button type="submit" formaction="/inbox/contacts/{{ c.id }}/optout"
+                    class="btn-small btn-danger" formnovalidate
+                    onclick="return confirm('Opt-out manuale?');">🚫</button>
           {% else %}
-            <form method="post" action="/inbox/contacts/{{ c.id }}/reset" style="display:inline">
-              <button type="submit" class="btn-small">↩️</button>
-            </form>
+            <button type="submit" formaction="/inbox/contacts/{{ c.id }}/reset"
+                    class="btn-small" formnovalidate>↩️</button>
           {% endif %}
+          <button type="submit" formaction="/inbox/contacts/{{ c.id }}/delete"
+                  class="btn-small btn-danger" formnovalidate
+                  onclick="return confirm('Cancellare il contatto #{{ c.id }}? Threads e messaggi associati saranno cancellati anche.');">🗑️</button>
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  </form>
   {% else %}
   <p class="muted">Nessun contatto. Vengono creati dai runner outreach/qualifier o quando ricevi messaggi.</p>
   {% endif %}
 </section>
+
+<script>
+(function () {
+  function wire(form) {
+    const all = form.querySelector('[data-bulk-select-all]');
+    const rows = form.querySelectorAll('[data-bulk-row]');
+    const submit = form.querySelector('[data-bulk-submit]');
+    const counter = form.querySelector('[data-bulk-count]');
+    if (!rows.length) return;
+    function refresh() {
+      const sel = Array.from(rows).filter(c => c.checked).length;
+      if (counter) counter.textContent = `${sel} selezionati`;
+      if (submit) submit.disabled = sel === 0;
+      if (all) {
+        all.checked = sel === rows.length;
+        all.indeterminate = sel > 0 && sel < rows.length;
+      }
+    }
+    if (all) all.addEventListener('change', () => {
+      rows.forEach(c => { c.checked = all.checked; });
+      refresh();
+    });
+    rows.forEach(c => c.addEventListener('change', refresh));
+    refresh();
+  }
+  document.querySelectorAll('[data-bulk-form]').forEach(wire);
+
+  window.bulkConfirmDelete = function (form, label) {
+    const sel = form.querySelectorAll('[data-bulk-row]:checked').length;
+    if (!sel) return false;
+    return confirm(`Cancellare ${sel} ${label}${sel === 1 ? '' : 'i'}? L'azione è permanente.`);
+  };
+})();
+</script>
 {% endblock %}

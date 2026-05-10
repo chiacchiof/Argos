@@ -408,7 +408,7 @@
       let typing = false;
       let streamDone = false;
       let received = false;
-      const baseDelayMs = 14;
+      const baseDelayMs = 18;
       const finalize = () => {
         assistant.bubble.classList.remove("is-streaming");
       };
@@ -421,7 +421,7 @@
             if (streamDone) finalize();
             return;
           }
-          const burst = Math.max(1, Math.min(pending.length, Math.ceil(pending.length / 60)));
+          const burst = pending.length > 240 ? 6 : (pending.length > 90 ? 4 : 2);
           assistant.text.textContent += pending.slice(0, burst);
           pending = pending.slice(burst);
           transcript.scrollTop = transcript.scrollHeight;
