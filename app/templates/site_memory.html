@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+
+{% block title %}Memoria sito · AgentScraper{% endblock %}
+
+{% block content %}
+<h2>🧠 Memoria sito</h2>
+<p class="muted">
+  Knowledge persistente che il framework usa nei prossimi run. Cancella entries
+  selettive prima di un test "pulito da 0", o tutto via "Svuota memoria".
+</p>
+
+{% if request.query_params.get('_msg') %}
+  <div class="flash-success">{{ request.query_params.get('_msg') | replace('+', ' ') }}</div>
+{% endif %}
+
+<section class="filter-bar">
+  <form method="get" action="/site_memory">
+    <label>
+      Filtra per dominio:
+      <select name="domain" onchange="this.form.submit()">
+        <option value="">— tutti —</option>
+        {% for d in all_domains %}
+          <option value="{{ d }}" {% if d == filter_domain %}selected{% endif %}>{{ d }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if filter_domain %}
+      <a href="/site_memory" class="btn-link-small">cancella filtro</a>
+    {% endif %}
+  </form>
+
+  {% if filter_domain %}
+    <form method="post" action="/site_memory/domain/delete"
+          onsubmit="return confirm('Cancellare TUTTI i pattern e i playbook di {{ filter_domain }}?');">
+      <input type="hidden" name="domain" value="{{ filter_domain }}">
+      <button type="submit" class="btn-danger">
+        🗑️ Cancella tutto per {{ filter_domain }}
+      </button>
+    </form>
+  {% endif %}
+</section>
+
+<details class="collapsible-section danger-zone">
+  <summary>⚠️ Svuota intera memoria sito</summary>
+  <form method="post" action="/site_memory/flush_all"
+        onsubmit="return confirm('SICURO? Cancello TUTTI i pattern e TUTTI i playbook di TUTTI i domini.');">
+    <p>
+      Cancella ogni riga da <code>site_patterns</code> e <code>site_playbooks</code>.
+      Per confermare, scrivi <strong>YES</strong> (maiuscolo) qui sotto:
+    </p>
+    <input type="text" name="confirm" placeholder="YES" required pattern="YES">
+    <button type="submit" class="btn-danger">🔥 Svuota tutta la memoria sito</button>
+  </form>
+</details>
+
+<hr>
+
+<h3>📐 Site patterns ({{ n_patterns }})</h3>
+<p class="muted small">
+  Regex e pattern URL appresi dai runner per dominio. Influenzano la discovery
+  di <code>bulk_extract</code>: i pattern <code>confirmed</code> vengono riusati;
+  i <code>rejected</code> vengono evitati.
+</p>
+
+{% if patterns %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>id</th>
+      <th>Dominio</th>
+      <th>Pattern</th>
+      <th>Regex</th>
+      <th>Asset type</th>
+      <th>Status</th>
+      <th>Hit / Succ / Fail</th>
+      <th>Aggiornato</th>
+      <th>Azioni</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in patterns %}
+    <tr>
+      <td>{{ p.id }}</td>
+      <td>{{ p.registrable_domain }}</td>
+      <td><code>{{ p.pattern }}</code></td>
+      <td><code class="small">{{ p.regex[:80] }}{% if p.regex|length > 80 %}…{% endif %}</code></td>
+      <td>{{ p.asset_type or '—' }}</td>
+      <td><span class="status-pill status-{{ p.status }}">{{ p.status }}</span></td>
+      <td>{{ p.hits }} / {{ p.successes }} / {{ p.failures }}</td>
+      <td class="small muted">{{ p.updated_at[:19] if p.updated_at else '—' }}</td>
+      <td>
+        <form method="post" action="/site_memory/pattern/{{ p.id }}/delete" style="display:inline"
+              onsubmit="return confirm('Cancellare il pattern {{ p.pattern }}?');">
+          <button type="submit" class="btn-danger-small">🗑️</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted"><em>Nessun pattern memorizzato{% if filter_domain %} per <strong>{{ filter_domain }}</strong>{% endif %}.</em></p>
+{% endif %}
+
+<hr>
+
+<h3>📚 Site playbooks ({{ n_playbooks }})</h3>
+<p class="muted small">
+  Istruzioni operative scritte da un agente potente (browser_use) per insegnare
+  a uno debole (site_explorer) come estrarre dati. Stage 2 del knowledge transfer
+  cross-runner. Marcati <code>stale</code> dopo 3 fallimenti consecutivi.
+</p>
+
+{% if playbooks %}
+{% for p in playbooks %}
+<div class="playbook-card">
+  <div class="playbook-header">
+    <strong>{{ p.registrable_domain }}</strong>
+    <span class="muted">/ {{ p.asset_type }}</span>
+    <span class="status-pill status-{{ p.status }}">{{ p.status }}</span>
+    {% if p.transferable %}
+      <span class="status-pill status-confirmed">transferable</span>
+    {% else %}
+      <span class="status-pill status-rejected">non-transferable</span>
+    {% endif %}
+    <span class="muted small">id={{ p.id }} · source={{ p.source_runner }} · hits={{ p.hits }} · succ={{ p.successes }} · fail={{ p.failures }}</span>
+    <form method="post" action="/site_memory/playbook/{{ p.id }}/delete" style="display:inline; margin-left:auto"
+          onsubmit="return confirm('Cancellare il playbook di {{ p.registrable_domain }}?');">
+      <button type="submit" class="btn-danger-small">🗑️</button>
+    </form>
+  </div>
+  <pre class="playbook-text">{{ p.playbook_text }}</pre>
+  {% if p.playbook_blockers %}
+    <div class="playbook-blockers">
+      <strong>Blockers:</strong>
+      {% for b in p.playbook_blockers %}<code>{{ b }}</code>{% endfor %}
+    </div>
+  {% endif %}
+  <div class="muted small">
+    Creato job#{{ p.source_job_id or '—' }} · aggiornato {{ p.updated_at[:19] if p.updated_at else '—' }}
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<p class="muted"><em>Nessun playbook memorizzato{% if filter_domain %} per <strong>{{ filter_domain }}</strong>{% endif %}.</em></p>
+{% endif %}
+
+<style>
+.flash-success { background:#dff6df; padding:.6rem 1rem; border-radius:6px; margin:1rem 0; }
+.filter-bar { display:flex; gap:1rem; align-items:center; flex-wrap:wrap; margin:1rem 0; }
+.filter-bar form { display:inline-flex; gap:.5rem; align-items:center; }
+.btn-link-small { font-size:.85em; }
+.danger-zone { border:1px solid #f5d4d4; background:#fdf6f6; padding:.5rem 1rem; border-radius:6px; margin:1rem 0; }
+.danger-zone summary { cursor:pointer; font-weight:600; color:#a13030; }
+.btn-danger { background:#c93030; color:#fff; border:0; padding:.5rem 1rem; border-radius:4px; cursor:pointer; }
+.btn-danger:hover { background:#a02020; }
+.btn-danger-small { background:transparent; border:1px solid #ddd; cursor:pointer; padding:.2rem .5rem; border-radius:4px; font-size:.9em; }
+.btn-danger-small:hover { background:#fee; border-color:#f88; }
+.data-table { width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92em; }
+.data-table th, .data-table td { border:1px solid #e5e5e5; padding:.4rem .6rem; text-align:left; }
+.data-table th { background:#f7f7f7; }
+.data-table code.small { font-size:.85em; }
+.status-pill { display:inline-block; padding:.1rem .5rem; border-radius:10px; font-size:.8em; font-weight:600; }
+.status-pill.status-active, .status-pill.status-confirmed { background:#d8f0d8; color:#1d6b1d; }
+.status-pill.status-candidate { background:#fff3cd; color:#7a5d00; }
+.status-pill.status-rejected, .status-pill.status-stale { background:#f5d4d4; color:#a02020; }
+.status-pill.status-archived { background:#e8e8e8; color:#666; }
+.playbook-card { border:1px solid #e5e5e5; border-radius:6px; padding:.8rem 1rem; margin:.8rem 0; }
+.playbook-header { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+.playbook-text { background:#f8f8f8; padding:.6rem .8rem; border-radius:4px; font-size:.92em; white-space:pre-wrap; margin:.6rem 0; max-height:240px; overflow:auto; }
+.playbook-blockers { font-size:.9em; margin:.4rem 0; }
+.playbook-blockers code { background:#fdf6f6; padding:.1rem .4rem; border-radius:3px; margin:0 .2rem; }
+</style>
+{% endblock %}

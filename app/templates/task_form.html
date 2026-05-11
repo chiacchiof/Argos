@@ -44,7 +44,7 @@
         <option value="browser_use" {% if mode=='browser_use' %}selected{% endif %}>browser_use — scraping con browser reale (agentico)</option>
         <option value="bulk_extract" {% if mode=='bulk_extract' %}selected{% endif %}>bulk_extract — scraping massivo deterministico (lista URL)</option>
         <option value="auto_extract" {% if mode=='auto_extract' %}selected{% endif %}>auto_extract — agente decide la strategia per ogni sito (consigliato per liste eterogenee)</option>
-        <option value="site_explorer" {% if mode=='site_explorer' %}selected{% endif %}>site_explorer — agente ReAct che naviga il sito intelligentemente (LLM decide ogni step)</option>
+        <option value="site_explorer" {% if mode=='site_explorer' %}selected{% endif %}>site_explorer — il LLM mappa il sito (categorie/listing/paginazione), poi il runner estrae deterministicamente</option>
         <option value="qualifier" {% if mode=='qualifier' %}selected{% endif %}>qualifier — LLM filtra/scora contatti</option>
         <option value="outreach" {% if mode=='outreach' %}selected{% endif %}>outreach — invio email/telegram</option>
         <option value="responder" {% if mode=='responder' %}selected{% endif %}>responder — auto-reply LLM ai messaggi inbound</option>
@@ -244,19 +244,55 @@
       <summary>Configurazione site_explorer <span class="hint">(per <code>auto_extract</code> si applica ai siti dove il profiler sceglie <code>site_explorer</code>)</span></summary>
 
       <label>Cap target per sito <span class="hint">(massimo asset estratti per ciascun sito; il runner termina al raggiungimento)</span>
-        <input type="number" name="target_cap_per_site" min="1" max="200"
+        <input type="number" id="target_cap_per_site_input" name="target_cap_per_site" min="0" max="5000"
                value="{{ p.get('target_cap_per_site', 30) }}">
       </label>
 
+      <label class="inline-checkbox">
+        <input type="checkbox" id="unbounded_extraction_check"
+               {% if p.get('target_cap_per_site') == 0 %}checked{% endif %}>
+        ♾️ <strong>Estrai tutti i target del sito</strong>
+        <span class="hint">(modalità unbounded: il runner non si ferma finché non ha visitato tutte le listing. Cap interno di sicurezza: 5000. Il costo dipende dalla dimensione del sito.)</span>
+      </label>
+
+      <label>♻️ Refresh policy <span class="hint">(re-extract di asset già in DB nei rilanci dello stesso task)</span>
+        {% set rp = p.get('refresh_policy_days') if p.get('refresh_policy_days') is not none else 7 %}
+        <select name="refresh_policy_days">
+          <option value="0"  {% if rp == 0 %}selected{% endif %}>Mai (skip se già in DB) — risparmio massimo</option>
+          <option value="1"  {% if rp == 1 %}selected{% endif %}>Re-extract dopo 1 giorno</option>
+          <option value="7"  {% if rp == 7 %}selected{% endif %}>Re-extract dopo 7 giorni (default)</option>
+          <option value="30" {% if rp == 30 %}selected{% endif %}>Re-extract dopo 30 giorni</option>
+          <option value="-1" {% if rp == -1 %}selected{% endif %}>Sempre (re-extract tutti, anche freschi)</option>
+        </select>
+      </label>
+
+      <script>
+      (function(){
+        const chk = document.getElementById('unbounded_extraction_check');
+        const inp = document.getElementById('target_cap_per_site_input');
+        if (!chk || !inp) return;
+        function sync() {
+          if (chk.checked) {
+            inp.value = 0;
+            inp.disabled = true;
+          } else {
+            inp.disabled = false;
+            if (parseInt(inp.value || '0', 10) <= 0) inp.value = 30;
+          }
+        }
+        chk.addEventListener('change', sync);
+        sync();
+      })();
+      </script>
+
       <p class="muted small">
-        💡 Il runner ReAct di <code>site_explorer</code> naviga il sito step-per-step con un LLM e si ferma a:
-        <strong>(a)</strong> raggiungimento del <strong>cap target</strong> (campo qui sopra),
+        💡 Il runner di <code>site_explorer</code> termina a:
+        <strong>(a)</strong> raggiungimento del <strong>cap target</strong>,
         <strong>(b)</strong> esaurimento del <strong>max step LLM</strong> (campo "Max iterazioni" nello <strong>Step 1</strong>),
-        oppure <strong>(c)</strong> il modello chiama <code>done()</code>.
+        oppure <strong>(c)</strong> queue di esplorazione vuota (modalità unbounded).
       </p>
       <p class="muted small">
-        Regola empirica: per estrarre N target servono <strong>~N + 30%</strong> step LLM (es. 100 target → 130 step).
-        Dentro <code>auto_extract</code> il max step è cap-pato fra <strong>50</strong> e <strong>200</strong>.
+        Regola empirica: per estrarre N target servono <strong>~N + 30%</strong> step di estrazione del runner (la fase MAPPING richiede solo 3-5 step LLM totali). Dentro <code>auto_extract</code> il max step LLM (mapping) è cap-pato fra <strong>50</strong> e <strong>200</strong>.
       </p>
     </details>
 
@@ -825,7 +861,7 @@
       browser_use: "Pilota un browser reale (Chromium): scrolla, clicca, gestisce JS. Per scraping serio.",
       bulk_extract: "Scraping massivo deterministico (HTTP+readability+LLM). 1 chiamata LLM per URL. Per cataloghi grandi e siti statici.",
       auto_extract: "Per ogni sito della lista, un profiler LLM decide la strategia (bulk_extract o browser_use) o salta se non promettente. Consigliato per liste eterogenee di siti.",
-      site_explorer: "Agente ReAct: il LLM decide ogni step (apri pagina X, scendi nella sezione Y, estrai questa scheda). Naviga il sito intelligentemente partendo dal seed. Perfetto per siti dove la struttura non è ovvia.",
+      site_explorer: "Architettura 2-fasi: il LLM fa SOLO il mapping del sito (identifica categorie, listing, paginazione e li accoda). Poi il runner prende il controllo e estrae deterministicamente, fetch_page+extract_target su ogni URL fresco di ogni listing, fino al cap target o all'esaurimento della queue. Niente loop LLM-driven che si pianta a metà. Perfetto per siti listing→dettaglio (immobili, e-commerce, directory, profili).",
       qualifier: "Legge un profiles.jsonl e filtra i contatti via LLM, scorando 0-10.",
       outreach: "Manda email/telegram ai contatti qualified. Usa il template che definisci sotto.",
       responder: "Risponde automaticamente ai messaggi inbound usando un LLM. Opt-out detection inclusa."
@@ -935,6 +971,99 @@
 
   // Render iniziale (dopo che l'altro IIFE ha già fatto update() per data-modes)
   goTo(0);
+})();
+</script>
+
+<script>
+/* Cascading provider→model per discovery_llm_* e browser_llm_*.
+ * Problema: i 2 dropdown del modello mostrano in optgroup TUTTI i modelli di
+ * TUTTI i provider. Se l'utente cambia il provider ma non tocca il modello,
+ * il valore precedente (orfano) viene salvato → mismatch (es. provider=openai +
+ * model=qwen3-coder:30b) che porta a HTTP 404 al runtime.
+ *
+ * Fix: al change del provider:
+ *  1. Fetch GET /api/models?provider=<new> per la lista compatibile.
+ *  2. Ricostruisce le <option> del <select.model-picker> con SOLO quei modelli.
+ *  3. Resetta il valore selezionato e svuota l'<input type=text> del modello,
+ *     forzando l'utente a scegliere un modello compatibile.
+ *
+ * Per il main llm_provider (id=llm_provider_select) il caricamento e' gestito
+ * gia' lato server via HTMX (hx-get="/providers/model-field"): qui non serve.
+ */
+(function () {
+  function buildOptions(models, currentValue) {
+    const opts = ['<option value="">— scegli un modello suggerito —</option>'];
+    if (!models || models.length === 0) {
+      opts.push('<option value="" disabled>(nessun modello suggerito per questo provider)</option>');
+    } else {
+      for (const m of models) {
+        const sel = (m === currentValue) ? ' selected' : '';
+        opts.push(`<option value="${m}"${sel}>${m}</option>`);
+      }
+    }
+    return opts.join('\n');
+  }
+
+  async function reloadModelDropdown(providerSelect, options) {
+    const targetSelector = options.targetInputSelector;
+    const pickerSelector = options.pickerSelector;
+    const provider = providerSelect.value;
+
+    // Trova picker e input text fratelli (stesso row del provider)
+    const row = providerSelect.closest('.row');
+    if (!row) return;
+    const picker = row.querySelector(pickerSelector);
+    const input = row.querySelector(targetSelector);
+    if (!picker || !input) return;
+
+    // Provider vuoto = "stesso del task" → svuoto picker e input (l'utente NON
+    // deve specificare nulla, useremo il main).
+    if (!provider) {
+      picker.innerHTML = '<option value="">— stesso del task (default) —</option>';
+      input.value = '';
+      return;
+    }
+
+    // Reset input subito (evita di lasciare un valore orfano se la fetch fallisce)
+    input.value = '';
+    picker.innerHTML = '<option value="">— caricamento... —</option>';
+
+    try {
+      const res = await fetch(`/api/models?provider=${encodeURIComponent(provider)}`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      picker.innerHTML = buildOptions(data.models || [], '');
+      // Auto-imposta il primo modello suggerito come default (utile per cloud
+      // providers dove la scelta e' ovvia: gpt-4o-mini, claude-3-5-sonnet, ecc.)
+      if (data.models && data.models.length > 0) {
+        picker.value = data.models[0];
+        input.value = data.models[0];
+      }
+    } catch (err) {
+      picker.innerHTML = `<option value="">— errore caricamento (${err.message}) —</option>`;
+    }
+  }
+
+  function setupCascade(providerName, targetSelector, pickerSelector) {
+    const sel = document.querySelector(`select[name="${providerName}"]`);
+    if (!sel) return;
+    sel.addEventListener('change', () => {
+      reloadModelDropdown(sel, { targetInputSelector: targetSelector, pickerSelector });
+    });
+  }
+
+  setupCascade(
+    'discovery_llm_provider',
+    "input[name='discovery_llm_model']",
+    "select.model-picker[data-target=\"input[name='discovery_llm_model']\"]"
+  );
+  setupCascade(
+    'browser_llm_provider',
+    "input[name='browser_llm_model']",
+    "select.model-picker[data-target=\"input[name='browser_llm_model']\"]"
+  );
 })();
 </script>
 {% endblock %}

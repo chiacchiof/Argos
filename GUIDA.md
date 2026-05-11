@@ -147,12 +147,12 @@ In ogni caso, dopo la selezione vedi un box verde **📁 File selezionato: \<pat
 
 ---
 
-## 3. I 7 tipi di Task (`agent_mode`)
+## 3. I 8 tipi di Task (`agent_mode`)
 
-Quando crei un task, il campo **Modalità agente** determina cosa farà. Le 7 modalità si dividono in **2 famiglie**:
+Quando crei un task, il campo **Modalità agente** determina cosa farà. Le 8 modalità si dividono in **2 famiglie**:
 
-- **Scraping** (4 modalità): trovano ed estraggono dati dal web → producono `profiles.jsonl`
-- **Pipeline downstream** (3 modalità): operano sui dati già estratti
+- **Scraping** (5 modalità: `react`, `bulk_extract`, `browser_use`, `auto_extract`, `site_explorer`): trovano ed estraggono dati dal web → producono `profiles.jsonl` (o report `.md` per `react`)
+- **Pipeline downstream** (3 modalità: `qualifier`, `outreach`, `responder`): operano sui dati già estratti
 
 ### 3.0 Albero decisionale "quale modalità mi serve?"
 
@@ -172,11 +172,19 @@ Devo estrarre dati dal web?
 │   (home non linka i target, listing nascoste,
 │    navigazione multi-livello) ─────────────────────► site_explorer (§3.4.1)
 │
+├── SÌ — sito INFINITE-SCROLL (social feed, camgirl, lazy-load)
+│   o voglio TUTTI i profili/prodotti del sito ─────► site_explorer (§3.4.1)
+│   con target_cap_per_site=0 + keyword-trigger
+│   nell'objective ("tutti i profili", "infinite scroll", ecc.)
+│   → auto-discovery FORZATA via Chromium headless
+│
 └── NO — ho già un profiles.jsonl, devo lavorarci sopra
     ├── Filtrare/scorare i contatti via LLM ──────────► qualifier     (§3.5)
     ├── Mandare email/telegram ai contatti ───────────► outreach      (§3.6)
     └── Rispondere automaticamente ai messaggi ricevuti ► responder    (§3.7)
 ```
+
+Vedi anche §3.0.3 per la sintesi operativa dei 5 casi tipici con keyword-trigger e refresh policy.
 
 ### 3.0.1 Tabella sintetica di confronto
 
@@ -188,7 +196,7 @@ Devo estrarre dati dal web?
 | `browser_use` | Pilota Chromium reale | LENTO (4-6h) | $5-10 (gpt-4o-mini) | Solo se HTML statico non basta |
 | `bulk_extract` | HTTP + readability + 1 LLM/URL | veloce (5-10 min) | $0.20 cloud, **$0 locale** | Cataloghi statici, pattern URL chiari |
 | `auto_extract` | Profiler + dispatch automatico | dipende | dipende dai siti | Lista eterogenea di siti |
-| **`site_explorer`** | **Agente ReAct: LLM decide ogni step** | medio (5-15 min/sito) | **$0.05-0.20 per sito** | **Siti dove la struttura non è ovvia: scende automaticamente nelle listing giuste** |
+| **`site_explorer`** | **Mapping LLM + Extraction runner-driven**: il LLM mappa categorie/listing/paginazione, il runner estrae deterministicamente | medio (3-10 min/sito) | **$0.05-0.30 per sito** | **Siti listing→dettaglio: immobili, e-commerce, directory, profili. Estrae sistematicamente fino a cap target.** |
 
 #### Famiglia "Pipeline downstream"
 
@@ -201,6 +209,62 @@ Devo estrarre dati dal web?
 ### 3.0.2 Regola d'oro: bulk_extract prima di tutto
 
 **Prova sempre prima `bulk_extract`** se il sito target ha contenuto in HTML statico. È 50-100× più economico e veloce di `browser_use`. Passa a `browser_use` solo se: (a) il sito richiede JS per renderizzare il contenuto, (b) i dati sono dietro click/scroll, (c) il sito ha login obbligatorio. Se non sei sicuro, usa `auto_extract` che lo decide per te.
+
+### 3.0.3 🎯 Scraping avanzato e intelligente (sintesi operativa, rev. 6)
+
+Questa è la sezione "fast-path" che riassume le decisioni da prendere quando configuri un task di scraping. Il dettaglio completo è nelle §3.1–3.4.1.3.
+
+#### Decision tree esteso (5 casi tipici)
+
+| Caso | Sintomo del sito | Modalità | Note di configurazione |
+|---|---|---|---|
+| **A** — Sito statico con pattern URL chiaro (cataloghi, immobili, e-commerce piccolo, directory) | Tanti link con path ripetitivo (`/product/<id>`, `/annuncio/<n>`). HTML server-side. | `bulk_extract` con **crawler ON** | seed = home/listing radice. `crawler_enabled=true`, `crawler_max_depth=3-5`. Pattern URL auto-detect via LLM discovery. |
+| **B** — Sito multi-livello (categorie + sotto-categorie + paginazioni numerate) | Home non linka direttamente i target, serve drill-down ragionato (es. yescasa.it, pcase.it). | `site_explorer` con `target_cap_per_site` esplicito | Cap 30-100 secondo quanto ti serve. Il LLM mappa le listing, il runner estrae deterministicamente fino al cap. |
+| **C** — Sito infinite-scroll (camgirl, social feed, news feed, listing lazy-loaded) | Il "first paint" HTTP mostra 1-10 target, ma scrollando appaiono centinaia/migliaia. | `site_explorer` con `target_cap_per_site=0` (♾️ unbounded) **+ objective con keyword-trigger** | Vedi sotto "Keyword-trigger objective". Auto-discovery FORZATA in Chromium headless prima del turno LLM. |
+| **D** — Sito con anti-bot / login / Cloudflare / JS-render puro | HTTP fetch ritorna 403, blank HTML, o redirect a login. | `browser_use` esplicito | Lento e costoso. Riserva ai casi dove gli altri runner falliscono. |
+| **E** — Lista mista di N siti diversi, non sai a priori la natura di ciascuno | B2B lead-gen, audit competitor, monitoraggio multi-fonte. | `auto_extract` | Il profiler LLM decide per ogni sito quale runner usare (bulk / site_explorer / browser_use / skip). Fallback automatico bidirezionale. |
+
+#### 🔑 Keyword-trigger del campo "Obiettivo"
+
+Il campo **Obiettivo** del task non è solo descrittivo: in `site_explorer` viene letto dal runner per decidere se attivare l'**auto-discovery via browser headless** PRIMA del primo turno LLM (modalità deterministica, gratis come token, ~10-30s su Playwright). Il trigger scatta se:
+
+- `target_cap_per_site = 0` (modalità ♾️ unbounded), **oppure**
+- L'objective contiene una delle frasi-chiave: *"infinite scroll"*, *"infinite scrolling"*, *"tutti i profili"*, *"tutti i target"*, *"tutti gli annunci"*, *"tutti i prodotti"*, *"tutto il sito"*, *"centinaia"*, *"migliaia"*, *"tutti i contatti"*, *"tutta la lista"*.
+
+Quando attivo, il runner chiama `discover_urls_via_scroll(seed, scrolls=30)` direttamente e popola la `direct_target_queue` con tutti gli URL raccolti. Risolve il caso in cui il LLM "vede" il first-paint statico e ignora l'istruzione di usare `discover_via_browser`.
+
+**Suggerimento operativo**: se vuoi indicizzare TUTTI i target di un sito infinite-scroll, scrivi nell'objective qualcosa come "estrai tutti i profili pubblici del sito, è un sito infinite scroll" — il trigger scatta e l'auto-discovery garantisce copertura completa anche se il LLM non riconosce il pattern.
+
+#### Esempio concreto: flusso ibrido mondocamgirls.com (2026-05-10)
+
+1. Task `site_explorer`, seed `https://mondocamgirls.com/it/`, objective *"Estrai tutti i profili camgirl pubblici con email/telegram/social"*, `target_cap_per_site=0`, template `profile_contacts`.
+2. **Pre-turno LLM (auto-discovery FORZATA)**: trigger attivo (cap=0 + "tutti i profili"). Il runner apre Chromium headless, scrolla 30 volte la home → raccoglie 1305 sub-domain profilo distinti → li accoda al `direct_target_queue` (filtrati con `canonical_url` + `looks_like_service_path`).
+3. **Turno LLM mapping (1-2 step)**: il LLM legge il prompt + playbook salvato dal run precedente → `start_extraction(summary=...)`.
+4. **Runner-driven extraction (FASE A)**: per ogni URL del `direct_target_queue`, `extract_target` con LLM extractor economico (`gpt-4o-mini`). Costo: ~$0.005/profilo.
+5. **Re-run incrementale**: il giorno dopo, rilanci lo stesso task. Il runner controlla `db.has_recent_asset(url, ..., max_age_days=refresh_policy_days)` per ogni URL pre-skip → salta i 1305 già in DB freschi → costa ~$0. Solo nuovi profili vengono estratti.
+
+#### Refresh policy e re-run incrementali
+
+Il campo task **`refresh_policy_days`** (UI: dropdown "Refresh policy") controlla il comportamento dei re-run:
+
+- **Mai** (`refresh_policy_days=0`): se l'URL ha un asset in DB (qualunque età) → skip. Risparmio massimo.
+- **N giorni** (es. 7, 30): skip se l'asset esiste E `updated_at` è entro N giorni. Default: 7.
+- **Sempre** (`refresh_policy_days=-1`): nessun skip, re-extract tutti.
+
+Il check usa `assets.source_url_canonical` come chiave → riconosce duplicati cross-lingua (`/it/profilo/X/` ≡ `/en/profilo/X/` ≡ `/profilo/X/?setlang=it`) e cross-paginazione (`?p=0` ≡ `?p=1` ≡ no-query).
+
+#### Site playbook (mappa pre-armata sui run successivi)
+
+A fine job riuscito, sia `site_explorer` che `browser_use` salvano un **playbook** nella tabella `site_playbooks`: contiene la mappa delle listing esplorate, `learned_subpath`, n. asset estratti. Al run successivo sullo **stesso dominio**, il LLM in fase MAPPING riceve il playbook nel system prompt → conosce già le listing → riduce di 2-3 step LLM la fase di mapping.
+
+#### Cheat-sheet per l'obiettivo
+
+| Vuoi... | Scrivi nell'objective |
+|---|---|
+| Tutti i profili/prodotti del sito (no limite) | "estrai **tutti i profili/prodotti** del sito, indicizzazione completa" + cap=0 |
+| Sito infinite-scroll | menziona "**infinite scroll**" + cap=0 |
+| Solo una città / un filtro / un sotto-segmento | "estrai annunci **di Acireale** con prezzo > 200k" + cap=50 |
+| Re-run incrementale settimanale | `refresh_policy_days=7` (default) — il sistema salta i freschi |
 
 ### 3.1 `react` — Ricerca leggera (HTTP + DuckDuckGo)
 
@@ -479,6 +543,8 @@ Se manca, significa che stai usando un solo modello per tutto.
 - **Modello principale** (per Extraction): es. `gpt-4o-mini` o `llama3.1:8b` locale
 - **Discovery LLM** (opzionale): per l'auto-detect del pattern URL nei siti `bulk_extract` — viene riusato anche dal profiler se compilato
 - **Browser LLM** (opzionale): per i siti instradati a `browser_use` (sia primaria che fallback) — vedi §4.1
+
+> **⚠️ Mismatch provider/model (2026-05-10)**: se cambi `discovery_llm_provider` o `browser_llm_provider` da Ollama a OpenAI (o viceversa), **ricordati di cambiare anche il modello corrispondente**. Il dropdown del modello non si auto-resetta al cambio di provider, e un mismatch tipo `provider=openai + model=qwen3-coder:30b` farebbe fallire la chiamata con HTTP 404 (il modello non esiste su quel provider). Dal 2026-05-10 il runner rileva l'incongruenza con un'euristica e fa **fallback automatico al main LLM** con un warning nei log: `⚠️ Discovery LLM incongruente: ... Fallback al main LLM (...). Correggi i campi nel form del task.` Il fallback evita 404 ma è una pezza: la cosa giusta è correggere il form.
 - **Crawler config + max_iterations**: applicate ai siti instradati a `bulk_extract`
 
 **Output**:
@@ -504,21 +570,197 @@ Il sistema processerà i 50 siti, scarterà quelli off-topic (che non ospitano p
 
 ---
 
-### 3.4.1 `site_explorer` — Agente ReAct vero per navigazione di siti
+### 3.4.1 `site_explorer` — Mapping LLM + Extraction runner-driven
 
-**Cosa fa**: a differenza di `bulk_extract` (pipeline rigida discovery+crawler) e `auto_extract` (dispatcher di sub-runner), `site_explorer` usa un **LLM agentico** per decidere step-per-step come navigare un sito, esattamente come farebbe un umano:
+**Cosa fa** (2026-05-10 rev. 4 — runner-driven extraction): `site_explorer` divide il lavoro in due fasi distinte:
 
-> "Apro la home. Vedo nel menu un link `Vendita case` con sotto-link per zona fra cui Acireale. Quella è ovviamente la sezione che mi interessa. Apro `vendita-case/acireale/`. Vedo 30 schede annuncio. Provo a estrarne una per verificare il pattern. OK, sono pagine annuncio. Estraggo le altre. Pagine successive del paginatore? Se sì, vado avanti."
+1. **Fase MAPPING (LLM)**: il LLM esplora il sito a livello di struttura — fa 1-3 `fetch_page` per capire dove vivono i target, poi accoda le listing/categorie/paginazioni rilevanti con `enqueue_listings([...], reason="...")` e cede il controllo con `start_extraction(summary="...")`. **3-5 step LLM totali**.
+2. **Fase EXTRACTION (runner deterministico)**: il runner pop-pa la queue, fa `fetch_page` programmatico su ogni listing, identifica i target URL e fa `extract_target` su ciascuno (LLM extractor — l'unica chiamata LLM rimasta per profilo). Auto-discovery delle paginazioni (`?p=N`, `/page/N`, ecc.) che vengono accodate dinamicamente. Termina al cap target o queue vuota.
+
+> Un umano davanti a un sito di immobili ragionerebbe così: "Vedo `/vendita-case/acireale/`, `/vendita-case/catania/`, paginazione `?p=2`. Annoto questi 4 punti d'ingresso. Ora vado a fare il lavoro sporco: estraggo gli annunci uno per uno." Site_explorer lavora esattamente così — il LLM annota (mapping), il runner fa il lavoro sporco (extraction).
 
 **Quando usarlo**:
 - Siti dove `bulk_extract` con discovery automatica fallisce perché la home **non linka direttamente** le pagine target (es. yescasa.it, pcase.it: gli annunci sono dentro `/vendita-case/<citta>/`, non sulla home).
-- Siti con struttura non ovvia / multi-livello / dove il pattern URL non si capisce a prima vista.
-- Quando vuoi essere SICURO che l'agente esplori l'obiettivo dichiarato nel `objective` invece di vagare alla cieca.
+- Siti **multi-livello** dove il primo strato non basta (es. mondocamgirls con 3 categorie distinte ognuna con N profili distinti).
+- Quando vuoi un'estrazione **deterministica** fino al cap target, senza il rischio che il LLM "si fermi presto" perché perde il filo.
 
-**Architettura ReAct con 3 tool**:
-- `fetch_page(url)` → ritorna `{title, n_internal_links, link_patterns: [{pattern, count, examples}], text_preview}`. Output compatto pensato per LLM (no HTML grezzo).
-- `extract_target(url)` → fetch + LLM extractor con il template del task. Ritorna `{ok: true, asset_summary: "..."}` se la pagina è un target valido (post-`_has_minimal_data_for`), `{ok: false, reason: "..."}` se non lo è. Permette al LLM di **verificare in vivo** se un URL è un target, prima di sprecare 200 chiamate su URL fasulle.
-- `done(reason)` → termina graceful.
+**Architettura "Mapping LLM + Extraction runner-driven" (2026-05-10 rev. 4)**:
+
+L'agente **non fa più il loop di estrazione**. Il LLM fa SOLO la fase di MAPPING (identificare i listing del sito); l'estrazione vera è gestita **deterministicamente dal runner** tramite un loop dentro [`_runner_driven_extraction`](app/agent/runner_site_explorer.py).
+
+| Tool | Chi lo chiama | Quando |
+|---|---|---|
+| `fetch_page(url)` | LLM | FASE 1: ispezionare struttura sito |
+| `enqueue_listings(urls, reason)` | LLM | FASE 1: dichiarare listing/categoria/paginazione da esplorare |
+| `start_extraction(summary)` | LLM | FASE 1 → 2: cedere il controllo al runner |
+| `extract_target(url)` | **Runner** | FASE 2: per ogni URL fresco di ogni listing della queue (LLM extractor invocato qui) |
+| `done(reason)` | Runner | FASE 2: cap raggiunto o queue esaurita |
+
+**Flusso tipico (3-5 step LLM totali per il mapping)**:
+
+```
+step 1 [LLM]: fetch_page(seed) → vede link_patterns: /donne/, /trans/, /video/, /vendita/<citta>/, ?p=2, ...
+step 2 [LLM]: enqueue_listings(["<seed>/donne/", "<seed>/trans/", "<seed>/video/"], reason="categorie")
+step 3 [LLM]: start_extraction(summary="3 categorie principali, profili sub-domain")
+              → fine del turno LLM. Cedo al runner.
+
+[runner-driven, NESSUNA chiamata LLM decisional]
+runner: pop /donne/ → fetch_page → 21 URL profilo → extract_target × 21 → +18 asset
+runner: pop /trans/ → fetch_page → 18 URL profilo → extract_target × 18 → +14 asset
+runner: pop /video/ → fetch_page → 32 URL profilo → extract_target × 32 → +25 asset
+runner: rileva ?p=2 nei link → append automaticamente alla queue
+runner: pop ?p=2 → ... → +N asset
+runner: cap target raggiunto (100/100) → done.
+```
+
+**Cosa fa il runner deterministicamente in FASE 2** ([`_runner_driven_extraction`](app/agent/runner_site_explorer.py)):
+
+1. Loop `while queue and n_assets < max_targets`:
+2. **Pop** un listing dalla queue → `fetch_page` programmatico (no LLM).
+3. **Identifica target URLs**: top 3 pattern del listing, escludendo paginazione e self-listing, cap 30 URL per listing.
+4. **Auto-discovery paginazione**: detect `?p=N`, `?page=N`, `/page/N`, `&p=N` nei link_patterns e **append automaticamente** alla queue (max 5 paginazioni per listing).
+5. **Per ogni target URL**: `extract_target` (qui sì, chiama LLM extractor — è la parte "vera" del lavoro). Se asset valido → ingest + counter+1.
+6. **Drill-down opzionale**: se `is_complete=false` E `learned_subpath` è noto, retry su `<url>/<subpath>/`.
+7. **Terminate** su cap target raggiunto o queue vuota.
+
+**Razionale del refactoring**: nelle versioni precedenti (rev. 1-3), tutto il loop era LLM-driven con prompt in espansione progressiva. Risultato: ogni LLM aveva la propria patologia (qwen3-coder allucinava il cap; gpt-4o-mini con parallel calls smetteva dopo 4-5 estrazioni). Il loop è una fase **deterministica per natura** ("per ogni URL del listing, estrai"). Trasformarlo in runner-driven elimina:
+- Allucinazioni del cap (il runner sa con precisione `n_assets vs max_targets`)
+- "Perdita di filo" del modello (nessuna decisione LLM tra una estrazione e l'altra)
+- Risparmio token: ~30-40% rispetto al ReAct full-LLM (il LLM viene chiamato solo per mapping iniziale + LLM extractor per profilo)
+
+**Generalità**: il design copre la grande maggioranza dei siti scrappabili (listing → dettaglio):
+
+| Tipo di sito | Listing identificato dal LLM | Pattern dettaglio | Funziona? |
+|---|---|---|---|
+| Immobili (yescasa, immobiliare.it) | `/vendita-case/<citta>/`, `?p=N` | `/annuncio/<id>/` | ✅ |
+| E-commerce | `/categoria/<slug>/page/<n>/` | `/product/<id>` | ✅ |
+| Directory professionisti | `/people/<area>/`, `/freelancers/` | `/profile/<slug>` | ✅ |
+| Eventi | `/eventi/<mese>/`, `/category/concerti/` | `/event/<id>` | ✅ |
+| Camgirl/escort | `/donne/`, `/trans/`, `/video/` | `<slug>.dominio.com/` | ✅ |
+| News | `/sezione/<topic>/`, `/archivio/<data>/` | `/article/<slug>` | ✅ |
+
+**Casi NON coperti** (richiedono `browser_use` o intervento esterno):
+- Cloudflare/anti-bot duro
+- Login obbligatorio
+- JS-render puro senza HTML statico (per il rendering pesante; per i siti **infinite-scroll** vedi `discover_via_browser` qui sotto)
+
+### 3.4.1.0 Modalità ibrida: `discover_via_browser` per siti infinite-scroll (rev. 6)
+
+Dal **2026-05-10 rev. 6**, `site_explorer` ha un quinto tool: **`discover_via_browser(url, scrolls, target_pattern_hint)`**. Risolve un limite strutturale del runner HTTP-only: vede solo il "first paint" della listing, non i profili caricati via infinite scroll / lazy load.
+
+**Cosa fa**: apre l'URL in **Chromium headless** (Playwright), gestisce cookie/age-gate, scrolla N volte aspettando 1.5s tra ogni scroll, raccoglie tutti gli `href` del DOM finale, filtra per dominio + pattern hint, **accoda automaticamente** gli URL al `direct_target_queue` del runner. **NON usa LLM**: navigation puramente deterministica, gratis come token. Costo: ~10-30s di compute locale + ~0 token.
+
+**Quando usarlo**: il LLM (in fase MAPPING) decide. Il system prompt istruisce a usarlo quando:
+- Un `fetch_page` mostra POCHI target (es. <10 URL del pattern atteso)
+- L'objective utente menziona *"tutti"*, *"centinaia"*, *"tutto"*
+- Il sito ha indicatori di JS-load (rilevabili nel HTML: `IntersectionObserver`, `infinite-scroll` markers, scroll listeners)
+
+**Esempio pratico (mondocamgirls.com)**: la listing `/it/camgirls-donne.html` espone in HTTP statico **1 sub-domain profilo** (first paint). Con `discover_via_browser(scrolls=20)`: **1305 sub-domain unici scoperti**. Tre ordini di grandezza di differenza.
+
+**Flusso ibrido tipico**:
+
+```
+step 1 [LLM]: fetch_page(seed) → vede pochi target ma il sito sembra infinite-scroll
+step 2 [LLM]: discover_via_browser(seed, scrolls=20, pattern_hint='dominio.com/')
+              → browser headless apre, scrolla, raccoglie 1305 URL
+              → tutti accodati al direct_target_queue (con dedup canonical + service-path filter)
+step 3 [LLM]: start_extraction → cede al runner
+
+[runner-driven, FASE A — direct_target_queue]
+runner: per ogni URL del direct_target_queue: extract_target → asset
+        (no fetch_page intermedio: questi URL sono già target identificati)
+        cap target raggiunto OR queue vuota → stop
+
+[runner-driven, FASE B — exploration_queue]
+        (eventualmente eseguita dopo FASE A se ci sono ancora listing classiche)
+```
+
+**Sicurezza/limiti**:
+- Cap scrolls: max 100 per call.
+- Cap URL raccolti: 2000 per call (post-filtering).
+- Timeout totale: 180s.
+- Skip se Playwright non installato (errore esplicito).
+
+**Generalità**: funziona per qualunque sito infinite-scroll. Test live confermato su:
+- `mondocamgirls.com`: 1305 profili sub-domain (vs 1 in HTTP)
+- pattern simili: feed social, listing e-commerce con lazy load, news feed, directory infinite
+
+**Combinabile con `enqueue_listings`**: il LLM può fare BOTH per massimizzare la copertura: discover_via_browser sulla pagina infinite-scroll + enqueue_listings sulle paginazioni statiche del resto del sito.
+
+### 3.4.1.1 Filtri agnostici (rev. 4) e modalità unbounded
+
+Dal **2026-05-10 rev. 4** il runner applica 3 filtri **completamente agnostici al dominio** che riducono drasticamente i falsi positivi e i duplicati. Sono regole strutturali sul "come si comporta il web in generale", **niente di hardcoded per un sito specifico**.
+
+**F1 — Service-path filtering** ([`_looks_like_service_path`](app/agent/runner_site_explorer.py)): scarta dal runner-driven extraction (e da `enqueue_listings`) ogni URL il cui path contiene un segmento noto come "pagina di sistema":
+- Legali: `privacy`, `terms`, `gdpr`, `cookie`, `legal`, `disclaimer`, `2257`, `tos`
+- Customer service: `assistenza`, `support`, `help`, `faq`, `contattaci`, `contact`
+- Aziendali: `chi-siamo`, `about`, `team`, `careers`, `lavora-con-noi`, `press`
+- Account/auth: `login`, `signup`, `password-reset`, `area-cliente`, `area-personale`
+- Tecniche: `sitemap`, `accessibility`, `robots`
+- E-commerce service: `checkout`, `cart`, `wishlist`, `primoacquisto`, `ordini`
+
+Match come **path-token** (segmenti completi del path, non sub-string permissiva): `/assistenza.html` matcha, ma `/users/assistenza-tecnica-srl/` no.
+
+**F2 — URL canonicalization** ([`_canonical_url`](app/agent/runner_site_explorer.py)): trasforma l'URL in una "forma canonica" per detectare duplicati cross-lingua/cross-paginazione. Strip:
+- **Locale prefix** se il primo segmento del path è un codice ISO 639 (`/it/`, `/en/`, `/es/`, `/fr/`, `/de/`, ...)
+- **Query params di lingua**: `setlang`, `lang`, `language`, `locale`, `hl`
+- **Paginazione "pagina 1"**: `?p=0`, `?p=1`, `?page=0`, `?page=1`, `?offset=0`
+
+Esempi di equivalenza riconosciuta:
+- `https://x.com/profilo/123/?setlang=it` ≡ `https://x.com/en/profilo/123/` ≡ `https://x.com/profilo/123/`
+
+Il runner mantiene un set `seen_canonicals` durante l'extraction → URL diversi che producono la stessa canonical form vengono saltati. Risultato: niente più "Miss Giadina estratta 5 volte in 5 lingue".
+
+**F3 (rev. 5: rimosso)** — la validation "rifiuta URL nei `next_extract_targets`" si è dimostrata troppo fragile: i top pattern di un fetch contengono spesso URL listing legittimi (es. `/categoria/donne/`) che il LLM correttamente vuole accodare, ma F3 li rifiutava. La dedup è già garantita da: dedup canonical (cross-lingua), `extracted_urls` set (no re-extract), `explored_listings` set (no re-pop di stessi listing), `_looks_like_service_path` (no privacy/faq/...). F3 fa più danno che bene → eliminato. Il prompt ora chiede al LLM di accodare SOLO listing ma non blocca eventuali target accodati per errore.
+
+### 3.4.1.2 Persistenza, dedup e re-run incrementali (rev. 5)
+
+Tre meccanismi che lavorano insieme per rendere i re-run dello stesso task efficienti e senza duplicati. **Tutti generalisti** (alla source nel DB layer e nei runner): valgono per `bulk_extract`, `site_explorer`, `auto_extract`.
+
+**Dedup canonical su `assets`** ([`db.upsert_asset`](app/db.py)): la dedup degli asset usa la **canonical form** dell'URL (cross-lingua + paginazione-zero) come chiave, non il source_url letterale. Concretamente: `https://x.com/it/profilo/123/?setlang=it`, `https://x.com/en/profilo/123/`, `https://x.com/profilo/123/` — tutti 3 producono lo stesso `source_url_canonical` e diventano un unico asset in DB. Schema esteso con colonna `assets.source_url_canonical TEXT` + indice; migrazione idempotente backfill-a la canonical sui record esistenti.
+
+**`has_recent_asset(url, asset_type, max_age_days)`** ([`db.py`](app/db.py)): primitiva consultata dai runner PRIMA di chiamare `extract_target` su un URL. Semantica del parametro `max_age_days`:
+- `0` → "mai re-extract": skip se l'asset esiste in DB (qualunque età).
+- `N > 0` → skip se l'asset esiste E `updated_at` è entro N giorni.
+- `-1` → "sempre re-extract" (no skip, semantica del precedente comportamento).
+
+Risparmia chiamate LLM extractor + fetch HTTP sui re-run incrementali. Il check usa `source_url_canonical` → riconosce duplicati cross-lingua.
+
+**Configurazione `refresh_policy_days`**: nuovo campo task (DB + form) con dropdown:
+- Mai (skip se in DB) — risparmio massimo
+- 1 / 7 (default) / 30 giorni
+- Sempre (re-extract tutti)
+
+I log mostrano `♻️ Refresh policy: ...` all'avvio del job e `⏩ [runner] skip N URL già in DB freschi` per ogni listing dove sono stati saltati URL.
+
+**Site_explorer scrive il proprio playbook** (rev. 5): a fine job riuscito, `site_explorer` salva un playbook in `site_playbooks` (oltre a quello che faceva già `browser_use`). Contiene la mappa delle listing esplorate + `learned_subpath` + n. asset estratti. Al run successivo sullo stesso dominio, il LLM in fase MAPPING legge il playbook → conosce già i listing → fa subito `enqueue_listings([...])` senza esplorare. Risparmio ulteriore di 2-3 step LLM mapping.
+
+**Resume incrementale via queue persistita (rev. 6.1, 2026-05-10)**: il `direct_target_queue` (popolato da `discover_via_browser`) viene **salvato su disco** in `data/results/<task_id>/_pending_queue.json` in 5 punti:
+
+1. Subito dopo `discover_via_browser` riuscita (queue completa)
+2. Periodicamente ogni 50 estrazioni in FASE A del runner-driven
+3. Su cap target raggiunto (queue residua salvata)
+4. Su stop signal (queue residua salvata)
+5. Nel `finally:` del main try (cancel/error/eccezione)
+
+Atomic write (`tmpfile + os.replace`) per evitare corruzione. **All'avvio del run successivo sullo stesso task**, se il file esiste e ha età < `refresh_policy_days`, viene caricato e la discovery via browser viene **saltata** completamente. Risparmio: ~30s di Playwright + 0 token. Log: `♻️ Resume: caricata queue persistita (N URL residui, M già estratti). SALTO la discovery via browser.` Il file viene cancellato automaticamente quando la queue è completamente processata.
+
+**`max_tokens` per LLM extract** (rev. 6.1): in [`runner_bulk_extract.py:_llm_extract_json`](app/agent/runner_bulk_extract.py) il default è **1500** (alzato da 800 il 2026-05-10). Su alcune pagine con content lungo (liste prezzi, servizi commerciali), il LLM riempie il campo `estratto` con molto testo, e a 800 tokens il JSON veniva troncato a metà → parse-fail su intere righe (es. yield crollato dal 85% al 29% sui re-run di mondocamgirls infinite-scroll). Output max di `gpt-4o-mini` è 16k, quindi 1500 è safe.
+
+**Qualifier materializza in `contacts`** (rev. 6.1): il qualifier ([`runner_qualifier.py:_process_obj`](app/agent/runner_qualifier.py)) ora, dopo aver aggiornato `assets.status='qualified'`, **upserta anche un record in `contacts`** se l'asset ha almeno un canale reale (email/telegram/whatsapp). Prima il qualifier popolava `contacts` solo per il vecchio flusso da `profiles.jsonl`. Conseguenza: gli outreach (che leggono da `contacts`) ora trovano automaticamente i qualified asset estratti dal nuovo flusso asset-first. Dedup per `source_url` → niente duplicati cross-run.
+
+### 3.4.1.3 Modalità "Estrai tutti i target del sito" (unbounded)
+
+Per task con objective tipo *"indicizza TUTTI i profili del sito"*, c'è un flag dedicato:
+
+- UI form: checkbox **♾️ Estrai tutti i target del sito** sotto "Cap target per sito".
+- Effetto: setta `target_cap_per_site = 0` nel DB. Il runner interpreta `0` come "unbounded" e usa un cap interno di sicurezza pari a **5000** (`_UNBOUNDED_TARGET_CAP`).
+- Comportamento: il runner-driven extraction continua finché la queue di esplorazione è vuota (oltre alla paginazione auto-discovered). Termina solo quando ha veramente esaurito tutto.
+- Costo: **proporzionale alla dimensione del sito**. ~$0.005-0.01 per profilo con `gpt-4o-mini`. Un sito con 1000 profili costa ~$5-10.
+
+Quando attivo, il log mostra: `♾️ Modalità UNBOUNDED: cap target = 0 → estraggo TUTTI i target del sito`.
+
+Caso d'uso tipico: indicizzazione completa di una directory professionisti, full-crawl di un catalogo e-commerce, lead generation senza un budget specifico in mente.
 
 **DOM enrichment automatico (2026-05-10)**: dopo che il LLM extractor produce il JSON, prima della validazione, il runner applica `_enrich_obj_from_dom(html, template)` che cerca nel raw HTML **pattern di contatto canonici** e popola i campi che il LLM ha lasciato vuoti:
 
@@ -957,11 +1199,15 @@ L'asset nasce con `status='new'` e può essere promosso a `qualified|rejected|ar
 - **Filtro stato**: `new | qualified | rejected | archived`.
 - **Filtri tag a faceting**: per ogni `tag_key` rilevante per il tipo selezionato, top 30 valori con count cliccabili. Multi-tag funziona come AND.
 - **Tabella**: `id | tipo | titolo | dominio | tag (mini-chip) | stato | task origine`.
+- **Paginazione** (2026-05-10): 100 asset per pagina (configurabile via `?per_page=N`, max 500). Counter "Mostrando X–Y di N", navigator « prima ‹ prec [pagine] succ › ultima ». Filtri preservati fra le pagine.
 - Detail asset: `raw_json` completo, lista tag, form di promozione stato, link al task/job di origine.
 
 Esempi di query URL:
 - `/assets?asset_type=real_estate&tags=citta:Acireale,price_band:200-300k`
 - `/assets?asset_type=job_listings&tags=remote_policy:remote,salary_band:60-90k`
+- `/assets?asset_type=profile_contacts&status=qualified&page=3&per_page=200`
+
+Analogo paginator anche su **`/inbox/contacts`** (stessa logica, 100 per pagina default).
 
 ### 9.3 Memoria pattern per dominio (`site_patterns`)
 
@@ -1106,9 +1352,41 @@ Il **profiler** distribuisce le 4 strategie con questa logica (vedi anche §3.4)
 1. `max_iterations` cappato per i sub-job che hanno semantica "step LLM" invece di "URL processati":
    - `browser_use`: cap 25 step (prima ereditava 200 step di auto_extract → loop di minuti).
    - `site_explorer`: cap **min 50 / max 200** step (`max(50, min(inherited, 200))`). Il default ReAct è 30, ma se l'utente sa di voler estrarre molti profili (es. `target_cap_per_site=100`) può alzare `max_iterations` del task fino a 200. Cap minimo 50 protegge da impostazioni sbagliate (es. `max_iterations=10`).
-2. Browser-use `step_timeout=180s` (default). Step più lento di 3 min = abort.
-3. `asyncio.wait_for` esterno a `agent.run()` con timeout `max(180, max_steps*15+60)`. Su TimeoutError salva quanto raccolto e passa al seed successivo.
-4. Site_explorer: validation completezza degli asset post-extract (vedi §9.3.3) impedisce ingest di JSON vuoti.
+2. **Anti-loop su extract_target ripetuti** (2026-05-10): se gli ultimi 4 `extract_target` consecutivi falliscono per `URL già estratto/visitato`, il runner forza `done()` con motivazione "il LLM si è incartato sul context". Protegge contro modelli che, dopo aver fatto un fetch_page con URL nuovi, ignorano i nuovi e ritentano quelli vecchi.
+3. **Hint `_runner_state` nel tool_output** (2026-05-10): ogni `extract_target` ok include nel JSON di risposta un blocco `⚠️_RUNNER_STATE_AUTORITATIVO` con `cap_target_REALE`, `estratti_finora`, `rimanenti` e una `DIRETTIVA` imperativa. È il numero AUTORITATIVO; il prompt istruisce il modello a ignorare cap diversi scritti nell'objective dell'utente (allucinazione comune sui modelli sotto-8B).
+4. **Anti-loop su fetch_page ripetuti** (2026-05-10 rev. 2): contatore `consecutive_already_visited_fetches`. Se gli ultimi 3 `fetch_page` falliscono per `URL già visitato`, il runner forza `done()`. Complementa il (2) coprendo il caso in cui il LLM scappa al guard di extract_target tentando ri-fetch di pagine già fatte.
+5. **`fetch_page` espone URL freschi su top 3 pattern** (2026-05-10 rev. 2): invece di esporre `urls` solo per il top pattern (e `examples` da 3 per i secondari), il response include `urls` (cap 30) **filtrati dagli URL già estratti** per i top 3 pattern, più un campo `next_extract_targets` con un mix di 3 URL per pattern (max 9 URL fresh totali). Razionale: su siti come mondocamgirls il top pattern di una listing intermedia è "navigation" (es. `/it/camgirls-donne.html`), mentre i veri profili sono in pattern secondari (sub-domain). Esporre solo il top non basta — il modello rimane senza URL freschi e si "incarta" su quelli già fatti.
+6. Browser-use `step_timeout=180s` (default). Step più lento di 3 min = abort.
+7. `asyncio.wait_for` esterno a `agent.run()` con timeout `max(180, max_steps*15+60)`. Su TimeoutError salva quanto raccolto e passa al seed successivo.
+8. Site_explorer: validation completezza degli asset post-extract (vedi §9.3.3) impedisce ingest di JSON vuoti.
+
+### 9.4.1 Playbook cross-runner (Stage 2 — knowledge transfer)
+
+Dal **2026-05-10**, `auto_extract` può fare **knowledge distillation** dall'agente potente (browser_use con browser reale) a quello debole (site_explorer su HTTP statico). L'idea: browser_use, durante l'estrazione, **impara** cose sul sito (URL pattern, sub-paths utili, blockers come paywall/captcha) e le persiste in un "playbook" che site_explorer può sfruttare nei run futuri o, se lo stesso job è in corso, immediatamente.
+
+**Flusso**:
+
+1. **Browser_use a fine job** ([`_write_site_playbook`](app/agent/runner_browseruse.py)): se ha estratto >0 asset, fa una chiamata LLM extra (~$0.002) chiedendo: *"In 5-10 righe, scrivi istruzioni operative per un agente HTTP-only che deve estrarre gli stessi dati da questo sito. Output JSON con `playbook_text`, `transferable: bool`, `blockers: []`."* Salva in `site_playbooks(domain, asset_type)`.
+
+2. **Site_explorer all'inizio del run**: query `db.get_site_playbook(domain, asset_type)`. Se esiste e `transferable=true`, lo inietta nel system prompt come `📚 INTELLIGENCE DA RUN PRECEDENTE: ...`. Bumpa `hits`. Alla fine bump `successes`/`failures`.
+
+3. **Auto_extract intra-job re-arm** ([`_maybe_rearm_site_explorer`](app/agent/runner_auto_extract.py)): dopo che il fallback `browser_use` ha estratto >0 asset E il playbook scritto è transferable E `n_estratti < target_cap_per_site`, il dispatcher rilancia automaticamente un sub-job `site_explorer` armato del playbook fresco per finire il lavoro a costo basso. Cap di sicurezza: 1 re-arm per sito.
+
+4. **Auto-stale**: se site_explorer applica un playbook e fallisce 3 volte consecutive (0 asset estratti), il playbook va in `status='stale'` e viene ignorato. Al prossimo run, browser_use lo rigenera.
+
+**Tabella `site_playbooks`** (DDL in [`app/db.py`](app/db.py)):
+```
+registrable_domain + asset_type (UNIQUE) → playbook (JSON: text, transferable, blockers),
+source_runner ('browser_use'|'site_explorer'|'manual'), source_job_id,
+status ('active'|'stale'|'archived'), hits, successes, failures
+```
+
+**UI/Tool**: `list_site_playbooks(registrable_domain?, status?)` e `delete_site_playbook(playbook_id)` esposti come tool della chat orchestrator. Esempio uso:
+
+> *"Quali playbook abbiamo per yescasa.it?"* → l'orchestrator chiama `list_site_playbooks(registrable_domain='yescasa.it')` e ti mostra il testo.
+> *"Cancella il playbook di mondocamgirls.com, il sito ha cambiato struttura"* → `delete_site_playbook(playbook_id=...)`.
+
+**Costo aggiuntivo**: 1 chiamata LLM in più al termine di ogni job browser_use riuscito (~$0.002 con `gpt-4o-mini`). Trascurabile rispetto al risparmio nei job successivi (site_explorer parte già armato e fa il 30-50% in meno di step).
 
 ### 9.5 Pulsante Stop davvero affidabile
 
@@ -1369,6 +1647,60 @@ URL principali:
 **`profiles.jsonl` non viene passato al downstream**
 - Sull'edge devi specificare il nome del file in **Artifact da passare** (es. `profiles.jsonl`, `qualified.jsonl`). L'edge default non passa nulla.
 
+**Gli id di asset/job/contact partono da un numero alto, non da 1**
+- Comportamento corretto. SQLite con `INTEGER PRIMARY KEY AUTOINCREMENT` garantisce id **strettamente crescenti e mai riusati** anche dopo `DELETE`. Lo stato è mantenuto in `sqlite_sequence`. Vedi §12.1 sotto per il dettaglio.
+
+**Qualifier dice "1033 qualified" ma `/inbox/contacts` ne mostra solo X**
+- Risolto dal 2026-05-10. Il qualifier ora materializza in `contacts` ogni asset qualified che ha almeno un canale reale (email/telegram/whatsapp). Se vedi ancora discrepanze: gli asset con solo `display_name` (senza contatti) restano in `assets` ma non in `contacts` — corretto (niente da contattare, niente da materializzare).
+
+**Job cancelled o crashed → asset persi?**
+- No, se il sub-job era `site_explorer` o `bulk_extract`: i dati sono nel `profiles.jsonl` su disco. Puoi recuperarli con `_ingest_to_assets` manuale. Vedi §12.2 sotto.
+- In aggiunta: dal 2026-05-10, `site_explorer` salva la queue residua in `_pending_queue.json` → rilanciare il task riprende automaticamente.
+
+### 12.1 Come funzionano gli id univoci in DB
+
+Schema: `id INTEGER PRIMARY KEY AUTOINCREMENT` per tutte le tabelle principali (`tasks`, `jobs`, `assets`, `contacts`, `workflows`, ...). SQLite mantiene il prossimo id usabile nella tabella interna **`sqlite_sequence`**:
+
+```sql
+SELECT name, seq FROM sqlite_sequence;
+-- assets: 1172  → prossimo INSERT avrà id=1173
+-- jobs: 37     → prossimo INSERT avrà id=38
+```
+
+**Implicazioni**:
+
+- **Gap dopo DELETE**: cancellare le righe NON resetta la sequence. Es. cancelli gli asset id 1–55, il prossimo INSERT avrà id 56. È *comportamento by design* di AUTOINCREMENT.
+- **Stabilità permalink**: `/assets/56` punterà sempre allo stesso asset (o 404 se cancellato). Non c'è rischio di "ricicli" di id.
+- **Audit cronologico**: id crescente = ordine di creazione. Utile per "ultimi 10 asset" senza guardare `created_at`.
+
+**Come "compattare" gli id** (sconsigliato, rompe permalink esistenti):
+
+```sql
+-- 1. cancella i dati
+DELETE FROM assets;
+-- 2. resetta la sequence
+DELETE FROM sqlite_sequence WHERE name = 'assets';
+```
+
+Da fare solo in caso di esigenze tecniche specifiche (es. demo che parte da id=1). Non c'è limite tecnico al crescere degli id (SQLite supporta INTEGER 64-bit, ~9.2 quintilioni di righe).
+
+### 12.2 Recupero di asset da un job crashato/cancellato
+
+Se un job viene interrotto prima di completare l'ingest in DB, i dati estratti sono comunque su disco. Ogni asset estratto viene **scritto immediatamente** in `data/results/<task_id>/<timestamp>/profiles.jsonl` con `flush()` dopo ogni riga.
+
+**Per ingestare manualmente** dopo un cancel:
+
+```python
+from pathlib import Path
+from app.agent.runner_browseruse import _ingest_to_assets
+def jlog(msg): print(msg)
+profiles_path = Path('data/results/<TASK_ID>/<RUN_TIMESTAMP>/profiles.jsonl')
+n = _ingest_to_assets(profiles_path, task_id=<TASK_ID>, job_id=<JOB_ID>, jlog=jlog, extraction_template='<template>')
+print(f'Ingested: {n}')
+```
+
+In alternativa: rilanciare il task. Con `refresh_policy_days>0` (default 7) gli URL già in DB vengono skippati e processati solo i nuovi. Con `site_explorer`, in più, viene caricata anche la queue persistita (`_pending_queue.json`) saltando la discovery via browser.
+
 ---
 
 ## 13. Considerazioni etiche e legali
@@ -1384,14 +1716,127 @@ L'app fornisce gli strumenti tecnici. La conformità legale e l'etica sono respo
 
 ---
 
-## 14. Cosa NON fa (ancora)
+## 14. Limiti e TODO
 
-- **WhatsApp**: scartato (Meta Cloud API troppo costosa/burocratica per single-user)
-- **Webhook pubblici**: solo polling. Per webhook reali servirebbe tunneling HTTPS (ngrok/cloudflare).
-- **A/B testing template outreach**: si fa duplicando il task
-- **Drip campaigns** (sequenze nel tempo): per ora outreach manda tutto in batch
-- **Diff fra run successivi** (es. "solo nuovi profili"): da costruire come task custom
-- **Visualizzazione DAG grafica**: solo lista testuale
-- **Multi-utente / autenticazione**: è single-user locale; per uso condiviso servirebbe auth + isolamento DB
+Lista esplicita di cosa **non funziona oggi** (limiti reali, non bug) e di **cosa servirebbe** per espandere il framework. Per ogni voce: **cosa**, **perché**, **come implementarlo**. Pensata come roadmap quando si riprende il lavoro.
 
-Il piano è allineabile a tutto questo — basta chiedere.
+### 14.1 Limiti tecnici noti (oggi)
+
+**1) Cloudflare / anti-bot aggressivi** — `Annunci69.it`, parte di LinkedIn, Akamai-protected
+- **Cosa**: i siti che usano sfide JS attive (interstitial "checking your browser..."), fingerprinting browser, bot management Akamai/Cloudflare → falliscono sia in `site_explorer` (HTTP) sia in `browser_use` (Chromium standard).
+- **Perché serve**: oggi questi siti vengono saltati o danno 0 estrazioni. Per lead gen B2B vasta, l'esclusione di LinkedIn/Indeed/Glassdoor è limitante.
+- **Come**: integrare `playwright-stealth` (`pip install playwright-stealth`) nel modulo `url_discovery_browser.py` e in `runner_browseruse.py` (intercetta navigator.webdriver, plugins, languages). Aggiungere supporto **residential proxy** rotativo (Bright Data, IPRoyal) come param task `proxy_url`. Per Cloudflare Turnstile/captcha, integrazione 2captcha API. Stima: 4-8h + costo proxy (~$10-50/mese per uso moderato).
+
+**2) Login wall** — Instagram, Facebook profili privati, marketplace con auth
+- **Cosa**: niente gestione credenziali, niente sessione persistente.
+- **Perché**: molti siti hanno dati pubblici accessibili SOLO da utente autenticato (es. Instagram profili "pubblici" ma chiedono login per scroll feed).
+- **Come**: aggiungere campi task `login_url`, `login_credentials` (cifrate in DB), un `login_script` opzionale per Playwright (sequenza click+type). browser_use già supporta login flow agentico ma è lento. Per Playwright headless, persistere `storageState` (cookies + localStorage) in `data/sessions/<domain>.json` riutilizzabile fra run.
+
+**3) JS-render pesante anche dopo scroll** — SPA senza SSR che caricano contenuti via WebSocket / GraphQL streaming
+- **Cosa**: rare, ma alcune SPA non rispondono al `window.scrollTo` perché usano custom scroll-container nidificati.
+- **Perché**: `discover_via_browser` può fallire silenziosamente (0 URL raccolti).
+- **Come**: estendere `discover_urls_via_scroll` con strategia ibrida: oltre a `scrollTo(body.scrollHeight)`, simulare anche scroll su elementi `[data-virtualized]`, `.infinite-scroll-container`, e fare `wait_for_function` su `document.querySelectorAll('a').length > N` prima di considerare la pagina "stabile".
+
+**4) Captcha resolution** — Cloudflare Turnstile, hCaptcha, reCAPTCHA
+- **Cosa**: zero supporto.
+- **Perché**: molti siti gate con captcha la lista profili o il "mostra contatto".
+- **Come**: integrazione **2captcha.com** o **anti-captcha.com** (~$1-3 per 1000 captcha risolti). Aggiungere helper `solve_captcha(page, captcha_type)` in `url_discovery_browser.py`. Trigger automatico se la pagina mostra elementi `[data-cf-turnstile]` / `.h-captcha` / `.g-recaptcha`.
+
+**5) Service-path tokens monolingua** — siti in giapponese, coreano, arabo
+- **Cosa**: la lista `SERVICE_PATH_TOKENS` in `url_canonical.py` ha ~50 keyword italiano+inglese. Su un sito tedesco le pagine `/impressum`, `/datenschutz` non vengono filtrate.
+- **Perché**: tante false estrazioni di pagine di sistema su siti internazionali → inflaziona il count + sporca il qualifier.
+- **Come**: aggiungere multi-lingua. Strutturare in `LANG_SERVICE_TOKENS = {"de": [...], "fr": [...], "ja": [...]}` e auto-detection lingua dal `<html lang="">` o `<meta http-equiv="Content-Language">` al primo fetch. Stima: 1h se basta espandere lista; 3h se aggiungiamo auto-detection.
+
+**6) Pattern hint hardcoded a sub-domain in auto-discovery** — siti con `/product/<id>` non gestiti automaticamente
+- **Cosa**: in `_run_agent_inner` quando scatta l'auto-discovery FORZATA, il `pattern_hint` è `^https?://[a-z0-9_-]+\.<reg_domain>/?` (sub-domain). Va bene per cam, social personal, ma non per e-commerce con `/product/<int>`.
+- **Perché**: su siti tipo `shop.tld/product/12345`, `discover_via_browser` raccoglie troppi URL irrilevanti (navigation, blog, ecc.) e il dedup canonical non basta.
+- **Come**: nel ramo auto-discovery FORZATA, fare prima un `fetch_page` programmatico, identificare il pattern target più frequente (riusare `_group_urls_by_pattern`), e passare al `discover_via_browser` un `pattern_hint` derivato dal pattern dominante. Stima: 30 min.
+
+**7) Cap unbounded hardcoded a 5000** — mega-siti con >5000 profili
+- **Cosa**: `_UNBOUNDED_TARGET_CAP = 5000` cap interno di sicurezza. Anche con `target_cap_per_site=0`, il runner si ferma a 5000.
+- **Perché**: directory grandi (Eventbrite, Booking) possono avere 50.000+ target. Oggi serve un task per "slice" (es. per città).
+- **Come**: rendere il cap configurabile per-task (es. campo `safety_cap` separato da `target_cap_per_site`). Oppure abilitare modalità "true unbounded" che richiede conferma esplicita nel form (checkbox "ho letto i rischi di costo"). Stima: 1h.
+
+**8) Queue persistita per task, non per workflow** — un solo `_pending_queue.json` per task_id
+- **Cosa**: se hai due workflow che usano lo stesso task come entry-point, condividono la queue.
+- **Perché**: scenario raro, ma possibile collisione.
+- **Come**: cambiare il path in `data/results/<task_id>/_pending_queue_<workflow_run_id>.json`. Trade-off: più file da cleanup. Stima: 30 min.
+
+**9) Asset versioning** — non c'è storico delle modifiche di un asset
+- **Cosa**: quando un asset viene re-estratto (refresh_policy), `raw_json` viene **sovrascritto**. Niente storico ("come era 30 giorni fa").
+- **Perché**: utile per "diff" (es. prezzo immobiliare cambiato? telegram modificato?).
+- **Come**: tabella `asset_versions(asset_id, version_n, raw_json_snapshot, created_at)`. Su `update_asset`, fare INSERT della versione vecchia prima di UPDATE. Cap n_versioni (10 più recenti) per non gonfiare il DB. Stima: 3h.
+
+**10) Backup automatico DB** — niente
+- **Cosa**: `data/agentscraper.db` non viene mai backup-pato. Power-loss → niente recovery.
+- **Perché**: dopo 1000+ asset estratti l'utente non vuole perderli per un crash.
+- **Come**: cron settimanale `sqlite3 .backup data/backups/agentscraper-<ts>.db`. Cap a N backup (es. 4 settimane). Stima: 30 min + spazio disco.
+
+**11) Cleanup automatico `data/results/`** — cresce indefinitamente
+- **Cosa**: ogni run scrive `profiles.jsonl` + `report.md` + eventuali sub-dir browser_use. Mai cancellati.
+- **Perché**: dopo 50 run su 5 task, `data/results/` può occupare GB.
+- **Come**: TTL configurabile per task (es. `keep_runs=5` mantiene solo le 5 più recenti). Cron job che pulisce dir più vecchie di N giorni. Stima: 1h.
+
+### 14.2 TODO architetturali (espansioni grosse)
+
+**A) Browser actions per "MANUS-like" extensions**
+- **Cosa**: oggi `browser_use` estrae solo. Per renderlo agente generale, serve un linguaggio di **azioni dichiarate dall'utente**: click, fill_form, navigate_flow, wait_for_element. Aggiunte come tool callable dal LLM orchestrator.
+- **Perché**: l'utente vuole avvicinarsi a MANUS (es. "prenota un volo, compila form, paga"). Oggi `browser_use` decide step-by-step ma è specializzato per estrazione strutturata, non per workflow transazionali.
+- **Come**: nuovo runner `runner_browser_actions.py` con tool LLM `click(selector)`, `fill(selector, value)`, `wait_for(selector)`, `read_text(selector)`, `screenshot()`, `submit_form(selector)`. Sequenza di azioni come "ricetta" persistente in DB (`browser_recipes` tabella). Stima: 1-2 settimane di lavoro per copertura decente. È un altro progetto.
+
+**B) Multi-domain task chaining sofisticato**
+- **Cosa**: workflow DAG attuale è rigido (nodi predefiniti). Mancano "branch condizionali" (es. "se qualifier rifiuta 80% → riprova con criteri allargati"), "loop" (es. "ripeti il chain finché N contatti acquisiti"), "join" (es. "estrai da 3 siti diversi e fai merge").
+- **Perché**: piani complessi end-to-end (lead gen B2B con qualificazione + arricchimento + outreach + follow-up) richiedono branch/loop.
+- **Come**: estendere `workflow_edges` con `trigger_event` più ricchi: `on_done_if_n_outputs>=K`, `on_done_loop_until`, `on_done_merge_with_<other_edge_id>`. UI form per definire condizioni. Engine in `app/jobs.py` che le interpreta. Stima: 1 settimana.
+
+**C) API REST documentata + multi-utente**
+- **Cosa**: FastAPI espone già route ma niente OpenAPI doc pubblica, niente auth.
+- **Perché**: per integrazioni esterne (es. Zapier, n8n, app mobile) o uso condiviso multi-team.
+- **Come**: 
+  1. Auto-generare OpenAPI 3.0 via `app.openapi()` con tag, descrizioni, esempi
+  2. Aggiungere autenticazione: JWT token o API key (header `X-API-Key`)
+  3. Multi-tenancy: aggiungere `user_id` a `tasks`, `assets`, `contacts`. Migrazione idempotente.
+  4. RBAC light: ruolo `admin` vs `viewer` (admin lancia, viewer legge).
+  
+  Stima: 1-2 settimane.
+
+**D) Asset → workflow downstream automatico su cambio status**
+- **Cosa**: oggi un workflow scatta SOLO quando un job upstream termina. Niente trigger su evento "manuale" (es. utente cambia `status` di un asset da `new` a `qualified`).
+- **Perché**: utile per workflow "ibridi" dove la qualificazione è manuale e l'outreach automatico.
+- **Come**: nuovo edge type `trigger_event="on_asset_status_change:qualified"`. Hook in `db.update_asset_status` che fa scattare `jobs.start_job_for_asset(asset_id, downstream_task_id)`. Stima: 1-2 giorni.
+
+**E) Pluggable storage backend (Postgres)**
+- **Cosa**: SQLite va bene per single-user su file. Per uso shared o cluster, Postgres.
+- **Perché**: SQLite ha limite di concorrenza writes (1 alla volta). Su API multi-utente o cron paralleli, Postgres scala meglio.
+- **Come**: refactor `app/db.py` da `sqlite3` a `SQLAlchemy` (overhead ma copre entrambi). Migrazioni con Alembic. Setting `DB_URL=sqlite:///... | postgresql://...`. Stima: 1 settimana.
+
+### 14.3 TODO operativi (miglioramenti incrementali)
+
+| # | Cosa | Beneficio | Stima |
+|---|---|---|---|
+| 1 | **Export CSV/Excel** da `/assets` e `/inbox/contacts` | Lead gen verso strumenti esterni (HubSpot, Pipedrive) | 2h |
+| 2 | **Diff fra run successivi**: "X profili nuovi, Y aggiornati, Z scomparsi" | Vedi cosa è cambiato sul sito senza guardare in DB | 4h |
+| 3 | **Visualizzazione DAG grafica** del workflow (SVG con frecce) | Più intuitivo della lista testuale | 4h |
+| 4 | **A/B testing template outreach** (variante A vs B sullo stesso task) | Ottimizzare conversion senza duplicare task | 1d |
+| 5 | **Drip campaigns** (sequenze temporali con delay) | Outreach a 3-5 giorni invece di batch unico | 1-2d |
+| 6 | **Schedulazione job via cron UI** (già scritto in DB campo `cron`, ma UI scarna) | Re-run automatici settimanali per refresh dati | 2h |
+| 7 | **Streaming output LLM** in live durante mapping (vedi i tool calls in tempo reale) | UX migliore per debug | 4h |
+| 8 | **Bulk action** su `/assets` (export selezionati, cambia status N) | Già c'è bulk-delete; aggiungi le altre azioni | 2h |
+| 9 | **Webhook esterni** per notifica eventi (job done, qualifier ha trovato N>K contatti) | Integrazione con Slack/Discord/Telegram | 4h |
+| 10 | **Custom extraction_template** definibili da UI (no codice Python) | L'utente aggiunge template per dominio specifico | 1d |
+| 11 | **Test suite ampia** (oltre 10 smoke test) — coprire url_canonical, persistenza queue, qualifier→contacts | Refactor sicuri | 1d |
+| 12 | **Error metrics dashboard** (job falliti %, JSON-fail rate, costo cumulativo per task) | Visibilità runtime | 1d |
+| 13 | **Auto-detection lingua sito** per service-path multilingua | Vedi limite #5 | 3h |
+| 14 | **Pattern hint LLM-driven** in auto-discovery | Vedi limite #6 | 30min |
+| 15 | **Tunneling HTTPS** (ngrok/cloudflare-tunnel) per webhook inbound | Niente più solo polling per email/telegram | 4h |
+| 16 | **Settings UI** invece di modificare `.env` a mano | UX più friendly | 1d |
+
+### 14.4 Già scartato (con motivo)
+
+- **WhatsApp Cloud API**: Meta richiede business verification + costi/messaggio per single-user. Sostituibile con WhatsApp Web automation via browser (fragile) o evitare.
+- **Crawling JavaScript-rendered con headless browser fisso**: già coperto da `browser_use` quando serve. Tenere un Chromium "always-on" sprecherebbe RAM.
+- **Auto-translation dei messaggi**: out-of-scope. L'utente può comporre messaggi in lingue diverse via template manuale.
+
+---
+
+Il piano è allineabile a tutto questo — basta chiedere quale punto attivare per primo.

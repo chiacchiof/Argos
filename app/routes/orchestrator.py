@@ -271,6 +271,26 @@ CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_site_playbooks",
+            "description": (
+                "Lista i playbook persistiti — istruzioni operative scritte da un agente "
+                "potente (browser_use) per insegnare a uno debole (site_explorer) come "
+                "estrarre dati da un dominio. Stage 2 del knowledge transfer cross-runner. "
+                "Filtri: registrable_domain, status ('active'|'stale'|'archived')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "registrable_domain": {"type": "string"},
+                    "status": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
+            },
+        },
+    },
 ]
 
 CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
@@ -314,7 +334,9 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
             "name": "create_task",
             "description": (
                 "Crea un singolo task. Per piani multi-step preferisci propose_plan+execute_plan. "
-                "Campi minimi: name, agent_mode, objective."
+                "Campi minimi: name, agent_mode, objective. "
+                "Per site_explorer su sito infinite-scroll/unbounded: passa target_cap_per_site=0 E un objective "
+                "con keyword-trigger ('tutti i profili', 'infinite scroll', 'centinaia', ecc.)."
             ),
             "parameters": {
                 "type": "object",
@@ -332,6 +354,28 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                     "message_template": {"type": "string"},
                     "message_channels": {"type": "array", "items": {"type": "string"}},
                     "responder_system_prompt": {"type": "string"},
+                    "target_cap_per_site": {
+                        "type": "integer",
+                        "description": (
+                            "site_explorer: cap target estratti per sito. 0 = unbounded (cap interno di "
+                            "sicurezza 5000). Default 30."
+                        ),
+                    },
+                    "refresh_policy_days": {
+                        "type": "integer",
+                        "description": (
+                            "Re-run incrementali: 0=mai re-extract se asset esiste in DB; N>0=re-extract se "
+                            "asset più vecchio di N giorni (default 7); -1=sempre re-extract."
+                        ),
+                    },
+                    "crawler_enabled": {
+                        "type": "boolean",
+                        "description": "bulk_extract: abilita BFS crawler dal seed con auto-detect pattern URL.",
+                    },
+                    "crawler_max_depth": {
+                        "type": "integer",
+                        "description": "bulk_extract crawler: hop massimi dal seed (default 3).",
+                    },
                 },
                 "required": ["name", "agent_mode", "objective"],
             },
@@ -431,6 +475,23 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                     "notes": {"type": "string"},
                 },
                 "required": ["pattern_id", "status"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_site_playbook",
+            "description": (
+                "Cancella un playbook (force-refresh: il prossimo browser_use sul dominio "
+                "lo rigenera). Usa quando il sito e' cambiato e il playbook non funziona piu'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "playbook_id": {"type": "integer"},
+                },
+                "required": ["playbook_id"],
             },
         },
     },
@@ -1514,6 +1575,10 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
             return _tool_list_site_patterns(args)
         if name == "set_site_pattern_status":
             return _tool_set_site_pattern_status(args)
+        if name == "list_site_playbooks":
+            return _tool_list_site_playbooks(args)
+        if name == "delete_site_playbook":
+            return _tool_delete_site_playbook(args)
         return f"Tool non supportato: {name}"
     except Exception as e:
         return f"Errore tool {name}: {type(e).__name__}: {e}"
@@ -1824,7 +1889,7 @@ def _tool_create_task(args: dict[str, Any]) -> str:
     extraction_template = args.get("extraction_template")
     extraction_schema = get_schema(extraction_template) if extraction_template else None
     try:
-        planned = PlannedTask(
+        planned_kwargs: dict[str, Any] = dict(
             key=base_key[:60],
             name=name[:200],
             agent_mode=agent_mode,  # type: ignore[arg-type]
@@ -1843,9 +1908,22 @@ def _tool_create_task(args: dict[str, Any]) -> str:
             notes="Creato da chat Orchestrator.",
             status_tag="tuning",
         )
+        if args.get("target_cap_per_site") is not None:
+            planned_kwargs["target_cap_per_site"] = max(0, int(args.get("target_cap_per_site") or 0))
+        if args.get("crawler_enabled") is not None:
+            planned_kwargs["crawler_enabled"] = bool(args.get("crawler_enabled"))
+        if args.get("crawler_max_depth") is not None:
+            planned_kwargs["crawler_max_depth"] = max(1, int(args.get("crawler_max_depth") or 3))
+        planned = PlannedTask(**planned_kwargs)
     except Exception as e:
         return json.dumps({"ok": False, "reason": f"campi task non validi: {type(e).__name__}: {e}"})
     payload = _task_to_db_payload(planned)
+    # refresh_policy_days non esiste su PlannedTask: applicalo direttamente al payload DB.
+    if args.get("refresh_policy_days") is not None:
+        try:
+            payload["refresh_policy_days"] = int(args.get("refresh_policy_days"))
+        except Exception:
+            pass
     task_id = db.create_task(payload)
     return json.dumps(
         {"ok": True, "task_id": task_id, "name": planned.name, "agent_mode": planned.agent_mode}
@@ -2082,6 +2160,52 @@ def _tool_set_site_pattern_status(args: dict[str, Any]) -> str:
     return json.dumps({"ok": True, "pattern_id": pattern_id, "status": status})
 
 
+def _tool_list_site_playbooks(args: dict[str, Any]) -> str:
+    """Lista i playbook persistiti. Cross-runner knowledge transfer (Stage 2)."""
+    domain = (str(args.get("registrable_domain") or "").strip()) or None
+    status = (str(args.get("status") or "").strip()) or None
+    limit = max(1, min(int(args.get("limit") or 50), 200))
+    rows = db.list_site_playbooks(registrable_domain=domain, status=status, limit=limit)
+    slim = []
+    for r in rows:
+        # Il campo playbook e' JSON serializzato: esponilo parsato per leggibilita'
+        pb_text = ""
+        pb_blockers: list[Any] = []
+        try:
+            pb_obj = json.loads(r.get("playbook") or "{}")
+            pb_text = (pb_obj.get("text") or "")[:400]
+            pb_blockers = pb_obj.get("blockers") or []
+        except Exception:
+            pb_text = (r.get("playbook") or "")[:400]
+        slim.append({
+            "id": r.get("id"),
+            "registrable_domain": r.get("registrable_domain"),
+            "asset_type": r.get("asset_type"),
+            "source_runner": r.get("source_runner"),
+            "transferable": bool(r.get("transferable")),
+            "status": r.get("status"),
+            "hits": r.get("hits"),
+            "successes": r.get("successes"),
+            "failures": r.get("failures"),
+            "playbook_preview": pb_text,
+            "blockers": pb_blockers,
+            "updated_at": r.get("updated_at"),
+        })
+    return json.dumps(
+        {"ok": True, "count": len(slim), "playbooks": slim},
+        ensure_ascii=False, indent=2, default=str,
+    )
+
+
+def _tool_delete_site_playbook(args: dict[str, Any]) -> str:
+    """Cancella un playbook (force-refresh: il prossimo browser_use lo rigenera)."""
+    pid = int(args.get("playbook_id") or 0)
+    if pid <= 0:
+        return json.dumps({"ok": False, "reason": "playbook_id mancante"})
+    db.delete_site_playbook(pid)
+    return json.dumps({"ok": True, "playbook_id": pid, "action": "deleted"})
+
+
 def _chat_system_prompt(
     *,
     web_enabled: bool,
@@ -2133,16 +2257,27 @@ def _chat_system_prompt(
         "Sei l'Orchestrator di AgentScraper, il meta-agente che progetta, costruisce, lancia e monitora "
         "altri agenti per conto dell'utente. Italiano, operativo, asciutto: max 4-6 righe salvo richiesta esplicita. "
         "Niente introduzioni, niente riepiloghi ovvi, niente liste lunghe.\n\n"
-        "MODALITA AGENTE DISPONIBILI (per pianificare task):\n"
+        "MODALITA AGENTE DISPONIBILI (8 in totale, per pianificare task):\n"
+        "Scraping (5):\n"
         "- react: ricerca web leggera con DDG+HTTP+readability, output report .md/.txt.\n"
-        "- bulk_extract: HTTP+readability per URL noti su sito statico, output profiles.jsonl.\n"
-        "- browser_use: Chromium reale, JS/login/scroll, output profiles.jsonl. Lento.\n"
-        "- auto_extract: profiler + dispatch automatico per liste eterogenee, output profiles.jsonl.\n"
-        "- site_explorer: agente ReAct che naviga il sito intelligentemente (LLM decide ogni step). Per siti dove la struttura non e' ovvia.\n"
-        "- qualifier: legge profiles.jsonl, produce qualified.jsonl.\n"
-        "- outreach: invia email/telegram. RISCHIOSO.\n"
-        "- responder: auto-reply inbound. RISCHIOSO.\n"
+        "- bulk_extract: HTTP+readability per URL noti su sito statico, output profiles.jsonl. Supporta crawler BFS dal seed con auto-detect pattern URL.\n"
+        "- browser_use: Chromium reale via browser-use, JS/login/scroll/anti-bot, output profiles.jsonl. Lento e costoso (~$5-10 per sito).\n"
+        "- auto_extract: profiler + dispatch automatico (bulk_extract / site_explorer / browser_use / skip) per liste eterogenee. Fallback bidirezionale.\n"
+        "- site_explorer: Mapping LLM (3-5 step) + Extraction runner-driven deterministico. Tool LLM: fetch_page, enqueue_listings, discover_via_browser, start_extraction. Per siti listing→dettaglio, multi-livello, infinite-scroll.\n"
+        "Pipeline downstream (3):\n"
+        "- qualifier: legge profiles.jsonl, scora 0-10 via LLM, produce qualified.jsonl + DB contacts.\n"
+        "- outreach: invia email/telegram ai qualified. RISCHIOSO.\n"
+        "- responder: auto-reply inbound (con opt-out detection). RISCHIOSO.\n"
         "Convenzione artifact: extract*->qualifier passa profiles.jsonl; qualifier->outreach/responder passa qualified.jsonl.\n\n"
+        "STRATEGIE SCRAPING (decision tree operativo — sintetizzato dalla GUIDA §3.0.3):\n"
+        "A. Sito statico con pattern URL chiaro (cataloghi, e-commerce piccolo, immobili, directory) → bulk_extract con crawler ON (auto-detect pattern via 1 LLM call discovery, poi BFS deterministico).\n"
+        "B. Sito multi-livello (categorie + sotto-categorie + paginazioni) → site_explorer con target_cap_per_site esplicito (30-100). Il LLM mappa le listing, il runner estrae.\n"
+        "C. Sito INFINITE-SCROLL (social feed, camgirl, lazy-load, news feed) o 'voglio TUTTI i target del sito' → site_explorer con target_cap_per_site=0 (♾️ unbounded) E objective contenente keyword-trigger: 'tutti i profili', 'tutti i target', 'tutti gli annunci', 'tutti i prodotti', 'tutto il sito', 'centinaia', 'migliaia', 'infinite scroll', 'tutti i contatti', 'tutta la lista'. Il runner attiva auto-discovery FORZATA via Chromium headless (discover_via_browser, gratis come token, ~10-30s) PRIMA del turno LLM → raccoglie centinaia/migliaia di URL via scroll → li accoda al direct_target_queue. Senza il trigger il LLM potrebbe ignorare il sito infinite-scroll e vedere solo il first-paint statico.\n"
+        "D. Sito con anti-bot / Cloudflare / login / JS-render puro → browser_use esplicito (riserva: lento e costoso).\n"
+        "E. Lista mista di N siti diversi (B2B lead-gen, audit) → auto_extract (profiler decide per ogni sito).\n"
+        "REFRESH POLICY (re-run incrementali): campo task refresh_policy_days. 0='mai re-extract se in DB' (risparmio max), N>0='re-extract se asset più vecchio di N giorni' (default 7), -1='sempre re-extract'. Il check usa source_url_canonical → dedup cross-lingua (`/it/x/` ≡ `/en/x/`) e cross-paginazione (`?p=0` ≡ no-query). I re-run dello stesso task saltano automaticamente gli URL già in DB freschi: niente fetch HTTP, niente LLM extractor, costo ~0.\n"
+        "SITE PLAYBOOKS: a fine job riuscito, site_explorer e browser_use salvano un playbook nella tabella site_playbooks; al run successivo sullo stesso dominio, il LLM in fase MAPPING legge il playbook e salta 2-3 step di esplorazione.\n"
+        "TOOL LLM di site_explorer in fase MAPPING (info utile per consigliare l'objective): fetch_page(url) ispeziona; enqueue_listings(urls, reason) accoda listing/categorie/paginazioni; discover_via_browser(url, scrolls, target_pattern_hint) è il tool browser headless deterministico (zero token, gratis) per siti infinite-scroll; start_extraction(summary) cede al runner. extract_target è chiamato dal runner, non dal LLM.\n\n"
         "FONTE PRIMARIA DI VERITA' — GUIDA.md:\n"
         "Hai accesso alla guida completa del progetto via i tool `list_guide_topics()` e "
         "`read_guide_section(query)`. La guida contiene best practice, configurazioni "
@@ -2152,18 +2287,26 @@ def _chat_system_prompt(
         "Esempi di flusso corretto:\n"
         "  • Utente chiede 'come configuro un site_explorer per un sito immobiliare':\n"
         "    1) read_guide_section('site_explorer') → leggi la sez. 3.4.1\n"
-        "    2) sintetizzi i parametri consigliati\n"
+        "    2) sintetizzi i parametri consigliati (target_cap_per_site, refresh_policy_days, modello)\n"
         "    3) se Azioni ON, costruisci e proponi il task con propose_plan/create_task.\n"
+        "  • Utente chiede 'come scrappo un sito infinite-scroll tipo Instagram':\n"
+        "    1) read_guide_section('infinite scroll') o read_guide_section('3.0.3')\n"
+        "    2) raccomandi site_explorer + target_cap_per_site=0 + objective con keyword-trigger\n"
+        "       ('estrai tutti i profili pubblici del sito, è un sito infinite scroll').\n"
         "  • Utente chiede 'quale modello usare per qualifier':\n"
         "    1) read_guide_section('qualifier') o read_guide_section('provider LLM')\n"
         "    2) sintesi 1-2 righe.\n"
+        "  • Utente chiede 'come faccio re-run incrementali senza ri-spendere':\n"
+        "    1) read_guide_section('refresh_policy') o read_guide_section('3.0.3')\n"
+        "    2) spieghi refresh_policy_days=0 ('mai') o 7 (default) + dedup via source_url_canonical.\n"
         "Non inventare configurazioni: se la guida lo dice, citala.\n\n"
         "OPERATIVITA:\n"
         "- Per costellazioni multi-task suggerisci di compilare il Brief e premere 'Genera piano' (canale canonico). "
         "In alternativa, con Azioni ON, usa propose_plan + execute_plan.\n"
         "- Per modifiche puntuali (lancia job 12, crea questo task, mostra stato workflow 4): usa direttamente i tool.\n"
         "- Per stato dei job/agenti usa list_jobs / get_job_status / list_tasks invece di descrivere a vuoto.\n"
-        "- Per outreach/responder: chiedi consenso esplicito all'utente in chat PRIMA di passare confirm_risky=true.\n\n"
+        "- Per outreach/responder: chiedi consenso esplicito all'utente in chat PRIMA di passare confirm_risky=true.\n"
+        "- Quando crei un task site_explorer per un sito infinite-scroll, passa SEMPRE target_cap_per_site=0 nel create_task E componi un objective che contenga una delle keyword-trigger sopra. Senza trigger, l'auto-discovery FORZATA non scatta e perderai i target lazy-loaded.\n\n"
         f"CAPACITA CHAT:\n- {web_line}\n- {files_line}\n- {actions_line}\n\n"
         f"SNAPSHOT SISTEMA:\n{snapshot}"
     )

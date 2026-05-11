@@ -235,13 +235,27 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
     # Browser_use richiede tool-calling complesso + visione: se l'utente ha
     # specificato un LLM dedicato `browser_llm_*` (modello capable, magari diverso
     # dal main extraction), preferiamolo. Altrimenti fallback al main del task.
+    # Validation: se provider=cloud E model=ollama-tag (es. provider=openai +
+    # model=qwen3-coder:30b), e' un mismatch dal form non resettato → fallback a main.
+    from .runner_auto_extract import _looks_like_ollama_model, _CLOUD_PROVIDERS
     browser_provider = (task.get("browser_llm_provider") or "").strip()
     browser_model = (task.get("browser_llm_model") or "").strip()
     if browser_provider and browser_model:
-        provider_key = browser_provider
-        model_name = browser_model
-        api_key_override = task.get("browser_llm_api_key")
-        role_label = "🖥️ Browser LLM (override)"
+        if browser_provider.lower() in _CLOUD_PROVIDERS and _looks_like_ollama_model(browser_model):
+            jlog(
+                f"⚠️ Browser LLM incongruente: provider='{browser_provider}' "
+                f"ma model='{browser_model}' sembra Ollama. Fallback al main LLM. "
+                f"Correggi i campi `browser_llm_*` nel form del task."
+            )
+            provider_key = task.get("llm_provider") or "ollama"
+            model_name = task["model"]
+            api_key_override = task.get("llm_api_key")
+            role_label = "Provider LLM (fallback dopo mismatch browser_llm)"
+        else:
+            provider_key = browser_provider
+            model_name = browser_model
+            api_key_override = task.get("browser_llm_api_key")
+            role_label = "🖥️ Browser LLM (override)"
     else:
         provider_key = task.get("llm_provider") or "ollama"
         model_name = task["model"]
@@ -417,6 +431,28 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
         jlog,
         extraction_template=task.get("extraction_template"),
     )
+
+    # Stage 2 — Playbook write: se abbiamo estratto >0 asset E c'e' UN solo seed
+    # (caso tipico di auto_extract sub-job), chiediamo al LLM un playbook free-form
+    # da iniettare nei futuri run di site_explorer su questo dominio.
+    try:
+        if (
+            n_assets > 0
+            and not stopped
+            and len(seeds_to_run) == 1
+            and task.get("extraction_template")
+        ):
+            await _write_site_playbook(
+                seed_url=seeds_to_run[0],
+                asset_type=task["extraction_template"],
+                n_assets=n_assets,
+                summaries_text="\n\n".join(summaries)[:6000],
+                task=task,
+                job_id=job_id,
+                jlog=jlog,
+            )
+    except Exception as e:
+        jlog(f"  ⚠️ Playbook write skipped: {type(e).__name__}: {e}")
 
     # report finale (anche dopo stop, quello che hai raccolto è già su disco)
     n_profiles = _count_lines(consolidated_jsonl)
@@ -974,3 +1010,134 @@ def _maybe_collect_agent_files(agent: Any, run_dir: Path, jlog: Callable) -> Non
                 return
         except Exception:
             continue
+
+
+# ===========================================================================
+# Stage 2 — Playbook write: cosa ha imparato browser_use sul sito?
+# ===========================================================================
+
+async def _write_site_playbook(
+    *,
+    seed_url: str,
+    asset_type: str,
+    n_assets: int,
+    summaries_text: str,
+    task: dict[str, Any],
+    job_id: int,
+    jlog: Callable,
+) -> None:
+    """Chiede al LLM un riassunto operativo di cosa ha imparato browser_use sul
+    sito, da iniettare nei futuri run di site_explorer (HTTP-only) sullo stesso
+    dominio. Salva in DB tramite db.upsert_site_playbook.
+
+    L'output del LLM e' atteso come JSON con `playbook_text` e `transferable`.
+    Su parsing fail: fallback a salvataggio del raw output con transferable=true.
+    """
+    import json as _json
+    from urllib.parse import urlparse
+    import httpx
+    from .llm_providers import resolve_api_key, resolve_base_url
+    from .runner_bulk_extract import _registrable_domain
+
+    host = (urlparse(seed_url).hostname or "").lower()
+    reg = _registrable_domain(host)
+    if not reg:
+        return
+
+    provider = (task.get("browser_llm_provider") or task.get("llm_provider") or "ollama").strip()
+    model = (task.get("browser_llm_model") or task.get("model") or "qwen3.5:latest").strip()
+    try:
+        base_url = resolve_base_url(provider, task.get("llm_base_url"))
+        api_key = resolve_api_key(provider, task.get("browser_llm_api_key") or task.get("llm_api_key"))
+    except Exception as e:
+        jlog(f"  ⚠️ Playbook write: impossibile risolvere LLM ({e}). Skip.")
+        return
+
+    sys_prompt = (
+        "Sei un'AI che scrive 'playbook' operativi per altri agenti. Hai appena "
+        "completato un'estrazione su un sito web con un agente browser-based. "
+        "Ora devi scrivere ISTRUZIONI BREVI per un agente HTTP-only "
+        "(fetch + readability + LLM extract, NIENTE browser, NIENTE click) che "
+        "estraga gli stessi dati sullo stesso sito.\n\n"
+        "Output: SOLO un JSON con questi campi (niente prosa fuori dal JSON):\n"
+        "{\n"
+        '  "playbook_text": "<istruzioni operative in italiano, 5-10 righe max>",\n'
+        '  "transferable": true | false,\n'
+        '  "blockers": [<lista di motivi che bloccherebbero un agente HTTP-only, '
+        'es. \"captcha\", \"login richiesto\", \"contenuti JS-render\">]\n'
+        "}\n\n"
+        "Regole:\n"
+        "- transferable=false se il sito richiede click/scroll/login per vedere i dati: "
+        "in quel caso i blockers spiegano perche'.\n"
+        "- transferable=true se i dati sono nel HTML statico: il playbook spiega DOVE "
+        "(URL pattern, sub-paths utili) e COSA evitare (footer, gating).\n"
+        "- Sii concreto: usa pattern URL veri (es. '/<slug>/contatti/'), non frasi vaghe.\n"
+        "- Lingua: italiano.\n"
+    )
+    user_prompt = (
+        f"Sito: {reg}\n"
+        f"Asset type: {asset_type}\n"
+        f"Asset estratti con successo (browser_use): {n_assets}\n\n"
+        f"Cosa ho fatto durante l'estrazione (sintesi per-seed):\n{summaries_text}\n\n"
+        f"Scrivi ora il JSON del playbook."
+    )
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 600,
+        "response_format": {"type": "json_object"},
+    }
+    api_url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(api_url, json=payload, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+        raw = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        # strip <think> tags Qwen3
+        cleaned = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE).strip()
+        try:
+            obj = _json.loads(cleaned)
+        except Exception:
+            # Fallback: salva raw come playbook_text, transferable=true
+            obj = {"playbook_text": cleaned[:2000], "transferable": True, "blockers": []}
+    except Exception as e:
+        jlog(f"  ⚠️ Playbook write: chiamata LLM fallita ({type(e).__name__}: {e}). Skip.")
+        return
+
+    playbook_text = (obj.get("playbook_text") or "").strip()
+    transferable = bool(obj.get("transferable", True))
+    blockers = obj.get("blockers") or []
+    if not playbook_text:
+        jlog("  ⚠️ Playbook write: LLM non ha emesso playbook_text. Skip.")
+        return
+
+    # Serializza il playbook con metadati come JSON-string nel campo `playbook`
+    full = _json.dumps(
+        {
+            "text": playbook_text,
+            "transferable": transferable,
+            "blockers": blockers,
+            "asset_count_at_creation": n_assets,
+        },
+        ensure_ascii=False,
+    )
+    pb_id = db.upsert_site_playbook(
+        registrable_domain=reg,
+        asset_type=asset_type,
+        playbook=full,
+        source_runner="browser_use",
+        source_job_id=job_id,
+        transferable=transferable,
+    )
+    jlog(
+        f"  📚 Playbook salvato (id={pb_id}) per {reg} / {asset_type} — "
+        f"transferable={transferable}, blockers={blockers}"
+    )

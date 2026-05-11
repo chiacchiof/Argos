@@ -27,7 +27,32 @@
   {% if job.log %}
     <details {% if in_progress %}open{% endif %}>
       <summary>Log ({{ job.log.count('\n') }} righe)</summary>
-      <pre class="log">{{ job.log }}</pre>
+      <pre class="log" id="job-log-{{ job.id }}" data-job-log="{{ job.id }}">{{ job.log }}</pre>
     </details>
+    {# Auto tail-follow: ad ogni HTMX swap (ogni 2s mentre il job è in_progress)
+       il <pre> viene ricreato e perde lo scroll position. Lo script setta lo
+       scroll in fondo SOLO se l'utente era gia' in coda (entro 80px dal fondo);
+       se l'utente ha scrollato indietro per leggere log vecchi, lascia il
+       cursore dove e'. Lo stato "stickToBottom" e' tracciato in window per
+       sopravvivere agli swap HTMX. #}
+    <script>
+    (function () {
+      const jid = "{{ job.id }}";
+      const stickKey = "_jobLogStick_" + jid;
+      window[stickKey] = (typeof window[stickKey] === "boolean") ? window[stickKey] : true;
+      const pre = document.getElementById("job-log-" + jid);
+      if (!pre) return;
+      // Subito: applica scroll-bottom se eravamo "in coda" prima dell'ultimo swap.
+      if (window[stickKey]) {
+        pre.scrollTop = pre.scrollHeight;
+      }
+      // Listener: aggiorna lo stato "stick" mentre l'utente scrolla.
+      // (Il listener si aggancia al nuovo <pre> ad ogni swap — non leak.)
+      pre.addEventListener("scroll", function () {
+        const distanceFromBottom = pre.scrollHeight - (pre.scrollTop + pre.clientHeight);
+        window[stickKey] = distanceFromBottom < 80; // tolleranza 80px
+      }, { passive: true });
+    })();
+    </script>
   {% endif %}
 </div>

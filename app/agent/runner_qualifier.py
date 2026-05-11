@@ -182,12 +182,39 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             n_failed += 1
             return
 
-        # Aggiorna asset (sorgente primaria) o contacts (fallback profiles.jsonl)
+        # Aggiorna asset (sorgente primaria). Anche se asset_id e' presente,
+        # se l'asset e' qualified E ha almeno un canale di contatto reale,
+        # materializzalo ANCHE nella tabella `contacts` per renderlo utilizzabile
+        # dai task outreach (che leggono da contacts, non da assets).
         if asset_id is not None:
             try:
                 db.update_asset_qualifier(asset_id, score, decision, notes=reason[:300])
             except Exception as e:
                 jlog(f"  ⚠️ update asset {asset_id} failed: {e}")
+            # Materializza in contacts se qualified + contatti reali
+            if decision == "qualified":
+                email = obj.get("email") or None
+                tg_user = obj.get("telegram") or obj.get("telegram_username") or None
+                if isinstance(tg_user, str):
+                    tg_user = tg_user.lstrip("@") or None
+                # Solo se almeno UN canale reale (altrimenti niente da contattare)
+                if email or tg_user:
+                    try:
+                        cid = db.upsert_contact({
+                            "source_task_id": task["id"],
+                            "source_job_id": job_id,
+                            "source_url": obj.get("url") or obj.get("source_url"),
+                            "source_domain": obj.get("source_domain") or _domain_of(obj.get("url")),
+                            "display_name": (
+                                obj.get("display_name") or obj.get("username") or obj.get("nickname")
+                            ),
+                            "email": email,
+                            "telegram_username": tg_user,
+                            "raw_json": raw_str,
+                        })
+                        db.update_contact_qualifier(cid, score, decision)
+                    except Exception as e:
+                        jlog(f"  ⚠️ materialize contact failed: {e}")
         else:
             email = obj.get("email") or None
             tg_user = obj.get("telegram") or obj.get("telegram_username") or None

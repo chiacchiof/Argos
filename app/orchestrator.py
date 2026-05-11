@@ -111,7 +111,7 @@ PLANNER_TOOLS_SPEC: list[dict[str, Any]] = [
 _PLANNER_MANUAL = """\
 MANUALE OPERATIVO AGENTSCRAPER (per pianificare task e workflow)
 
-== Le 7 modalita di agente ==
+== Le 8 modalita di agente ==
 
 [react]
 Ricerca web leggera: DuckDuckGo + fetch HTTP + readability. Niente browser.
@@ -120,21 +120,29 @@ Campi rilevanti: objective, max_iterations (default 10), model (Ollama locale).
 Output: report .md/.txt in data/results/. Niente profiles.jsonl.
 
 [bulk_extract]
-HTTP + readability + 1 LLM call per URL, opzionale crawler statico.
-Quando: lista o pattern di URL noti su sito statico (cataloghi, listini, directory).
-Campi rilevanti: seed_queries (URL iniziali), extraction_template, allowed_domains, max_iterations (200), crawler_enabled+crawler_max_depth se serve scoprire pagine.
+HTTP + readability + 1 LLM call per URL, opzionale crawler BFS statico dal seed con auto-detect pattern URL via 1 LLM discovery.
+Quando: lista o pattern di URL noti su sito statico (cataloghi, listini, directory, e-commerce piccoli). Anche partendo dalla home con crawler ON.
+Campi rilevanti: seed_queries (URL iniziali), extraction_template, allowed_domains, max_iterations (200), crawler_enabled+crawler_max_depth (3-5) se serve scoprire pagine partendo dalla home.
 Output: profiles.jsonl.
 
 [browser_use]
-Browser Chromium reale via browser-use, supporta JS, login, scroll, click. Lento e costoso.
-Quando: il brief dice javascript/dinamico/login/scroll/click oppure sai che HTTP statico non basta.
+Browser Chromium reale via browser-use, supporta JS, login, scroll, click, anti-bot leggero. Lento (~4-6h per sito grande) e costoso (~$5-10).
+Quando: il brief dice javascript/dinamico/login/scroll/click/cloudflare/anti-bot, oppure sai che HTTP statico non basta.
 Campi rilevanti: seed_queries, extraction_template, allowed_domains, max_iterations (30+).
 Output: profiles.jsonl.
 
 [auto_extract]
-Profiler iniziale + dispatch automatico fra bulk_extract / browser_use / skip per ogni dominio.
-Quando: lista eterogenea di siti diversi (non sai a priori se sono statici o dinamici).
+Profiler iniziale (1 LLM call per sito) + dispatch automatico fra bulk_extract / site_explorer / browser_use / skip per ogni dominio. Fallback bidirezionale (bulk<->site_explorer, browser_use->site_explorer) se la strategia primaria produce 0 profili.
+Quando: lista eterogenea di siti diversi, non sai a priori se sono statici/dinamici/multi-livello.
 Campi rilevanti: seed_queries (lista URL siti), extraction_template, allowed_domains, max_iterations (200+).
+Output: profiles.jsonl.
+
+[site_explorer]
+Mapping LLM (3-5 step) + Extraction runner-driven deterministico. Il LLM fa SOLO la fase di mapping: 1-3 fetch_page per capire la struttura, poi enqueue_listings([...]) e start_extraction(summary). Il runner pop-pa la queue e fa extract_target su ogni URL fresco (LLM extractor economico). Auto-discovery paginazione (?p=N, /page/N, /it/...) e dedup canonical cross-lingua.
+Tool LLM aggiuntivo: discover_via_browser(url, scrolls, target_pattern_hint) per siti infinite-scroll — apre Chromium headless, scrolla N volte, raccoglie centinaia/migliaia di URL DOM-finali, accoda al direct_target_queue. Zero token LLM (deterministico), ~10-30s.
+Auto-discovery FORZATA: se target_cap_per_site=0 OPPURE l'objective contiene una keyword-trigger ("tutti i profili", "tutti i target", "tutti gli annunci", "tutti i prodotti", "tutto il sito", "centinaia", "migliaia", "infinite scroll", "tutti i contatti", "tutta la lista"), il runner chiama discover_urls_via_scroll(seed, scrolls=30) PRIMA del primo turno LLM. Soluzione al caso in cui il LLM ignorerebbe l'infinite scroll.
+Quando: siti listing→dettaglio multi-livello (yescasa, pcase: la home non linka i target), siti con sub-domain come slug profilo, siti infinite-scroll/lazy-load (camgirl, social feed, news feed). Anche unbounded ("indicizza tutto il sito").
+Campi rilevanti: seed_queries (UN solo URL, la home o sezione alta), extraction_template (obbligatorio), max_iterations (30-50), target_cap_per_site (30-100 oppure 0 per unbounded — cap interno di sicurezza 5000), model (preferibilmente code-tuned: qwen3-coder:30b locale, oppure gpt-4o-mini cloud).
 Output: profiles.jsonl.
 
 [qualifier]
@@ -156,20 +164,30 @@ Campi rilevanti: responder_system_prompt.
 Vincolo: warning consenso obbligatorio + risk_level=high.
 
 == Artifact convention sugli edge ==
-- bulk_extract / auto_extract / browser_use -> qualifier   ::   pass_artifact = "profiles.jsonl"
-- qualifier -> outreach                                    ::   pass_artifact = "qualified.jsonl"
-- qualifier -> responder                                   ::   pass_artifact = "qualified.jsonl"
+- bulk_extract / auto_extract / browser_use / site_explorer -> qualifier   ::   pass_artifact = "profiles.jsonl"
+- qualifier -> outreach                                                    ::   pass_artifact = "qualified.jsonl"
+- qualifier -> responder                                                   ::   pass_artifact = "qualified.jsonl"
 Per altre coppie pass_artifact puo essere null.
+
+== Persistenza e re-run incrementali ==
+Tutti i runner di scraping (bulk_extract / site_explorer / auto_extract) consultano db.has_recent_asset(url, ..., max_age_days=refresh_policy_days) PRIMA di chiamare l'LLM extractor su un URL.
+- refresh_policy_days=0  -> "mai re-extract" (skip se asset esiste in DB, qualunque eta')
+- refresh_policy_days=N  -> skip se asset esiste e updated_at entro N giorni (default 7)
+- refresh_policy_days=-1 -> "sempre re-extract"
+Il check usa source_url_canonical -> dedup cross-lingua (/it/ ≡ /en/) e cross-paginazione (?p=0 ≡ no-query).
+Site_explorer e browser_use salvano un playbook in site_playbooks a fine job riuscito -> al run successivo sullo stesso dominio il LLM mapping legge la mappa pre-armata e risparmia 2-3 step.
 
 == Regole di consistency ==
 1. outreach o responder => SEMPRE almeno un warning di consenso esplicito + risk_level="high".
 2. outreach senza qualifier upstream e ammesso solo se l'utente lo chiede esplicitamente; va dichiarato come warning.
-3. browser_use solo se il brief menziona javascript/dinamico/login/scroll/click; altrimenti preferisci bulk_extract o auto_extract.
-4. auto_extract per liste di siti diversi; bulk_extract per pattern URL chiari di un solo dominio.
-5. extraction_template: usa "profile_contacts" per lead/contatti/profili; "ecommerce_products" per prodotti; "real_estate" per case; "events" per eventi; "news_articles" per articoli; "job_listings" per lavoro. Se ambiguo, omettilo.
-6. Niente API key nel JSON. Niente campi inventati. Usa solo i nomi di agent_mode esistenti.
-7. Se il brief e ambiguo, fai un piano piccolo (1-2 task), non riempire di stadi inutili.
-8. **Pipeline discovery+extract**: se il brief chiede di "estrarre" / "raccogliere lead" / "trovare profili" / "scrapare" MA non contiene URL ne' domini specifici (es. "trova le agenzie immobiliari di Acireale e estrai gli annunci"), preferisci una pipeline a 2 task:
+3. browser_use solo se il brief menziona javascript/dinamico/login/scroll/click/cloudflare/anti-bot; altrimenti preferisci bulk_extract, site_explorer o auto_extract.
+4. auto_extract per liste di siti diversi; bulk_extract per pattern URL chiari di un solo dominio statico; site_explorer per UN sito multi-livello con struttura non ovvia oppure infinite-scroll.
+5. **site_explorer vs bulk_extract**: se il brief riguarda UN solo sito ma il pattern URL non e' ovvio (drill-down categoria>>annuncio, sub-domain per profilo, paginazioni numerate complesse), site_explorer. Se il brief contiene URL/seed gia' pronti e pattern lineare (es. "estrai i prodotti di shop.x.com/category/y"), bulk_extract con crawler ON.
+6. **site_explorer infinite-scroll / unbounded**: se l'utente dichiara di voler "tutti i profili / tutti i target / tutti i prodotti / tutto il sito / centinaia di profili / migliaia di X" oppure menziona "infinite scroll" / "social feed" / "lazy load" / "scroll dinamico", produci un task site_explorer con target_cap_per_site=0 E mantieni nell'objective la keyword esatta scritta dall'utente (NON la riformulare in qualcosa di neutro tipo "estrai profili"). La keyword nell'objective attiva l'auto-discovery FORZATA via Chromium nel runner. Senza keyword il trigger non scatta e il runner vede solo il first-paint statico.
+7. extraction_template: usa "profile_contacts" per lead/contatti/profili; "ecommerce_products" per prodotti; "real_estate" per case; "events" per eventi; "news_articles" per articoli; "job_listings" per lavoro. Se ambiguo, omettilo.
+8. Niente API key nel JSON. Niente campi inventati. Usa solo i nomi di agent_mode esistenti.
+9. Se il brief e ambiguo, fai un piano piccolo (1-2 task), non riempire di stadi inutili.
+10. **Pipeline discovery+extract**: se il brief chiede di "estrarre" / "raccogliere lead" / "trovare profili" / "scrapare" MA non contiene URL ne' domini specifici (es. "trova le agenzie immobiliari di Acireale e estrai gli annunci"), preferisci una pipeline a 2 task:
    - Task 1: `react` con objective "scopri URL di siti pertinenti e produci un elenco".
    - Task 2: `auto_extract` con `seed_queries=[]` (l'utente popolera' manualmente dopo la run di react).
    - **NON creare un edge** tra i due task: react produce un report .md, non un file di seed; il passaggio degli URL e' manuale.
@@ -296,6 +314,58 @@ Plan:
   ]
 }
 Nota: l'edge tra `research` e `extract` non esiste perche' react produce report.md, non un file di seed. L'utente popola manualmente seed_queries di `extract` dopo aver visto il report.
+
+ESEMPIO 5 (site_explorer multi-livello con cap esplicito)
+Brief: "Estrai gli annunci di case in vendita ad Acireale sopra 200k da yescasa.it"
+Plan:
+{
+  "title": "Annunci yescasa.it Acireale > 200k",
+  "summary": "site_explorer su un sito immobiliare multi-livello (categoria citta + paginazione) con cap target 50.",
+  "risk_level": "low",
+  "assumptions": ["Yescasa.it ha listing per citta e paginazione numerata, sito statico HTML."],
+  "warnings": [],
+  "run_after_create": false,
+  "tasks": [{
+    "key": "extract", "name": "Estrazione annunci Acireale",
+    "agent_mode": "site_explorer",
+    "objective": "Estrai annunci immobiliari di Acireale con prezzo > 200000 EUR.",
+    "seed_queries": ["https://www.yescasa.it/"],
+    "allowed_domains": ["yescasa.it"],
+    "extraction_template": "real_estate",
+    "max_iterations": 40,
+    "target_cap_per_site": 50
+  }],
+  "edges": []
+}
+
+ESEMPIO 6 (site_explorer infinite-scroll / unbounded)
+Brief: "Voglio indicizzare TUTTI i profili pubblici di mondocamgirls.com, e' un sito infinite scroll. Mi servono email/telegram/social di ogni profilo."
+Plan:
+{
+  "title": "Indicizzazione completa profili mondocamgirls.com",
+  "summary": "site_explorer unbounded su sito infinite-scroll: auto-discovery FORZATA via Chromium headless scrolla la home e raccoglie centinaia/migliaia di sub-domain profilo, poi runner estrae contatti.",
+  "risk_level": "low",
+  "assumptions": [
+    "Il sito espone profili come sub-domain; HTTP statico mostra solo first-paint.",
+    "Profili pubblici, niente login richiesto."
+  ],
+  "warnings": [
+    "Modalita unbounded: costo proporzionale al numero di profili (~$0.005/profilo con gpt-4o-mini). 1000 profili ≈ $5."
+  ],
+  "run_after_create": false,
+  "tasks": [{
+    "key": "extract", "name": "Indicizzazione completa profili",
+    "agent_mode": "site_explorer",
+    "objective": "Estrai TUTTI i profili pubblici del sito (infinite scroll) con email/telegram/social/sitoweb.",
+    "seed_queries": ["https://mondocamgirls.com/it/"],
+    "allowed_domains": ["mondocamgirls.com"],
+    "extraction_template": "profile_contacts",
+    "max_iterations": 60,
+    "target_cap_per_site": 0
+  }],
+  "edges": []
+}
+Nota: target_cap_per_site=0 attiva la modalita unbounded; le parole "TUTTI i profili" + "infinite scroll" nell'objective sono keyword-trigger che attivano l'auto-discovery FORZATA via Chromium nel runner. NON riformulare l'objective in modo neutro: la keyword esatta e' parte del meccanismo.
 """
 
 

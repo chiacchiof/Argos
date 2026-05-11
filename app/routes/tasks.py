@@ -21,6 +21,36 @@ from ..templates import templates
 router = APIRouter()
 
 
+@router.get("/api/models", response_class=JSONResponse)
+async def api_models_for_provider(provider: str = ""):
+    """Ritorna la lista dei modelli compatibili per un provider.
+
+    Usato dal form task per ripopolare i dropdown del modello quando l'utente
+    cambia il provider (evita mismatch provider+model salvati incongruenti).
+
+    Per `ollama`: query live a `list_models()` (cache lato Ollama).
+    Per provider cloud: lista `suggested_models` dalla config del provider.
+    """
+    provider_key = (provider or "").strip().lower()
+    if not provider_key:
+        return {"provider": "", "models": []}
+    if provider_key == "ollama":
+        try:
+            models = await list_models()
+        except Exception:
+            models = [settings.default_model]
+        return {"provider": provider_key, "models": models}
+    try:
+        info = get_provider(provider_key)
+    except Exception:
+        return {"provider": provider_key, "models": []}
+    suggested = info.get("suggested_models") or []
+    return {
+        "provider": provider_key,
+        "models": [m["id"] if isinstance(m, dict) else str(m) for m in suggested],
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, status_tag: str = ""):
     tasks = db.list_tasks()
@@ -107,6 +137,7 @@ def _form_to_dict(
     responder_system_prompt: str = "",
     bulk_concurrency: int = 5,
     target_cap_per_site: int = 30,
+    refresh_policy_days: int = 7,
     bulk_rate_limit_per_sec: float = 2.0,
     bulk_extraction_method: str = "llm_per_page",
     bulk_css_selectors: str = "",
@@ -148,6 +179,7 @@ def _form_to_dict(
         "responder_system_prompt": (responder_system_prompt or "").strip() or None,
         "bulk_concurrency": bulk_concurrency,
         "target_cap_per_site": target_cap_per_site,
+        "refresh_policy_days": refresh_policy_days,
         "bulk_rate_limit_per_sec": bulk_rate_limit_per_sec,
         "bulk_extraction_method": (bulk_extraction_method or "llm_per_page").strip(),
         "bulk_css_selectors": (bulk_css_selectors or "").strip() or None,
@@ -202,6 +234,7 @@ async def create_task(
     responder_system_prompt: str = Form(""),
     bulk_concurrency: int = Form(5),
     target_cap_per_site: int = Form(30),
+    refresh_policy_days: int = Form(7),
     bulk_rate_limit_per_sec: float = Form(2.0),
     bulk_extraction_method: str = Form("llm_per_page"),
     bulk_css_selectors: str = Form(""),
@@ -225,7 +258,7 @@ async def create_task(
         extraction_template, extraction_schema, llm_provider, llm_base_url, llm_api_key,
         input_artifact_path, message_template, message_subject, message_channels,
         responder_system_prompt,
-        bulk_concurrency, target_cap_per_site, bulk_rate_limit_per_sec, bulk_extraction_method, bulk_css_selectors,
+        bulk_concurrency, target_cap_per_site, refresh_policy_days, bulk_rate_limit_per_sec, bulk_extraction_method, bulk_css_selectors,
         crawler_enabled, crawler_url_pattern, crawler_max_depth,
         discovery_llm_provider, discovery_llm_model, discovery_llm_api_key,
         max_discovery_retries,
@@ -283,6 +316,7 @@ async def update_task(
     responder_system_prompt: str = Form(""),
     bulk_concurrency: int = Form(5),
     target_cap_per_site: int = Form(30),
+    refresh_policy_days: int = Form(7),
     bulk_rate_limit_per_sec: float = Form(2.0),
     bulk_extraction_method: str = Form("llm_per_page"),
     bulk_css_selectors: str = Form(""),
@@ -332,7 +366,7 @@ async def update_task(
         extraction_template, extraction_schema, llm_provider, llm_base_url, llm_api_key,
         input_artifact_path, message_template, message_subject, message_channels,
         responder_system_prompt,
-        bulk_concurrency, target_cap_per_site, bulk_rate_limit_per_sec, bulk_extraction_method, bulk_css_selectors,
+        bulk_concurrency, target_cap_per_site, refresh_policy_days, bulk_rate_limit_per_sec, bulk_extraction_method, bulk_css_selectors,
         crawler_enabled, crawler_url_pattern, crawler_max_depth,
         discovery_llm_provider, discovery_llm_model, discovery_llm_api_key,
         max_discovery_retries,

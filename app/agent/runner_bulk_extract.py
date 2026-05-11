@@ -721,7 +721,11 @@ async def _llm_extract_json(
             {"role": "user", "content": _build_extract_prompt(text, url, schema)},
         ],
         "temperature": 0.0,
-        "max_tokens": 800,
+        # max_tokens 1500: alcune pagine hanno content lungo (liste prezzi/servizi)
+        # e il LLM riempie il campo `estratto` con molto testo. A 800 tokens il
+        # JSON veniva troncato a meta', causando parse-fail su tutta la riga.
+        # 1500 da' margine; max output gpt-4o-mini è 16k, quindi safe.
+        "max_tokens": 1500,
         # response_format funziona su OpenAI (json_object) e su Ollama OpenAI-compat (>=0.4)
         "response_format": {"type": "json_object"},
     }
@@ -1205,11 +1209,22 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int) -> str:
     profiles_f = profiles_path.open("a", encoding="utf-8")
     errors_f = errors_path.open("a", encoding="utf-8")
 
+    refresh_policy_days = int(task.get("refresh_policy_days") if task.get("refresh_policy_days") is not None else 7)
+    extraction_template_for_skip = task.get("extraction_template") or None
+    n_skipped_recent = 0
+
     async def process_one(client: httpx.AsyncClient, url: str) -> None:
-        nonlocal n_ok, n_failed, n_done, stopped
+        nonlocal n_ok, n_failed, n_done, stopped, n_skipped_recent
         # Stop check cooperativo
         if db.get_control_signal(job_id) == "stop":
             stopped = True
+            return
+        # Fix 3: skip se asset esiste in DB ed e' fresco (per re-run incrementali).
+        if extraction_template_for_skip and db.has_recent_asset(
+            url, extraction_template_for_skip, refresh_policy_days
+        ):
+            n_skipped_recent += 1
+            n_done += 1
             return
         async with sem:
             await limiter.wait_for(url)

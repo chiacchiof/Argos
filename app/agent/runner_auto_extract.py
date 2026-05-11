@@ -130,26 +130,117 @@ def _aggregate_profiles(report_path: Path | None, main_profiles: Path) -> int:
     return n
 
 
-def _resolve_profiler_llm(task: dict[str, Any]) -> tuple[str, str, str]:
-    """Risolve provider per il profiler: discovery_llm_* se compilato, altrimenti main."""
-    provider_key = (
-        (task.get("discovery_llm_provider") or "").strip()
-        or (task.get("llm_provider") or "").strip()
-        or "ollama"
+def _count_jsonl_lines(p: Path) -> int:
+    """Conta righe non vuote nel jsonl consolidato (per re-arm intra-job)."""
+    try:
+        return sum(1 for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip())
+    except Exception:
+        return 0
+
+
+async def _maybe_rearm_site_explorer(
+    *,
+    task: dict[str, Any],
+    site_url: str,
+    parent_job_id: int,
+    jlog,
+    main_profiles: Path,
+    n_already_extracted: int,
+    target_cap: int,
+) -> bool:
+    """Stage 2 intra-job: dopo che browser_use ha estratto N>0 profili E ha salvato
+    un playbook in DB, rilanciamo site_explorer ARMATO del playbook per finire il
+    lavoro fino al cap target. Cap di sicurezza: max 1 re-arming per sito.
+
+    Ritorna True se il re-arm e' stato eseguito (e ha aggiunto profili al jsonl
+    consolidato), False se saltato (no playbook, transferable=false, ecc.).
+    """
+    asset_type = task.get("extraction_template")
+    host = (urlparse(site_url).hostname or "").lower()
+    reg = _registrable_domain(host)
+    if not asset_type or not reg:
+        return False
+
+    playbook = db.get_site_playbook(reg, asset_type)
+    if not playbook:
+        jlog("  ℹ️ Re-arm saltato: nessun playbook trovato in DB.")
+        return False
+    # transferable e' gia' filtrato da get_site_playbook (ritorna solo active+transferable=1)
+    jlog(
+        f"  💡 Playbook fresco per {reg} (id={playbook['id']}, source="
+        f"{playbook['source_runner']}). Rilancio site_explorer armato per finire "
+        f"il lavoro ({n_already_extracted}/{target_cap} gia' raccolti)."
     )
-    model = (
-        (task.get("discovery_llm_model") or "").strip()
-        or task.get("model")
-        or ""
+    n_rearm, rearm_report = await _execute_strategy(
+        task, "site_explorer", site_url, parent_job_id, jlog,
     )
-    api_key_input = (
-        task.get("discovery_llm_api_key")
-        if task.get("discovery_llm_provider")
-        else task.get("llm_api_key")
-    )
+    n_added = _aggregate_profiles(rearm_report, main_profiles)
+    jlog(f"  ← re-arm site_explorer: +{n_added} profili (totale per sito: {n_already_extracted + n_added})")
+    return n_added > 0
+
+
+_OLLAMA_MODEL_MARKERS = ("qwen", "llama", "mistral", "deepseek", "phi", "gemma", "codestral", "granite")
+_CLOUD_PROVIDERS = {"openai", "anthropic", "gemini", "grok"}
+
+
+def _looks_like_ollama_model(model: str) -> bool:
+    """Heuristic: True se il nome del modello sembra un tag Ollama (qwen3:30b,
+    llama3.1:8b, ecc.) — usato per detectare incongruenze provider/modello."""
+    if not model:
+        return False
+    m = model.lower()
+    if any(mk in m for mk in _OLLAMA_MODEL_MARKERS):
+        return True
+    if ":" in m and not m.startswith(("gpt-", "claude-", "o1-", "o3-")):
+        return True
+    return False
+
+
+def _resolve_profiler_llm(task: dict[str, Any]) -> tuple[str, str, str, str | None]:
+    """Risolve provider per il profiler: discovery_llm_* se compilato, altrimenti main.
+
+    Validation: se discovery_provider e' cloud ma discovery_model sembra Ollama
+    (incongruenza tipica dovuta al form che non resetta il modello al cambio di
+    provider), fallback automatico al main LLM con un warning. Evita 404 sicuri.
+
+    Ritorna (base_url, api_key, model, warning_message_or_None).
+    """
+    discovery_provider = (task.get("discovery_llm_provider") or "").strip()
+    discovery_model = (task.get("discovery_llm_model") or "").strip()
+    main_provider = (task.get("llm_provider") or "ollama").strip()
+    main_model = (task.get("model") or "").strip()
+    warning: str | None = None
+
+    if discovery_provider and discovery_model:
+        # Detect incongruenza provider/model
+        if discovery_provider.lower() in _CLOUD_PROVIDERS and _looks_like_ollama_model(discovery_model):
+            warning = (
+                f"⚠️ Discovery LLM incongruente: provider='{discovery_provider}' "
+                f"ma model='{discovery_model}' sembra Ollama. Fallback al main LLM "
+                f"({main_provider}/{main_model}) per evitare errori 404. "
+                f"Correggi i campi `discovery_llm_*` nel form del task."
+            )
+            provider_key = main_provider
+            model = main_model
+            api_key_input = task.get("llm_api_key")
+        else:
+            provider_key = discovery_provider
+            model = discovery_model
+            api_key_input = task.get("discovery_llm_api_key")
+    elif discovery_provider:
+        # Provider impostato ma modello vuoto → usa modello main col discovery provider
+        # (puo' funzionare se il main_model e' compatibile, altrimenti fallira' a runtime)
+        provider_key = discovery_provider
+        model = main_model
+        api_key_input = task.get("discovery_llm_api_key")
+    else:
+        provider_key = main_provider or "ollama"
+        model = main_model
+        api_key_input = task.get("llm_api_key")
+
     base_url = resolve_base_url(provider_key, task.get("llm_base_url"))
     api_key = resolve_api_key(provider_key, api_key_input)
-    return base_url, api_key, model
+    return base_url, api_key, model, warning
 
 
 async def run_agent(task: dict[str, Any], job_id: int) -> str:
@@ -165,11 +256,13 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     # 1. Risolvi LLM per il profiler
     try:
-        prof_base_url, prof_api_key, prof_model = _resolve_profiler_llm(task)
+        prof_base_url, prof_api_key, prof_model, prof_warning = _resolve_profiler_llm(task)
     except RuntimeError as e:
         jlog(f"ERRORE configurazione provider profiler: {e}")
         db.update_job(job_id, status="error", error=str(e), finished_at=db.now_iso())
         raise
+    if prof_warning:
+        jlog(prof_warning)
     jlog(f"Profiler LLM: {prof_model} (riusa discovery_llm_* se compilato, altrimenti main)")
 
     # 2. Setup run dir consolidata
@@ -265,6 +358,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             "browser_use": "site_explorer",
         }
         fallback_used = None
+        rearm_used = False
         n_final = n_primary
         fb_strategy = fallback_map.get(decision["strategy"])
         if n_primary == 0 and fb_strategy:
@@ -279,6 +373,29 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             fallback_used = fb_strategy
             n_final = n_aggregated_fb
 
+            # Stage 2 — Re-arm intra-job: se il fallback era browser_use ed ha estratto >0,
+            # browser_use ha appena salvato un playbook in DB. Se transferable=true E
+            # abbiamo ancora budget rispetto al cap target, rilanciamo site_explorer
+            # ARMATO del playbook per finire il lavoro a costo basso.
+            target_cap = max(1, int(task.get("target_cap_per_site") or 30))
+            if (
+                fb_strategy == "browser_use"
+                and n_final > 0
+                and n_final < target_cap
+                and task.get("extraction_template")
+            ):
+                rearm_used = await _maybe_rearm_site_explorer(
+                    task=task,
+                    site_url=site_url,
+                    parent_job_id=job_id,
+                    jlog=jlog,
+                    main_profiles=main_profiles,
+                    n_already_extracted=n_final,
+                    target_cap=target_cap,
+                )
+                if rearm_used:
+                    n_final = _count_jsonl_lines(main_profiles)
+
         total_profiles += n_final
         site_results.append({
             "url": site_url,
@@ -287,6 +404,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             "reason": decision["reason"],
             "expected_yield": decision.get("expected_yield", 0),
             "fallback_used": fallback_used,
+            "rearm_used": rearm_used,
             "n_profiles_primary": n_primary,
             "n_profiles_final": n_final,
             "target_hint": decision.get("target_hint", ""),

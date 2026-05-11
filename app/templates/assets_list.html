@@ -142,11 +142,64 @@
     </tbody>
   </table>
   </form>
-  <p class="muted small">{{ assets | length }} asset (max 300).</p>
+
+  {# Paginazione #}
+  {% set page_from = offset + 1 %}
+  {% set page_to = offset + assets|length %}
+  <div class="pagination">
+    <p class="muted small">
+      Mostrando <strong>{{ page_from }}–{{ page_to }}</strong> di <strong>{{ total }}</strong>
+      ({{ per_page }} per pagina, pagina {{ page }} di {{ total_pages }})
+    </p>
+    {% if total_pages > 1 %}
+    <nav class="pager">
+      {% set sep = '&' if qs_base else '' %}
+      {% if page > 1 %}
+        <a href="?{{ qs_base }}{{ sep }}page=1">« prima</a>
+        <a href="?{{ qs_base }}{{ sep }}page={{ page - 1 }}">‹ prec</a>
+      {% else %}
+        <span class="pager-disabled">« prima</span>
+        <span class="pager-disabled">‹ prec</span>
+      {% endif %}
+
+      {# Pagine vicine al corrente: max 7 link al centro #}
+      {% set window_start = [page - 3, 1] | max %}
+      {% set window_end = [page + 3, total_pages] | min %}
+      {% if window_start > 1 %}<span class="pager-ellipsis">…</span>{% endif %}
+      {% for p in range(window_start, window_end + 1) %}
+        {% if p == page %}
+          <strong class="pager-current">{{ p }}</strong>
+        {% else %}
+          <a href="?{{ qs_base }}{{ sep }}page={{ p }}">{{ p }}</a>
+        {% endif %}
+      {% endfor %}
+      {% if window_end < total_pages %}<span class="pager-ellipsis">…</span>{% endif %}
+
+      {% if page < total_pages %}
+        <a href="?{{ qs_base }}{{ sep }}page={{ page + 1 }}">succ ›</a>
+        <a href="?{{ qs_base }}{{ sep }}page={{ total_pages }}">ultima »</a>
+      {% else %}
+        <span class="pager-disabled">succ ›</span>
+        <span class="pager-disabled">ultima »</span>
+      {% endif %}
+    </nav>
+    {% endif %}
+  </div>
+
   {% else %}
   <p class="muted">Nessun asset corrisponde ai filtri.</p>
   {% endif %}
 </section>
+
+<style>
+.pagination { display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; flex-wrap: wrap; gap: 0.5rem; }
+.pager { display: inline-flex; gap: 0.3rem; align-items: center; }
+.pager a, .pager strong, .pager span { padding: 0.25rem 0.6rem; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; font-size: 0.9em; }
+.pager a:hover { background: #f0f0f0; }
+.pager-current { background: #333; color: #fff; border-color: #333 !important; }
+.pager-disabled { color: #aaa; cursor: not-allowed; }
+.pager-ellipsis { border: 0 !important; color: #888; }
+</style>
 
 <script>
 (function () {

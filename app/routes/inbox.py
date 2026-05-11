@@ -31,13 +31,53 @@ async def inbox_list(
     )
 
 
+_CONTACTS_PAGE_SIZE = 100
+
+
 @router.get("/inbox/contacts", response_class=HTMLResponse)
-async def inbox_contacts(request: Request, status: str | None = None):
-    contacts = db.list_contacts(status=status, limit=500)
+async def inbox_contacts(
+    request: Request,
+    status: str | None = None,
+    page: int = 1,
+    per_page: int = _CONTACTS_PAGE_SIZE,
+):
+    status_clean = (status or "").strip() or None
+    per_page = max(10, min(int(per_page or _CONTACTS_PAGE_SIZE), 500))
+    page = max(1, int(page or 1))
+    offset = (page - 1) * per_page
+
+    total = db.count_contacts(status=status_clean)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    if page > total_pages:
+        page = total_pages
+        offset = (page - 1) * per_page
+
+    contacts = db.list_contacts(
+        status=status_clean,
+        limit=per_page,
+        offset=offset,
+    )
+
+    qs_parts: list[str] = []
+    if status_clean:
+        qs_parts.append(f"status={status_clean}")
+    if per_page != _CONTACTS_PAGE_SIZE:
+        qs_parts.append(f"per_page={per_page}")
+    qs_base = "&".join(qs_parts)
+
     return templates.TemplateResponse(
         request,
         "inbox_contacts.html",
-        {"contacts": contacts, "filter_status": status or ""},
+        {
+            "contacts": contacts,
+            "filter_status": status_clean or "",
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": total_pages,
+            "offset": offset,
+            "qs_base": qs_base,
+        },
     )
 
 

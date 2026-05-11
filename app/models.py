@@ -38,7 +38,8 @@ class TaskIn(BaseModel):
     message_channels: list[MessageChannel] = Field(default_factory=list)
     responder_system_prompt: str | None = None
     bulk_concurrency: int = Field(default=5, ge=1, le=50)
-    target_cap_per_site: int = Field(default=30, ge=1, le=200)
+    target_cap_per_site: int = Field(default=30, ge=0, le=5000)
+    refresh_policy_days: int = Field(default=7, ge=-1, le=365)
     bulk_rate_limit_per_sec: float = Field(default=2.0, ge=0.1, le=100.0)
     bulk_extraction_method: BulkExtractionMethod = "llm_per_page"
     bulk_css_selectors: str | None = None

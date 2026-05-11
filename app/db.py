@@ -179,22 +179,24 @@ CREATE INDEX IF NOT EXISTS idx_orchestrator_messages_id ON orchestrator_messages
 -- Sostituisce/affianca `contacts` come inbox principale dei dati estratti.
 CREATE TABLE IF NOT EXISTS assets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  asset_type        TEXT NOT NULL,
-  source_task_id    INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
-  source_job_id     INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
-  source_url        TEXT,
-  source_domain     TEXT,
-  title             TEXT,
-  raw_json          TEXT NOT NULL,
-  status            TEXT NOT NULL DEFAULT 'new',
-  qualifier_score   INTEGER,
-  notes             TEXT,
-  created_at        TEXT NOT NULL,
-  updated_at        TEXT NOT NULL
+  asset_type           TEXT NOT NULL,
+  source_task_id       INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+  source_job_id        INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  source_url           TEXT,
+  source_url_canonical TEXT,         -- canonicalized form per dedup cross-lingua/paginazione
+  source_domain        TEXT,
+  title                TEXT,
+  raw_json             TEXT NOT NULL,
+  status               TEXT NOT NULL DEFAULT 'new',
+  qualifier_score      INTEGER,
+  notes                TEXT,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_assets_type_status ON assets(asset_type, status);
 CREATE INDEX IF NOT EXISTS idx_assets_url ON assets(source_url);
 CREATE INDEX IF NOT EXISTS idx_assets_source ON assets(source_task_id);
+-- idx_assets_url_canonical creato dopo la migrazione idempotente (vedi init_db)
 
 CREATE TABLE IF NOT EXISTS asset_tags (
   asset_id  INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
@@ -225,6 +227,28 @@ CREATE TABLE IF NOT EXISTS site_patterns (
 );
 CREATE INDEX IF NOT EXISTS idx_site_patterns_domain_status ON site_patterns(registrable_domain, status);
 CREATE INDEX IF NOT EXISTS idx_site_patterns_asset_type ON site_patterns(asset_type);
+
+-- Playbook cross-runner per dominio: l'agente potente (browser_use) salva
+-- istruzioni operative free-form da iniettare nel system prompt dell'agente
+-- debole (site_explorer) sui run successivi sullo stesso dominio.
+-- Stage 2 del knowledge transfer: vedi GUIDA §9.4.x.
+CREATE TABLE IF NOT EXISTS site_playbooks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  registrable_domain TEXT NOT NULL,
+  asset_type         TEXT NOT NULL,
+  playbook           TEXT NOT NULL,         -- istruzioni operative free-form (LLM-generated)
+  source_runner      TEXT NOT NULL,         -- 'browser_use' / 'site_explorer' / 'manual'
+  source_job_id      INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+  transferable       INTEGER NOT NULL DEFAULT 1,   -- 0 se NO (es. richiede browser/login)
+  status             TEXT NOT NULL DEFAULT 'active', -- 'active' / 'stale' / 'archived'
+  hits               INTEGER NOT NULL DEFAULT 0,   -- quante volte un runner l'ha usato
+  successes          INTEGER NOT NULL DEFAULT 0,   -- quante volte ha portato a estrazioni
+  failures           INTEGER NOT NULL DEFAULT 0,   -- quante volte ha portato a 0 estrazioni
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  UNIQUE (registrable_domain, asset_type)
+);
+CREATE INDEX IF NOT EXISTS idx_site_playbooks_domain ON site_playbooks(registrable_domain);
 """
 
 
@@ -328,6 +352,29 @@ def init_db() -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN notes TEXT")
         if "status_tag" not in cols:
             con.execute("ALTER TABLE tasks ADD COLUMN status_tag TEXT")
+        # Refresh policy: ogni quanti giorni ri-extract di un asset esistente.
+        # 0 = mai (skip se esiste in DB). N>0 = ri-extract se updated_at piu' vecchio
+        # di N giorni. -1 = sempre (mai skip). Default 7 (ragionevole per dati che
+        # cambiano poco). Vale per site_explorer e bulk_extract; non ha senso per browser_use.
+        if "refresh_policy_days" not in cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN refresh_policy_days INTEGER NOT NULL DEFAULT 7")
+        # assets — Fix 2: canonical URL per dedup cross-lingua
+        acols = {r["name"] for r in con.execute("PRAGMA table_info(assets)").fetchall()}
+        if "source_url_canonical" not in acols:
+            con.execute("ALTER TABLE assets ADD COLUMN source_url_canonical TEXT")
+            # backfill: popola la canonical sui record esistenti
+            try:
+                from .agent.url_canonical import canonical_url as _canon_url
+                rows = con.execute("SELECT id, source_url FROM assets WHERE source_url IS NOT NULL").fetchall()
+                for r in rows:
+                    con.execute(
+                        "UPDATE assets SET source_url_canonical = ? WHERE id = ?",
+                        (_canon_url(r["source_url"]), r["id"]),
+                    )
+            except Exception:
+                pass
+        # Indice (creato sempre, idempotente, dopo che la colonna esiste)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_assets_url_canonical ON assets(source_url_canonical, asset_type)")
         # jobs
         jcols = {r["name"] for r in con.execute("PRAGMA table_info(jobs)").fetchall()}
         if "control_signal" not in jcols:
@@ -557,7 +604,8 @@ def create_task(data: dict[str, Any]) -> int:
                                   llm_provider, llm_base_url, llm_api_key,
                                   input_artifact_path, message_template, message_subject,
                                   message_channels, responder_system_prompt,
-                                  bulk_concurrency, target_cap_per_site, bulk_rate_limit_per_sec,
+                                  bulk_concurrency, target_cap_per_site, refresh_policy_days,
+                                  bulk_rate_limit_per_sec,
                                   bulk_extraction_method, bulk_css_selectors,
                                   crawler_enabled, crawler_url_pattern, crawler_max_depth,
                                   discovery_llm_provider, discovery_llm_model,
@@ -565,7 +613,7 @@ def create_task(data: dict[str, Any]) -> int:
                                   browser_llm_provider, browser_llm_model, browser_llm_api_key,
                                   rating, notes, status_tag,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -590,7 +638,8 @@ def create_task(data: dict[str, Any]) -> int:
                 _dump_list(data.get("message_channels")),
                 data.get("responder_system_prompt") or None,
                 int(data.get("bulk_concurrency") or 5),
-                int(data.get("target_cap_per_site") or 30),
+                int(data.get("target_cap_per_site") if data.get("target_cap_per_site") is not None else 30),
+                int(data.get("refresh_policy_days") if data.get("refresh_policy_days") is not None else 7),
                 float(data.get("bulk_rate_limit_per_sec") or 2.0),
                 data.get("bulk_extraction_method") or "llm_per_page",
                 data.get("bulk_css_selectors") or None,
@@ -626,7 +675,8 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 llm_provider = ?, llm_base_url = ?, llm_api_key = ?,
                 input_artifact_path = ?, message_template = ?, message_subject = ?,
                 message_channels = ?, responder_system_prompt = ?,
-                bulk_concurrency = ?, target_cap_per_site = ?, bulk_rate_limit_per_sec = ?,
+                bulk_concurrency = ?, target_cap_per_site = ?, refresh_policy_days = ?,
+                bulk_rate_limit_per_sec = ?,
                 bulk_extraction_method = ?, bulk_css_selectors = ?,
                 crawler_enabled = ?, crawler_url_pattern = ?, crawler_max_depth = ?,
                 discovery_llm_provider = ?, discovery_llm_model = ?,
@@ -659,7 +709,8 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 _dump_list(data.get("message_channels")),
                 data.get("responder_system_prompt") or None,
                 int(data.get("bulk_concurrency") or 5),
-                int(data.get("target_cap_per_site") or 30),
+                int(data.get("target_cap_per_site") if data.get("target_cap_per_site") is not None else 30),
+                int(data.get("refresh_policy_days") if data.get("refresh_policy_days") is not None else 7),
                 float(data.get("bulk_rate_limit_per_sec") or 2.0),
                 data.get("bulk_extraction_method") or "llm_per_page",
                 data.get("bulk_css_selectors") or None,
@@ -1054,10 +1105,28 @@ def get_contact(contact_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def count_contacts(
+    status: str | None = None,
+    source_task_id: int | None = None,
+) -> int:
+    """Conta i contatti che matchano i filtri di list_contacts. Per paginazione UI."""
+    sql = "SELECT COUNT(*) FROM contacts WHERE 1=1"
+    args: list[Any] = []
+    if status:
+        sql += " AND status = ?"
+        args.append(status)
+    if source_task_id is not None:
+        sql += " AND source_task_id = ?"
+        args.append(source_task_id)
+    with connect() as con:
+        return int(con.execute(sql, args).fetchone()[0])
+
+
 def list_contacts(
     status: str | None = None,
     source_task_id: int | None = None,
     limit: int = 500,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     sql = "SELECT * FROM contacts WHERE 1=1"
     args: list[Any] = []
@@ -1067,8 +1136,9 @@ def list_contacts(
     if source_task_id is not None:
         sql += " AND source_task_id = ?"
         args.append(source_task_id)
-    sql += " ORDER BY id DESC LIMIT ?"
+    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
     args.append(limit)
+    args.append(max(0, int(offset)))
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
@@ -1143,15 +1213,65 @@ def delete_contacts_bulk(contact_ids: list[int]) -> int:
 # Assets — modello generale per profili/annunci/prodotti/articoli/eventi/...
 # ===========================================================================
 
+def has_recent_asset(
+    source_url: str,
+    asset_type: str,
+    max_age_days: int = 7,
+) -> bool:
+    """True se esiste un asset con questo source_url (canonical) + asset_type
+    aggiornato negli ultimi `max_age_days` giorni. Usato dai runner per skip-pare
+    re-extract di asset gia' freschi in DB.
+
+    Semantica di max_age_days:
+      0  → "mai re-extract": skip se l'asset esiste in DB (qualunque eta')
+      -1 → "sempre re-extract": ritorna sempre False (no skip)
+      N>0 → skip se updated_at >= now - N giorni
+    """
+    if max_age_days < 0:
+        return False
+    if not source_url or not asset_type:
+        return False
+    from datetime import datetime, timedelta, timezone
+    from .agent.url_canonical import canonical_url as _canon
+    canonical = _canon(source_url)
+    with connect() as con:
+        row = con.execute(
+            """SELECT updated_at FROM assets
+               WHERE asset_type = ?
+                     AND (source_url_canonical = ? OR source_url = ?)
+               ORDER BY updated_at DESC
+               LIMIT 1""",
+            (asset_type, canonical, source_url),
+        ).fetchone()
+    if not row:
+        return False
+    if max_age_days == 0:
+        return True
+    try:
+        ts_str = row["updated_at"]
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return (now - ts) <= timedelta(days=max_age_days)
+    except Exception:
+        # parse fail: meglio ri-extract (cosa giusta)
+        return False
+
+
 def upsert_asset(
     data: dict[str, Any],
     tags: dict[str, list[str]] | None = None,
 ) -> int:
-    """Inserisce o aggiorna un asset (chiave: source_url se presente, altrimenti
-    insert nuovo). Ritorna asset_id. I tag sostituiscono quelli precedenti.
+    """Inserisce o aggiorna un asset.
+    Chiave di dedup: source_url_canonical (cross-lingua/paginazione) + asset_type.
+    Fallback: source_url letterale se canonical non calcolabile.
+    Ritorna asset_id. I tag sostituiscono quelli precedenti.
     """
+    from .agent.url_canonical import canonical_url as _canon
     asset_type = (data.get("asset_type") or "").strip() or "generic"
     source_url = (data.get("source_url") or "").strip() or None
+    source_url_canonical = _canon(source_url) if source_url else None
     raw_json = data.get("raw_json") or "{}"
     if not isinstance(raw_json, str):
         raw_json = json.dumps(raw_json, ensure_ascii=False)
@@ -1164,7 +1284,14 @@ def upsert_asset(
 
     with connect() as con:
         existing = None
-        if source_url:
+        # Prima cerca per canonical (dedup cross-lingua), poi fallback su source_url
+        if source_url_canonical:
+            row = con.execute(
+                "SELECT id FROM assets WHERE source_url_canonical = ? AND asset_type = ? LIMIT 1",
+                (source_url_canonical, asset_type),
+            ).fetchone()
+            existing = int(row["id"]) if row else None
+        if existing is None and source_url:
             row = con.execute(
                 "SELECT id FROM assets WHERE source_url = ? AND asset_type = ? LIMIT 1",
                 (source_url, asset_type),
@@ -1175,18 +1302,20 @@ def upsert_asset(
             con.execute(
                 """
                 UPDATE assets SET
-                  source_task_id = COALESCE(?, source_task_id),
-                  source_job_id  = COALESCE(?, source_job_id),
-                  source_domain  = COALESCE(?, source_domain),
-                  title          = COALESCE(?, title),
-                  raw_json       = ?,
-                  notes          = COALESCE(?, notes),
-                  updated_at     = ?
+                  source_task_id       = COALESCE(?, source_task_id),
+                  source_job_id        = COALESCE(?, source_job_id),
+                  source_url_canonical = COALESCE(?, source_url_canonical),
+                  source_domain        = COALESCE(?, source_domain),
+                  title                = COALESCE(?, title),
+                  raw_json             = ?,
+                  notes                = COALESCE(?, notes),
+                  updated_at           = ?
                 WHERE id = ?
                 """,
                 (
                     source_task_id,
                     source_job_id,
+                    source_url_canonical,
                     source_domain,
                     title,
                     raw_json,
@@ -1200,15 +1329,17 @@ def upsert_asset(
             cur = con.execute(
                 """
                 INSERT INTO assets (
-                  asset_type, source_task_id, source_job_id, source_url, source_domain,
-                  title, raw_json, status, qualifier_score, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'new', NULL, ?, ?, ?)
+                  asset_type, source_task_id, source_job_id, source_url, source_url_canonical,
+                  source_domain, title, raw_json, status, qualifier_score, notes,
+                  created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', NULL, ?, ?, ?)
                 """,
                 (
                     asset_type,
                     source_task_id,
                     source_job_id,
                     source_url,
+                    source_url_canonical,
                     source_domain,
                     title,
                     raw_json,
@@ -1264,12 +1395,45 @@ def get_asset(asset_id: int) -> dict[str, Any] | None:
     return asset
 
 
+def count_assets(
+    asset_type: str | None = None,
+    status: str | None = None,
+    source_task_id: int | None = None,
+    tag_filters: list[tuple[str, str]] | None = None,
+) -> int:
+    """Conta gli asset matchando gli stessi filtri di `list_assets`. Usato dalla
+    paginazione UI per calcolare il numero di pagine."""
+    sql = "SELECT COUNT(DISTINCT a.id) FROM assets a"
+    args: list[Any] = []
+    if tag_filters:
+        for i, (k, v) in enumerate(tag_filters):
+            alias = f"t{i}"
+            sql += (
+                f" JOIN asset_tags {alias} ON {alias}.asset_id = a.id "
+                f"AND {alias}.tag_key = ? AND {alias}.tag_value = ?"
+            )
+            args.extend([k.lower(), v])
+    sql += " WHERE 1=1"
+    if asset_type:
+        sql += " AND a.asset_type = ?"
+        args.append(asset_type)
+    if status:
+        sql += " AND a.status = ?"
+        args.append(status)
+    if source_task_id is not None:
+        sql += " AND a.source_task_id = ?"
+        args.append(source_task_id)
+    with connect() as con:
+        return int(con.execute(sql, args).fetchone()[0])
+
+
 def list_assets(
     asset_type: str | None = None,
     status: str | None = None,
     source_task_id: int | None = None,
     tag_filters: list[tuple[str, str]] | None = None,
     limit: int = 200,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     sql = "SELECT a.* FROM assets a"
     args: list[Any] = []
@@ -1292,8 +1456,9 @@ def list_assets(
     if source_task_id is not None:
         sql += " AND a.source_task_id = ?"
         args.append(source_task_id)
-    sql += " ORDER BY a.id DESC LIMIT ?"
+    sql += " ORDER BY a.id DESC LIMIT ? OFFSET ?"
     args.append(limit)
+    args.append(max(0, int(offset)))
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
         results = [dict(r) for r in rows]
@@ -1551,6 +1716,170 @@ def maybe_promote_pattern(pattern_id: int, min_successes: int = 3, min_ratio: fl
         set_site_pattern_status(pattern_id, new_status)
         return new_status
     return None
+
+
+# ===========================================================================
+# Site playbooks (Stage 2 — knowledge transfer cross-runner)
+# ===========================================================================
+
+def get_site_playbook(registrable_domain: str, asset_type: str) -> dict[str, Any] | None:
+    """Ritorna il playbook ATTIVO per (dominio, asset_type) o None.
+    Auto-skip se status != 'active' o transferable=0."""
+    if not registrable_domain or not asset_type:
+        return None
+    with connect() as con:
+        row = con.execute(
+            """SELECT * FROM site_playbooks
+               WHERE registrable_domain = ? AND asset_type = ?
+                     AND status = 'active' AND transferable = 1""",
+            (registrable_domain.lower(), asset_type),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_site_playbook(
+    *,
+    registrable_domain: str,
+    asset_type: str,
+    playbook: str,
+    source_runner: str,
+    source_job_id: int | None,
+    transferable: bool,
+) -> int:
+    """Crea o aggiorna il playbook per (dominio, asset_type).
+    Resetta `failures` a 0 (e' una nuova versione). Ritorna l'id."""
+    ts = now_iso()
+    domain_l = registrable_domain.lower()
+    with connect() as con:
+        existing = con.execute(
+            "SELECT id FROM site_playbooks WHERE registrable_domain = ? AND asset_type = ?",
+            (domain_l, asset_type),
+        ).fetchone()
+        if existing:
+            pb_id = int(existing["id"])
+            con.execute(
+                """UPDATE site_playbooks
+                   SET playbook = ?, source_runner = ?, source_job_id = ?,
+                       transferable = ?, status = 'active', failures = 0,
+                       updated_at = ?
+                   WHERE id = ?""",
+                (
+                    playbook, source_runner, source_job_id,
+                    1 if transferable else 0, ts, pb_id,
+                ),
+            )
+            return pb_id
+        cur = con.execute(
+            """INSERT INTO site_playbooks (
+                registrable_domain, asset_type, playbook, source_runner, source_job_id,
+                transferable, status, hits, successes, failures, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'active', 0, 0, 0, ?, ?)""",
+            (
+                domain_l, asset_type, playbook, source_runner, source_job_id,
+                1 if transferable else 0, ts, ts,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def bump_playbook_hits(playbook_id: int) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE site_playbooks SET hits = hits + 1, updated_at = ? WHERE id = ?",
+            (now_iso(), playbook_id),
+        )
+
+
+def bump_playbook_outcome(playbook_id: int, *, success: bool, stale_threshold: int = 3) -> str | None:
+    """Bump successes o failures. Auto-stale a `failures >= stale_threshold`.
+    Ritorna 'stale' se il playbook e' stato auto-archiviato, None altrimenti."""
+    ts = now_iso()
+    with connect() as con:
+        if success:
+            con.execute(
+                "UPDATE site_playbooks SET successes = successes + 1, failures = 0, updated_at = ? WHERE id = ?",
+                (ts, playbook_id),
+            )
+            return None
+        # failure: bump e check soglia
+        con.execute(
+            "UPDATE site_playbooks SET failures = failures + 1, updated_at = ? WHERE id = ?",
+            (ts, playbook_id),
+        )
+        row = con.execute(
+            "SELECT failures, status FROM site_playbooks WHERE id = ?", (playbook_id,)
+        ).fetchone()
+        if row and int(row["failures"]) >= stale_threshold and row["status"] == "active":
+            con.execute(
+                "UPDATE site_playbooks SET status = 'stale', updated_at = ? WHERE id = ?",
+                (ts, playbook_id),
+            )
+            return "stale"
+    return None
+
+
+def list_site_playbooks(
+    *,
+    registrable_domain: str | None = None,
+    status: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM site_playbooks WHERE 1=1"
+    params: list[Any] = []
+    if registrable_domain:
+        sql += " AND registrable_domain = ?"
+        params.append(registrable_domain.lower())
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY updated_at DESC LIMIT ?"
+    params.append(int(limit))
+    with connect() as con:
+        rows = con.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_site_playbook(playbook_id: int) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM site_playbooks WHERE id = ?", (playbook_id,))
+
+
+def delete_site_pattern(pattern_id: int) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM site_patterns WHERE id = ?", (pattern_id,))
+
+
+def delete_site_patterns_by_domain(registrable_domain: str) -> int:
+    """Cancella tutti i pattern di un dominio. Ritorna il numero di righe cancellate."""
+    if not registrable_domain:
+        return 0
+    with connect() as con:
+        cur = con.execute(
+            "DELETE FROM site_patterns WHERE registrable_domain = ?",
+            (registrable_domain.lower(),),
+        )
+        return int(cur.rowcount or 0)
+
+
+def delete_site_playbooks_by_domain(registrable_domain: str) -> int:
+    """Cancella tutti i playbook di un dominio. Ritorna n righe cancellate."""
+    if not registrable_domain:
+        return 0
+    with connect() as con:
+        cur = con.execute(
+            "DELETE FROM site_playbooks WHERE registrable_domain = ?",
+            (registrable_domain.lower(),),
+        )
+        return int(cur.rowcount or 0)
+
+
+def truncate_site_memory() -> dict[str, int]:
+    """Svuota completamente la memoria sito (pattern + playbook).
+    Ritorna un dict con n righe cancellate per tabella."""
+    with connect() as con:
+        n_pat = int(con.execute("DELETE FROM site_patterns").rowcount or 0)
+        n_pb = int(con.execute("DELETE FROM site_playbooks").rowcount or 0)
+    return {"site_patterns": n_pat, "site_playbooks": n_pb}
 
 
 # ===========================================================================
