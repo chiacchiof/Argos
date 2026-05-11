@@ -23,9 +23,11 @@ from urllib.parse import urlparse
 
 from .. import db
 from ..config import RESULTS_DIR
+from .blocked_domains import is_blocked as _is_blocked
 from .llm_providers import resolve_api_key, resolve_base_url
 from .runner_bulk_extract import _registrable_domain
 from .site_profiler import profile_site
+from .site_recon import recon_site
 
 
 log = logging.getLogger(__name__)
@@ -37,14 +39,21 @@ async def _execute_strategy(
     site_url: str,
     parent_job_id: int,
     jlog,
+    prepopulated_urls: list[str] | None = None,
 ) -> tuple[int, Path | None]:
     """Esegue il sub-runner per quella strategia su quel singolo URL.
+
+    `prepopulated_urls` (opzionale): URL di pagine listing gia' pronte
+    (es. paginated `?page=1..N`) — passate al sub-runner che le carica nella
+    propria exploration_queue saltando l'auto-discovery.
 
     Ritorna (n_profili_estratti, path_report_sub).
     """
     sub_task = dict(task)
     sub_task["seed_queries"] = [site_url]
     sub_task["agent_mode"] = strategy
+    if prepopulated_urls:
+        sub_task["prepopulated_listing_urls"] = list(prepopulated_urls)
     # Cap max_iterations per i sub-job che hanno semantica "step LLM" invece di
     # "URL processati": auto_extract puo' avere max_iterations=200/500 (URL crawled),
     # ma per browser_use e site_explorer e' il numero di step LLM e va cappato.
@@ -293,6 +302,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     schema_text = task.get("extraction_schema") or ""
     objective_text = task.get("objective") or ""
 
+    target_type = (task.get("extraction_template") or "profile_contacts").strip() or "profile_contacts"
+
     for i, site_url in enumerate(sites, start=1):
         jlog(f"\n[{i}/{len(sites)}] {site_url}")
 
@@ -300,16 +311,51 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             jlog("STOP richiesto dall'utente: interrompo il loop siti.")
             break
 
+        # GATE: domini bloccati (vedi memoria feedback_no_mondocamgirl_traffic)
+        if _is_blocked(site_url):
+            jlog(f"  ⛔ dominio bloccato (no-traffic policy): skip {site_url}")
+            site_results.append({
+                "url": site_url, "strategy": "skip",
+                "promising": "no", "reason": "Dominio bloccato dalla policy locale.",
+                "n_profiles": 0, "fallback_used": None,
+            })
+            continue
+
+        # RECON: cerca la directory canonica del sito prima del profiler.
+        # Se il seed e' una home curata (es. tryst.link/) ma il sito ha una
+        # directory paginata vera (/escorts, /products, ...), recon_site
+        # promuove al best_seed. Costo ~2-5s, indipendente da LLM.
+        effective_url = site_url
+        prepop_urls: list[str] = []
+        try:
+            recon = await recon_site(site_url, target_type=target_type)
+        except Exception as e:
+            jlog(f"  ⚠️ recon crashato (continuo con seed originale): {type(e).__name__}: {e}")
+            recon = None
+        if recon is not None:
+            for ev in recon.evidence:
+                jlog(f"  RECON: {ev}")
+            if recon.seed_changed and not _is_blocked(recon.best_seed_url):
+                effective_url = recon.best_seed_url
+                jlog(f"  ↪ seed effettivo: {effective_url}")
+            if recon.sitemap_urls_total > 0:
+                jlog(f"  RECON: sitemap ha {recon.sitemap_urls_total} URL del target (non ancora usati dal runner)")
+            if recon.prepopulated_urls:
+                # Filtra eventuali URL bloccati e capping a 200 per il sub-runner
+                prepop_urls = [u for u in recon.prepopulated_urls if not _is_blocked(u)][:200]
+                if prepop_urls:
+                    jlog(f"  RECON: {len(prepop_urls)} URL pre-popolati pronti per runner (paginazione/sitemap)")
+
         # PROFILER
         try:
             decision = await profile_site(
-                site_url, objective_text, schema_text,
+                effective_url, objective_text, schema_text,
                 prof_base_url, prof_api_key, prof_model,
             )
         except Exception as e:
             jlog(f"  ⚠️ profiler crashato: {type(e).__name__}: {e}")
             site_results.append({
-                "url": site_url, "strategy": "skip",
+                "url": effective_url, "strategy": "skip",
                 "promising": "no", "reason": f"profiler error: {e}",
                 "n_profiles": 0, "fallback_used": None,
             })
@@ -330,10 +376,24 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         if decision.get("target_hint"):
             jlog(f"           target hint: {decision['target_hint']}")
 
+        # === OVERRIDE: se recon ha gia' trovato URL paginati statici, forza
+        # site_explorer ignorando il profiler. Il recon ha materialmente
+        # scaricato le pagine e contato i profili, quindi sa che il sito e'
+        # accessibile via HTTP statico — il profiler che dice "JS-heavy" per
+        # via di text_ratio basso (es. CSS inline gigante) e' un falso allarme.
+        if prepop_urls and decision["strategy"] in ("browser_use", "skip"):
+            old = decision["strategy"]
+            decision["strategy"] = "site_explorer"
+            jlog(
+                f"  ↪ OVERRIDE strategy: {old} → site_explorer perche' recon "
+                f"ha gia' validato {len(prepop_urls)} URL paginati HTTP-accessibili "
+                f"(text_ratio basso era falso allarme da HEAD gonfio)."
+            )
+
         if decision["strategy"] == "skip":
             jlog(f"  ⏭️  skip (profiler)")
             site_results.append({
-                "url": site_url, "strategy": "skip",
+                "url": effective_url, "original_seed": site_url, "strategy": "skip",
                 "promising": decision["promising"],
                 "reason": decision["reason"],
                 "n_profiles": 0, "fallback_used": None,
@@ -343,7 +403,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
         # SUB-RUNNER (strategia primaria)
         n_primary, sub_report = await _execute_strategy(
-            task, decision["strategy"], site_url, job_id, jlog,
+            task, decision["strategy"], effective_url, job_id, jlog,
+            prepopulated_urls=prepop_urls,
         )
         n_aggregated = _aggregate_profiles(sub_report, main_profiles)
         n_primary = n_aggregated  # uso il count effettivo dopo aggregazione
@@ -367,7 +428,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 f"Tento fallback → {fb_strategy} (1 retry max per sito)."
             )
             n_fb, fb_report = await _execute_strategy(
-                task, fb_strategy, site_url, job_id, jlog,
+                task, fb_strategy, effective_url, job_id, jlog,
+                prepopulated_urls=prepop_urls,
             )
             n_aggregated_fb = _aggregate_profiles(fb_report, main_profiles)
             fallback_used = fb_strategy
@@ -386,7 +448,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             ):
                 rearm_used = await _maybe_rearm_site_explorer(
                     task=task,
-                    site_url=site_url,
+                    site_url=effective_url,
                     parent_job_id=job_id,
                     jlog=jlog,
                     main_profiles=main_profiles,
@@ -398,7 +460,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
         total_profiles += n_final
         site_results.append({
-            "url": site_url,
+            "url": effective_url,
+            "original_seed": site_url,
             "strategy": decision["strategy"],
             "promising": decision["promising"],
             "reason": decision["reason"],

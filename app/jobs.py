@@ -350,6 +350,14 @@ def _maybe_finalize_workflow_run(workflow_run_id: int) -> None:
 
 def start_job(task_id: int, workflow_run_id: int | None = None) -> int:
     """Crea un job in stato queued e lancia il task asincrono. Ritorna job_id."""
+    task = db.get_task(task_id)
+    if task is None:
+        raise ValueError(f"Task {task_id} non esiste.")
+    if task.get("disabled"):
+        raise ValueError(
+            f"Task #{task_id} '{task.get('name')}' e' disabilitato. "
+            f"Riabilitalo prima di lanciarlo."
+        )
     job_id = db.create_job(task_id, workflow_run_id=workflow_run_id)
     t = asyncio.create_task(_run_job(job_id, task_id))
     _running_tasks[job_id] = t
@@ -361,6 +369,14 @@ def start_workflow(workflow_id: int) -> dict:
 
     Ritorna {"workflow_run_id": int, "started_jobs": [job_id, ...], "roots": [task_id, ...]}.
     """
+    wf = db.get_workflow(workflow_id)
+    if wf is None:
+        raise ValueError(f"Workflow {workflow_id} non esiste.")
+    if wf.get("disabled"):
+        raise ValueError(
+            f"Workflow #{workflow_id} '{wf.get('name')}' e' disabilitato. "
+            f"Riabilitalo prima di lanciarlo."
+        )
     roots = db.find_workflow_roots(workflow_id)
     if not roots:
         # Se il workflow non ha edge, non c'è nulla da lanciare

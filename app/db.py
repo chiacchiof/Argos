@@ -387,6 +387,14 @@ def init_db() -> None:
         ecols = {r["name"] for r in con.execute("PRAGMA table_info(workflow_edges)").fetchall()}
         if "workflow_id" not in ecols:
             con.execute("ALTER TABLE workflow_edges ADD COLUMN workflow_id INTEGER REFERENCES workflows(id) ON DELETE CASCADE")
+
+        # tasks.disabled e workflows.disabled (flag boolean per disabilitare lancio)
+        tcols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "disabled" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
+        wcols = {r["name"] for r in con.execute("PRAGMA table_info(workflows)").fetchall()}
+        if "disabled" not in wcols:
+            con.execute("ALTER TABLE workflows ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
         # Indici su workflow_edges (creati qui dopo che workflow_id esiste sicuramente)
         con.execute("CREATE INDEX IF NOT EXISTS idx_workflow_edges_from ON workflow_edges(from_task_id, enabled)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflow_id)")
@@ -591,6 +599,24 @@ def get_task(task_id: int) -> dict[str, Any] | None:
     with connect() as con:
         row = con.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return _row_to_task(row) if row else None
+
+
+def set_task_disabled(task_id: int, disabled: bool) -> None:
+    """Imposta il flag `disabled` (0/1) per un task."""
+    with connect() as con:
+        con.execute(
+            "UPDATE tasks SET disabled = ? WHERE id = ?",
+            (1 if disabled else 0, task_id),
+        )
+
+
+def set_workflow_disabled(workflow_id: int, disabled: bool) -> None:
+    """Imposta il flag `disabled` (0/1) per un workflow."""
+    with connect() as con:
+        con.execute(
+            "UPDATE workflows SET disabled = ? WHERE id = ?",
+            (1 if disabled else 0, workflow_id),
+        )
 
 
 def create_task(data: dict[str, Any]) -> int:

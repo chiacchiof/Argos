@@ -120,6 +120,13 @@ pre.log { max-height: 360px; overflow: auto; background: #1a1a1a; color: #eee;
 .btn-small { padding: 0.3rem 0.7rem; font-size: 0.9em; border-radius: 3px; }
 .btn-primary { background: var(--done); }
 .btn-danger { background: var(--danger); }
+.btn-secondary { background: #6c757d; color: #fff; }
+.btn-secondary:hover { background: #5a6268; }
+
+/* Disabled rows in tasks/workflows list */
+.row-disabled { opacity: 0.55; background: #f8f8f8; }
+.row-disabled a { color: #999; }
+.disabled-badge { font-size: 0.85em; margin-right: 0.3rem; vertical-align: middle; }
 .btn-link { background: transparent; color: var(--accent); border: 1px solid var(--border); text-decoration: none; }
 .btn-link-action {
   display: inline-block; padding: 0.5rem 1rem; border-radius: 4px;

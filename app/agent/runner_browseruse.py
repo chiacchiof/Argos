@@ -209,11 +209,21 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
 
 async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) -> str:
+    from .blocked_domains import assert_no_blocked_seeds
+
     db.update_job(job_id, status="running", started_at=db.now_iso())
     db.set_control_signal(job_id, None)
     jlog(
         f"Avvio browser-use per task #{task['id']} \"{task['name']}\""
     )
+
+    # POLICY GATE: domini bloccati (vedi memoria feedback_no_mondocamgirl_traffic)
+    _blocked = assert_no_blocked_seeds(task.get("seed_queries") or [])
+    if _blocked:
+        msg = f"Seed bloccati dalla policy locale (no-traffic): {_blocked}. Abort runner."
+        jlog(f"⛔ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
 
     try:
         from browser_use import Agent
@@ -344,6 +354,12 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
             sub_dir = run_dir
 
         task_text = _build_seed_task(live_task, seed, max_steps)
+        # Flush incrementale: dopo ogni N step, browser_use chiama questa
+        # callback che salva history.extracted_content() in profiles.jsonl.
+        # Cosi' anche con kill brusco (uvicorn reload, watchdog stop) i profili
+        # gia' estratti sopravvivono — non sono piu' in memoria volatile.
+        agent_holder: dict = {}
+        new_step_cb = _make_incremental_flush_callback(agent_holder, sub_dir, jlog, flush_every=3)
         agent = _make_agent(
             Agent,
             task_text,
@@ -351,7 +367,9 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
             sub_dir,
             jlog,
             should_stop_cb=_make_stop_signal_callback(job_id),
+            new_step_cb=new_step_cb,
         )
+        agent_holder["agent"] = agent
 
         history_obj = None
         try:
@@ -497,22 +515,67 @@ def _make_agent(
     run_dir: Path,
     jlog: Callable,
     should_stop_cb: Callable[[], Any] | None = None,
+    new_step_cb: Callable[..., Any] | None = None,
 ) -> Any:
     """Inizializza Agent provando i nomi alternativi del kwarg per il file_system_path.
 
     Se `should_stop_cb` (async, ritorna bool) e' fornita, la registriamo come
     `register_should_stop_callback` cosi' browser-use la chiama tra uno step e
     l'altro: se True, l'agent.run termina graceful.
+
+    Se `new_step_cb` (async (browser_state, model_output, step_n)) e' fornita,
+    viene registrata come `register_new_step_callback`: chiamata dopo ogni step
+    LLM completato. Usata per flush incrementale dell'history (extracted_content)
+    su disco, cosi' se il job viene killato a meta' i dati gia' estratti sopravvivono.
     """
     base: dict[str, Any] = {"task": task_text, "llm": llm}
     if should_stop_cb is not None:
         base["register_should_stop_callback"] = should_stop_cb
+    if new_step_cb is not None:
+        base["register_new_step_callback"] = new_step_cb
     for kw in ("file_system_path", "files_path", "agent_data_dir"):
         try:
             return Agent(**base, **{kw: str(run_dir)})
         except TypeError:
             continue
     return Agent(**base)
+
+
+def _make_incremental_flush_callback(
+    agent_holder: dict,
+    sub_dir: Path,
+    jlog: Callable,
+    flush_every: int = 3,
+):
+    """Costruisce callback async chiamato dopo ogni step browser_use che, ogni
+    `flush_every` step, flusha history.extracted_content() su profiles.jsonl.
+
+    `agent_holder` e' un dict mutabile usato per passare l'agente dopo
+    l'inizializzazione (circular dependency: la callback ha bisogno dell'agent,
+    l'agent ha bisogno della callback).
+    """
+    state = {"count": 0, "last_flushed": 0}
+
+    async def _on_new_step(browser_state, model_output, step_n: int) -> None:
+        state["count"] += 1
+        if (state["count"] - state["last_flushed"]) < flush_every:
+            return
+        agent = agent_holder.get("agent")
+        if agent is None or not hasattr(agent, "state") or not hasattr(agent.state, "history"):
+            return
+        try:
+            history = agent.state.history
+            n_before = _count_lines(sub_dir / "profiles.jsonl")
+            n_written = _collect_extracted_jsonl(history, sub_dir, lambda _s: None)
+            n_after = _count_lines(sub_dir / "profiles.jsonl")
+            new_lines = max(0, n_after - n_before)
+            state["last_flushed"] = state["count"]
+            if new_lines > 0:
+                jlog(f"  💾 flush incrementale step {step_n}: +{new_lines} profili salvati su disco")
+        except Exception as e:
+            log.debug("incremental flush failed at step %s: %s", step_n, e)
+
+    return _on_new_step
 
 
 def _make_stop_signal_callback(job_id: int):
@@ -896,6 +959,116 @@ def _extract_json_dicts(text: str) -> list[dict]:
                 i += 1
         else:
             i += 1
+    # Fallback markdown: se nessun JSON valido trovato, prova a parsare
+    # il testo come profilo in markdown "**Field:** value" (browser_use spesso
+    # estrae cosi' invece di JSON puro, perdendo i dati senza questo fallback).
+    if not out:
+        md_dict = _parse_markdown_profile(text)
+        if md_dict:
+            out.append(md_dict)
+    return out
+
+
+# Regex per ri-parsare profili che browser_use ha estratto in markdown libero
+# anziche' come JSON. Esempi di pattern:
+#   **Age:** 26
+#   - **Hair Color:** Blonde
+#   Nationality: American
+# Strategia: matcha "<bullet?> <stars?> <KEY> <stars?>: <VALUE>" su singola riga.
+# [^*:\n] evita di sconfinare in altri token (asterischi, colon, newline).
+_MD_FIELD_RE = re.compile(
+    r"^[ \t]*[-*]?[ \t]*([A-Za-z][^:\n]{0,40})[ \t]*:[ \t]+([^\n]{1,300})$",
+    re.MULTILINE,
+)
+# Asterischi markdown ("**") rimossi PRIMA del match (browser_use produce
+# righe tipo "**Display Name:** Mia Melano" che renderebbero il regex fragile).
+_MD_ASTERISK_STRIP = re.compile(r"\*\*")
+
+_MD_FIELD_KEY_MAP: dict[str, str] = {
+    "name": "display_name",
+    "full name": "display_name",
+    "real name": "display_name",
+    "display name": "display_name",
+    "username": "username",
+    "user name": "username",
+    "alias": "username",
+    "handle": "username",
+    "nickname": "username",
+    "email": "email",
+    "e-mail": "email",
+    "telegram": "telegram",
+    "telegram username": "telegram",
+    "whatsapp": "whatsapp",
+    "phone": "whatsapp",
+    "telefono": "whatsapp",
+    "instagram": "instagram",
+    "facebook": "facebook",
+    "twitter": "twitter",
+    "tiktok": "tiktok",
+    "onlyfans": "onlyfans",
+    "website": "sitoweb",
+    "sitoweb": "sitoweb",
+    "site": "sitoweb",
+    "url": "source_url",
+    "profile url": "source_url",
+    "source url": "source_url",
+    "age": "age",
+    "born": "born",
+    "birthday": "born",
+    "data di nascita": "born",
+    "nationality": "nationality",
+    "ethnicity": "ethnicity",
+    "country": "country",
+    "city": "city",
+    "location": "city",
+    "languages": "languages",
+    "profession": "profession",
+    "professions": "profession",
+    "hair color": "hair_color",
+    "eye color": "eye_color",
+    "height": "height",
+    "weight": "weight",
+    "measurements": "measurements",
+}
+
+
+def _parse_markdown_profile(text: str) -> dict | None:
+    """Parsea testo markdown con campi 'Key: value' o '**Key:** value' in un dict.
+
+    Usato quando browser_use estrae profili come testo libero invece che JSON.
+    Ritorna None se trova meno di 3 campi (dati troppo sparsi per essere utili).
+    """
+    if not text:
+        return None
+    # Rimuovi asterischi markdown per semplificare il regex
+    text_norm = _MD_ASTERISK_STRIP.sub("", text)
+    out: dict[str, Any] = {}
+    socials: list[dict[str, str]] = []
+    for m in _MD_FIELD_RE.finditer(text_norm):
+        raw_key = m.group(1).strip().lower()
+        raw_val = m.group(2).strip()
+        if not raw_val or raw_val.lower() in ("n/a", "none", "null", "-", "--"):
+            continue
+        # Tronca valori troppo lunghi (header markdown probabilmente)
+        raw_val = raw_val[:500]
+        # Mappa al nostro schema
+        key = _MD_FIELD_KEY_MAP.get(raw_key)
+        if not key:
+            # Heuristic: se il valore inizia con "http", trattalo come social
+            if raw_val.lower().startswith(("http://", "https://", "www.")):
+                socials.append({"platform": raw_key, "url": raw_val})
+            continue
+        # Social platforms: aggrega in lista invece di chiave singola
+        if key in ("instagram", "facebook", "twitter", "tiktok", "onlyfans"):
+            socials.append({"platform": key, "url": raw_val})
+            continue
+        # Skip se gia' presente (manteniamo il primo)
+        if key not in out:
+            out[key] = raw_val
+    if socials:
+        out["social"] = socials
+    if len(out) < 3:
+        return None
     return out
 
 

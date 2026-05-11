@@ -97,6 +97,17 @@ async def delete_workflow(workflow_id: int):
     return RedirectResponse(url="/workflows", status_code=303)
 
 
+@router.post("/workflows/{workflow_id}/toggle-disabled")
+async def toggle_workflow_disabled(workflow_id: int, redirect_to: str = Form("/workflows")):
+    """Toggle del flag `disabled` di un workflow."""
+    w = db.get_workflow(workflow_id)
+    if w is None:
+        return RedirectResponse(url=redirect_to or "/workflows", status_code=303)
+    new_val = not bool(w.get("disabled"))
+    db.set_workflow_disabled(workflow_id, new_val)
+    return RedirectResponse(url=redirect_to or "/workflows", status_code=303)
+
+
 @router.get("/workflows/{workflow_id}", response_class=HTMLResponse)
 async def workflow_detail(request: Request, workflow_id: int):
     w = db.get_workflow(workflow_id)

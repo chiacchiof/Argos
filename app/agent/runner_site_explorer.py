@@ -237,12 +237,22 @@ async def _run_agent_inner(
     _has_minimal_data_for,
     _ingest_to_assets,
 ) -> str:
+    from .blocked_domains import assert_no_blocked_seeds
+
     db.update_job(job_id, status="running", started_at=db.now_iso())
     db.set_control_signal(job_id, None)
     jlog(
         f"Avvio site_explorer per task #{task['id']} \"{task['name']}\" — "
         f"agente ReAct su LLM"
     )
+
+    # POLICY GATE: domini bloccati (vedi memoria feedback_no_mondocamgirl_traffic)
+    _blocked = assert_no_blocked_seeds(task.get("seed_queries") or [])
+    if _blocked:
+        msg = f"Seed bloccati dalla policy locale (no-traffic): {_blocked}. Abort runner."
+        jlog(f"⛔ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
 
     # 1. Risorse e config LLM
     provider_key = task.get("llm_provider") or "ollama"
@@ -373,11 +383,41 @@ async def _run_agent_inner(
         playbook_data=playbook_data,
     )
 
+    # === Prepopulated listing queue (da site_recon pagination expansion) ===
+    # Se l'auto_extract ha gia' identificato URL paginati validi (es. ?page=1..N
+    # con paginazione visibile nel HTML del seed), li trovo in
+    # task["prepopulated_listing_urls"]. Li carico direttamente in
+    # exploration_queue saltando l'auto-discovery (i prepopulated coprono gia' tutto).
+    prepop_listings = list(task.get("prepopulated_listing_urls") or [])
+    if prepop_listings:
+        added_pp = 0
+        for u in prepop_listings:
+            if not u:
+                continue
+            if u in explored_listings or u in exploration_queue:
+                continue
+            canonical_u = _canonical_url(u)
+            if any(_canonical_url(q) == canonical_u for q in exploration_queue):
+                continue
+            exploration_queue.append(u)
+            added_pp += 1
+            # Per i prepopulated NON applichiamo _MAX_QUEUE_SIZE (cap anti-runaway
+            # contro enqueue_listings del LLM): questi URL sono pre-validati dal
+            # recon, devono passare tutti per coprire la directory paginata.
+        if added_pp:
+            jlog(
+                f"📥 Prepopulated listing queue: +{added_pp} URL paginati da recon "
+                f"(saltato auto-discovery via browser scroll)."
+            )
+
     # === Forced auto-discovery (deterministico, NON LLM-driven) ===
     # Se l'objective contiene keyword "infinite scroll/tutti/centinaia/..."
     # OPPURE target_cap_per_site=0 (unbounded), il runner chiama discover_via_browser
     # DA SOLO sul seed prima del primo turno LLM. Il LLM trova la queue gia' piena
     # e deve solo chiamare start_extraction.
+    #
+    # SKIP se exploration_queue gia' popolata dai prepopulated_listing_urls
+    # (siamo gia' coperti, non serve scrollare il browser).
     obj_lower = (task.get("objective") or "").lower()
     _AUTO_DISCOVER_KEYWORDS = (
         "infinite scroll", "infinite scrolling", "scroll infinito",
@@ -389,6 +429,12 @@ async def _run_agent_inner(
         unbounded_mode
         or any(k in obj_lower for k in _AUTO_DISCOVER_KEYWORDS)
     )
+    if auto_discover_triggered and exploration_queue:
+        jlog(
+            "🤖 Auto-discovery via browser saltato: exploration_queue gia' popolata "
+            f"({len(exploration_queue)} URL) da prepopulated listing."
+        )
+        auto_discover_triggered = False
     if auto_discover_triggered:
         # Resume: prova a caricare la queue persistita da un run precedente
         # interrotto/cancellato. Se valida, salta la discovery (~30s + 0 token).
@@ -467,6 +513,14 @@ async def _run_agent_inner(
             f"SEMPLICEMENTE chiamare start_extraction(summary='Auto-discovery completata, "
             f"queue popolata') per cedere il controllo al runner che estrarra' tutto. "
             f"NON fare fetch_page, NON fare enqueue_listings: la queue e' gia' pronta."
+        )
+    elif exploration_queue:
+        first_user_msg = (
+            f"La exploration_queue contiene gia' {len(exploration_queue)} URL listing "
+            f"paginati (es. ?page=1..N) identificati dal recon. Chiama "
+            f"start_extraction(summary='Pagination expansion, queue popolata') per cedere "
+            f"il controllo al runner che processera' tutte le pagine. NON fare fetch_page "
+            f"o enqueue_listings: la queue e' gia' pronta."
         )
     else:
         first_user_msg = (
@@ -1981,12 +2035,14 @@ async def _tool_extract_target(
             return (
                 json.dumps({"ok": False, "url": url, "reason": f"HTTP {r.status_code}"}),
                 None,
+                False,
             )
         ct = (r.headers.get("content-type") or "").lower()
         if "html" not in ct and "xml" not in ct:
             return (
                 json.dumps({"ok": False, "url": url, "reason": f"content-type non HTML: {ct}"}),
                 None,
+                False,
             )
         html = r.text
         summary_html = ""  # main-content extracted by readability (no header/footer/nav)

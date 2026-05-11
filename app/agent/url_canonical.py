@@ -31,10 +31,12 @@ SERVICE_PATH_TOKENS: frozenset[str] = frozenset({
     "lavora-con-noi", "work-with-us", "press", "stampa", "media",
     # Tecniche
     "sitemap", "accessibility", "accessibilita", "robots",
-    # Account / auth
-    "account", "myaccount", "my-account", "login", "signin", "sign-in",
-    "register", "signup", "sign-up", "logout",
-    "password", "password-reset", "reset-password", "forgot-password",
+    # Account / auth (varianti con underscore + trattino)
+    "account", "myaccount", "my-account", "my_account",
+    "login", "log-in", "log_in", "signin", "sign-in", "sign_in",
+    "register", "signup", "sign-up", "sign_up", "logout", "log_out", "log-out",
+    "password", "password-reset", "password_reset", "reset-password", "reset_password",
+    "forgot-password", "forgot_password",
     "area-cliente", "areacliente", "area-personale", "area-utente",
     "area-camgirl", "areacamgirl", "diventaunacamgirl", "diventa-",
     # E-commerce service

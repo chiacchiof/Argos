@@ -17,13 +17,27 @@
     </thead>
     <tbody>
       {% for w in workflows %}
-      <tr>
+      <tr {% if w.disabled %}class="row-disabled"{% endif %}>
         <td>{{ w.id }}</td>
-        <td><a href="/workflows/{{ w.id }}">{{ w.name }}</a></td>
+        <td>
+          {% if w.disabled %}<span class="disabled-badge" title="Workflow disabilitato: non puo' essere lanciato">🚫</span>{% endif %}
+          <a href="/workflows/{{ w.id }}">{{ w.name }}</a>
+        </td>
         <td>{{ w.n_tasks }}</td>
         <td>{{ w.n_edges }}</td>
         <td><small>{{ w.updated_at }}</small></td>
-        <td><a href="/workflows/{{ w.id }}/edit">modifica</a></td>
+        <td>
+          <a href="/workflows/{{ w.id }}/edit">modifica</a>
+          <form method="post" action="/workflows/{{ w.id }}/toggle-disabled" style="display:inline; margin-left: 0.4rem;">
+            <input type="hidden" name="redirect_to" value="/workflows">
+            {% if w.disabled %}
+              <button type="submit" class="btn-small" title="Riabilita il workflow">✓ abilita</button>
+            {% else %}
+              <button type="submit" class="btn-small btn-secondary" title="Disabilita: non potra' essere lanciato"
+                      onclick="return confirm('Disabilitare il workflow #{{ w.id }} \'{{ w.name|e }}\'?');">🚫 disabilita</button>
+            {% endif %}
+          </form>
+        </td>
       </tr>
       {% endfor %}
     </tbody>

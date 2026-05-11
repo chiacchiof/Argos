@@ -806,6 +806,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
 
 async def _run_agent_inner(task: dict[str, Any], job_id: int) -> str:
+    from .blocked_domains import assert_no_blocked_seeds
+
     def jlog(line: str) -> None:
         db.append_job_log(job_id, line)
 
@@ -815,6 +817,14 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int) -> str:
         f"Avvio bulk_extract per task #{task['id']} \"{task['name']}\" "
         f"— modello {task['model']}"
     )
+
+    # POLICY GATE: domini bloccati (vedi memoria feedback_no_mondocamgirl_traffic)
+    _blocked = assert_no_blocked_seeds(task.get("seed_queries") or [])
+    if _blocked:
+        msg = f"Seed bloccati dalla policy locale (no-traffic): {_blocked}. Abort runner."
+        jlog(f"⛔ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
 
     # 1. Risorse e config
     # MAIN model: usato per le N chiamate di extraction (1 per URL)

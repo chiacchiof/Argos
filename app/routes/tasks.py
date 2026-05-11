@@ -407,6 +407,20 @@ async def delete_task(task_id: int):
     return RedirectResponse(url="/", status_code=303)
 
 
+@router.post("/tasks/{task_id}/toggle-disabled")
+async def toggle_task_disabled(task_id: int, redirect_to: str = Form("/")):
+    """Toggle del flag `disabled` di un task. Bloccato → non si lancia.
+
+    `redirect_to` controlla dove tornare (default: home `/`, ma puo' essere `/tasks/X`).
+    """
+    t = db.get_task(task_id)
+    if t is None:
+        return RedirectResponse(url=redirect_to or "/", status_code=303)
+    new_val = not bool(t.get("disabled"))
+    db.set_task_disabled(task_id, new_val)
+    return RedirectResponse(url=redirect_to or "/", status_code=303)
+
+
 @router.get("/providers/model-field", response_class=HTMLResponse)
 async def provider_model_field(
     request: Request,

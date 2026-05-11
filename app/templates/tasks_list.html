@@ -38,9 +38,12 @@
     </thead>
     <tbody>
       {% for t in tasks %}
-      <tr>
+      <tr {% if t.disabled %}class="row-disabled"{% endif %}>
         <td>{{ t.id }}</td>
-        <td><a href="/tasks/{{ t.id }}">{{ t.name }}</a></td>
+        <td>
+          {% if t.disabled %}<span class="disabled-badge" title="Task disabilitato: non puo' essere lanciato">🚫</span>{% endif %}
+          <a href="/tasks/{{ t.id }}">{{ t.name }}</a>
+        </td>
         <td>{{ status_badge(t.status_tag) }}</td>
         <td>{{ rating_stars(t.rating) }}</td>
         <td>{{ health_badge(health_by_task.get(t.id)) }}</td>
@@ -50,6 +53,15 @@
         <td><small>{{ t.updated_at }}</small></td>
         <td>
           <a href="/tasks/{{ t.id }}/edit">modifica</a>
+          <form method="post" action="/tasks/{{ t.id }}/toggle-disabled" style="display:inline; margin-left: 0.4rem;">
+            <input type="hidden" name="redirect_to" value="/">
+            {% if t.disabled %}
+              <button type="submit" class="btn-small" title="Riabilita il task">✓ abilita</button>
+            {% else %}
+              <button type="submit" class="btn-small btn-secondary" title="Disabilita il task: non potra' essere lanciato"
+                      onclick="return confirm('Disabilitare il task #{{ t.id }} \'{{ t.name|e }}\'? Non potra' essere lanciato finche' non lo riabiliti.');">🚫 disabilita</button>
+            {% endif %}
+          </form>
         </td>
       </tr>
       {% endfor %}
