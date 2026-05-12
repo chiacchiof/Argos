@@ -25,6 +25,22 @@
     </label>
   </form>
 
+  {# Legenda canali — distingue canali outreach automatici da manuali #}
+  <details class="channel-legend">
+    <summary>📖 Legenda canali di contatto</summary>
+    <ul class="legend-list">
+      <li><span class="ch-icon ch-auto" title="Outreach automatico">✉️</span> <strong>Email</strong> — outreach automatico (task <code>outreach_email</code>)</li>
+      <li><span class="ch-icon ch-auto" title="Outreach automatico">💬</span> <strong>Telegram</strong> — outreach automatico (task <code>outreach_telegram</code>)</li>
+      <li><span class="ch-icon ch-manual" title="Outreach manuale">📱</span> <strong>WhatsApp</strong> — outreach manuale (in roadmap: Twilio API o WA Web automation)</li>
+      <li><span class="ch-icon ch-manual" title="Outreach manuale">🌐</span> <strong>Sitoweb</strong> — outreach manuale (form contact sul sito)</li>
+      <li><span class="ch-icon ch-manual" title="Outreach manuale">📷</span> <strong>Social</strong> (Instagram/Twitter/TikTok/Facebook) — outreach manuale (in roadmap: DM via Playwright)</li>
+    </ul>
+    <p class="muted small">
+      <span class="ch-icon ch-auto">●</span> = canale automatizzato già supportato dal framework<br>
+      <span class="ch-icon ch-manual">●</span> = canale presente nei dati ma outreach automatico non ancora implementato (richiede integrazione futura)
+    </p>
+  </details>
+
   {% if contacts %}
   <form method="post" action="/inbox/contacts/delete-bulk" class="bulk-action-form" data-bulk-form
         onsubmit="return window.bulkConfirmDelete(this, 'contatto')">
@@ -40,8 +56,8 @@
     <thead>
       <tr>
         <th class="bulk-col"><span class="visually-hidden">Seleziona</span></th>
-        <th>#</th><th>Nome</th><th>Email</th><th>Telegram</th>
-        <th>Status</th><th>Score</th><th>Sorgente</th><th></th>
+        <th>#</th><th>Nome</th><th>Canali</th><th>Email</th><th>Telegram</th>
+        <th>Altro</th><th>Status</th><th title="Score qualifier (0-10, da LLM). Soglia qualified: ≥5.">Score</th><th>Sorgente</th><th></th>
       </tr>
     </thead>
     <tbody>
@@ -50,14 +66,36 @@
         <td><input type="checkbox" name="contact_ids" value="{{ c.id }}" data-bulk-row></td>
         <td>{{ c.id }}</td>
         <td>{{ c.display_name or '—' }}</td>
+        <td class="channels-cell">
+          {% if c.email %}<span class="ch-icon ch-auto" title="Email: {{ c.email }}">✉️</span>{% endif %}
+          {% if c.telegram_username or c.telegram_chat_id %}<span class="ch-icon ch-auto" title="Telegram: @{{ c.telegram_username or c.telegram_chat_id }}">💬</span>{% endif %}
+          {% if c.whatsapp %}<span class="ch-icon ch-manual" title="WhatsApp: {{ c.whatsapp }} (outreach manuale)">📱</span>{% endif %}
+          {% if c.sitoweb %}<span class="ch-icon ch-manual" title="Sitoweb: {{ c.sitoweb }} (outreach manuale)">🌐</span>{% endif %}
+          {% if c.social_json %}<span class="ch-icon ch-manual" title="Social (outreach manuale)">📷</span>{% endif %}
+          {% if not (c.email or c.telegram_username or c.telegram_chat_id or c.whatsapp or c.sitoweb or c.social_json) %}<span class="muted">—</span>{% endif %}
+        </td>
         <td>{% if c.email %}<code>{{ c.email }}</code>{% else %}—{% endif %}</td>
         <td>
           {% if c.telegram_username %}@{{ c.telegram_username }}{% endif %}
           {% if c.telegram_chat_id %}<small class="muted">chat:{{ c.telegram_chat_id }}</small>{% endif %}
           {% if not c.telegram_username and not c.telegram_chat_id %}—{% endif %}
         </td>
+        <td class="other-channels">
+          {% if c.whatsapp %}<div><small><strong>WA:</strong> <code>{{ c.whatsapp }}</code></small></div>{% endif %}
+          {% if c.sitoweb %}<div><small><strong>Web:</strong> <a href="{{ c.sitoweb }}" target="_blank" rel="noopener">{{ c.sitoweb[:35] }}{% if c.sitoweb|length > 35 %}…{% endif %}</a></small></div>{% endif %}
+          {% if c.social_json %}
+            {% set socials = c.social_json | safe_loads %}
+            {% if socials %}
+              {% for s in socials[:3] %}
+                <div><small><strong>{{ s.platform or '?' }}:</strong> <a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.url[:35] }}{% if s.url|length > 35 %}…{% endif %}</a></small></div>
+              {% endfor %}
+              {% if socials|length > 3 %}<div><small class="muted">+{{ socials|length - 3 }} altri</small></div>{% endif %}
+            {% endif %}
+          {% endif %}
+          {% if not (c.whatsapp or c.sitoweb or c.social_json) %}—{% endif %}
+        </td>
         <td><span class="status status-{{ c.status }}">{{ c.status }}</span></td>
-        <td>{% if c.qualifier_score is not none %}{{ c.qualifier_score }}/10{% else %}—{% endif %}</td>
+        <td>{% if c.qualifier_score is not none %}<span class="score-badge score-{{ 'high' if c.qualifier_score >= 8 else 'mid' if c.qualifier_score >= 5 else 'low' }}" title="Valutazione LLM 0-10. ≥5=qualified.">{{ c.qualifier_score }}/10</span>{% else %}—{% endif %}</td>
         <td><small>{% if c.source_url %}<a href="{{ c.source_url }}" target="_blank" rel="noopener">{{ c.source_domain or 'link' }}</a>{% else %}—{% endif %}</small></td>
         <td class="row-actions">
           {% if c.status != 'optedout' %}

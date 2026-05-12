@@ -175,6 +175,17 @@ async def discover_urls_via_scroll(
             ),
         }
 
+    # Stealth (mascheramento marker automazione): se disponibile, applichiamo
+    # patches che fanno apparire il browser come Chrome reale (no navigator.webdriver,
+    # canvas/WebGL spoofing, plugins, ecc.). Bypassa molti anti-bot livello base/medio.
+    try:
+        from playwright_stealth import Stealth as _Stealth
+        _stealth = _Stealth()
+        _stealth_available = True
+    except ImportError:
+        _stealth = None
+        _stealth_available = False
+
     # Wrappiamo Playwright SYNC dentro asyncio.to_thread per evitare problemi di
     # event loop policy su Windows (la versione async richiederebbe ProactorEventLoop
     # che non e' il default di asyncio.run / loop FastAPI).
@@ -184,7 +195,16 @@ async def discover_urls_via_scroll(
         error_local: str | None = None
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                # Wrap p con stealth se disponibile (intercetta tutte le pages
+                # create da p.chromium.launch(...))
+                p_ctx = p
+                if _stealth_available:
+                    try:
+                        p_ctx = _stealth.use_sync(p)
+                    except Exception as _e:
+                        log.debug("stealth wrap fallito: %s", _e)
+                        p_ctx = p
+                browser = p_ctx.chromium.launch(headless=True)
                 try:
                     context = browser.new_context(
                         user_agent=(
@@ -197,6 +217,12 @@ async def discover_urls_via_scroll(
                     page = context.new_page()
                     page.set_default_timeout(_PAGE_TIMEOUT_S * 1000)
                     page.goto(url, wait_until="domcontentloaded")
+                    # wait for networkidle per dare tempo a JS di completare render
+                    # (fix bug yield basso vs httpx)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=8000)
+                    except Exception:
+                        pass
                     # Dismiss overlay (cookie/age gate). Pattern compatto: per ogni
                     # testo noto, prova a cliccare il primo bottone/link che ne contiene.
                     import time as _time

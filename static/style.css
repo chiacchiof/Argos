@@ -127,6 +127,41 @@ pre.log { max-height: 360px; overflow: auto; background: #1a1a1a; color: #eee;
 .row-disabled { opacity: 0.55; background: #f8f8f8; }
 .row-disabled a { color: #999; }
 .disabled-badge { font-size: 0.85em; margin-right: 0.3rem; vertical-align: middle; }
+
+/* Channels in /inbox/contacts */
+.channels-cell { white-space: nowrap; }
+.ch-icon {
+  display: inline-block; font-size: 1.1em; margin-right: 0.15rem;
+  vertical-align: middle; cursor: help;
+}
+.ch-icon.ch-auto { filter: none; opacity: 1; }
+.ch-icon.ch-manual { filter: grayscale(0.4); opacity: 0.85; }
+
+.channel-legend {
+  background: #f7f9fc; border: 1px solid #d6dae0; border-radius: 6px;
+  padding: 0.5rem 1rem; margin: 0.8rem 0; font-size: 0.9em;
+}
+.channel-legend summary { cursor: pointer; font-weight: 500; padding: 0.3rem 0; }
+.channel-legend .legend-list {
+  list-style: none; padding-left: 0; margin: 0.5rem 0;
+}
+.channel-legend .legend-list li { margin: 0.3rem 0; }
+
+.other-channels {
+  font-size: 0.85em; max-width: 320px; word-break: break-all;
+}
+.other-channels code { font-size: 0.9em; }
+.other-channels a { color: var(--accent); text-decoration: none; }
+.other-channels a:hover { text-decoration: underline; }
+
+/* Score badge color-coded */
+.score-badge {
+  display: inline-block; padding: 0.15rem 0.5rem; border-radius: 3px;
+  font-weight: 500; font-size: 0.9em;
+}
+.score-badge.score-high { background: #c6f6d5; color: #22543d; }   /* 8-10 */
+.score-badge.score-mid  { background: #fefcbf; color: #744210; }   /* 5-7 */
+.score-badge.score-low  { background: #fed7d7; color: #742a2a; }   /* 0-4 */
 .btn-link { background: transparent; color: var(--accent); border: 1px solid var(--border); text-decoration: none; }
 .btn-link-action {
   display: inline-block; padding: 0.5rem 1rem; border-radius: 4px;

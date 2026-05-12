@@ -72,6 +72,33 @@ OPERATIONAL_PREAMBLE = """Sei un agente che naviga il web come un utente reale p
 dati strutturati da pagine pubbliche. L'utente vuole poi usare questi dati per analisi e \
 content-optimization (ricontattare i proprietari delle pagine, ottimizzare cataloghi, ecc.).
 
+═══════════════════════════════════════════════════════════════════════
+⚠️  REGOLA #1 — CRITICA, NON NEGOZIABILE  ⚠️
+
+DEVI chiamare l'action `extract_structured_data` come tool dopo aver aperto OGNI singola \
+pagina che corrisponde allo schema. È L'UNICO MODO in cui i dati vengono salvati.
+
+WRONG (mai fare cosi'):
+  Memory: "Extracted structured data from 3 profiles: Anna, Bea, Carla"
+  → I dati NON sono stati salvati. Sono solo nel tuo pensiero. ANDRANNO PERSI.
+
+CORRECT (sempre fare cosi'):
+  1. Apri pagina profilo di Anna
+  2. CHIAMA extract_structured_data(query="extract profile_contacts schema fields from this page")
+  3. Apri pagina profilo di Bea
+  4. CHIAMA extract_structured_data(...)
+  5. Apri pagina profilo di Carla
+  6. CHIAMA extract_structured_data(...)
+
+REGOLE OPERATIVE:
+- Una pagina valida = una chiamata a `extract_structured_data`. Non aggregare piu' profili in \
+  una sola chiamata, non saltare la chiamata "perche' tanto sai gia' i dati".
+- NON descrivere l'estrazione nella Memory ("Extracted profile X"). La Memory serve solo per \
+  pianificare i prossimi step (es. "next: navigate to /page/3"), NON per memorizzare dati estratti.
+- Se l'action `extract_structured_data` non e' disponibile come tool, fermati e usa `done` \
+  con summary "tool extract_structured_data non disponibile".
+═══════════════════════════════════════════════════════════════════════
+
 STRATEGIA OPERATIVA (per ogni seed URL):
 1. Apri la pagina di partenza. Gestisci cookie banner / verifica età cliccando il bottone di \
    conferma ("Accetta", "OK", "SONO MAGGIORENNE", "Continue", "I agree", ecc.).
@@ -79,11 +106,9 @@ STRATEGIA OPERATIVA (per ogni seed URL):
    secondo i criteri dello SCHEMA DI ESTRAZIONE (vedi sotto).
 3. Per ogni link che SEMBRA essere una pagina valida, aprilo (anche in nuove tab è OK).
 4. Verifica che soddisfi i criteri dello schema.
-5. SE LA PAGINA È VALIDA → chiama l'action `extract` (extract_structured_data) descrivendo \
-   precisamente i campi che vuoi estrarre secondo lo SCHEMA fornito sotto. L'action ritorna \
-   un JSON strutturato che viene memorizzato per te.
-   IMPORTANTE: ogni chiamata a `extract` deve produrre UN oggetto JSON che corrisponda allo \
-   schema (con i campi richiesti, NULL se assenti). Non riassumere a parole, USA L'ACTION.
+5. SE LA PAGINA È VALIDA → **chiama extract_structured_data** (vedi REGOLA #1) con una query \
+   che chiede tutti i campi dello SCHEMA fornito sotto. L'action ritorna un JSON strutturato \
+   che viene salvato su disco automaticamente.
 6. Torna alla lista, vai alla prossima pagina. Salta duplicati / categorie / pagine non valide.
 7. Continua finché ci sono step disponibili o non trovi più pagine nuove.
 
@@ -94,12 +119,18 @@ VINCOLI:
 - Se la pagina richiede autenticazione o ha anti-bot pesante, NON insistere: scrivi nel summary \
   "skipped: <motivo>" e passa avanti.
 
+ANTI-LOOP:
+- Se hai visitato la stessa URL 3 volte senza estrarne dati, NON tornarci una quarta volta. \
+  Cerca un'altra strada o termina con `done`.
+- Se stai per ripetere lo stesso click/scroll/navigate del turno precedente con Memory invariata, \
+  cambia approccio invece di insistere.
+
 OUTPUT FINALE (con l'action `done`):
 Un riepilogo MARKDOWN BREVE (max 30 righe) con:
-- numero di pagine estratte in questa sessione (= numero di chiamate `extract` eseguite con successo)
+- numero di chiamate `extract_structured_data` eseguite con successo (= profili salvati)
 - elenco dei domini coperti con conteggio per dominio
 - problemi incontrati (anti-bot, JS-only, login richiesto, struttura imprevista)
-- NIENTE ridondanza dei dati estratti: sono già stati salvati tramite l'action `extract`.
+- NIENTE ridondanza dei dati estratti: sono già stati salvati tramite `extract_structured_data`.
 """
 
 def _resolve_extraction_schema(task: dict[str, Any]) -> str:
@@ -359,7 +390,9 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
         # Cosi' anche con kill brusco (uvicorn reload, watchdog stop) i profili
         # gia' estratti sopravvivono — non sono piu' in memoria volatile.
         agent_holder: dict = {}
-        new_step_cb = _make_incremental_flush_callback(agent_holder, sub_dir, jlog, flush_every=3)
+        new_step_cb = _make_incremental_flush_callback(
+            agent_holder, sub_dir, jlog, job_id, flush_every=3, memory_stuck_threshold=8,
+        )
         agent = _make_agent(
             Agent,
             task_text,
@@ -545,19 +578,70 @@ def _make_incremental_flush_callback(
     agent_holder: dict,
     sub_dir: Path,
     jlog: Callable,
+    job_id: int,
     flush_every: int = 3,
+    memory_stuck_threshold: int = 8,
 ):
-    """Costruisce callback async chiamato dopo ogni step browser_use che, ogni
-    `flush_every` step, flusha history.extracted_content() su profiles.jsonl.
+    """Costruisce callback async chiamato dopo ogni step browser_use che svolge
+    DUE compiti generici e domain-agnostic:
+
+    1. **Flush incrementale**: ogni `flush_every` step, scarica
+       history.extracted_content() su profiles.jsonl. Cosi' se il job e' killato
+       a meta', i dati gia' estratti via tool sopravvivono.
+
+    2. **Early-stop Memory stuck**: hash della Memory dell'AgentOutput. Se la
+       Memory e' identica per `memory_stuck_threshold` step consecutivi → setta
+       control_signal=stop sul job_id, terminando graceful l'agente. Evita loop
+       di failure che bruciano step e soldi senza fare progressi.
 
     `agent_holder` e' un dict mutabile usato per passare l'agente dopo
     l'inizializzazione (circular dependency: la callback ha bisogno dell'agent,
     l'agent ha bisogno della callback).
     """
-    state = {"count": 0, "last_flushed": 0}
+    state = {
+        "count": 0,
+        "last_flushed": 0,
+        "last_memory_hash": None,
+        "memory_stuck_count": 0,
+        "early_stopped": False,
+    }
 
     async def _on_new_step(browser_state, model_output, step_n: int) -> None:
         state["count"] += 1
+
+        # -- Compito 2: early-stop su Memory identica --
+        try:
+            # AgentOutput puo' essere pydantic model o dict; estraggo Memory in modo difensivo
+            mem_text: str | None = None
+            cs = getattr(model_output, "current_state", None) or getattr(model_output, "state", None)
+            if cs is not None:
+                mem_text = getattr(cs, "memory", None)
+                if mem_text is None and isinstance(cs, dict):
+                    mem_text = cs.get("memory")
+            if mem_text and isinstance(mem_text, str):
+                import hashlib
+                h = hashlib.md5(mem_text.encode("utf-8", errors="ignore")).hexdigest()
+                if h == state["last_memory_hash"]:
+                    state["memory_stuck_count"] += 1
+                else:
+                    state["last_memory_hash"] = h
+                    state["memory_stuck_count"] = 0
+                if state["memory_stuck_count"] >= memory_stuck_threshold and not state["early_stopped"]:
+                    state["early_stopped"] = True
+                    jlog(
+                        f"  🛑 early-stop: Memory dell'agente identica per "
+                        f"{state['memory_stuck_count']} step consecutivi (step {step_n}). "
+                        f"Setto control_signal=stop per uscire dal loop di failure. "
+                        f"L'agente raccolto fin qui rimane salvato."
+                    )
+                    try:
+                        db.set_control_signal(job_id, "stop")
+                    except Exception as e:
+                        log.debug("set_control_signal failed: %s", e)
+        except Exception as e:
+            log.debug("memory-stuck check failed at step %s: %s", step_n, e)
+
+        # -- Compito 1: flush incrementale --
         if (state["count"] - state["last_flushed"]) < flush_every:
             return
         agent = agent_holder.get("agent")

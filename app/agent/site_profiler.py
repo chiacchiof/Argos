@@ -192,6 +192,17 @@ QUANDO SCEGLIERE browser_use:
 - Solo se text_to_html_ratio<0.03 + body quasi vuoto in raw HTML (vero JS-render).
 - È costoso e lento: meglio site_explorer come prima scelta su HTML decente.
 
+ESPLORAZIONE PRELIMINARE (opzionale, max 2 volte):
+Se ti serve aprire un URL specifico per capire meglio la struttura prima di decidere
+(es. la home suggerisce che la directory vera sta a `/categories/X`, vuoi controllare),
+puoi rispondere con `{"action": "explore", "url": "<URL>"}` invece della decisione finale.
+Io fetcherò quel URL e ti richiamerò con i suoi signals. Max 2 esplorazioni totali, poi
+DEVI rispondere con la decisione finale.
+
+Esempio (esplorazione):
+  {"action": "explore", "url": "https://example.com/all-products"}
+
+Esempio (decisione finale):
 Rispondi in JSON ESATTO:
 {
   "strategy": "bulk_extract" | "site_explorer" | "browser_use" | "skip",
@@ -201,6 +212,9 @@ Rispondi in JSON ESATTO:
   "expected_yield": <int stimato di profili/dati ottenibili, 0 se skip>
 }
 Solo JSON, niente prosa."""
+
+
+_MAX_EXPLORE_ITERATIONS = 2
 
 
 _VALID_STRATEGIES = {"bulk_extract", "site_explorer", "browser_use", "skip"}
@@ -248,10 +262,11 @@ async def profile_site(
         result["reason"] = "URL vuoto."
         return result
 
-    # 1. Fetch home
+    # 1. Fetch home — usa HttpFetcher con TLS impersonation (bypassa Cloudflare).
+    from .http_fetcher import HttpFetcher
     try:
-        async with httpx.AsyncClient(
-            headers={"User-Agent": user_agent},
+        async with HttpFetcher(
+            user_agent=user_agent,
             follow_redirects=True,
             timeout=timeout,
         ) as client:
@@ -259,16 +274,16 @@ async def profile_site(
             result["http_status"] = r.status_code
             result["final_url"] = str(r.url)
             if r.status_code >= 400:
-                # 401/403/429 = anti-bot/auth: il PROFILER non passa, ma un browser
-                # reale potrebbe (UA, cookie, JS challenge). Non skip-pare a vuoto:
-                # instrada a browser_use che ha realistic UA + Playwright.
+                # 401/403/429 = anti-bot/auth: anche con TLS impersonation non
+                # siamo passati. Probabilmente serve JS challenge (Turnstile) o
+                # session cookie. Instrada a browser_use con Playwright.
                 if r.status_code in (401, 403, 429):
                     result["strategy"] = "browser_use"
                     result["promising"] = "maybe"
                     result["error"] = f"HTTP {r.status_code}"
                     result["reason"] = (
-                        f"HTTP {r.status_code} sul profiler (probabile anti-bot). "
-                        f"Tento con browser_use che usa UA realistico e JS."
+                        f"HTTP {r.status_code} sul profiler anche con TLS impersonation "
+                        f"(anti-bot pesante). Tento con browser_use + Playwright."
                     )
                     return result
                 result["error"] = f"HTTP {r.status_code}"
@@ -284,9 +299,129 @@ async def profile_site(
     signals = _detect_signals(html, url_normalized)
     result["signals"] = signals
 
-    # 3. LLM classification
-    user_prompt_parts = [
-        f"URL analizzato: {url_normalized}",
+    # 3. LLM classification — loop iterativo con esplorazione opzionale
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": PROFILER_SYSTEM},
+        {"role": "user", "content": _compose_profiler_user_prompt(
+            url_normalized, signals, objective, schema_text,
+        )},
+    ]
+    explored_urls: list[str] = []
+
+    async with httpx.AsyncClient(timeout=120) as llm_client:
+        from .http_fetcher import HttpFetcher
+        async with HttpFetcher(user_agent=user_agent, timeout=timeout) as fetch_client:
+            for iteration in range(_MAX_EXPLORE_ITERATIONS + 1):
+                payload = {
+                    "model": llm_model,
+                    "messages": messages,
+                    "temperature": 0.0,
+                    "max_tokens": 500,
+                    "response_format": {"type": "json_object"},
+                }
+                try:
+                    r = await llm_client.post(
+                        f"{llm_base_url.rstrip('/')}/chat/completions",
+                        json=payload,
+                        headers={"Authorization": f"Bearer {llm_api_key}"},
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                    raw = (
+                        data.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                        or ""
+                    ).strip()
+                    result["llm_raw"] = raw[:1000]
+                except Exception as e:
+                    result["error"] = f"LLM error: {type(e).__name__}: {e}"
+                    result["reason"] = f"Errore LLM nel profiling: {e}"
+                    return result
+
+                obj = _safe_json_parse(raw)
+                if not isinstance(obj, dict):
+                    result["error"] = "LLM JSON non parseable"
+                    result["reason"] = f"Risposta LLM malformata: {raw[:200]!r}"
+                    return result
+
+                # Branch: esplorazione richiesta?
+                action = (obj.get("action") or "").strip().lower()
+                if action == "explore" and iteration < _MAX_EXPLORE_ITERATIONS:
+                    explore_url = (obj.get("url") or "").strip()
+                    if not explore_url or not explore_url.startswith(("http://", "https://")):
+                        # URL invalido — convincilo a decidere
+                        messages.append({"role": "assistant", "content": raw})
+                        messages.append({
+                            "role": "user",
+                            "content": "URL per esplorazione non valido. Decidi ORA con i signals che hai.",
+                        })
+                        continue
+                    if explore_url in explored_urls:
+                        messages.append({"role": "assistant", "content": raw})
+                        messages.append({
+                            "role": "user",
+                            "content": "Hai gia' esplorato quell'URL. Decidi ORA.",
+                        })
+                        continue
+                    # Fetch URL secondario
+                    try:
+                        r2 = await fetch_client.get(explore_url)
+                        if r2.status_code >= 400:
+                            extra_signals = {
+                                "url": explore_url,
+                                "http_status": r2.status_code,
+                                "error": f"HTTP {r2.status_code}",
+                            }
+                        else:
+                            sub_html = r2.text
+                            sub_signals = _detect_signals(sub_html, str(r2.url))
+                            sub_signals["http_status"] = r2.status_code
+                            sub_signals["final_url"] = str(r2.url)
+                            extra_signals = sub_signals
+                    except Exception as e:
+                        extra_signals = {"url": explore_url, "error": f"{type(e).__name__}: {e}"}
+                    explored_urls.append(explore_url)
+                    messages.append({"role": "assistant", "content": raw})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Esplorazione di {explore_url} completata. Signals:\n"
+                            f"{_format_signals_compact(extra_signals)}\n\n"
+                            f"Ora decidi (esplorazioni rimaste: "
+                            f"{_MAX_EXPLORE_ITERATIONS - iteration - 1})."
+                        ),
+                    })
+                    continue
+
+                # Decisione finale
+                s = obj.get("strategy")
+                if s in _LEGACY_STRATEGY_ALIASES:
+                    s = _LEGACY_STRATEGY_ALIASES[s]
+                p = obj.get("promising")
+                result["strategy"] = s if s in _VALID_STRATEGIES else "skip"
+                result["promising"] = p if p in _VALID_PROMISING else "no"
+                result["reason"] = (obj.get("reason") or "").strip()[:500]
+                result["target_hint"] = (obj.get("target_hint") or "").strip()[:200]
+                try:
+                    result["expected_yield"] = int(obj.get("expected_yield") or 0)
+                except (TypeError, ValueError):
+                    result["expected_yield"] = 0
+                result["explored_urls"] = explored_urls
+                return result
+
+    # Fallback se loop esaurito senza decisione (caso patologico)
+    result["error"] = "Profiler exhausted iterations without decision"
+    result["reason"] = "LLM ha richiesto esplorazioni oltre il cap senza decidere"
+    return result
+
+
+def _compose_profiler_user_prompt(
+    url: str, signals: dict, objective: str | None, schema_text: str | None,
+) -> str:
+    """Compone il primo user prompt del profiler con signals della pagina."""
+    parts = [
+        f"URL analizzato: {url}",
         f"OBIETTIVO UTENTE (italiano): {(objective or '').strip()[:600] or '(non specificato)'}",
         "",
         f"SCHEMA dei dati richiesti:\n{(schema_text or '').strip()[:1000] or '(nessuno)'}",
@@ -295,87 +430,52 @@ async def profile_site(
         f"  - title: {signals.get('title')!r}",
         f"  - meta_description: {signals.get('meta_description')!r}",
         f"  - lang: {signals.get('lang')!r}",
-        f"  - html_size: {signals['html_size']} byte",
-        f"  - text_size: {signals['text_size']} byte (testo dopo strip HTML)",
-        f"  - text_to_html_ratio: {signals['text_to_html_ratio']}  "
-        "(0=JS-heavy/template, 0.05+=HTML con contenuto, 0.3+=ricco di testo)",
-        f"  - n_internal_links: {signals['n_internal_links']}",
-        f"  - n_external_links: {signals['n_external_links']}",
-        f"  - n_forms: {signals['n_forms']}, has_login_form: {signals['has_login_form']}",
-        f"  - has_signup_keywords: {signals['has_signup_keywords']}",
+        f"  - html_size: {signals.get('html_size')} byte",
+        f"  - text_size: {signals.get('text_size')} byte",
+        f"  - text_to_html_ratio: {signals.get('text_to_html_ratio')}",
+        f"  - n_internal_links: {signals.get('n_internal_links')}",
+        f"  - n_external_links: {signals.get('n_external_links')}",
+        f"  - n_forms: {signals.get('n_forms')}, has_login_form: {signals.get('has_login_form')}",
+        f"  - has_signup_keywords: {signals.get('has_signup_keywords')}",
     ]
-    if signals["top_link_patterns"]:
-        user_prompt_parts.append("\nTOP PATTERN URL nei link interni (host+path con placeholder):")
+    if signals.get("top_link_patterns"):
+        parts.append("\nTOP PATTERN URL nei link interni:")
         for p in signals["top_link_patterns"]:
             ex = p["examples"][0] if p["examples"] else ""
-            user_prompt_parts.append(f"  • {p['pattern']}  ({p['count']} URL, es. {ex})")
-    if signals["main_text_snippet"]:
-        user_prompt_parts.append(
-            f"\nESTRATTO TESTO HOME (primi 2000 char):\n{signals['main_text_snippet']}"
-        )
+            parts.append(f"  • {p['pattern']}  ({p['count']} URL, es. {ex})")
+    if signals.get("main_text_snippet"):
+        parts.append(f"\nESTRATTO TESTO (primi 2000 char):\n{signals['main_text_snippet']}")
+    return "\n".join(parts)
 
-    user_prompt = "\n".join(user_prompt_parts)
 
-    payload = {
-        "model": llm_model,
-        "messages": [
-            {"role": "system", "content": PROFILER_SYSTEM},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.0,
-        "max_tokens": 500,
-        "response_format": {"type": "json_object"},
-    }
+def _format_signals_compact(signals: dict) -> str:
+    """Versione compatta dei signals per messaggio di follow-up dopo esplorazione."""
+    if signals.get("error"):
+        return f"  - status: ERROR ({signals['error']})"
+    out = [
+        f"  - status: {signals.get('http_status')}",
+        f"  - title: {signals.get('title')!r}",
+        f"  - text_size: {signals.get('text_size')} byte",
+        f"  - text_to_html_ratio: {signals.get('text_to_html_ratio')}",
+        f"  - n_internal_links: {signals.get('n_internal_links')}",
+    ]
+    if signals.get("top_link_patterns"):
+        out.append("  - top patterns:")
+        for p in signals["top_link_patterns"][:4]:
+            ex = p["examples"][0] if p["examples"] else ""
+            out.append(f"    • {p['pattern']}  ({p['count']} URL, es. {ex})")
+    return "\n".join(out)
 
+
+def _safe_json_parse(raw: str) -> Any:
+    """Parse JSON con fallback su greedy {...} match."""
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.post(
-                f"{llm_base_url.rstrip('/')}/chat/completions",
-                json=payload,
-                headers={"Authorization": f"Bearer {llm_api_key}"},
-            )
-            r.raise_for_status()
-            data = r.json()
-            raw = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                or ""
-            ).strip()
-            result["llm_raw"] = raw[:1000]
-    except Exception as e:
-        result["error"] = f"LLM error: {type(e).__name__}: {e}"
-        result["reason"] = f"Errore LLM nel profiling: {e}"
-        return result
-
-    # parse JSON (con fallback su greedy {...})
-    obj: Any = None
-    try:
-        obj = json.loads(raw)
+        return json.loads(raw)
     except json.JSONDecodeError:
         m = re.search(r"\{[\s\S]+\}", raw)
         if m:
             try:
-                obj = json.loads(m.group(0))
+                return json.loads(m.group(0))
             except json.JSONDecodeError:
-                obj = None
-
-    if not isinstance(obj, dict):
-        result["error"] = "LLM JSON non parseable"
-        result["reason"] = f"Risposta LLM malformata: {raw[:200]!r}"
-        return result
-
-    s = obj.get("strategy")
-    if s in _LEGACY_STRATEGY_ALIASES:
-        s = _LEGACY_STRATEGY_ALIASES[s]
-    p = obj.get("promising")
-    result["strategy"] = s if s in _VALID_STRATEGIES else "skip"
-    result["promising"] = p if p in _VALID_PROMISING else "no"
-    result["reason"] = (obj.get("reason") or "").strip()[:500]
-    result["target_hint"] = (obj.get("target_hint") or "").strip()[:200]
-    try:
-        result["expected_yield"] = int(obj.get("expected_yield") or 0)
-    except (TypeError, ValueError):
-        result["expected_yield"] = 0
-
-    return result
+                pass
+    return None

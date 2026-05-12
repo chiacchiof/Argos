@@ -191,14 +191,23 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 db.update_asset_qualifier(asset_id, score, decision, notes=reason[:300])
             except Exception as e:
                 jlog(f"  ⚠️ update asset {asset_id} failed: {e}")
-            # Materializza in contacts se qualified + contatti reali
+            # Materializza in contacts se qualified + almeno un canale di contatto.
+            # Espanso rispetto alla versione precedente: ora considera anche
+            # whatsapp, sitoweb, social[] come canali validi (anche se outreach
+            # automatico via questi e' in roadmap, vedi backlog). Il dedup
+            # avviene su email -> telegram -> source_url (vedi db.upsert_contact).
             if decision == "qualified":
                 email = obj.get("email") or None
                 tg_user = obj.get("telegram") or obj.get("telegram_username") or None
                 if isinstance(tg_user, str):
                     tg_user = tg_user.lstrip("@") or None
-                # Solo se almeno UN canale reale (altrimenti niente da contattare)
-                if email or tg_user:
+                whatsapp = obj.get("whatsapp") or None
+                sitoweb = obj.get("sitoweb") or obj.get("site") or obj.get("website") or None
+                social = obj.get("social") or None
+                # Materializza se almeno UNO dei canali e' presente. Niente canali
+                # = solo asset, niente contact.
+                has_any_channel = bool(email or tg_user or whatsapp or sitoweb or social)
+                if has_any_channel:
                     try:
                         cid = db.upsert_contact({
                             "source_task_id": task["id"],
@@ -210,6 +219,9 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                             ),
                             "email": email,
                             "telegram_username": tg_user,
+                            "whatsapp": whatsapp,
+                            "sitoweb": sitoweb,
+                            "social": social,
                             "raw_json": raw_str,
                         })
                         db.update_contact_qualifier(cid, score, decision)

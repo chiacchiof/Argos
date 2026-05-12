@@ -210,7 +210,9 @@ from .url_canonical import (
 
 _DEFAULT_MAX_ITER = 30
 _DEFAULT_TARGET_PER_SITE = 30
-_UNBOUNDED_TARGET_CAP = 5000  # cap di sicurezza quando l'utente sceglie "tutti i target"
+_UNBOUNDED_TARGET_CAP = 20000  # cap di sicurezza per modalita' unbounded.
+# Alzato da 5000 a 20000 il 2026-05-11 dopo aver visto tryst.link con 32k profili
+# reali e babepedia /top100 con 21k profili. 5000 lasciava troppo sul tavolo.
 _FETCH_TIMEOUT_S = 25
 _FETCH_TEXT_PREVIEW = 2000  # caratteri da mostrare al LLM
 _FETCH_LINK_PATTERN_TOP = 12  # top-N pattern di link da mostrare al LLM
@@ -462,7 +464,11 @@ async def _run_agent_inner(
             scrolls_n = 30
             # Pattern hint: sub-domain dello stesso registrable_domain (caso piu' comune
             # per profili e simili). Fallback a "tutto il dominio" se non match.
-            pattern_hint = rf"^https?://[a-z0-9_-]+\.{re.escape(seed_reg_domain)}/?"
+            # Pattern_hint: matcha sia URL con subdomain (es. `cam.example.com`,
+            # tipico per profili camgirl, OnlyFans-like) sia senza (es. `tryst.link/escort/X`,
+            # `babepedia.com/babe/X`). Il subdomain e' OPZIONALE — non richiederlo per
+            # default era il bug che azzerava il yield su tryst/babepedia.
+            pattern_hint = rf"^https?://([a-z0-9_-]+\.)?{re.escape(seed_reg_domain)}/?"
             jlog(
                 f"🤖 Auto-discovery FORZATA (trigger: {'unbounded' if unbounded_mode else 'keyword objective'}): "
                 f"chiamo discover_via_browser({seed_url}, scrolls={scrolls_n}) PRIMA del primo turno LLM."
@@ -545,10 +551,14 @@ async def _run_agent_inner(
     api_url = f"{base_url.rstrip('/')}/chat/completions"
 
     # 4. Loop ReAct
-    async with httpx.AsyncClient(timeout=120) as llm_client, httpx.AsyncClient(
+    # llm_client = httpx (parla con OpenAI/Ollama, no anti-bot)
+    # fetch_client = HttpFetcher con TLS impersonation (parla con siti scrapati,
+    # bypassa Cloudflare e altri anti-bot)
+    from .http_fetcher import HttpFetcher as _HttpFetcher
+    async with httpx.AsyncClient(timeout=120) as llm_client, _HttpFetcher(
         timeout=_FETCH_TIMEOUT_S,
         follow_redirects=True,
-        headers={"User-Agent": settings.http_user_agent},
+        user_agent=settings.http_user_agent,
     ) as fetch_client:
         try:
             for step in range(max_steps):
@@ -1649,7 +1659,7 @@ def _build_system_prompt(
         "tutti i contatti", "tutta la lista",
     )
     matched_keywords = [k for k in infinite_scroll_keywords if k in obj_lower]
-    is_unbounded = max_targets >= 5000  # _UNBOUNDED_TARGET_CAP
+    is_unbounded = max_targets >= _UNBOUNDED_TARGET_CAP
     trigger_block = ""
     if matched_keywords or is_unbounded:
         reasons = []
@@ -1981,6 +1991,141 @@ async def _tool_fetch_page(
     return json.dumps(out, ensure_ascii=False)
 
 
+# Pattern testuali (case-insensitive) che indicano pagina vuota/placeholder/errore.
+# Cross-domain: stringhe generiche che appaiono identiche su molti siti.
+_EMPTY_PLACEHOLDER_TITLE_PATTERNS: tuple[str, ...] = (
+    "free pics, galleries",        # babepedia placeholder (slug senza dati)
+    "free sexy pics, galleries",
+    "free nude pics, galleries",
+    "page not found", "404 not found", "not found - 404",
+    "pagina non trovata", "pagina non disponibile",
+    "this page is unavailable",
+    "account suspended", "suspended profile",
+    "profilo sospeso", "profilo non disponibile",
+    "user not found", "utente non trovato",
+    "no results", "nessun risultato",
+    "access denied", "accesso negato",
+)
+
+_EMPTY_PLACEHOLDER_BODY_PATTERNS: tuple[str, ...] = (
+    "the page you requested could not be found",
+    "the page you are looking for",
+    "il profilo che stai cercando non esiste",
+    "this profile does not exist",
+    "questo profilo non esiste",
+    "this account has been suspended",
+    "questo account e' stato sospeso",
+    "404 error",
+)
+
+
+def _validate_critical_fields(obj: dict, *, raw_text: str, raw_html: str) -> dict:
+    """Post-validation anti-hallucination: per i campi critici di contatto,
+    verifica che il valore esista nel raw text/HTML. Altrimenti nullify.
+
+    Cross-domain: applicabile a qualsiasi sito + schema. Non rimuove l'asset,
+    solo i singoli campi inventati.
+
+    Regole:
+      - `email`: must appear substring (lowercase) in raw_text o raw_html
+      - `whatsapp`: cerca la sequenza di cifre piu' lunga (almeno 6) nel raw
+      - `telegram`: cerca l'handle (`@xxx` o segment dopo `t.me/`) nel raw
+      - `social[]`: ogni `url` deve apparire (sottostringa case-insensitive) nel raw_html
+    """
+    if not isinstance(obj, dict):
+        return obj
+
+    haystack_text = (raw_text or "").lower()
+    haystack_html = (raw_html or "").lower()
+
+    def _appears(needle: str) -> bool:
+        n = (needle or "").strip().lower()
+        return bool(n) and (n in haystack_text or n in haystack_html)
+
+    # email
+    email = obj.get("email")
+    if isinstance(email, str) and email.strip():
+        if not _appears(email.strip()):
+            obj["email"] = None
+
+    # whatsapp — estraggo le cifre, cerco la sequenza nel raw
+    wa = obj.get("whatsapp")
+    if isinstance(wa, str) and wa.strip():
+        digits = re.sub(r"\D", "", wa)
+        if len(digits) < 6 or (digits not in haystack_text and digits not in haystack_html):
+            obj["whatsapp"] = None
+
+    # telegram — estraggo l'handle (parte dopo @ o t.me/)
+    tg = obj.get("telegram")
+    if isinstance(tg, str) and tg.strip():
+        m = re.search(r"(?:@|t\.me/|telegram\.me/)([A-Za-z0-9_]{3,})", tg)
+        handle = m.group(1).lower() if m else tg.strip().lstrip("@").lower()
+        if not handle or (handle not in haystack_text and handle not in haystack_html):
+            obj["telegram"] = None
+
+    # social[] — ogni URL deve esistere nel HTML grezzo
+    social = obj.get("social")
+    if isinstance(social, list):
+        filtered = []
+        for s in social:
+            if not isinstance(s, dict):
+                continue
+            url_s = (s.get("url") or "").strip()
+            if not url_s:
+                continue
+            if _appears(url_s) or _appears(url_s.rstrip("/")):
+                filtered.append(s)
+        obj["social"] = filtered
+
+    # sitoweb
+    site = obj.get("sitoweb")
+    if isinstance(site, str) and site.strip():
+        if not _appears(site.strip()) and not _appears(site.strip().rstrip("/")):
+            obj["sitoweb"] = None
+
+    return obj
+
+
+def _looks_like_empty_or_placeholder(
+    title: str | None, text: str | None
+) -> str | None:
+    """Detection generica di pagina vuota / placeholder / errore. Ritorna la
+    ragione (string) se la pagina va skippata, None se sembra reale.
+
+    Logica conservativa: skippa solo con segnali forti, per evitare falsi
+    positivi che farebbero perdere dati legittimi.
+
+    Cross-domain: nessun pattern e' specifico di un sito. Funziona su qualsiasi
+    pagina che usa stringhe inglesi/italiane standard di errore.
+    """
+    title_l = (title or "").strip().lower()
+    text_l = (text or "").strip().lower()
+
+    # Segnale 1: title contiene placeholder noto
+    for pat in _EMPTY_PLACEHOLDER_TITLE_PATTERNS:
+        if pat in title_l:
+            return f"title placeholder: '{pat}'"
+
+    # Segnale 2: body contiene messaggio di errore esplicito
+    for pat in _EMPTY_PLACEHOLDER_BODY_PATTERNS:
+        if pat in text_l:
+            return f"body error pattern: '{pat}'"
+
+    # Segnale 3: body troppo corto (< 80 char) E nessun marker di contenuto reale
+    # (es. presenza di email, telefono, username, age, ecc.)
+    if len(text_l) < 80:
+        has_content_marker = any(
+            m in text_l for m in (
+                "@", "+1", "+39", "whatsapp", "telegram",
+                "age", "anni", "born", "nat", "city", "città",
+            )
+        )
+        if not has_content_marker:
+            return f"body too short ({len(text_l)} char) e senza marker di contenuto"
+
+    return None
+
+
 async def _tool_extract_target(
     url: str,
     *,
@@ -2070,6 +2215,22 @@ async def _tool_extract_target(
             False,
         )
 
+    # Pre-check pagina vuota / placeholder: skip LLM extract se la pagina
+    # e' chiaramente un fallback del sito (profilo sospeso, 404, registration wall).
+    # Risparmio token significativo su siti tipo babepedia con molti placeholder.
+    skip_reason = _looks_like_empty_or_placeholder(title_page, text)
+    if skip_reason:
+        return (
+            json.dumps({
+                "ok": False,
+                "url": url,
+                "reason": f"pre-check empty page: {skip_reason}",
+                "skipped_pre_llm": True,
+            }),
+            None,
+            False,
+        )
+
     extracted_urls.add(url)
 
     # LLM extract — riuso _llm_extract_json di runner_bulk_extract.
@@ -2116,6 +2277,16 @@ async def _tool_extract_target(
         obj = _enrich_obj_from_dom(obj, clean_html, extraction_template, source_url=url)
     except Exception as e:
         log.debug("DOM enrich failed for %s: %s", url, e)
+
+    # Post-validation anti-hallucination: per i campi critici (contatti) verifico
+    # che il valore prodotto dall'LLM esista letteralmente nel testo o HTML
+    # grezzo. Se l'LLM ha "inventato" un'email/whatsapp/telegram non presente
+    # nella pagina → nullify. Generica cross-domain, riduce hallucinations su
+    # modelli che decidono di "inferire" contatti dal slug URL o dal nome.
+    try:
+        obj = _validate_critical_fields(obj, raw_text=text, raw_html=html)
+    except Exception as e:
+        log.debug("post-validation failed for %s: %s", url, e)
 
     # Validation post-template (riusa _has_minimal_data_for)
     if not has_min_data_fn(extraction_template, obj):

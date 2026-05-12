@@ -36,6 +36,7 @@ from xml.etree import ElementTree as ET
 import httpx
 from selectolax.parser import HTMLParser
 
+from .http_fetcher import HttpFetcher
 from .pagination_detector import detect_pagination, generate_paginated_urls, PaginationInfo
 from .url_canonical import canonical_url, looks_like_service_path
 
@@ -198,7 +199,7 @@ def _extract_nav_footer_urls(html: str, base_url: str) -> list[str]:
 
 
 async def _probe_url(
-    client: httpx.AsyncClient,
+    client: HttpFetcher,
     url: str,
 ) -> dict:
     """GET veloce + analisi: status, content-length, num link, num link target.
@@ -206,10 +207,12 @@ async def _probe_url(
     Uso GET (non HEAD) perche' molti siti rispondono 405/200-vuoto a HEAD ma
     200 con corpo a GET. Cap a 2 MB per gestire siti con <head> giganti
     (es. tryst.link ha 362 KB di CSS inline prima del body).
+
+    Il `client` e' un HttpFetcher con TLS impersonation (bypassa Cloudflare).
     """
     info: dict = {"url": url, "status": None, "html_size": 0, "n_links": 0, "error": None}
     try:
-        r = await client.get(url, follow_redirects=True)
+        r = await client.get(url)
         info["status"] = r.status_code
         info["final_url"] = str(r.url)
         if r.status_code >= 400:
@@ -236,7 +239,7 @@ async def _probe_url(
 async def _probe_candidates(
     seed_origin: str,
     target_type: str,
-    client: httpx.AsyncClient,
+    client: HttpFetcher,
     extra_urls: Iterable[str] = (),
 ) -> list[dict]:
     """Testa candidati canonici + extra (es. nav/footer links), in parallelo.
@@ -358,7 +361,7 @@ def _pick_best_candidate(
 async def _fetch_sitemap_urls_for_seed(
     seed_origin: str,
     target_hints: Iterable[str],
-    client: httpx.AsyncClient,
+    client: HttpFetcher,
 ) -> list[str]:
     """Legge robots.txt + sitemap.xml (e indici) per estrarre URL del target."""
     hints_t = tuple(target_hints) if target_hints else ()
@@ -367,7 +370,7 @@ async def _fetch_sitemap_urls_for_seed(
     # 1. Trova URL dei sitemap (robots.txt + fallback)
     sitemap_locations: list[str] = []
     try:
-        r = await client.get(seed_origin.rstrip("/") + "/robots.txt", follow_redirects=True)
+        r = await client.get(seed_origin.rstrip("/") + "/robots.txt")
         if r.status_code == 200:
             for ln in r.text.splitlines():
                 ln = ln.strip()
@@ -389,7 +392,7 @@ async def _fetch_sitemap_urls_for_seed(
             continue
         seen_sitemaps.add(sm_url)
         try:
-            r = await client.get(sm_url, follow_redirects=True)
+            r = await client.get(sm_url)
             if r.status_code != 200:
                 continue
             body = r.text
@@ -471,8 +474,8 @@ async def recon_site(
     target_hints = SITEMAP_TARGET_HINTS.get(target_type, ())
     seed_orig = _origin(seed_url)
 
-    async with httpx.AsyncClient(
-        headers={"User-Agent": user_agent},
+    async with HttpFetcher(
+        user_agent=user_agent,
         timeout=timeout,
         follow_redirects=True,
     ) as client:
@@ -548,7 +551,11 @@ async def recon_site(
         # e itera direttamente le pagine.
         pag = best.get("pagination")
         if pag and isinstance(pag, PaginationInfo) and pag.has_pagination:
-            n_pages = min(pag.estimated_pages, 200)  # cap difensivo
+            # Cap difensivo: coprire fino a 2000 pagine paginate (= ~50k profili
+            # a 25/pagina), oltre questo costa memoria senza beneficio reale.
+            # Il runner downstream rispetta comunque target_cap_per_site del task,
+            # quindi non itera oltre il necessario.
+            n_pages = min(pag.estimated_pages, 2000)
             paged_urls = generate_paginated_urls(
                 result.best_seed_url,
                 n_pages,

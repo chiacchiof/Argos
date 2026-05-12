@@ -342,7 +342,10 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 jlog(f"  RECON: sitemap ha {recon.sitemap_urls_total} URL del target (non ancora usati dal runner)")
             if recon.prepopulated_urls:
                 # Filtra eventuali URL bloccati e capping a 200 per il sub-runner
-                prepop_urls = [u for u in recon.prepopulated_urls if not _is_blocked(u)][:200]
+                # Cap match con site_recon (2000): copre directory grandi senza
+                # esplodere memoria. target_cap_per_site del task ferma comunque
+                # l'estrazione molto prima del cap di pagine se basta.
+                prepop_urls = [u for u in recon.prepopulated_urls if not _is_blocked(u)][:2000]
                 if prepop_urls:
                     jlog(f"  RECON: {len(prepop_urls)} URL pre-popolati pronti per runner (paginazione/sitemap)")
 

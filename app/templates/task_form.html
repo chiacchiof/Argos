@@ -274,9 +274,14 @@
         function sync() {
           if (chk.checked) {
             inp.value = 0;
-            inp.disabled = true;
+            // readonly invece di disabled: gli input disabled NON vengono inviati col form,
+            // quindi il valore 0 (unbounded) andrebbe perso al save. readonly mantiene
+            // il submit ma blocca l'editing.
+            inp.readOnly = true;
+            inp.style.background = '#f0f0f0';
           } else {
-            inp.disabled = false;
+            inp.readOnly = false;
+            inp.style.background = '';
             if (parseInt(inp.value || '0', 10) <= 0) inp.value = 30;
           }
         }

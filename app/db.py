@@ -395,6 +395,18 @@ def init_db() -> None:
         wcols = {r["name"] for r in con.execute("PRAGMA table_info(workflows)").fetchall()}
         if "disabled" not in wcols:
             con.execute("ALTER TABLE workflows ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
+
+        # contacts: aggiungi canali secondari (whatsapp, sitoweb, social_json).
+        # Permette materializzazione di profili con SOLO social/whatsapp anche
+        # senza email/telegram. Outreach automatico via questi canali ancora
+        # non implementato (vedi backlog: outreach via Playwright per social DM).
+        ccols = {r["name"] for r in con.execute("PRAGMA table_info(contacts)").fetchall()}
+        if "whatsapp" not in ccols:
+            con.execute("ALTER TABLE contacts ADD COLUMN whatsapp TEXT")
+        if "sitoweb" not in ccols:
+            con.execute("ALTER TABLE contacts ADD COLUMN sitoweb TEXT")
+        if "social_json" not in ccols:
+            con.execute("ALTER TABLE contacts ADD COLUMN social_json TEXT")
         # Indici su workflow_edges (creati qui dopo che workflow_id esiste sicuramente)
         con.execute("CREATE INDEX IF NOT EXISTS idx_workflow_edges_from ON workflow_edges(from_task_id, enabled)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflow_id)")
@@ -1051,11 +1063,24 @@ def upsert_contact(data: dict[str, Any]) -> int:
     """Insert o update by (email, telegram_username) per evitare duplicati. Ritorna id.
 
     Accetta sia 'source_task_id' (nuovo) sia 'source_project_id' (legacy alias).
+    Supporta anche canali secondari (whatsapp, sitoweb, social_json) — quando
+    presenti senza email/telegram, dedup avviene per `source_url`.
     """
+    import json as _json
     ts = now_iso()
     email = (data.get("email") or "").strip().lower() or None
     tg_user = (data.get("telegram_username") or "").strip().lstrip("@").lower() or None
+    whatsapp = (data.get("whatsapp") or "").strip() or None
+    sitoweb = (data.get("sitoweb") or "").strip() or None
+    social = data.get("social")
+    if isinstance(social, list) and social:
+        social_json = _json.dumps(social, ensure_ascii=False)
+    elif isinstance(social, str) and social.strip():
+        social_json = social.strip()
+    else:
+        social_json = None
     source_task = data.get("source_task_id") or data.get("source_project_id")
+    source_url = data.get("source_url")
     with connect() as con:
         existing = None
         if email:
@@ -1066,6 +1091,13 @@ def upsert_contact(data: dict[str, Any]) -> int:
             existing = con.execute(
                 "SELECT id FROM contacts WHERE LOWER(telegram_username) = ? LIMIT 1",
                 (tg_user,),
+            ).fetchone()
+        if not existing and source_url:
+            # Fallback dedup per source_url: necessario per profili con solo
+            # social/whatsapp/sitoweb (no email/tg) che altrimenti verrebbero
+            # ri-inseriti ad ogni run del qualifier.
+            existing = con.execute(
+                "SELECT id FROM contacts WHERE source_url = ? LIMIT 1", (source_url,)
             ).fetchone()
         if existing:
             cid = int(existing["id"])
@@ -1079,6 +1111,9 @@ def upsert_contact(data: dict[str, Any]) -> int:
                   display_name      = COALESCE(?, display_name),
                   email             = COALESCE(?, email),
                   telegram_username = COALESCE(?, telegram_username),
+                  whatsapp          = COALESCE(?, whatsapp),
+                  sitoweb           = COALESCE(?, sitoweb),
+                  social_json       = COALESCE(?, social_json),
                   raw_json          = COALESCE(?, raw_json),
                   updated_at        = ?
                 WHERE id = ?
@@ -1091,6 +1126,9 @@ def upsert_contact(data: dict[str, Any]) -> int:
                     data.get("display_name"),
                     email,
                     tg_user,
+                    whatsapp,
+                    sitoweb,
+                    social_json,
                     data.get("raw_json"),
                     ts,
                     cid,
@@ -1102,8 +1140,9 @@ def upsert_contact(data: dict[str, Any]) -> int:
             INSERT INTO contacts
             (source_task_id, source_job_id, source_url, source_domain,
              display_name, email, telegram_username, telegram_chat_id,
+             whatsapp, sitoweb, social_json,
              raw_json, status, qualifier_score, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_task,
@@ -1114,6 +1153,9 @@ def upsert_contact(data: dict[str, Any]) -> int:
                 email,
                 tg_user,
                 data.get("telegram_chat_id"),
+                whatsapp,
+                sitoweb,
+                social_json,
                 data.get("raw_json"),
                 data.get("status") or "new",
                 data.get("qualifier_score"),

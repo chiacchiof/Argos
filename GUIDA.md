@@ -1720,12 +1720,46 @@ L'app fornisce gli strumenti tecnici. La conformità legale e l'etica sono respo
 
 Lista esplicita di cosa **non funziona oggi** (limiti reali, non bug) e di **cosa servirebbe** per espandere il framework. Per ogni voce: **cosa**, **perché**, **come implementarlo**. Pensata come roadmap quando si riprende il lavoro.
 
+### 14.0 Stato dopo i fix del 2026-05-11
+
+Round di fix corposo applicato dopo aver fatto girare il workflow `Like3` (3 siti: tryst.link / babepedia / trovagnocca) e averne osservato i bottleneck reali.
+
+**Fix applicati**:
+
+| Fix | Cosa risolve | File chiave |
+|---|---|---|
+| **`app/agent/blocked_domains.py`** | Policy gate centralizzato per domini vietati (es. `mondocamgirl.com`/`mondocamgirls.com`/`camlive.com`). Applicato all'inizio di **tutti i runner** (`site_explorer`, `bulk_extract`, `browser_use`, `auto_extract`). | nuovo + integrazione in 4 runner |
+| **`app/agent/site_recon.py`** | Stage preliminare al profiler: probe URL canonici per `target_type` + sitemap.xml + nav/footer extraction → promuove il seed alla "directory page" reale (es. `tryst.link/` → `tryst.link/escorts`). | nuovo modulo |
+| **`app/agent/pagination_detector.py`** | Regex per "Listing 32710 profiles, page 1 of 1363" + anchor `?page=N`. Genera URL paginati pre-popolati (cap 2000) → site_explorer salta auto-discovery e itera direttamente la directory. | nuovo modulo |
+| **`app/agent/http_fetcher.py` + `curl_cffi`** | TLS fingerprint impersonation (Chrome120). Bypassa Cloudflare livello base/medio. Babepedia da SEMPRE 403 → 200 con 236 link `/babe/{slug}` su `/top100`. | nuovo + integrazione in `site_recon`, `site_profiler`, `runner_site_explorer` |
+| **Browser_use system prompt rigido** | REGOLA #1 (WRONG vs CORRECT) per forzare `extract_structured_data` come tool call invece di Memory text. + Anti-loop "non ripetere stesso click 3×". | `runner_browseruse.py:OPERATIONAL_PREAMBLE` |
+| **Browser_use early-stop su Memory stuck** | Hash MD5 della Memory dell'agent; se identica per 8 step consecutivi → `control_signal=stop` graceful. Stoppa loop di failure dichiarato. | `_make_incremental_flush_callback` |
+| **Browser_use flush incrementale** | Ogni 3 step salva `history.extracted_content()` su `profiles.jsonl`. Sopravvive a kill brusco. | `runner_browseruse.py` |
+| **Browser_use markdown parser fallback** | Quando l'agent estrae "in Memory" come prosa, fallback regex per recuperare campi `**Field:** value`. | `_parse_markdown_profile` |
+| **Profiler explore-loop** | Profiler può chiedere `{"action":"explore","url":...}` per fetchare 2 URL extra prima di decidere strategia (replica leggera di tool-calling). | `site_profiler.py` |
+| **`_pick_best_candidate` paginazione-first** | Tra candidati directory, preferisce quello con paginazione visibile (es. `/escorts` 1364 pagine > `/au/escorts/melbourne` 4 pagine). | `site_recon.py` |
+| **Pattern hint subdomain opzionale** | Bug pre-esistente: `_run_agent_inner` aveva regex `[a-z]+\.<dom>` che scartava `tryst.link/escort/X` (no subdomain). Ora `([a-z]+\.)?<dom>`. | `runner_site_explorer.py:465` |
+| **Watchdog query SQL semplificata** | Vecchia query non vedeva sub-job di `auto_extract` (workflow_run_id=NULL, task_id=from_task). Falsi stalli. Ora cattura tutti i job correlati per `id >= MIN`. | `scripts/watchdog_workflow.py` |
+| **DB schema: colonne `disabled`** | Su `tasks` e `workflows`. Toggle button nelle list view. Gate in `start_job`/`start_workflow`. | `db.py`, `jobs.py`, route + template |
+| **Fix UI: `target_cap_per_site=0` non salvava** | JS faceva `inp.disabled=true` quando checkbox unbounded → input non inviato col form. Cambiato a `readOnly=true`. | `task_form.html` |
+| **Cap pagination/prepopulated 200 → 2000** | Tryst.link ha 1364 pagine reali; 200 era troppo restrittivo. | `site_recon.py`, `pagination_detector.py`, `runner_auto_extract.py` |
+
+**Risultati misurati** su workflow `Like3` (cap=30, 3 siti):
+
+| Run | Provider | Tryst | Babepedia | Trovagnocca | Tot DB | Costo |
+|---|---|---|---|---|---|---|
+| #16 (baseline) | gpt-4o-mini | 4 | 0 | 0 | 4 | $0.20 |
+| #69 (con recon+pagination, cap=100) | gpt-4o-mini | 100 | 0 | 0 | 100 | $0.55 |
+| **#77 (con tutti i fix, cap=30, Qwen 30b locale)** | **qwen3-coder:30b** | **30** | **10** 🆕 | **0** | **40** | **~$0.20** (solo browser_use trovagnocca) |
+
+Babepedia da SEMPRE 0 → 10 profili reali (Charlotte, Ollessia, XStacy Milam, Elizabeth Ruiz, ...). Conferma che `curl_cffi` ha sbloccato il sito.
+
 ### 14.1 Limiti tecnici noti (oggi)
 
-**1) Cloudflare / anti-bot aggressivi** — `Annunci69.it`, parte di LinkedIn, Akamai-protected
-- **Cosa**: i siti che usano sfide JS attive (interstitial "checking your browser..."), fingerprinting browser, bot management Akamai/Cloudflare → falliscono sia in `site_explorer` (HTTP) sia in `browser_use` (Chromium standard).
-- **Perché serve**: oggi questi siti vengono saltati o danno 0 estrazioni. Per lead gen B2B vasta, l'esclusione di LinkedIn/Indeed/Glassdoor è limitante.
-- **Come**: integrare `playwright-stealth` (`pip install playwright-stealth`) nel modulo `url_discovery_browser.py` e in `runner_browseruse.py` (intercetta navigator.webdriver, plugins, languages). Aggiungere supporto **residential proxy** rotativo (Bright Data, IPRoyal) come param task `proxy_url`. Per Cloudflare Turnstile/captcha, integrazione 2captcha API. Stima: 4-8h + costo proxy (~$10-50/mese per uso moderato).
+**1) Cloudflare / anti-bot aggressivi** — Annunci69.it, parte di LinkedIn, Akamai-protected, **trovagnocca.com**
+- **Status 2026-05-11**: livello base/medio Cloudflare **risolto** via `curl_cffi` TLS impersonation (vedi §14.0). Babepedia che dava sempre 403 ora restituisce 200. **Restano** i siti con JS challenge attivo (Cloudflare Turnstile) — es. trovagnocca rimane bloccato anche con TLS impersonation + browser_use Playwright standard.
+- **Cosa rimane**: siti che richiedono superamento di un challenge interactivo (Turnstile, hCaptcha) → falliscono `site_explorer` (HTTP) e anche `browser_use` (Chromium senza stealth).
+- **Come**: in roadmap → `playwright-stealth` (in arrivo nel prossimo blocco, gratis). Per Cloudflare Enterprise / WAF custom serve **residential proxy** rotativo (Bright Data, IPRoyal, ~$10-50/mese) e/o 2captcha API. Stima: 2-4h (solo stealth) + costo eventuale.
 
 **2) Login wall** — Instagram, Facebook profili privati, marketplace con auth
 - **Cosa**: niente gestione credenziali, niente sessione persistente.
@@ -1747,15 +1781,12 @@ Lista esplicita di cosa **non funziona oggi** (limiti reali, non bug) e di **cos
 - **Perché**: tante false estrazioni di pagine di sistema su siti internazionali → inflaziona il count + sporca il qualifier.
 - **Come**: aggiungere multi-lingua. Strutturare in `LANG_SERVICE_TOKENS = {"de": [...], "fr": [...], "ja": [...]}` e auto-detection lingua dal `<html lang="">` o `<meta http-equiv="Content-Language">` al primo fetch. Stima: 1h se basta espandere lista; 3h se aggiungiamo auto-detection.
 
-**6) Pattern hint hardcoded a sub-domain in auto-discovery** — siti con `/product/<id>` non gestiti automaticamente
-- **Cosa**: in `_run_agent_inner` quando scatta l'auto-discovery FORZATA, il `pattern_hint` è `^https?://[a-z0-9_-]+\.<reg_domain>/?` (sub-domain). Va bene per cam, social personal, ma non per e-commerce con `/product/<int>`.
-- **Perché**: su siti tipo `shop.tld/product/12345`, `discover_via_browser` raccoglie troppi URL irrilevanti (navigation, blog, ecc.) e il dedup canonical non basta.
-- **Come**: nel ramo auto-discovery FORZATA, fare prima un `fetch_page` programmatico, identificare il pattern target più frequente (riusare `_group_urls_by_pattern`), e passare al `discover_via_browser` un `pattern_hint` derivato dal pattern dominante. Stima: 30 min.
+**6) Pattern hint hardcoded a sub-domain in auto-discovery** — ✅ **RISOLTO 2026-05-11**
+- Status: regex cambiata da `[a-z]+\.<dom>` (subdomain obbligatorio) a `([a-z]+\.)?<dom>` (subdomain opzionale). Ora siti come `tryst.link/escort/X`, `babepedia.com/babe/X` passano il filtro. Non serve più hardcoded.
 
-**7) Cap unbounded hardcoded a 5000** — mega-siti con >5000 profili
-- **Cosa**: `_UNBOUNDED_TARGET_CAP = 5000` cap interno di sicurezza. Anche con `target_cap_per_site=0`, il runner si ferma a 5000.
-- **Perché**: directory grandi (Eventbrite, Booking) possono avere 50.000+ target. Oggi serve un task per "slice" (es. per città).
-- **Come**: rendere il cap configurabile per-task (es. campo `safety_cap` separato da `target_cap_per_site`). Oppure abilitare modalità "true unbounded" che richiede conferma esplicita nel form (checkbox "ho letto i rischi di costo"). Stima: 1h.
+**7) Cap unbounded hardcoded** — parzialmente risolto
+- **Cosa**: `_MAX_TARGETS = 5000` cap interno di sicurezza in `site_explorer`. Da alzare a 20000 nel prossimo blocco di fix per coprire siti tipo tryst.link (32k profili reali) o Eventbrite/Booking.
+- **Come**: già pianificato — 1 riga in `runner_site_explorer.py`.
 
 **8) Queue persistita per task, non per workflow** — un solo `_pending_queue.json` per task_id
 - **Cosa**: se hai due workflow che usano lo stesso task come entry-point, condividono la queue.
@@ -1776,6 +1807,31 @@ Lista esplicita di cosa **non funziona oggi** (limiti reali, non bug) e di **cos
 - **Cosa**: ogni run scrive `profiles.jsonl` + `report.md` + eventuali sub-dir browser_use. Mai cancellati.
 - **Perché**: dopo 50 run su 5 task, `data/results/` può occupare GB.
 - **Come**: TTL configurabile per task (es. `keep_runs=5` mantiene solo le 5 più recenti). Cron job che pulisce dir più vecchie di N giorni. Stima: 1h.
+
+**12) Hallucinations residue LLM** — ~5% campi inventati (osservato su Qwen3-coder:30b)
+- **Cosa**: nei test, Qwen ha popolato `page_title="Asstyn Martyn - Escort"` quando il testo grezzo non lo conteneva (l'ha dedotto dall'URL slug). Mitigato in parte da gpt-4o-mini ma anche lui invented `crawled_at` come stringa fissa.
+- **Perché**: su volumi grandi (5000+ profili) gli errori si accumulano e sporcano il qualifier.
+- **Come**: post-validation per i campi critici (`email`, `whatsapp`, `telegram`) — verificare che il valore prodotto dall'LLM esista letteralmente nel testo grezzo (regex). Se non c'è → null. Stima: 1h. Pianificato per il prossimo blocco.
+
+**13) Browser_use estrae "in Memory" invece che tramite `extract_structured_data`** — gpt-4o-mini ignora il tool
+- **Cosa**: nei run reali con gpt-4o-mini, l'agent browser_use scrive in Memory "Extracted profiles: A, B, C" ma NON chiama il tool. Risultato: `history.extracted_content()` ritorna 0 blocchi → niente salvataggio in DB nonostante il modello dichiari di aver estratto.
+- **Perché**: 11 profili dichiarati in Memory persi nel run #71. Mitigato in parte dal markdown parser fallback ma è weak quando l'output è prosa narrativa.
+- **Come**: prompt rigidato con REGOLA #1 (vedi §14.0). Da testare se Qwen3-coder rispetta meglio. Possibile inject mid-run di reminder "USA IL TOOL" se Memory parla di estrazione ma history è vuota. Stima: 2h.
+
+**14) Auto-discovery Playwright yield basso** — vede meno link di curl_cffi
+- **Cosa**: `discover_via_browser` su tryst.link Melbourne ha trovato 5 URL totali, `curl_cffi.get` lo stesso URL ne mostra 88. Differenza ~17×.
+- **Perché**: probabile timing del `page.evaluate('document.querySelectorAll(\"a[href]\")')` chiamato prima di `networkidle`. L'HTML render del browser non è completo quando estraiamo gli href.
+- **Come**: in `app/agent/url_discovery_browser.py`, aggiungere `await page.wait_for_load_state('networkidle')` dopo gli scroll. Comunque oggi bypassato perché recon+pagination prepopola la queue senza scroll. Stima: 1h.
+
+**15) Profili "vuoti" sito-side** — placeholder generici (es. babepedia 6/10 con title "Free pics, galleries...")
+- **Cosa**: alcuni profili mostrano template fallback invece dei dati reali (probabili profili sospesi/incompleti).
+- **Perché**: l'estrazione LLM li salva comunque come asset con `title` generico, inflazionando il DB.
+- **Come**: pre-check title pattern prima di chiamare l'extract LLM — se title matcha "Free pics, galleries", "Profile not found", "Sospeso", ecc. → skip. Risparmio 30-50% token su siti tipo babepedia. Stima: 1h. Pianificato per il prossimo blocco.
+
+**16) Processing seriale dei siti dentro auto_extract** — 3 siti in serie
+- **Cosa**: il `for site_url in sites` di `runner_auto_extract.py` processa i siti uno alla volta. Su workflow unbounded con 3 siti × 8h ciascuno = 24h totali.
+- **Perché**: triplichiamo i tempi rispetto a una pipeline parallela.
+- **Come**: `asyncio.gather(*[process_site(s) for s in sites])` con semaphore per limitare VRAM. Da valutare se la RTX 4090 regge 3 sub-runner Qwen simultanei. Stima: 4h (incluso test concorrenza GPU). **Decisione esplicita dell'utente**: NON fare ora — preferisce serial con throughput stabile.
 
 ### 14.2 TODO architetturali (espansioni grosse)
 
@@ -1836,6 +1892,107 @@ Lista esplicita di cosa **non funziona oggi** (limiti reali, non bug) e di **cos
 - **WhatsApp Cloud API**: Meta richiede business verification + costi/messaggio per single-user. Sostituibile con WhatsApp Web automation via browser (fragile) o evitare.
 - **Crawling JavaScript-rendered con headless browser fisso**: già coperto da `browser_use` quando serve. Tenere un Chromium "always-on" sprecherebbe RAM.
 - **Auto-translation dei messaggi**: out-of-scope. L'utente può comporre messaggi in lingue diverse via template manuale.
+
+---
+
+## 15. Limiti del tool e come potenziarlo (sintesi operativa)
+
+Sezione consolidata pensata per dare uno sguardo veloce sui limiti **reali** del framework dopo i fix di maggio 2026 e sulle direzioni di potenziamento più sensate. È il complemento alla §14 (più dettagliata).
+
+### 15.1 Cosa funziona bene oggi (post-fix 2026-05-11)
+
+✅ **Recon automatico** del seed URL: promuove `home/` a directory paginata reale (es. `tryst.link/` → `tryst.link/escorts`, 1364 pagine).
+
+✅ **Pagination expansion**: legge "Listing 32710 profiles, page 1 of 1363" e genera direttamente gli URL paginati `?page=1..N` (cap 2000 di sicurezza).
+
+✅ **Anti-bot livello base/medio** (Cloudflare TLS check): bypassato con `curl_cffi` + `Chrome120` TLS fingerprint impersonation. **Babepedia** che dava sempre 403 ora risponde 200.
+
+✅ **Pre-check pagine vuote**: prima di chiamare l'LLM extract, regex sui placeholder ("Free pics, galleries", "Page not found", "Suspended", ecc.) → risparmio 30-50% token su siti con molti profili placeholder.
+
+✅ **Post-validation anti-hallucination**: i campi `email`/`whatsapp`/`telegram`/`social` prodotti dall'LLM vengono validati contro il testo grezzo della pagina. Se l'LLM li ha "inventati" → nullify.
+
+✅ **Materializzazione canali estesi**: i contacts ora sopravvivono anche con solo `whatsapp`/`sitoweb`/`social[]` (non più solo email/telegram).
+
+✅ **LLM locale Qwen 30b** su RTX 4090 a costo **$0** (~7-8 profili/min). Workflow lungo (1000+ profili) costa $0 invece di $50.
+
+✅ **Watchdog stabile**: query SQL aggregata vede tutti i sub-job auto_extract; trigger yield-fail dopo 50 ⛔ consecutivi senza ✅.
+
+### 15.2 Limiti reali oggi — cose che NON funzionano
+
+| # | Limite | Impatto | Causa tecnica |
+|---|---|---|---|
+| L1 | **Cloudflare Turnstile JS challenge** | Siti come trovagnocca.com restano 403 anche con `curl_cffi` + `playwright-stealth` headless | Il challenge richiede esecuzione JS valida + cookie sessione + IP non-datacenter |
+| L2 | **Pagination_detector cattura anchor di paginatori non legati al seed** | Babepedia: l'anchor `?page=869` di un paginatore ALTRO viene attribuito a `/top100` → 869 URL fantasma → 0 estrazioni | Regex non distingue da quale path proviene l'anchor `?page=N` |
+| L3 | **Browser_use estrae "in Memory" invece che via tool** | gpt-4o-mini su browser_use a volte ignora il prompt rigido REGOLA #1 e dichiara estrazioni in Memory senza chiamare `extract_structured_data` → 0 dati salvati | Modello LLM-specifico; il markdown parser fallback aiuta solo se il modello produce campi strutturati |
+| L4 | **Hallucinations residue LLM** (~5% su Qwen 30b) | Campi tipo `page_title` inventati dall'URL slug invece che dal testo. Mitigato per i campi critici dalla post-validation (Fix 3) | Comportamento LLM intrinseco |
+| L5 | **Cap interno 20000 profili/sito** | Mega-siti (50k+) richiedono task per "slice" (es. una città / sezione alla volta) | Hardcoded `_UNBOUNDED_TARGET_CAP` in site_explorer |
+| L6 | **Processing seriale dei siti in auto_extract** | 3 siti × 8h ciascuno = 24h totali; parallelizzando si ridurrebbe a 8h | `for site_url in sites:` non concorrente |
+| L7 | **Outreach automatico solo via Email/Telegram** | Profili con solo WhatsApp/Sitoweb/Social rimangono "contattabili manualmente" — il framework non ha task per inviare DM social o messaggi WA | Mancano runner `outreach_social`, `outreach_whatsapp` |
+| L8 | **Profili "vuoti" sito-side** (placeholder generici) | Su babepedia ~60% dei profili top mostrano "Free pics, galleries..." invece di dati. Estratti come asset ma utility bassa | Comportamento del sito, non bug nostro. Pre-check skippa solo i casi più ovvi |
+| L9 | **Auto-discovery Playwright yield basso** | Su tryst.link Melbourne 5 URL vs 88 di curl_cffi | Probabile timing del `querySelectorAll` prima di `networkidle` (mitigato col fix wait_for_load_state) |
+| L10 | **No de-dup semantico** | Lo stesso profilo su URL canonical diversi (mirror, alias) viene salvato 2 volte | Dedup solo per URL canonical, no embedding similarity |
+
+### 15.3 Come potenziarlo — strategie pratiche ranked
+
+Le strategie sono ordinate per **rapporto impatto/sforzo** considerando lo stato attuale (post-fix 2026-05-11). Per ogni una: cosa risolve, sforzo stimato, eventuale costo aggiuntivo.
+
+#### 🟢 Easy wins (sforzo basso, impatto immediato)
+
+1. **Fix L2 — pagination_detector path-aware** (1h, sforzo trivial)
+   - Filtrare anchor `?page=N` per path coincidente col seed → babepedia/top100 troverà 1 pagina reale, non 869 fantasma. Sblocca babepedia con cap=1000.
+
+2. **Alzare cap interno (L5)** da 20000 a 50000 (5 min)
+   - Riga unica in `runner_site_explorer.py:_UNBOUNDED_TARGET_CAP`. Solo se servono mega-site come Eventbrite.
+
+3. **Pulizia visuale UI canali** (FATTO 2026-05-11)
+   - Colonna "Canali" in `/inbox/contacts` con icone + legenda + score color-coded.
+
+#### 🟡 Medium effort (1-2 giorni, impatto significativo)
+
+4. **Outreach via Playwright per social DM (L7)** ([sezione I del backlog](memory))
+   - Runner `outreach_social` apre Instagram/Twitter/TikTok con session cookie persistito, naviga al profilo, invia DM.
+   - Rate limit 5-15 DM/giorno per piattaforma (sotto soglie anti-spam).
+   - Rischio: account social possono essere bannati. Conviene account dedicati, non personali.
+   - Costo: $0 ma rischio operativo.
+
+5. **WhatsApp Business via Twilio** (L7)
+   - Outreach automatico verso campi `whatsapp` dei contacts.
+   - Costo: $0.05/msg circa, compliant, no ban risk.
+   - Stima: 1 giorno per il task runner + setup Twilio.
+
+6. **Parallelizzare i siti in auto_extract (L6)**
+   - `asyncio.gather` con semaphore per i 3 sub-runner. -67% tempo workflow.
+   - Da testare se RTX 4090 regge 3 Qwen simultanei (potrebbe richiedere quantizzazione più aggressiva).
+   - Stima: 4h + test.
+
+#### 🔴 Hard / con dipendenze esterne (settimane + $)
+
+7. **Bypass Cloudflare Turnstile (L1)**
+   - Strategia 1: **playwright-stealth + browser headed** (no headless). Riduce detection ma richiede schermo visibile = no remote/cron.
+   - Strategia 2: **Residential proxy** (Bright Data, IPRoyal, ~$10-50/mese per uso moderato).
+   - Strategia 3: **2captcha API** ($1-3 per 1000 captcha) per Turnstile interactive.
+   - Strategia 4: combinare tutte e 3 (massima efficacia, massimo costo).
+   - Stima: 1 settimana + $20-50/mese.
+
+8. **Embeddings dedup (L10)**
+   - Tabella `asset_embeddings` con vettore sentence-transformer del titolo/testo. Cosine similarity per detection di duplicati cross-URL.
+   - Stima: 3-4 giorni.
+
+9. **Hunter.io / Apollo.io integration** per email-finder reverse
+   - Da un profilo (display_name + dominio) cercare l'email pubblica via API esterna. Aumenta coverage email outreach.
+   - Costo: $50-200/mese starter plan.
+   - Stima: 2 giorni.
+
+### 15.4 Comportamento attuale (riferimento) misurato sul workflow `Like3`
+
+| Run | Cap | Tryst | Babepedia | Trovagnocca | Costo | Tempo |
+|---|---|---|---|---|---|---|
+| Baseline (mar 2026) | — | 4 | 0 | 0 | $0.20 | 10 min |
+| Post recon+pagination (mag 2026) | 100 | 100 | 0 | 0 | $0.55 | 20 min |
+| Post Qwen+stealth+curl_cffi (#77) | 30 | 30 | 10 | 0 | $0.20 | 30 min |
+| **Post fix completi (#21)** | **1000** | **1000** | 0 | 0 | **$0.10** | 2h17min |
+
+**Crescita coverage**: 4 → 1000 (250×). **Crescita costo per profilo**: $0.05 → $0.0001 (500× più economico). Trovagnocca + Babepedia sono i bottleneck residui (vedi L1, L2).
 
 ---
 

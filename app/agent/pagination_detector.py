@@ -168,7 +168,7 @@ def generate_paginated_urls(
     max_page: int,
     *,
     start_page: int = 1,
-    cap: int = 500,
+    cap: int = 2500,
     param: str = "page",
     style: str = "query",
 ) -> list[str]:
