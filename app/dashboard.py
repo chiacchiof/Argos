@@ -189,10 +189,14 @@ def compute_dashboard(job_id: int) -> dict[str, Any] | None:
 
     is_active = status in ("queued", "running", "paused") and runner_alive
 
+    from .agent.runner_control import MODES_SUPPORTING_PAUSE
+    agent_mode = (task or {}).get("agent_mode") or ""
     return {
         "job_id": job["id"],
         "task_id": job["task_id"],
         "task_name": task["name"] if task else "",
+        "agent_mode": agent_mode,
+        "pause_supported": agent_mode in MODES_SUPPORTING_PAUSE,
         "status": status,
         "health": health,
         "is_active": is_active,

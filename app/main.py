@@ -15,6 +15,7 @@ from .routes import orchestrator as orchestrator_routes
 from .routes import results as results_routes
 from .routes import settings as settings_routes
 from .routes import site_memory as site_memory_routes
+from .routes import social_accounts as social_accounts_routes
 from .routes import tasks as tasks_routes
 from .routes import workflows as workflows_routes
 
@@ -46,6 +47,7 @@ app.include_router(workflows_routes.router)
 app.include_router(orchestrator_routes.router)
 app.include_router(assets_routes.router)
 app.include_router(site_memory_routes.router)
+app.include_router(social_accounts_routes.router)
 
 
 def run() -> None:

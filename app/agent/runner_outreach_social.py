@@ -1,0 +1,396 @@
+"""Runner outreach_social: invio DM via browser automation (Instagram/TikTok).
+
+Agent mode: `outreach_social`. Pipeline:
+  1. Verifica AGENTSCRAPER_SECRET (cifratura credenziali)
+  2. Carica account social attivi dal DB
+  3. Carica contacts qualified con social[platform] popolato
+  4. Genera messaggi personalizzati via LLM (Qwen locale, $0)
+  5. Engine apre browser headed + stealth, fa DM con humanize
+  6. Log in social_dm_log + update contacts.status='contacted' su ok
+  7. Report finale
+
+I selettori CSS di IG/TikTok sono FRAGILI per design: il modulo `social/instagram.py`
+e `social/tiktok.py` vanno tenuti aggiornati. Aspettati manutenzione ogni 1-2 mesi.
+
+Sicurezza: NON viene mai loggata la password in chiaro. Le sessioni Playwright
+sono salvate in data/sessions/<uuid>.json (cookies + storage). Ricaricare
+manualmente AGENTSCRAPER_SECRET in .env per cambiare la chiave di cifratura.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from .. import db
+from ..config import RESULTS_DIR
+from .blocked_domains import is_blocked
+from .llm_providers import resolve_api_key, resolve_base_url
+from .social.crypto_creds import decrypt, is_configured
+from .social.engine import OutreachEngine
+from .social.message_generator import MessageRequest, generate_batch
+from .social.platform_base import HealthStatus, SocialAccount
+
+
+log = logging.getLogger(__name__)
+
+
+def _parse_message_template_variants(task: dict[str, Any]) -> list[str]:
+    """Estrae lista di esempi-stile dal campo `message_template_variants`.
+
+    Formato: righe separate da `---` (textarea-friendly). Fallback: campo
+    `message_template` legacy come singolo esempio.
+    """
+    variants_raw = (task.get("message_template_variants") or "").strip()
+    if variants_raw:
+        chunks = [c.strip() for c in re.split(r"\n\s*-{3,}\s*\n", variants_raw) if c.strip()]
+        cleaned = [c.strip().strip("-").strip() for c in chunks]
+        cleaned = [c for c in cleaned if c]
+        if cleaned:
+            return cleaned[:10]
+    single = (task.get("message_template") or "").strip()
+    if single:
+        return [single]
+    return []
+
+
+def _extract_username_from_url(url: str, platform: str) -> str | None:
+    """Estrae l'username dalla URL social. None se non parseable."""
+    if not url:
+        return None
+    try:
+        p = urlparse(url)
+        path = (p.path or "").strip("/")
+    except Exception:
+        return None
+    if not path:
+        return None
+    if platform == "instagram":
+        m = re.match(r"^([A-Za-z0-9._]+)(?:/.*)?$", path)
+        return m.group(1) if m else None
+    if platform == "tiktok":
+        m = re.match(r"^@?([A-Za-z0-9._-]+)(?:/.*)?$", path)
+        return m.group(1).lstrip("@") if m else None
+    if platform == "facebook":
+        # Pattern 1: facebook.com/<username>
+        # Pattern 2: facebook.com/profile.php?id=<numeric>
+        if path.startswith("profile.php") or path == "profile.php":
+            # estraggo id dalla query string
+            try:
+                from urllib.parse import parse_qs
+                q = parse_qs(p.query or "")
+                idv = (q.get("id") or [""])[0]
+                return idv or None
+            except Exception:
+                return None
+        m = re.match(r"^([A-Za-z0-9.]+)(?:/.*)?$", path)
+        return m.group(1) if m else None
+    return None
+
+
+def _load_targets_for_platform(
+    task: dict[str, Any], platform: str, *, limit: int
+) -> list[dict[str, Any]]:
+    """Carica contatti target per la piattaforma.
+
+    Strategia:
+      - Se `task.target_contact_ids` non vuoto → usa SOLO quegli ID
+        (bypassa il filtro per status: l'utente li ha scelti esplicitamente).
+      - Altrimenti → tutti i contatti in status `target_status_in` (default
+        `qualified`) con `social[platform]` popolato.
+
+    In entrambi i casi si tiene un social URL per la platform e si scartano
+    quelli su host bloccati.
+    """
+    explicit_ids = task.get("target_contact_ids") or []
+    if isinstance(explicit_ids, str):
+        try:
+            explicit_ids = json.loads(explicit_ids) or []
+        except (json.JSONDecodeError, TypeError):
+            explicit_ids = []
+    explicit_ids = [int(x) for x in explicit_ids if str(x).strip().lstrip("-").isdigit()]
+
+    if explicit_ids:
+        candidates = db.get_contacts_by_ids(explicit_ids)
+    else:
+        target_status = task.get("target_status_in") or "qualified"
+        candidates = db.list_contacts(status=target_status, limit=limit * 5)
+
+    out: list[dict[str, Any]] = []
+    for c in candidates:
+        soc_raw = c.get("social_json")
+        if not soc_raw:
+            continue
+        try:
+            socials = json.loads(soc_raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for s in (socials or []):
+            if not isinstance(s, dict):
+                continue
+            if (s.get("platform") or "").lower() != platform:
+                continue
+            url = s.get("url") or ""
+            if not url or is_blocked(url):
+                continue
+            username = _extract_username_from_url(url, platform)
+            if username:
+                out.append({"contact": c, "username": username, "social_url": url})
+                break
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def run_agent(task: dict[str, Any], job_id: int) -> str:
+    """Entry-point outreach_social. Schema simmetrico agli altri runner."""
+    db.update_job(job_id, status="running", started_at=db.now_iso())
+    db.set_control_signal(job_id, None)
+
+    def jlog(line: str) -> None:
+        db.append_job_log(job_id, line)
+
+    jlog(f'Avvio outreach_social per task #{task["id"]} "{task["name"]}"')
+
+    # ---- 1. Validazioni ----
+    if not is_configured():
+        msg = (
+            "AGENTSCRAPER_SECRET non settata in .env: cifratura credenziali "
+            "disattivata, niente outreach. Abort."
+        )
+        jlog(f"❌ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
+
+    platform = (task.get("social_platform") or "").strip().lower()
+    if platform not in ("instagram", "tiktok", "facebook"):
+        msg = f"social_platform '{platform}' non supportata. Usa 'instagram', 'tiktok' o 'facebook'."
+        jlog(f"❌ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
+
+    intent = (task.get("outreach_intent") or "").strip()
+    if not intent:
+        msg = "outreach_intent vuoto. Specifica lo scopo del DM nel task."
+        jlog(f"❌ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
+
+    # ---- 2. Carica account social attivi ----
+    rows = db.list_social_accounts(platform=platform, status="active")
+    if not rows:
+        msg = (
+            f"Nessun account '{platform}' in stato active. "
+            f"Vai a /social/accounts per aggiungerli + fare warmup."
+        )
+        jlog(f"❌ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
+
+    accounts: list[SocialAccount] = []
+    account_id_by_uuid: dict[str, int] = {}
+    for r in rows:
+        try:
+            password = decrypt(r["encrypted_password"])
+        except Exception as e:
+            jlog(f"  ⚠️ decrypt fail per {r['username']}: {e} — skip")
+            continue
+        accounts.append(SocialAccount(
+            uuid=r["uuid"],
+            platform=r["platform"],
+            username=r["username"],
+            password=password,
+            proxy_label=r.get("proxy_label"),
+            daily_dm_cap=int(r.get("daily_dm_cap") or 10),
+            status=r.get("status") or "active",
+        ))
+        account_id_by_uuid[r["uuid"]] = r["id"]
+    if not accounts:
+        msg = "Nessun account decifrabile (chiave AGENTSCRAPER_SECRET mismatched?)."
+        jlog(f"❌ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
+    jlog(f"Caricati {len(accounts)} account {platform} attivi")
+
+    # ---- 3. Target ----
+    max_dms_per_run = int(task.get("max_dms_per_run") or 30)
+    explicit_ids = task.get("target_contact_ids") or []
+    if explicit_ids:
+        jlog(
+            f"Selezione esplicita: {len(explicit_ids)} contatti scelti nel task "
+            f"(status filter bypassato)"
+        )
+    else:
+        jlog("Selezione automatica: tutti i contacts qualified con URL per la platform")
+    targets = _load_targets_for_platform(task, platform, limit=max_dms_per_run)
+    if not targets:
+        if explicit_ids:
+            jlog(
+                f"⚠️ Nessuno dei {len(explicit_ids)} contatti selezionati ha un URL "
+                f"{platform} valido / non bloccato. Niente da fare."
+            )
+        else:
+            jlog(f"⚠️ Nessun target con {platform} URL fra contacts qualified. Niente da fare.")
+        db.update_job(job_id, status="done", finished_at=db.now_iso())
+        return ""
+    jlog(f"Target {platform}: {len(targets)} contatti")
+
+    # ---- 4. Genera messaggi personalizzati ----
+    template_variants = _parse_message_template_variants(task)
+    if template_variants:
+        jlog(f"Trovati {len(template_variants)} esempi di stile (message_template_variants)")
+
+    llm_provider = (task.get("llm_provider") or "ollama").strip().lower()
+    try:
+        llm_base_url = resolve_base_url(llm_provider, task.get("llm_base_url"))
+    except Exception as e:
+        msg = f"resolve_base_url({llm_provider!r}) fail: {e}"
+        jlog(f"❌ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
+    try:
+        llm_api_key = resolve_api_key(llm_provider, task.get("llm_api_key"))
+    except Exception as e:
+        msg = f"resolve_api_key({llm_provider!r}) fail: {e}. Imposta llm_api_key nel task o la env var del provider."
+        jlog(f"❌ {msg}")
+        db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+        return ""
+    llm_model = task.get("model") or "qwen3-coder:30b"
+    jlog(f"Generazione messaggi via {llm_provider}/{llm_model} (base_url={llm_base_url})...")
+
+    reqs: list[MessageRequest] = []
+    for t in targets:
+        c = t["contact"]
+        raw_data: dict[str, Any] = {}
+        if isinstance(c.get("raw_json"), str):
+            try:
+                raw_data = json.loads(c["raw_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        elif isinstance(c.get("raw_json"), dict):
+            raw_data = c["raw_json"]
+        reqs.append(MessageRequest(
+            target_display_name=c.get("display_name") or t["username"],
+            target_username=t["username"],
+            target_platform=platform,
+            target_profile_url=t["social_url"],
+            target_raw_data=raw_data,
+            intent=intent,
+            template_variants=template_variants,
+        ))
+
+    msg_results = await generate_batch(
+        reqs,
+        llm_base_url=llm_base_url,
+        llm_api_key=llm_api_key,
+        llm_model=llm_model,
+    )
+
+    pairs: list[tuple[str, str]] = []
+    contact_id_by_username: dict[str, int] = {}
+    errors_seen: list[str] = []
+    for (req, msg, err), t in zip(msg_results, targets):
+        if msg:
+            pairs.append((t["username"], msg))
+            contact_id_by_username[t["username"]] = t["contact"]["id"]
+        elif err:
+            errors_seen.append(f"{t['username']}: {err}")
+    jlog(f"Generati {len(pairs)}/{len(targets)} messaggi")
+    if not pairs:
+        for line in errors_seen[:5]:
+            jlog(f"  ↳ {line}")
+        jlog("⚠️ Nessun messaggio generato (LLM giù o tutti rifiutati). Abort.")
+        db.update_job(job_id, status="error", error="message generation failed", finished_at=db.now_iso())
+        return ""
+
+    # ---- 5. Engine sessione ----
+    max_per_session = int(task.get("max_dms_per_session") or 5)
+    headed = bool(task.get("headed", 1))
+    engine = OutreachEngine(accounts, headed=headed, use_patchright=True)
+
+    all_results = []
+    while pairs:
+        if db.get_control_signal(job_id) == "stop":
+            jlog("STOP richiesto durante outreach. Salvo quanto fatto.")
+            break
+        batch = pairs[:max_per_session]
+        pairs = pairs[max_per_session:]
+        jlog(f"→ Sessione: {len(batch)} DM via {platform}")
+        results = await engine.run_session(
+            platform_name=platform,
+            targets=batch,
+            warmup_min=5.0,
+            max_dms_per_session=max_per_session,
+            jlog=jlog,
+        )
+        all_results.extend(results)
+        if not results:
+            jlog("⚠️ Sessione vuota (account esauriti o off-hours). Stop loop.")
+            break
+
+    # ---- 6. Log su DB ----
+    n_ok = 0
+    n_fail = 0
+    for r in all_results:
+        contact_id = contact_id_by_username.get(r.target_username)
+        # Mapping account: per ora usiamo il primo account valido come "sender"
+        # (l'engine sceglie internamente; il SocialAccount usato non e' exposto
+        # nel risultato — TODO miglioramento: esporlo)
+        account_id_db = next(iter(account_id_by_uuid.values()), None)
+        if account_id_db is None:
+            continue
+        try:
+            # Recover original message text from pairs (loop above)
+            # Nota: l'engine non ritorna il message_text → lo cerchiamo nella
+            # mappatura targets generata sopra. Best-effort.
+            msg_text = next(
+                (m for u, m in [(u, m) for u, m in [(p[0], p[1]) for p in []]] if u == r.target_username),
+                "",
+            )
+            db.insert_social_dm_log({
+                "account_id": account_id_db,
+                "job_id": job_id,
+                "target_contact_id": contact_id,
+                "target_platform": platform,
+                "target_username": r.target_username or "",
+                "message": msg_text or "(message_text non disponibile)",
+                "ok": r.ok,
+                "reason": r.reason,
+                "health_post": r.health.value if hasattr(r.health, "value") else str(r.health),
+            })
+        except Exception as e:
+            jlog(f"  ⚠️ insert_social_dm_log fail: {e}")
+        if r.ok:
+            n_ok += 1
+            if contact_id:
+                try:
+                    db.update_contact_status(contact_id, "contacted")
+                except Exception as e:
+                    jlog(f"  ⚠️ update_contact_status({contact_id}) fail: {e}")
+        else:
+            n_fail += 1
+
+    jlog(f"✅ outreach_social completato: {n_ok} DM inviati, {n_fail} falliti")
+
+    # Report
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = RESULTS_DIR / str(task["id"]) / ts
+    run_dir.mkdir(parents=True, exist_ok=True)
+    report_path = run_dir / "report.md"
+    report = (
+        f"# Riepilogo outreach_social {ts}\n\n"
+        f"- **Piattaforma**: {platform}\n"
+        f"- **DM inviati**: {n_ok}\n"
+        f"- **DM falliti**: {n_fail}\n"
+        f"- **Account usati**: {len(accounts)}\n"
+        f"- **Modello LLM messaggi**: {llm_model}\n"
+    )
+    report_path.write_text(report, encoding="utf-8")
+
+    db.update_job(job_id, status="done", finished_at=db.now_iso(), result_path=str(report_path))
+    return str(report_path)

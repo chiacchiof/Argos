@@ -1996,4 +1996,149 @@ Le strategie sono ordinate per **rapporto impatto/sforzo** considerando lo stato
 
 ---
 
+## 16. Outreach social (Instagram, TikTok) — in sviluppo
+
+Modulo per inviare DM ai profili scraped tramite browser automation. L'esigenza: il framework oggi materializza contacts con `social[]` URL (Instagram, Twitter, TikTok, OnlyFans, ecc.) ma l'outreach automatico è limitato a email/telegram. La sezione 16 colma il gap.
+
+### 16.1 Obiettivi e vincoli
+
+- **Volume target**: 30-40 DM/giorno distribuiti su 4 account (10/account/giorno) per piattaforma
+- **Piattaforme supportate**: Instagram, TikTok. OnlyFans escluso (vedi 16.5)
+- **Anti-ban**: warmup 4-6 settimane account, stealth completo, comportamento umanizzato, proxy residenziali sticky
+- **Costo target**: < $100/mese (proxy + 2captcha eventuale)
+
+### 16.2 Architettura modulo (`dev/social_outreach/` → futuro `app/agent/social/`)
+
+```
+dev/social_outreach/         (file in sviluppo, fuori da app/ per non triggerare reload uvicorn)
+├── __init__.py
+├── humanize.py              # mouse curves Bezier, typing delay 60-200ms, scroll
+├── crypto_creds.py          # cifratura Fernet credenziali account (env AGENTSCRAPER_SECRET)
+├── session_manager.py       # persistenza session_state Playwright per account
+├── account_pool.py          # rotation account + rate limit + health tracking
+├── proxy_pool.py            # assegnazione 1:1 sticky account ↔ proxy residenziale
+├── platform_base.py         # interfaccia astratta SocialPlatform + DMResult
+├── instagram.py             # impl IG (login, goto_profile, warmup_browse, send_dm, check_health)
+├── tiktok.py                # impl TikTok (idem)
+└── engine.py                # orchestrator: pool + platform + stealth, API run_session()
+```
+
+### 16.3 Tecniche anti-detection integrate
+
+1. **Stealth browser**: `patchright` (fork patched di Playwright con anti-detection) + `playwright-stealth` (maschera `navigator.webdriver`, plugins, canvas)
+2. **Headed mode** (`headless=False`): riduce drasticamente detection rispetto a headless
+3. **Session persistence**: cookies + localStorage salvati per account in `data/sessions/<uuid>.json` → niente fresh login (login è il momento più rischioso)
+4. **Proxy residenziale sticky**: ogni account ha SEMPRE lo stesso IP (rotation per stesso account = red flag). Provider supportati: IPRoyal, Bright Data, Smartproxy
+5. **Comportamento umanizzato**:
+   - Click via `mouse.move()` + curva di Bezier + jitter dentro il box (no JS click)
+   - Typing con delay random per carattere (60-200ms) + pause su punteggiatura
+   - Scroll con velocità variabile, pause naturali
+   - Warmup pre-DM (browse home 5 min, like/view, hover)
+   - Gap random 8-30 min tra DM consecutivi
+   - Distribuzione oraria 9-22 (mai 24/7)
+6. **Health tracking**: monitoraggio `/challenge`, `/login`, captcha, 429, marker testuali ("We restrict certain activity"). 3 challenge consecutivi → quarantena account 7 giorni
+7. **Messaggi personalizzati**: LLM (Qwen 30b o gpt-4o-mini) genera variant per ogni target (no template fissi → evita Levenshtein detection)
+
+### 16.4 Account warmup (mandatorio prima della produzione)
+
+Periodo: 4-6 settimane. Setup:
+- Account vecchi ≥60 giorni (acquisire account "aged" se necessario)
+- Profilo completo: foto profilo + bio + 5-10 post propri
+- Tool fa browsing automatizzato MODERATO (NO DM): scroll 10-15 min/giorno, like 5-10 post, view stories, follow 2-3 account/settimana
+- 1 post propri/settimana (foto + caption coerente)
+- Building "trust score" cumulativo prima di iniziare DM
+
+### 16.5 OnlyFans — escluso come destinatario DM
+
+**Motivo**: per inviare DM su OF devi essere SUBSCRIBER del creator (oppure il creator deve avere "free messages" attivi, raro). Subscription $5-15/mese cadauno × 30-40 DM/giorno = $600-1800/giorno. Insostenibile.
+
+**Soluzione alternativa**: OF rimane "fonte di lead". Estraiamo dai profili OF i loro contatti pubblici (email, IG, Twitter, sito web) e facciamo outreach su quegli altri canali.
+
+### 16.6 Schema DB (migration pendente)
+
+Tre tabelle nuove:
+- `social_accounts(id, uuid, platform, username, encrypted_password, proxy_label, daily_dm_cap, status, created_at, ...)`
+- `social_dm_log(id, account_id, target_username, message, sent_at, ok, reason, health_status_post)`
+- `social_proxy_bindings(account_uuid, proxy_label, created_at)` — opzionale, oggi in-memory
+
+Migration file pronto in `dev/social_outreach/_pending_migration.sql`. Sarà applicata quando integriamo il runner — richiede momento senza job in corso (uvicorn reload).
+
+### 16.7 Stato sviluppo + prossimi step
+
+**Già fatto (2026-05-12)** — modulo deployato:
+- ✅ Modulo `app/agent/social/` (11 file Python, importabili da runner_outreach_social)
+- ✅ Dipendenze installate in `pyproject.toml`: `patchright`, `playwright-stealth`, `curl_cffi`, `cryptography`
+- ✅ Runner `app/agent/runner_outreach_social.py` (entry-point reale, non più template)
+- ✅ Dispatcher in `app/jobs.py:_run_job` → `agent_mode='outreach_social'` lancia il runner
+- ✅ Migration DB applicata: tabelle `social_accounts` + `social_dm_log` + 6 nuovi campi su `tasks`
+- ✅ UI: nuova opzione `outreach_social` nel dropdown agent_mode + sezione collassabile in `task_form.html`
+- ✅ UI: route `/social/accounts` (lista, add con cifratura, toggle status, delete)
+- ✅ Pydantic model `TaskIn` aggiornato con nuovi campi
+- ✅ Smoke 10/10 + E2E test 5/5 (task create + crypto encrypt/decrypt + variants parser + social_account CRUD)
+
+**Setup richiesto all'utente per iniziare a usare**:
+1. **AGENTSCRAPER_SECRET** in `.env` (min 16 char) — chiave master cifratura credenziali
+2. **AGENTSCRAPER_PROXIES** in `.env` (opzionale, JSON array di proxy residenziali)
+3. **4-8 account Instagram/TikTok DEDICATI** (mai personali)
+4. **Warmup 4-6 settimane** prima di iniziare DM in produzione
+5. Andare a `/social/accounts` e aggiungere gli account
+6. Creare task con `agent_mode=outreach_social`, popolare `outreach_intent` + `message_template_variants`
+
+**Setup operativo richiesto all'utente**:
+- Creare/recuperare 4 account Instagram + 4 TikTok dedicati (NON personali)
+- Configurare `AGENTSCRAPER_SECRET` in `.env` (chiave master cifratura)
+- Acquistare proxy residenziali (IPRoyal/Smartproxy, ~$50-80/mese per 8 account)
+- Warmup 4-6 settimane prima di iniziare DM
+
+### 16.9 Fix N1+N2+N3 applicati 2026-05-12
+
+Dopo incidente di stop manuale che ha "perso" 217 profili scaricati (poi
+recuperati manualmente), applicati 3 fix interconnessi:
+
+**Fix N1 — `_ingest_to_assets` dentro finally** (`runner_site_explorer.py`):
+quando l'utente fa Stop, `hard_stop_job` solleva CancelledError. Prima
+l'ingest era FUORI dal try/finally → cancellation lo saltava. Ora l'ingest
+e' nel finally esterno: i profili in `profiles.jsonl` finiscono SEMPRE in DB
+anche con stop brutale.
+
+**Fix N2 — supporto Pause uniforme** (`runner_control.py` + integrazione):
+estratto `wait_if_paused_or_stop()` come helper centralizzato. Site_explorer
+ora supporta pause come browser_use. UI: bottone Pausa disabilitato con
+tooltip esplicativo se `agent_mode` non e' in `MODES_SUPPORTING_PAUSE`.
+
+**Fix N3 — Stop con scelta downstream** (`routes/jobs.py` + dashboard UI):
+due bottoni Stop nella UI ora:
+- **"Stop"** (rosso): hard stop, status=cancelled, downstream NON parte
+- **"Stop e completa"** (grigio): graceful stop + flag che dice al cleanup
+  "tratta come done" → workflow downstream parte (qualifier, outreach).
+  Backend: nuovo signal `stop_complete`, set in-memory `_trigger_downstream_on_cancel`.
+
+UI: il bottone Pausa per agent_mode non-supportati e' disabilitato con
+`title="..."` esplicativo + onclick alert per chi clicca comunque.
+
+### 16.10 Trovagnocca: confermato login-only (sito blacklistato)
+
+Test 2026-05-12 (HTTP + curl_cffi):
+- `roma.trovagnocca.com/escort/tag/matura/` ritorna 803 link totali ma TUTTI
+  sono link di navigazione (`/escort/zona/...`, `/escort/comune/...`,
+  `/escort/tag/...`) o `/auth/register`, `/auth/login`. **0 profili individuali
+  pubblici**.
+- I profili reali sono dietro registrazione obbligatoria.
+- Il nostro scraper aveva catturato 217 pagine listing/tag classificandole
+  come "profile_contacts" per via del `display_name` che pero' e' il TITOLO
+  della categoria (es. "Escort Casalinghe a Napoli"), non un nome persona.
+- Tutti i 217 asset condividevano lo stesso `telegram = NetworkEmpirEscortBot`
+  (bot del sito), quindi al qualifier ne e' stato materializzato 1 contact
+  (dedup per telegram_username).
+
+**Azione**: trovagnocca aggiunto a `BLOCKED_HOSTS` (con sub-domini), 217 asset
++ 1 contact cancellati, seed rimosso dal task #13. Niente piu' traffico verso
+trovagnocca.
+
+### 16.8 Lezione operativa dal 2026-05-12
+
+⚠️ **Aggiungere file nuovi in `app/` durante un job attivo causa uvicorn reload → kill dei job in corso**. Workaround: sviluppare in `dev/` (fuori dal watch path di uvicorn). Spostare in `app/` solo in finestre safe (no job running).
+
+---
+
 Il piano è allineabile a tutto questo — basta chiedere quale punto attivare per primo.

@@ -561,9 +561,14 @@ async def _run_agent_inner(
         user_agent=settings.http_user_agent,
     ) as fetch_client:
         try:
+            from .runner_control import wait_if_paused_or_stop, RunnerStopped
             for step in range(max_steps):
-                if db.get_control_signal(job_id) == "stop":
-                    jlog("STOP richiesto dall'utente.")
+                # Gestisce pause + stop in modo uniforme con runner_browseruse.
+                # Se signal='pause' sospende; se 'stop' alza RunnerStopped che
+                # viene catturata sotto e segna stopped=True.
+                try:
+                    await wait_if_paused_or_stop(job_id, jlog)
+                except RunnerStopped:
                     stopped = True
                     break
 
@@ -1022,13 +1027,15 @@ async def _run_agent_inner(
         except asyncio.CancelledError:
             jlog("Cancellato.")
             stopped = True
-            raise
+            # NON raise immediato: lascia che il finally faccia ingest+save_queue
+            # prima di propagare. Senza questo, hard_stop_job perdeva i profili
+            # gia' nel jsonl (bug N1 incidente 2026-05-12).
         finally:
-            profiles_f.close()
+            try:
+                profiles_f.close()
+            except Exception:
+                pass
             # Persisti la queue residua per resume al prossimo run.
-            # Solo se c'e' qualcosa di non-completato (queue non vuota o n_assets >= max_targets
-            # con possibile residuo). Se invece il loop e' uscito naturalmente con queue vuota
-            # E cap NON raggiunto, il file e' gia' stato cancellato dal cleanup di FASE A.
             if direct_target_queue or exploration_queue:
                 try:
                     _save_pending_queue(
@@ -1038,16 +1045,20 @@ async def _run_agent_inner(
                 except Exception:
                     pass
 
-    # 5. Ingest in DB (riusa la pipeline asset)
+    # 5. Ingest in DB — DEVE girare anche con stop graceful per non perdere
+    # i profili gia' estratti. Fix N1 (incidente 2026-05-12: hard_stop saltava ingest).
     n_assets_in_db = 0
     if extraction_template:
-        n_assets_in_db = _ingest_to_assets(
-            profiles_path,
-            task["id"],
-            job_id,
-            jlog,
-            extraction_template=extraction_template,
-        )
+        try:
+            n_assets_in_db = _ingest_to_assets(
+                profiles_path,
+                task["id"],
+                job_id,
+                jlog,
+                extraction_template=extraction_template,
+            )
+        except Exception as e:
+            jlog(f"⚠️ ingest fail in finally: {type(e).__name__}: {e}")
 
     # 6. Report finale
     fmt = task.get("output_format") or "md"
@@ -1235,7 +1246,11 @@ async def _runner_driven_extraction(
                     "n_assets_collected": n_assets_collected,
                     "done_reason": f"runner-driven (direct): cap {max_targets} raggiunto",
                 }
-            if db.get_control_signal(job_id) == "stop":
+            # Gestisce pause + stop tramite helper centralizzato.
+            from .runner_control import wait_if_paused_or_stop, RunnerStopped
+            try:
+                await wait_if_paused_or_stop(job_id, lambda _s: None)
+            except RunnerStopped:
                 direct_target_queue.insert(0, target_url)
                 if task_id is not None:
                     try:
@@ -1323,9 +1338,12 @@ async def _runner_driven_extraction(
         return uniq
 
     while queue and n_assets_collected < max_targets:
-        # Stop signal check
+        # Pause/Stop signal check (helper centralizzato — supporta pause).
         from .. import db
-        if db.get_control_signal(job_id) == "stop":
+        from .runner_control import wait_if_paused_or_stop, RunnerStopped
+        try:
+            await wait_if_paused_or_stop(job_id, lambda _s: None)
+        except RunnerStopped:
             return {"n_assets_collected": n_assets_collected, "done_reason": "STOP utente"}
 
         listing_url = queue.pop(0)
@@ -1416,7 +1434,9 @@ async def _runner_driven_extraction(
                     "n_assets_collected": n_assets_collected,
                     "done_reason": f"runner-driven: cap target {max_targets} raggiunto",
                 }
-            if db.get_control_signal(job_id) == "stop":
+            try:
+                await wait_if_paused_or_stop(job_id, lambda _s: None)
+            except RunnerStopped:
                 return {"n_assets_collected": n_assets_collected, "done_reason": "STOP utente"}
 
             # Fix 3: skip se l'asset esiste in DB ed e' fresco entro refresh_policy_days.

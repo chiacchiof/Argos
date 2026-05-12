@@ -19,6 +19,10 @@ BLOCKED_HOSTS: frozenset[str] = frozenset({
     "mondocamgirl.com", "www.mondocamgirl.com",
     "mondocamgirls.com", "www.mondocamgirls.com",
     "camlive.com", "www.camlive.com",
+    # Login-only: i profili individuali sono dietro auth, non scrapabili.
+    # Test 2026-05-12: la sola cosa pubblica sono pagine listing/tag che
+    # generano falsi positivi (217 asset spazzatura). Vedi memoria.
+    "trovagnocca.com", "www.trovagnocca.com",
 })
 
 

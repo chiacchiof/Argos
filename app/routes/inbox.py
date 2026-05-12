@@ -38,15 +38,46 @@ _CONTACTS_PAGE_SIZE = 100
 async def inbox_contacts(
     request: Request,
     status: str | None = None,
-    page: int = 1,
-    per_page: int = _CONTACTS_PAGE_SIZE,
+    q: str | None = None,
+    channel: str | None = None,
+    source_domain: str | None = None,
+    score_min: str | None = None,  # str perche' il <select> manda "" quando "qualsiasi"
+    page: str | int = 1,
+    per_page: str | int = _CONTACTS_PAGE_SIZE,
 ):
+    # Parsing tollerante page/per_page
+    try:
+        page = int(str(page).strip() or 1)
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = int(str(per_page).strip() or _CONTACTS_PAGE_SIZE)
+    except (TypeError, ValueError):
+        per_page = _CONTACTS_PAGE_SIZE
     status_clean = (status or "").strip() or None
+    q_clean = (q or "").strip() or None
+    channel_clean = (channel or "").strip().lower() or None
+    domain_clean = (source_domain or "").strip().lower() or None
+    # Parsing tollerante: "" / non-int → None, altrimenti clamp [0..10]
+    score_clean: int | None = None
+    if score_min:
+        try:
+            v = int(str(score_min).strip())
+            if 0 <= v <= 10:
+                score_clean = v
+        except (TypeError, ValueError):
+            pass
     per_page = max(10, min(int(per_page or _CONTACTS_PAGE_SIZE), 500))
     page = max(1, int(page or 1))
     offset = (page - 1) * per_page
 
-    total = db.count_contacts(status=status_clean)
+    total = db.count_contacts(
+        status=status_clean,
+        search=q_clean,
+        channel=channel_clean,
+        source_domain=domain_clean,
+        score_min=score_clean,
+    )
     total_pages = max(1, (total + per_page - 1) // per_page)
     if page > total_pages:
         page = total_pages
@@ -54,16 +85,27 @@ async def inbox_contacts(
 
     contacts = db.list_contacts(
         status=status_clean,
+        search=q_clean,
+        channel=channel_clean,
+        source_domain=domain_clean,
+        score_min=score_clean,
         limit=per_page,
         offset=offset,
     )
 
-    qs_parts: list[str] = []
-    if status_clean:
-        qs_parts.append(f"status={status_clean}")
-    if per_page != _CONTACTS_PAGE_SIZE:
-        qs_parts.append(f"per_page={per_page}")
-    qs_base = "&".join(qs_parts)
+    # Per dropdown filtri: domini source noti
+    available_domains = db.list_contact_source_domains(limit=50)
+
+    # Querystring base (preserva filtri attivi nei link di paginazione)
+    from urllib.parse import urlencode
+    qs_dict = {}
+    if status_clean: qs_dict["status"] = status_clean
+    if q_clean: qs_dict["q"] = q_clean
+    if channel_clean: qs_dict["channel"] = channel_clean
+    if domain_clean: qs_dict["source_domain"] = domain_clean
+    if score_clean is not None: qs_dict["score_min"] = score_clean
+    if per_page != _CONTACTS_PAGE_SIZE: qs_dict["per_page"] = per_page
+    qs_base = urlencode(qs_dict)
 
     return templates.TemplateResponse(
         request,
@@ -71,6 +113,11 @@ async def inbox_contacts(
         {
             "contacts": contacts,
             "filter_status": status_clean or "",
+            "filter_q": q_clean or "",
+            "filter_channel": channel_clean or "",
+            "filter_source_domain": domain_clean or "",
+            "filter_score_min": score_clean if score_clean is not None else "",
+            "available_domains": available_domains,
             "page": page,
             "per_page": per_page,
             "total": total,
@@ -79,6 +126,89 @@ async def inbox_contacts(
             "qs_base": qs_base,
         },
     )
+
+
+@router.post("/inbox/contacts/add")
+async def inbox_contacts_add(
+    request: Request,
+    display_name: str = Form(""),
+    email: str = Form(""),
+    telegram_username: str = Form(""),
+    whatsapp: str = Form(""),
+    sitoweb: str = Form(""),
+    instagram_url: str = Form(""),
+    tiktok_url: str = Form(""),
+    facebook_url: str = Form(""),
+    source_url: str = Form(""),
+    source_domain: str = Form(""),
+    notes: str = Form(""),
+    status: str = Form("qualified"),
+):
+    """Inserisce manualmente un contatto outreach. Almeno UN canale (email,
+    telegram, whatsapp, sitoweb, social) deve essere valorizzato — altrimenti
+    rifiuta perche' non sarebbe contattabile.
+    """
+    import json as _json
+
+    # Costruisci social array da campi separati
+    socials: list[dict[str, str]] = []
+    for platform, url in (
+        ("instagram", instagram_url),
+        ("tiktok", tiktok_url),
+        ("facebook", facebook_url),
+    ):
+        url = (url or "").strip()
+        if url:
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            socials.append({"platform": platform, "url": url})
+
+    # Validazione: almeno UN canale
+    has_channel = bool(
+        (email or "").strip()
+        or (telegram_username or "").strip()
+        or (whatsapp or "").strip()
+        or (sitoweb or "").strip()
+        or socials
+    )
+    if not has_channel:
+        raise HTTPException(
+            status_code=400,
+            detail="Almeno un canale di contatto (email/telegram/whatsapp/sitoweb/social) deve essere valorizzato.",
+        )
+
+    # Infer source_domain da source_url se non specificato
+    sd = (source_domain or "").strip().lower() or None
+    if not sd and source_url:
+        from urllib.parse import urlparse
+        try:
+            sd = (urlparse(source_url).hostname or "").lower() or None
+        except Exception:
+            sd = None
+    # Default source: manuale
+    if not sd:
+        sd = "manual"
+
+    payload = {
+        "source_url": (source_url or "").strip() or f"manual:{(email or telegram_username or whatsapp or 'unnamed').strip()}",
+        "source_domain": sd,
+        "display_name": (display_name or "").strip() or None,
+        "email": (email or "").strip() or None,
+        "telegram_username": (telegram_username or "").strip().lstrip("@") or None,
+        "whatsapp": (whatsapp or "").strip() or None,
+        "sitoweb": (sitoweb or "").strip() or None,
+        "social": socials if socials else None,
+        "raw_json": _json.dumps({
+            "_manual_entry": True,
+            "display_name": display_name,
+            "notes": notes,
+        }, ensure_ascii=False),
+        "status": (status or "qualified").strip() or "qualified",
+    }
+    cid = db.upsert_contact(payload)
+    # Status (upsert_contact non lo gestisce direttamente, lo settiamo)
+    db.update_contact_status(cid, payload["status"], notes=notes.strip() or None)
+    return RedirectResponse(url=f"/inbox/contacts?flash=Contatto+%23{cid}+aggiunto", status_code=303)
 
 
 @router.get("/inbox/{thread_id}", response_class=HTMLResponse)

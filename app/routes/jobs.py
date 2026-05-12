@@ -44,33 +44,47 @@ async def job_dashboard(request: Request, job_id: int):
 
 
 @router.post("/jobs/{job_id}/control", response_class=HTMLResponse)
-async def job_control(request: Request, job_id: int, signal: str = Form("")):
-    """Manda un segnale al runner: pause | resume | stop."""
+async def job_control(
+    request: Request,
+    job_id: int,
+    signal: str = Form(""),
+    complete_downstream: str = Form(""),
+):
+    """Manda un segnale al runner: pause | resume | stop | stop_complete.
+
+    - `signal=stop`: stop immediato (hard kill). Status -> cancelled.
+      Downstream non parte (comportamento storico).
+    - `signal=stop_complete`: stop graceful + flag che dice "tratta come done"
+      a fine. Il runner finalizza (save queue, ingest in DB), poi al cleanup
+      il workflow downstream parte. Fix N3.
+    - `signal=pause`: solo per agent_mode che lo supportano (vedi
+      MODES_SUPPORTING_PAUSE in runner_control).
+    - `signal=resume`: clear pause.
+    """
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job non trovato")
     sig = signal.strip().lower()
-    if sig not in {"pause", "resume", "stop"}:
+    # Legacy compat: alcuni client passano `complete_downstream=1` con signal=stop
+    if sig == "stop" and complete_downstream.strip() in ("1", "true", "on", "yes"):
+        sig = "stop_complete"
+    if sig not in {"pause", "resume", "stop", "stop_complete"}:
         raise HTTPException(status_code=400, detail="signal non valido")
 
-    # 'resume' = clear control_signal (il runner uscirà dal wait loop)
     if sig == "resume":
         db.set_control_signal(job_id, None)
         if (job.get("status") or "") == "paused":
             db.update_job(job_id, status="running")
             db.append_job_log(job_id, "Richiesta RESUME dall'utente.")
     elif sig == "stop":
-        # Hard stop: cancella il task asyncio (interrompe browser-use ovunque sia)
-        # E imposta anche control_signal per coprire il caso "tra una seed e l'altra".
         db.set_control_signal(job_id, "stop")
         cancelled = jobs.hard_stop_job(job_id)
         if cancelled:
             db.append_job_log(
                 job_id,
-                "Richiesta STOP dall'utente — task cancellato (hard stop).",
+                "Richiesta STOP dall'utente — task cancellato (hard stop). Downstream NON partira'.",
             )
         else:
-            # Runner non più in memoria: chiudi subito il job
             db.append_job_log(
                 job_id,
                 "Richiesta STOP dall'utente — runner non più attivo, chiudo direttamente.",
@@ -79,7 +93,37 @@ async def job_control(request: Request, job_id: int, signal: str = Form("")):
             if cur and (cur.get("status") or "") in ("queued", "running", "paused"):
                 db.update_job(job_id, status="cancelled", finished_at=db.now_iso())
                 db.set_control_signal(job_id, None)
+    elif sig == "stop_complete":
+        # Stop graceful + downstream trigger. Fix N3 (incidente 2026-05-12).
+        # NO hard_stop_job: lascia che il runner finisca naturalmente il loop
+        # corrente (1-2 step LLM) e poi si fermi via control_signal=stop.
+        # Cosi' l'ingest_to_assets gira nel finally.
+        db.set_control_signal(job_id, "stop")
+        jobs.mark_complete_downstream_on_cancel(job_id)
+        db.append_job_log(
+            job_id,
+            "Richiesta STOP+COMPLETE dall'utente — fermo graceful, "
+            "ingest in DB dei profili gia' estratti, lancio downstream (qualifier/outreach).",
+        )
     elif sig == "pause":
+        # Verifica che l'agent_mode supporti la pausa, altrimenti notifica.
+        from ..agent.runner_control import MODES_SUPPORTING_PAUSE
+        task = db.get_task(job["task_id"])
+        mode = (task or {}).get("agent_mode", "")
+        if mode not in MODES_SUPPORTING_PAUSE:
+            db.append_job_log(
+                job_id,
+                f"⚠️ PAUSE richiesto ma agent_mode='{mode}' non lo supporta. "
+                f"Modi supportati: {sorted(MODES_SUPPORTING_PAUSE)}. Ignoro.",
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"La modalita' '{mode}' non supporta la pausa. "
+                    f"Modalita' supportate: {', '.join(sorted(MODES_SUPPORTING_PAUSE))}. "
+                    "Usa Stop se vuoi interrompere."
+                ),
+            )
         db.set_control_signal(job_id, "pause")
         db.append_job_log(
             job_id, "Richiesta PAUSE dall'utente — verrà applicata al prossimo seed."

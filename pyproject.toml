@@ -27,6 +27,18 @@ dependencies = [
   "aiosmtplib>=3.0",
   "imap-tools>=1.5",
   "pypdf>=4.0",
+  # Anti-bot: TLS fingerprint impersonation per bypassare Cloudflare base/medio
+  "curl_cffi>=0.15",
+  # Anti-detection per Playwright (usato in url_discovery_browser + outreach social)
+  "playwright-stealth>=2.0",
+  # Anti-detection avanzato: Patchright e' un fork patched di Playwright con
+  # ulteriori contromisure contro fingerprint detection. Usato dall'outreach
+  # social per Instagram/TikTok dove i marker standard di automazione vengono
+  # rilevati (vedi app/agent/social/).
+  "patchright>=1.59",
+  # Cifratura credenziali social account (Fernet symmetric encryption) salvate
+  # in DB. Chiave master in .env (AGENTSCRAPER_SECRET).
+  "cryptography>=43.0",
 ]
 
 [project.optional-dependencies]

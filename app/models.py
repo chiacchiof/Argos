@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 OutputFormat = Literal["txt", "md", "both"]
 AgentMode = Literal[
     "react", "browser_use", "bulk_extract", "auto_extract", "site_explorer",
-    "qualifier", "outreach", "responder",
+    "qualifier", "outreach", "outreach_social", "responder",
 ]
 BulkExtractionMethod = Literal["llm_per_page", "css_selectors"]
 MessageChannel = Literal["email", "telegram"]
@@ -56,6 +56,16 @@ class TaskIn(BaseModel):
     rating: int | None = Field(default=None, ge=1, le=5)
     notes: str | None = None
     status_tag: StatusTag | None = None
+    # Outreach social fields (agent_mode=outreach_social)
+    social_platform: str | None = None
+    outreach_intent: str | None = None
+    message_template_variants: str | None = None
+    max_dms_per_run: int = Field(default=30, ge=1, le=200)
+    max_dms_per_session: int = Field(default=5, ge=1, le=15)
+    headed: int = Field(default=1, ge=0, le=1)
+    # Selezione esplicita di target outreach_social: lista di contact.id.
+    # Se vuota, il runner usa TUTTI i qualified con social[platform] popolato.
+    target_contact_ids: list[int] = Field(default_factory=list)
 
     @field_validator("rating", mode="before")
     @classmethod
@@ -84,6 +94,35 @@ class TaskIn(BaseModel):
         if isinstance(v, str):
             return [line.strip() for line in v.splitlines() if line.strip()]
         return v or []
+
+    @field_validator("target_contact_ids", mode="before")
+    @classmethod
+    def parse_contact_ids(cls, v):
+        if v is None:
+            return []
+        # Accetta: list[int|str], string CSV ("1,2,3"), oppure JSON string
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            # Prova JSON prima ("[1, 2, 3]"), poi CSV ("1,2,3")
+            import json as _json
+            try:
+                parsed = _json.loads(s)
+                if isinstance(parsed, list):
+                    v = parsed
+                else:
+                    v = [s]
+            except (ValueError, TypeError):
+                v = [p.strip() for p in s.split(",") if p.strip()]
+        out: list[int] = []
+        if isinstance(v, (list, tuple)):
+            for item in v:
+                try:
+                    out.append(int(item))
+                except (TypeError, ValueError):
+                    continue
+        return out
 
     @field_validator("cron", mode="before")
     @classmethod

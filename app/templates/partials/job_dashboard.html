@@ -22,13 +22,29 @@
     </div>
     <div class="dashboard-controls">
       {% if d.status == "running" %}
+      {# Pausa: solo se l'agent_mode la supporta. Altrimenti bottone disabilitato
+         con tooltip esplicativo (fix N2 incidente 2026-05-12). #}
+      {% if d.pause_supported %}
       <button hx-post="/jobs/{{ d.job_id }}/control" hx-vals='{"signal":"pause"}'
               hx-target="closest .dashboard-panel" hx-swap="outerHTML"
-              type="button" class="btn-small">⏸ Pausa</button>
+              type="button" class="btn-small"
+              title="Sospende il job al prossimo step. Riprendibile con 'Riprendi'.">⏸ Pausa</button>
+      {% else %}
+      <button type="button" class="btn-small" disabled
+              title="La modalità '{{ d.agent_mode }}' non supporta la pausa. Usa Stop se vuoi interrompere."
+              onclick="alert('Pausa non supportata per agent_mode={{ d.agent_mode }}. Usa Stop.');">⏸ Pausa (n/d)</button>
+      {% endif %}
+
+      {# Stop con 2 varianti (fix N3): hard stop (no downstream) o
+         stop graceful + downstream trigger (qualifier/outreach partono comunque). #}
+      <button type="button" class="btn-small btn-secondary"
+              onclick="if(confirm('Stop GRACEFUL: il runner finisce le estrazioni in corso, ingesta i profili già estratti in DB e lancia il workflow downstream (qualifier/outreach). Procedere?')) htmx.ajax('POST', '/jobs/{{ d.job_id }}/control', {target: 'closest .dashboard-panel', swap: 'outerHTML', values: {signal: 'stop_complete'}});"
+              title="Stop con salvataggio + workflow downstream (qualifier, ecc.)">⏹ Stop e completa</button>
       <button hx-post="/jobs/{{ d.job_id }}/control" hx-vals='{"signal":"stop"}'
               hx-target="closest .dashboard-panel" hx-swap="outerHTML"
               type="button" class="btn-small btn-danger"
-              hx-confirm="Sicuro di voler interrompere il job? Lo stop si applicherà al termine della seed corrente.">⏹ Stop</button>
+              title="Stop immediato (hard). Salva i profili già nel jsonl, NON triggera downstream."
+              hx-confirm="Stop IMMEDIATO. I profili nel jsonl saranno ingestati in DB, ma il workflow downstream (qualifier/outreach) NON partira'. Procedere?">⏹ Stop</button>
       {% elif d.status == "paused" %}
       <button hx-post="/jobs/{{ d.job_id }}/control" hx-vals='{"signal":"resume"}'
               hx-target="closest .dashboard-panel" hx-swap="outerHTML"

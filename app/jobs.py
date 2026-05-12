@@ -28,6 +28,18 @@ _running_tasks: dict[int, asyncio.Task] = {}
 # Popolata DA dentro il thread proactor; svuotata quando il task termina.
 _active_jobs: dict[int, tuple[asyncio.AbstractEventLoop, asyncio.Task]] = {}
 
+# Set di job_id per cui triggerare il downstream anche se status='cancelled'.
+# Popolato dall'endpoint POST /jobs/{id}/stop?complete_downstream=1 (fix N3).
+# Svuotato dopo il trigger nel finally di _run_job.
+_trigger_downstream_on_cancel: set[int] = set()
+
+
+def mark_complete_downstream_on_cancel(job_id: int) -> None:
+    """Marca un job: quando viene stoppato/cancellato, il workflow downstream
+    parte comunque (qualifier, outreach, ecc.). Usato dall'UI "Stop e completa".
+    """
+    _trigger_downstream_on_cancel.add(job_id)
+
 
 def is_runner_alive(job_id: int) -> bool:
     """Il runner per questo job è ancora vivo in questo processo?
@@ -275,6 +287,10 @@ async def _run_job(job_id: int, task_id: int) -> None:
         elif mode == "outreach":
             from .agent.runner_outreach import run_agent as run_o
             await run_o(task, job_id)
+        elif mode == "outreach_social":
+            from .agent.runner_outreach_social import run_agent as run_os
+            # Apre browser headed (Playwright) → serve proactor thread su Windows.
+            await _run_in_proactor_thread(lambda: run_os(task, job_id), job_id)
         elif mode == "qualifier":
             from .agent.runner_qualifier import run_agent as run_q
             await run_q(task, job_id)
@@ -299,9 +315,17 @@ async def _run_job(job_id: int, task_id: int) -> None:
     finally:
         _running_tasks.pop(job_id, None)
         cur = db.get_job(job_id)
-        # Trigger downstream solo se job done
+        # Trigger downstream se:
+        # - status = done (caso normale), OPPURE
+        # - status = cancelled AND job_id e' nel set _trigger_downstream_on_cancel
+        #   (utente ha scelto "stop e completa workflow" — fix N3)
         try:
-            if cur and (cur.get("status") or "") == "done":
+            status = (cur or {}).get("status") or ""
+            should_trigger = status == "done" or (
+                status == "cancelled" and job_id in _trigger_downstream_on_cancel
+            )
+            _trigger_downstream_on_cancel.discard(job_id)
+            if should_trigger and cur:
                 _after_job_done(
                     job_id,
                     task_id,

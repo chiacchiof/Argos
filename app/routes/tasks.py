@@ -154,6 +154,14 @@ def _form_to_dict(
     rating: str = "",
     notes: str = "",
     status_tag: str = "",
+    # Campi outreach_social (aggiunti 2026-05-12)
+    social_platform: str = "",
+    outreach_intent: str = "",
+    message_template_variants: str = "",
+    max_dms_per_run: int = 30,
+    max_dms_per_session: int = 5,
+    headed: str = "",
+    target_contact_ids: list[str] | None = None,
 ) -> dict:
     return {
         "name": name.strip(),
@@ -196,15 +204,42 @@ def _form_to_dict(
         "rating": (rating or "").strip() or None,
         "notes": (notes or "").strip() or None,
         "status_tag": (status_tag or "").strip().lower() or None,
+        # outreach_social
+        "social_platform": (social_platform or "").strip().lower() or None,
+        "outreach_intent": (outreach_intent or "").strip() or None,
+        "message_template_variants": (message_template_variants or "").strip() or None,
+        "max_dms_per_run": int(max_dms_per_run or 30),
+        "max_dms_per_session": int(max_dms_per_session or 5),
+        "headed": 1 if (str(headed).strip() in ("1", "on", "true", "yes")) else 0,
+        "target_contact_ids": list(target_contact_ids or []),
     }
 
 
 def _form_extra_context() -> dict:
+    # Contacts disponibili per outreach_social, raggruppati per platform.
+    # Limit 500/platform: oltre il quale la UI con checkbox non scala — l'utente
+    # in quel caso lascia vuota la selezione (fallback: tutti i qualified).
+    contacts_by_platform: dict[str, list[dict]] = {}
+    for plat in ("instagram", "tiktok", "facebook"):
+        rows = db.list_contacts_with_social_platform(plat, limit=500)
+        # Forma compatta per il template
+        contacts_by_platform[plat] = [
+            {
+                "id": c["id"],
+                "display_name": (c.get("display_name") or "").strip() or None,
+                "source_domain": c.get("source_domain"),
+                "status": c.get("status"),
+                "url": c.get("_platform_url"),
+                "email": c.get("email"),
+            }
+            for c in rows
+        ]
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
         "llm_providers": list_providers(),
         "env_key_status": env_key_status(),
+        "contacts_by_platform": contacts_by_platform,
     }
 
 
@@ -251,7 +286,17 @@ async def create_task(
     rating: str = Form(""),
     notes: str = Form(""),
     status_tag: str = Form(""),
+    social_platform: str = Form(""),
+    outreach_intent: str = Form(""),
+    message_template_variants: str = Form(""),
+    max_dms_per_run: int = Form(30),
+    max_dms_per_session: int = Form(5),
+    headed: str = Form(""),
 ):
+    form = await request.form()
+    target_contact_ids_raw = (
+        form.getlist("target_contact_ids") if hasattr(form, "getlist") else []
+    )
     payload = _form_to_dict(
         name, description, objective, seed_queries, allowed_domains, blocked_domains,
         max_iterations, model, output_format, cron, agent_mode,
@@ -264,6 +309,13 @@ async def create_task(
         max_discovery_retries,
         browser_llm_provider, browser_llm_model, browser_llm_api_key,
         rating, notes, status_tag,
+        social_platform=social_platform,
+        outreach_intent=outreach_intent,
+        message_template_variants=message_template_variants,
+        max_dms_per_run=max_dms_per_run,
+        max_dms_per_session=max_dms_per_session,
+        headed=headed,
+        target_contact_ids=target_contact_ids_raw,
     )
     try:
         validated = TaskIn(**payload)
@@ -333,7 +385,17 @@ async def update_task(
     rating: str = Form(""),
     notes: str = Form(""),
     status_tag: str = Form(""),
+    social_platform: str = Form(""),
+    outreach_intent: str = Form(""),
+    message_template_variants: str = Form(""),
+    max_dms_per_run: int = Form(30),
+    max_dms_per_session: int = Form(5),
+    headed: str = Form(""),
 ):
+    form = await request.form()
+    target_contact_ids_raw = (
+        form.getlist("target_contact_ids") if hasattr(form, "getlist") else []
+    )
     existing = db.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="task non trovato")
@@ -372,6 +434,13 @@ async def update_task(
         max_discovery_retries,
         browser_llm_provider, browser_llm_model, browser_llm_api_key,
         rating, notes, status_tag,
+        social_platform=social_platform,
+        outreach_intent=outreach_intent,
+        message_template_variants=message_template_variants,
+        max_dms_per_run=max_dms_per_run,
+        max_dms_per_session=max_dms_per_session,
+        headed=headed,
+        target_contact_ids=target_contact_ids_raw,
     )
     try:
         validated = TaskIn(**payload)

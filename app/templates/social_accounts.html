@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Social Accounts — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <div class="section-header">
+    <div>
+      <h2 style="margin:0">📱 Social Accounts (Instagram / TikTok / Facebook)</h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        Account dedicati per outreach automatizzato via DM. <strong>Mai account personali</strong>:
+        rischio ban. Warmup raccomandato 4-6 settimane prima di iniziare DM in produzione.
+      </p>
+    </div>
+  </div>
+
+  {% if not is_secret_configured %}
+  <div class="warning-box">
+    ⚠️ <strong>AGENTSCRAPER_SECRET non configurata</strong>. Aggiungi al file <code>.env</code>:
+    <pre style="margin: 0.4rem 0; background: #fff; padding: 0.4rem; border-radius: 3px;">AGENTSCRAPER_SECRET=cambia-questa-chiave-segreta-lunga-30+-caratteri</pre>
+    Senza questa chiave, le credenziali non possono essere cifrate. Aggiungere account è disabilitato.
+  </div>
+  {% endif %}
+
+  <details class="optional-block" {% if not accounts %}open{% endif %}>
+    <summary>➕ Aggiungi nuovo account</summary>
+    <form method="post" action="/social/accounts" class="add-account-form" style="margin-top: 0.8rem;">
+      <label>Piattaforma
+        <select name="platform" required {% if not is_secret_configured %}disabled{% endif %}>
+          <option value="instagram">Instagram</option>
+          <option value="tiktok">TikTok</option>
+          <option value="facebook">Facebook</option>
+        </select>
+      </label>
+      <label>Username (senza @)
+        <input type="text" name="username" required placeholder="es. anna_marketing"
+               {% if not is_secret_configured %}disabled{% endif %}>
+      </label>
+      <label>Password
+        <input type="password" name="password" required autocomplete="new-password"
+               {% if not is_secret_configured %}disabled{% endif %}>
+        <span class="hint">Cifrata via Fernet (AES128 + HMAC-SHA256) prima del salvataggio. Niente plaintext in DB.</span>
+      </label>
+      <label>Daily DM cap
+        <input type="number" name="daily_dm_cap" value="10" min="1" max="50"
+               {% if not is_secret_configured %}disabled{% endif %}>
+        <span class="hint">Max DM/giorno per questo account. ⚠️ &gt;20 aumenta rischio ban.</span>
+      </label>
+      <label>Proxy label <span class="hint">(opzionale, deve esistere in AGENTSCRAPER_PROXIES env)</span>
+        <input type="text" name="proxy_label" placeholder="ip1"
+               {% if not is_secret_configured %}disabled{% endif %}>
+      </label>
+      <label>Note
+        <textarea name="notes" rows="2" placeholder="Es. account creato 2026-03-15, warmup completato"
+                  {% if not is_secret_configured %}disabled{% endif %}></textarea>
+      </label>
+      <button type="submit" class="btn-primary"
+              {% if not is_secret_configured %}disabled{% endif %}>Aggiungi (cifratura attiva)</button>
+    </form>
+  </details>
+
+  {% if accounts %}
+  <table class="data" style="margin-top: 1.5rem;">
+    <thead>
+      <tr>
+        <th>#</th><th>Piattaforma</th><th>Username</th><th>Status</th>
+        <th title="DM inviati nelle ultime 24h">DMs / 24h</th>
+        <th title="Cap giornaliero">Cap</th>
+        <th>Proxy</th><th>Creato</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in accounts %}
+      <tr {% if a.status in ('quarantine','banned') %}class="row-disabled"{% endif %}>
+        <td>{{ a.id }}</td>
+        <td><code>{{ a.platform }}</code></td>
+        <td><strong>{{ a.username }}</strong></td>
+        <td>
+          {% if a.status == 'active' %}<span class="status status-qualified">active</span>
+          {% elif a.status == 'warming_up' %}<span class="status status-new">warming_up</span>
+          {% elif a.status == 'quarantine' %}<span class="status status-rejected">quarantine</span>
+          {% elif a.status == 'banned' %}<span class="status status-rejected">banned</span>
+          {% else %}<span class="status">{{ a.status }}</span>{% endif %}
+        </td>
+        <td>{{ a.dms_today }}</td>
+        <td>{{ a.daily_dm_cap }}</td>
+        <td><small>{{ a.proxy_label or '—' }}</small></td>
+        <td><small>{{ a.created_at[:10] if a.created_at else '—' }}</small></td>
+        <td class="row-actions">
+          <form method="post" action="/social/accounts/{{ a.id }}/toggle-status" style="display:inline;">
+            {% if a.status == 'active' %}
+              <button type="submit" class="btn-small btn-secondary">⏸ quarantine</button>
+            {% elif a.status in ('quarantine','warming_up') %}
+              <button type="submit" class="btn-small">▶ active</button>
+            {% endif %}
+          </form>
+          <form method="post" action="/social/accounts/{{ a.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Cancellare account #{{ a.id }} ({{ a.platform }}/{{ a.username }})? Anche i log DM saranno cancellati.');">
+            <button type="submit" class="btn-small btn-danger">🗑️</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-top: 1.5rem;">
+    Nessun account ancora. Aggiungilo sopra per iniziare l'outreach automatico social.
+  </p>
+  {% endif %}
+
+  <details class="optional-block" style="margin-top: 1.5rem;">
+    <summary>📖 Come funziona</summary>
+    <ol>
+      <li><strong>Aggiungi account</strong> dedicati (mai personali, mai amministrativi). Account "aged" ≥60 giorni sono più sicuri.</li>
+      <li>L'account viene salvato in stato <code>warming_up</code>: NON usarlo per DM ancora. Periodo raccomandato: 4-6 settimane in cui esegui tu manualmente attività normali (post, like, follow).</li>
+      <li>Quando warmup è completato, clicca <strong>active</strong> per renderlo eligible per DM.</li>
+      <li>Crea un task con <code>agent_mode=outreach_social</code> e seleziona la piattaforma.</li>
+      <li>Il runner usa solo account <code>active</code> del platform selezionato, distribuisce DM in rotation.</li>
+      <li>Se un account riceve <strong>3 challenge consecutivi</strong> → quarantine automatica.</li>
+    </ol>
+  </details>
+</section>
+{% endblock %}

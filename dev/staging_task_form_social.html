@@ -1,0 +1,105 @@
+{# ====================================================================
+   STAGING: sezione UI per task con agent_mode=outreach_social
+   ====================================================================
+
+   Questo è un FRAGMENT da incollare in `app/templates/task_form.html`
+   in una finestra senza job in corso. NON è un file template valido da solo.
+
+   Posizione consigliata: dopo la sezione `<details class="collapsible-section
+   dyn-section" data-modes="outreach_email outreach_telegram">` (configurazione
+   outreach). Idealmente raggruppa social tra le altre modalità outreach.
+
+   Dipende da:
+   1. agent_mode="outreach_social" registrato fra i mode validi
+   2. Campi DB nuovi su tasks (se non già covered da campi esistenti):
+      - social_platform TEXT
+      - outreach_intent TEXT
+      - max_dms_per_run INTEGER
+      - max_dms_per_session INTEGER
+      - headed INTEGER (0/1)
+      Note: `message_template_variants` riusa lo schema esistente di message_template
+      ampliato. Puoi:
+      (a) aggiungere nuova colonna `message_template_variants TEXT` (consigliato),
+      (b) oppure usare il campo esistente `message_template` come singolo esempio.
+
+   3. Link a `/social/accounts` per gestire account social (pagina separata da
+      creare)
+
+   ==================================================================== #}
+
+<details class="collapsible-section dyn-section" data-modes="outreach_social">
+  <summary>Configurazione outreach social <span class="hint">(DM su Instagram / TikTok)</span></summary>
+
+  <div class="warning-box">
+    ⚠️ <strong>Prerequisiti</strong>: account social dedicati (non personali),
+    warmup 4-6 settimane, proxy residenziali, <code>AGENTSCRAPER_SECRET</code> in <code>.env</code>.
+    Vai a <a href="/social/accounts">/social/accounts</a> per aggiungerli.
+  </div>
+
+  <label>Piattaforma
+    <select name="social_platform">
+      <option value="instagram" {% if p.get('social_platform') == 'instagram' %}selected{% endif %}>Instagram</option>
+      <option value="tiktok"    {% if p.get('social_platform') == 'tiktok'    %}selected{% endif %}>TikTok</option>
+    </select>
+  </label>
+
+  <label>Obiettivo dell'outreach <span class="hint">(spiega cosa offri, chi sei, perché contatti)</span>
+    <textarea name="outreach_intent" rows="3" placeholder="Es. Sono un consulente di content optimization, offro alle creator del settore una review gratuita del profilo per aumentare engagement.">{{ p.get('outreach_intent', '') }}</textarea>
+  </label>
+
+  <label>Esempi di stile <span class="hint">(uno per blocco, separati da una riga <code>---</code>. L'LLM li userà come ispirazione, NON come template letterale)</span>
+    <textarea name="message_template_variants" rows="10" placeholder="Ciao Sara, ho dato un'occhiata al tuo profilo e mi piace molto come strutturi le foto. Volevo proporti una piccola review gratis del tuo posizionamento. Ti va di parlarne?
+---
+Hey! Sono X, lavoro con creator come te per migliorare la presenza online. Ho qualche idea specifica per il tuo profilo, se ti interessa ti scrivo i dettagli.
+---
+Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il tuo. Volevo proporti una consulenza breve, gratuita, sulla strategia contenuti. Disponibile?">{{ p.get('message_template_variants', '') }}</textarea>
+  </label>
+
+  <details class="sub-section">
+    <summary>Limiti e velocità <span class="hint">(parametri anti-ban — modificare con cautela)</span></summary>
+
+    <label>Max DM totali per esecuzione del task
+      <input type="number" name="max_dms_per_run" min="1" max="200" value="{{ p.get('max_dms_per_run', 30) }}">
+      <span class="hint">Default 30. Distribuiti su più sessioni se {{ '>' }} max_dms_per_session.</span>
+    </label>
+
+    <label>Max DM per sessione browser
+      <input type="number" name="max_dms_per_session" min="1" max="15" value="{{ p.get('max_dms_per_session', 5) }}">
+      <span class="hint">Default 5. Una "sessione" = login → warmup → N DM → logout. Mai > 10-15.</span>
+    </label>
+
+    <label class="inline-checkbox">
+      <input type="checkbox" name="headed" value="1" {% if p.get('headed', 1) %}checked{% endif %}>
+      <strong>Browser visibile (headed)</strong>
+      <span class="hint">Raccomandato: headless è facilmente detectato. Headed richiede che il PC sia attivo (no remote).</span>
+    </label>
+  </details>
+
+  <p class="muted small">
+    💡 <strong>Filtro target</strong>: il runner cerca automaticamente fra i contacts
+    <code>qualified</code> quelli con un URL <code>social[platform=<em>selected</em>]</code>.
+    Es. su Instagram, prende solo contacts che hanno un Instagram URL nei social estratti.
+  </p>
+
+  <p class="muted small">
+    📊 <strong>Stato account</strong>: <a href="/social/accounts">vedi dashboard account</a>
+    (status, dms_today, quarantine, ecc.)
+  </p>
+</details>
+
+{# ====================================================================
+   CSS aggiuntivo da incollare in static/style.css (alla fine):
+   ====================================================================
+
+.warning-box {
+  background: #fef3c7; border-left: 4px solid #f59e0b;
+  padding: 0.6rem 1rem; margin: 0.8rem 0; border-radius: 4px;
+  font-size: 0.92em;
+}
+.sub-section {
+  margin: 1rem 0 1rem 1rem; padding: 0.5rem 0;
+  border-left: 2px solid #e2e8f0;
+}
+.sub-section summary { padding-left: 0.5rem; cursor: pointer; }
+
+==================================================================== #}

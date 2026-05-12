@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,6 +9,12 @@ DATA_DIR = PROJECT_ROOT / "data"
 RESULTS_DIR = DATA_DIR / "results"
 UPLOADS_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "agentscraper.db"
+
+
+# Carica .env in os.environ per le variabili NON coperte da Settings (es.
+# AGENTSCRAPER_SECRET, AGENTSCRAPER_PROXIES, OPENAI_API_KEY se serve fuori
+# da Settings). pydantic-settings legge .env solo per i suoi campi.
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
 class Settings(BaseSettings):

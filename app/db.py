@@ -407,6 +407,74 @@ def init_db() -> None:
             con.execute("ALTER TABLE contacts ADD COLUMN sitoweb TEXT")
         if "social_json" not in ccols:
             con.execute("ALTER TABLE contacts ADD COLUMN social_json TEXT")
+
+        # tasks: campi per outreach_social
+        if "social_platform" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN social_platform TEXT")
+        if "outreach_intent" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN outreach_intent TEXT")
+        if "message_template_variants" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN message_template_variants TEXT")
+        if "max_dms_per_run" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN max_dms_per_run INTEGER NOT NULL DEFAULT 30")
+        if "max_dms_per_session" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN max_dms_per_session INTEGER NOT NULL DEFAULT 5")
+        if "headed" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN headed INTEGER NOT NULL DEFAULT 1")
+        # target_contact_ids: JSON array di contact.id selezionati esplicitamente
+        # come target per outreach_social. Se NULL/vuoto, il runner usa tutti i
+        # contacts qualified con social[platform] popolato.
+        if "target_contact_ids" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN target_contact_ids TEXT")
+
+        # social_accounts: account social per outreach DM
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS social_accounts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              uuid TEXT UNIQUE NOT NULL,
+              platform TEXT NOT NULL,
+              username TEXT NOT NULL,
+              encrypted_password BLOB NOT NULL,
+              proxy_label TEXT,
+              daily_dm_cap INTEGER NOT NULL DEFAULT 10,
+              status TEXT NOT NULL DEFAULT 'active',
+              warmup_started_at TEXT,
+              warmup_days_target INTEGER DEFAULT 30,
+              notes TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(platform, username)
+            )
+        """)
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_social_accounts_platform_status "
+            "ON social_accounts(platform, status)"
+        )
+
+        # social_dm_log: log dettagliato di ogni DM inviato (audit + analytics)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS social_dm_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              account_id INTEGER NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+              job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+              target_contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+              target_platform TEXT NOT NULL,
+              target_username TEXT NOT NULL,
+              message TEXT NOT NULL,
+              sent_at TEXT NOT NULL,
+              ok INTEGER NOT NULL,
+              reason TEXT,
+              health_post TEXT
+            )
+        """)
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_social_dm_log_account "
+            "ON social_dm_log(account_id, sent_at)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_social_dm_log_target "
+            "ON social_dm_log(target_contact_id)"
+        )
         # Indici su workflow_edges (creati qui dopo che workflow_id esiste sicuramente)
         con.execute("CREATE INDEX IF NOT EXISTS idx_workflow_edges_from ON workflow_edges(from_task_id, enabled)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflow_id)")
@@ -596,6 +664,14 @@ def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
     d["allowed_domains"] = _load_list(d.get("allowed_domains"))
     d["blocked_domains"] = _load_list(d.get("blocked_domains"))
     d["message_channels"] = _load_list(d.get("message_channels"))
+    raw_ids = _load_list(d.get("target_contact_ids"))
+    coerced_ids: list[int] = []
+    for v in raw_ids:
+        try:
+            coerced_ids.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    d["target_contact_ids"] = coerced_ids
     return d
 
 
@@ -650,8 +726,11 @@ def create_task(data: dict[str, Any]) -> int:
                                   discovery_llm_api_key, max_discovery_retries,
                                   browser_llm_provider, browser_llm_model, browser_llm_api_key,
                                   rating, notes, status_tag,
+                                  social_platform, outreach_intent, message_template_variants,
+                                  max_dms_per_run, max_dms_per_session, headed,
+                                  target_contact_ids,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -694,6 +773,13 @@ def create_task(data: dict[str, Any]) -> int:
                 _coerce_rating(data.get("rating")),
                 (data.get("notes") or "").strip() or None,
                 _coerce_status_tag(data.get("status_tag")),
+                data.get("social_platform") or None,
+                data.get("outreach_intent") or None,
+                data.get("message_template_variants") or None,
+                int(data.get("max_dms_per_run") or 30),
+                int(data.get("max_dms_per_session") or 5),
+                int(data.get("headed") or 0),
+                _dump_list([int(x) for x in (data.get("target_contact_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
                 ts,
                 ts,
             ),
@@ -721,6 +807,9 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 discovery_llm_api_key = ?, max_discovery_retries = ?,
                 browser_llm_provider = ?, browser_llm_model = ?, browser_llm_api_key = ?,
                 rating = ?, notes = ?, status_tag = ?,
+                social_platform = ?, outreach_intent = ?, message_template_variants = ?,
+                max_dms_per_run = ?, max_dms_per_session = ?, headed = ?,
+                target_contact_ids = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -765,6 +854,13 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 _coerce_rating(data.get("rating")),
                 (data.get("notes") or "").strip() or None,
                 _coerce_status_tag(data.get("status_tag")),
+                data.get("social_platform") or None,
+                data.get("outreach_intent") or None,
+                data.get("message_template_variants") or None,
+                int(data.get("max_dms_per_run") or 30),
+                int(data.get("max_dms_per_session") or 5),
+                int(data.get("headed") or 0),
+                _dump_list([int(x) for x in (data.get("target_contact_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
                 now_iso(),
                 task_id,
             ),
@@ -1173,12 +1269,28 @@ def get_contact(contact_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def count_contacts(
-    status: str | None = None,
-    source_task_id: int | None = None,
-) -> int:
-    """Conta i contatti che matchano i filtri di list_contacts. Per paginazione UI."""
-    sql = "SELECT COUNT(*) FROM contacts WHERE 1=1"
+def _build_contacts_filters(
+    status: str | None,
+    source_task_id: int | None,
+    source_domain: str | None,
+    search: str | None,
+    channel: str | None,
+    score_min: int | None,
+) -> tuple[str, list[Any]]:
+    """Costruisce la clausola WHERE condivisa da list_contacts + count_contacts.
+
+    `channel`: filtra contacts con almeno un canale del tipo specificato.
+       - "email": email NOT NULL/empty
+       - "telegram": telegram_username o telegram_chat_id
+       - "whatsapp": whatsapp NOT NULL/empty
+       - "sitoweb": sitoweb NOT NULL/empty
+       - "social": social_json valorizzato (lista non vuota)
+       - "instagram"|"tiktok"|"facebook": social_json contiene quella platform
+       - "any": almeno UN canale di contatto (esclude contatti "vuoti")
+    `search`: LIKE %q% su display_name, email, telegram_username, whatsapp,
+       sitoweb, source_url, source_domain, notes.
+    """
+    sql = " WHERE 1=1"
     args: list[Any] = []
     if status:
         sql += " AND status = ?"
@@ -1186,6 +1298,71 @@ def count_contacts(
     if source_task_id is not None:
         sql += " AND source_task_id = ?"
         args.append(source_task_id)
+    if source_domain:
+        sql += " AND source_domain = ?"
+        args.append(source_domain)
+    if search:
+        like = f"%{search.strip()}%"
+        sql += (
+            " AND ("
+            "  LOWER(COALESCE(display_name,'')) LIKE LOWER(?) OR"
+            "  LOWER(COALESCE(email,'')) LIKE LOWER(?) OR"
+            "  LOWER(COALESCE(telegram_username,'')) LIKE LOWER(?) OR"
+            "  LOWER(COALESCE(whatsapp,'')) LIKE LOWER(?) OR"
+            "  LOWER(COALESCE(sitoweb,'')) LIKE LOWER(?) OR"
+            "  LOWER(COALESCE(source_url,'')) LIKE LOWER(?) OR"
+            "  LOWER(COALESCE(source_domain,'')) LIKE LOWER(?) OR"
+            "  LOWER(COALESCE(notes,'')) LIKE LOWER(?) OR"
+            "  LOWER(COALESCE(social_json,'')) LIKE LOWER(?)"
+            ")"
+        )
+        args.extend([like] * 9)
+    if channel:
+        ch = channel.strip().lower()
+        if ch == "email":
+            sql += " AND email IS NOT NULL AND email != ''"
+        elif ch == "telegram":
+            sql += " AND ((telegram_username IS NOT NULL AND telegram_username != '') OR telegram_chat_id IS NOT NULL)"
+        elif ch == "whatsapp":
+            sql += " AND whatsapp IS NOT NULL AND whatsapp != ''"
+        elif ch == "sitoweb":
+            sql += " AND sitoweb IS NOT NULL AND sitoweb != ''"
+        elif ch == "social":
+            sql += " AND social_json IS NOT NULL AND social_json != '' AND social_json != '[]'"
+        elif ch in ("instagram", "tiktok", "facebook"):
+            # JSON search semplice: cerca '"platform": "<name>"' nella stringa
+            sql += " AND social_json LIKE ?"
+            args.append(f'%"platform": "{ch}"%')
+        elif ch == "any":
+            sql += (
+                " AND ("
+                "  (email IS NOT NULL AND email != '') OR"
+                "  (telegram_username IS NOT NULL AND telegram_username != '') OR"
+                "  telegram_chat_id IS NOT NULL OR"
+                "  (whatsapp IS NOT NULL AND whatsapp != '') OR"
+                "  (sitoweb IS NOT NULL AND sitoweb != '') OR"
+                "  (social_json IS NOT NULL AND social_json != '' AND social_json != '[]')"
+                ")"
+            )
+    if score_min is not None:
+        sql += " AND qualifier_score >= ?"
+        args.append(int(score_min))
+    return sql, args
+
+
+def count_contacts(
+    status: str | None = None,
+    source_task_id: int | None = None,
+    source_domain: str | None = None,
+    search: str | None = None,
+    channel: str | None = None,
+    score_min: int | None = None,
+) -> int:
+    """Conta i contatti che matchano i filtri di list_contacts. Per paginazione UI."""
+    where_sql, args = _build_contacts_filters(
+        status, source_task_id, source_domain, search, channel, score_min
+    )
+    sql = "SELECT COUNT(*) FROM contacts" + where_sql
     with connect() as con:
         return int(con.execute(sql, args).fetchone()[0])
 
@@ -1193,23 +1370,90 @@ def count_contacts(
 def list_contacts(
     status: str | None = None,
     source_task_id: int | None = None,
+    source_domain: str | None = None,
+    search: str | None = None,
+    channel: str | None = None,
+    score_min: int | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM contacts WHERE 1=1"
-    args: list[Any] = []
-    if status:
-        sql += " AND status = ?"
-        args.append(status)
-    if source_task_id is not None:
-        sql += " AND source_task_id = ?"
-        args.append(source_task_id)
-    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
-    args.append(limit)
-    args.append(max(0, int(offset)))
+    where_sql, args = _build_contacts_filters(
+        status, source_task_id, source_domain, search, channel, score_min
+    )
+    sql = "SELECT * FROM contacts" + where_sql + " ORDER BY id DESC LIMIT ? OFFSET ?"
+    args.extend([limit, max(0, int(offset))])
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_contacts_with_social_platform(
+    platform: str, limit: int = 500
+) -> list[dict[str, Any]]:
+    """Ritorna contacts (qualsiasi status, esclusi opt-out/banned) il cui
+    `social_json` contiene almeno un entry per `platform`.
+
+    Filtro fatto in Python perché social_json è opaco a SQL. Pensato per
+    popolare la UI di selezione target outreach_social: l'utente sceglie
+    esplicitamente quali contattare fra quelli disponibili per la piattaforma.
+    """
+    plat = (platform or "").strip().lower()
+    if plat not in ("instagram", "tiktok", "facebook"):
+        return []
+    sql = (
+        "SELECT * FROM contacts "
+        "WHERE social_json IS NOT NULL AND social_json != '' "
+        "AND status NOT IN ('optedout','banned') "
+        "ORDER BY id DESC LIMIT ?"
+    )
+    with connect() as con:
+        rows = con.execute(sql, (max(1, int(limit)),)).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        soc_raw = d.get("social_json")
+        try:
+            socials = json.loads(soc_raw) if soc_raw else []
+        except (json.JSONDecodeError, TypeError):
+            continue
+        platform_url: str | None = None
+        for s in (socials or []):
+            if not isinstance(s, dict):
+                continue
+            if (s.get("platform") or "").lower() != plat:
+                continue
+            u = (s.get("url") or "").strip()
+            if u:
+                platform_url = u
+                break
+        if platform_url:
+            d["_platform_url"] = platform_url
+            out.append(d)
+    return out
+
+
+def get_contacts_by_ids(ids: list[int]) -> list[dict[str, Any]]:
+    """Recupera contatti per lista di ID. Niente filtri su status."""
+    clean = [int(i) for i in ids if str(i).strip().lstrip("-").isdigit()]
+    if not clean:
+        return []
+    placeholders = ",".join("?" for _ in clean)
+    sql = f"SELECT * FROM contacts WHERE id IN ({placeholders})"
+    with connect() as con:
+        rows = con.execute(sql, clean).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_contact_source_domains(limit: int = 100) -> list[tuple[str, int]]:
+    """Lista dei domini di provenienza piu' frequenti (per dropdown filtro UI)."""
+    sql = (
+        "SELECT source_domain, COUNT(*) AS n FROM contacts "
+        "WHERE source_domain IS NOT NULL AND source_domain != '' "
+        "GROUP BY source_domain ORDER BY n DESC LIMIT ?"
+    )
+    with connect() as con:
+        rows = con.execute(sql, (limit,)).fetchall()
+    return [(r["source_domain"], int(r["n"])) for r in rows]
 
 
 def update_contact_status(contact_id: int, status: str, notes: str | None = None) -> None:
@@ -2189,3 +2433,113 @@ def list_orchestrator_messages(limit: int = 100) -> list[dict[str, Any]]:
 def clear_orchestrator_messages() -> None:
     with connect() as con:
         con.execute("DELETE FROM orchestrator_messages")
+
+
+# ===========================================================================
+# Social accounts + DM log (outreach social runner)
+# ===========================================================================
+
+def create_social_account(data: dict) -> int:
+    """Insert social_account.  deve essere bytes Fernet.
+
+    Required keys: uuid, platform, username, encrypted_password.
+    Optional: proxy_label, daily_dm_cap, status, notes.
+    """
+    ts = now_iso()
+    with connect() as con:
+        cur = con.execute(
+            """INSERT INTO social_accounts
+            (uuid, platform, username, encrypted_password, proxy_label,
+             daily_dm_cap, status, warmup_started_at, warmup_days_target,
+             notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                data["uuid"], data["platform"], data["username"],
+                data["encrypted_password"], data.get("proxy_label"),
+                int(data.get("daily_dm_cap", 10)),
+                data.get("status", "warming_up"),
+                data.get("warmup_started_at"),
+                int(data.get("warmup_days_target", 30)),
+                data.get("notes"),
+                ts, ts,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_social_accounts(platform: str | None = None, status: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM social_accounts WHERE 1=1"
+    args: list = []
+    if platform:
+        sql += " AND platform = ?"; args.append(platform)
+    if status:
+        sql += " AND status = ?"; args.append(status)
+    sql += " ORDER BY id DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_social_account(account_id: int) -> dict | None:
+    with connect() as con:
+        r = con.execute("SELECT * FROM social_accounts WHERE id = ?", (account_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def update_social_account(account_id: int, **fields) -> None:
+    if not fields: return
+    sets = [f"{k} = ?" for k in fields]
+    sql = f"UPDATE social_accounts SET {', '.join(sets)}, updated_at = ? WHERE id = ?"
+    with connect() as con:
+        con.execute(sql, (*fields.values(), now_iso(), account_id))
+
+
+def delete_social_account(account_id: int) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM social_accounts WHERE id = ?", (account_id,))
+
+
+def insert_social_dm_log(data: dict) -> int:
+    with connect() as con:
+        cur = con.execute(
+            """INSERT INTO social_dm_log
+            (account_id, job_id, target_contact_id, target_platform,
+             target_username, message, sent_at, ok, reason, health_post)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                int(data["account_id"]),
+                data.get("job_id"),
+                data.get("target_contact_id"),
+                data["target_platform"],
+                data["target_username"],
+                data["message"],
+                data.get("sent_at") or now_iso(),
+                1 if data.get("ok") else 0,
+                data.get("reason"),
+                data.get("health_post"),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_social_dm_log(account_id: int | None = None, limit: int = 100) -> list[dict]:
+    sql = "SELECT * FROM social_dm_log"
+    args: list = []
+    if account_id is not None:
+        sql += " WHERE account_id = ?"; args.append(account_id)
+    sql += " ORDER BY id DESC LIMIT ?"; args.append(limit)
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_social_dms_today(account_id: int) -> int:
+    """Numero di DM inviati con ok=1 nelle ultime 24h da questo account."""
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    with connect() as con:
+        r = con.execute(
+            "SELECT COUNT(*) FROM social_dm_log WHERE account_id = ? AND ok = 1 AND sent_at >= ?",
+            (account_id, cutoff),
+        ).fetchone()
+    return int(r[0]) if r else 0

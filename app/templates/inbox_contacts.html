@@ -2,28 +2,149 @@
 {% block title %}Contatti — AgentScraper{% endblock %}
 {% block content %}
 <section>
-  <h2>👥 Contatti</h2>
-  <p>
-    <a href="/inbox">← Inbox</a>
-  </p>
+  <div class="section-header">
+    <div>
+      <h2 style="margin:0">👥 Contatti</h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        <a href="/inbox">← Inbox</a> &middot;
+        <strong>{{ total }}</strong> contatti
+        {% if filter_status or filter_q or filter_channel or filter_source_domain or filter_score_min != '' %}
+          (filtrati)
+        {% endif %}
+      </p>
+    </div>
+    <button type="button" class="btn-primary" onclick="document.getElementById('add-contact-modal').classList.add('open');">
+      ➕ Aggiungi contatto
+    </button>
+  </div>
 
   {% if request.query_params.get('flash') %}
   <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
   {% endif %}
 
-  <form method="get" class="filters">
-    <label>Stato
-      <select name="status" onchange="this.form.submit()">
-        <option value="">tutti</option>
-        <option value="new" {% if filter_status=='new' %}selected{% endif %}>new</option>
-        <option value="qualified" {% if filter_status=='qualified' %}selected{% endif %}>qualified</option>
-        <option value="rejected" {% if filter_status=='rejected' %}selected{% endif %}>rejected</option>
-        <option value="contacted" {% if filter_status=='contacted' %}selected{% endif %}>contacted</option>
-        <option value="replied" {% if filter_status=='replied' %}selected{% endif %}>replied</option>
-        <option value="optedout" {% if filter_status=='optedout' %}selected{% endif %}>optedout</option>
-      </select>
-    </label>
+  {# Search bar + filtri avanzati #}
+  <form method="get" class="contacts-search">
+    <div class="search-row">
+      <input type="search" name="q" value="{{ filter_q }}" placeholder="🔍 Cerca nome, email, telegram, dominio, note…" class="search-input">
+      <button type="submit" class="btn-primary">Cerca</button>
+      {% if filter_q or filter_channel or filter_source_domain or filter_score_min != '' %}
+      <a href="/inbox/contacts{% if filter_status %}?status={{ filter_status }}{% endif %}" class="btn-link">✕ Reset filtri</a>
+      {% endif %}
+    </div>
+
+    <div class="filter-row">
+      <label>Stato
+        <select name="status" onchange="this.form.submit()">
+          <option value="">tutti</option>
+          <option value="new" {% if filter_status=='new' %}selected{% endif %}>new</option>
+          <option value="qualified" {% if filter_status=='qualified' %}selected{% endif %}>qualified</option>
+          <option value="rejected" {% if filter_status=='rejected' %}selected{% endif %}>rejected</option>
+          <option value="contacted" {% if filter_status=='contacted' %}selected{% endif %}>contacted</option>
+          <option value="replied" {% if filter_status=='replied' %}selected{% endif %}>replied</option>
+          <option value="optedout" {% if filter_status=='optedout' %}selected{% endif %}>optedout</option>
+        </select>
+      </label>
+
+      <label>Canale
+        <select name="channel" onchange="this.form.submit()">
+          <option value="">qualsiasi</option>
+          <option value="any"       {% if filter_channel=='any'       %}selected{% endif %}>almeno un canale</option>
+          <option value="email"     {% if filter_channel=='email'     %}selected{% endif %}>✉️ email</option>
+          <option value="telegram"  {% if filter_channel=='telegram'  %}selected{% endif %}>💬 telegram</option>
+          <option value="whatsapp"  {% if filter_channel=='whatsapp'  %}selected{% endif %}>📱 whatsapp</option>
+          <option value="sitoweb"   {% if filter_channel=='sitoweb'   %}selected{% endif %}>🌐 sitoweb</option>
+          <option value="social"    {% if filter_channel=='social'    %}selected{% endif %}>📷 qualsiasi social</option>
+          <option value="instagram" {% if filter_channel=='instagram' %}selected{% endif %}>📷 instagram</option>
+          <option value="tiktok"    {% if filter_channel=='tiktok'    %}selected{% endif %}>📷 tiktok</option>
+          <option value="facebook"  {% if filter_channel=='facebook'  %}selected{% endif %}>📷 facebook</option>
+        </select>
+      </label>
+
+      <label>Dominio sorgente
+        <select name="source_domain" onchange="this.form.submit()">
+          <option value="">tutti</option>
+          {% for dom, n in available_domains %}
+            <option value="{{ dom }}" {% if filter_source_domain==dom %}selected{% endif %}>{{ dom }} ({{ n }})</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>Score minimo
+        <select name="score_min" onchange="this.form.submit()">
+          <option value="">qualsiasi</option>
+          {% for s in [5, 6, 7, 8, 9, 10] %}
+            <option value="{{ s }}" {% if filter_score_min == s %}selected{% endif %}>≥ {{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
   </form>
+
+  {# Modal aggiungi contatto #}
+  <div id="add-contact-modal" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('open');">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 style="margin:0">➕ Aggiungi contatto manuale</h3>
+        <button type="button" class="btn-link" onclick="document.getElementById('add-contact-modal').classList.remove('open');">✕</button>
+      </div>
+      <form method="post" action="/inbox/contacts/add" class="add-contact-form">
+        <label>Nome / display name
+          <input type="text" name="display_name" placeholder="Es. Mario Rossi">
+        </label>
+
+        <fieldset class="channels-fieldset">
+          <legend>Canali di contatto <span class="hint">(almeno UNO obbligatorio)</span></legend>
+
+          <label>✉️ Email
+            <input type="email" name="email" placeholder="mario@example.com">
+          </label>
+          <label>💬 Telegram username <span class="hint">(senza @)</span>
+            <input type="text" name="telegram_username" placeholder="mariorossi">
+          </label>
+          <label>📱 WhatsApp <span class="hint">(numero internazionale)</span>
+            <input type="tel" name="whatsapp" placeholder="+39 333 1234567">
+          </label>
+          <label>🌐 Sitoweb
+            <input type="url" name="sitoweb" placeholder="https://mariorossi.it">
+          </label>
+          <label>📷 Instagram URL
+            <input type="url" name="instagram_url" placeholder="https://instagram.com/mariorossi">
+          </label>
+          <label>📷 TikTok URL
+            <input type="url" name="tiktok_url" placeholder="https://tiktok.com/@mariorossi">
+          </label>
+          <label>📷 Facebook URL
+            <input type="url" name="facebook_url" placeholder="https://facebook.com/mariorossi">
+          </label>
+        </fieldset>
+
+        <details class="optional-block">
+          <summary>Sorgente e note (opzionale)</summary>
+          <label>URL sorgente <span class="hint">(da dove viene il contatto, se applicabile)</span>
+            <input type="url" name="source_url" placeholder="https://example.com/profilo">
+          </label>
+          <label>Dominio sorgente <span class="hint">(es. "manual", "linkedin", ecc.)</span>
+            <input type="text" name="source_domain" placeholder="manual">
+          </label>
+          <label>Note
+            <textarea name="notes" rows="3" placeholder="Note interne sul contatto"></textarea>
+          </label>
+          <label>Status iniziale
+            <select name="status">
+              <option value="qualified" selected>qualified (pronto per outreach)</option>
+              <option value="new">new</option>
+              <option value="contacted">contacted</option>
+            </select>
+          </label>
+        </details>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-link" onclick="document.getElementById('add-contact-modal').classList.remove('open');">Annulla</button>
+          <button type="submit" class="btn-primary">💾 Salva contatto</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   {# Legenda canali — distingue canali outreach automatici da manuali #}
   <details class="channel-legend">
@@ -33,12 +154,8 @@
       <li><span class="ch-icon ch-auto" title="Outreach automatico">💬</span> <strong>Telegram</strong> — outreach automatico (task <code>outreach_telegram</code>)</li>
       <li><span class="ch-icon ch-manual" title="Outreach manuale">📱</span> <strong>WhatsApp</strong> — outreach manuale (in roadmap: Twilio API o WA Web automation)</li>
       <li><span class="ch-icon ch-manual" title="Outreach manuale">🌐</span> <strong>Sitoweb</strong> — outreach manuale (form contact sul sito)</li>
-      <li><span class="ch-icon ch-manual" title="Outreach manuale">📷</span> <strong>Social</strong> (Instagram/Twitter/TikTok/Facebook) — outreach manuale (in roadmap: DM via Playwright)</li>
+      <li><span class="ch-icon ch-manual" title="Outreach manuale">📷</span> <strong>Social</strong> (Instagram/TikTok/Facebook) — outreach automatico via task <code>outreach_social</code></li>
     </ul>
-    <p class="muted small">
-      <span class="ch-icon ch-auto">●</span> = canale automatizzato già supportato dal framework<br>
-      <span class="ch-icon ch-manual">●</span> = canale presente nei dati ma outreach automatico non ancora implementato (richiede integrazione futura)
-    </p>
   </details>
 
   {% if contacts %}
@@ -52,62 +169,134 @@
       <span class="bulk-count" data-bulk-count>0 selezionati</span>
       <button type="submit" class="btn-danger-inline" data-bulk-submit disabled>🗑️ Cancella selezionati</button>
     </div>
-  <table class="data">
+  <table class="data contacts-table">
     <thead>
       <tr>
         <th class="bulk-col"><span class="visually-hidden">Seleziona</span></th>
-        <th>#</th><th>Nome</th><th>Canali</th><th>Email</th><th>Telegram</th>
-        <th>Altro</th><th>Status</th><th title="Score qualifier (0-10, da LLM). Soglia qualified: ≥5.">Score</th><th>Sorgente</th><th></th>
+        <th class="col-id">#</th>
+        <th class="col-contact">Contatto</th>
+        <th class="col-channels">Canali di outreach</th>
+        <th class="col-score" title="Score qualifier (0-10, da LLM). Soglia qualified: ≥5.">Score</th>
+        <th class="col-status">Status</th>
+        <th class="col-actions"></th>
       </tr>
     </thead>
     <tbody>
       {% for c in contacts %}
+      {% set socials = c.social_json | safe_loads %}
       <tr>
         <td><input type="checkbox" name="contact_ids" value="{{ c.id }}" data-bulk-row></td>
-        <td>{{ c.id }}</td>
-        <td>{{ c.display_name or '—' }}</td>
-        <td class="channels-cell">
-          {% if c.email %}<span class="ch-icon ch-auto" title="Email: {{ c.email }}">✉️</span>{% endif %}
-          {% if c.telegram_username or c.telegram_chat_id %}<span class="ch-icon ch-auto" title="Telegram: @{{ c.telegram_username or c.telegram_chat_id }}">💬</span>{% endif %}
-          {% if c.whatsapp %}<span class="ch-icon ch-manual" title="WhatsApp: {{ c.whatsapp }} (outreach manuale)">📱</span>{% endif %}
-          {% if c.sitoweb %}<span class="ch-icon ch-manual" title="Sitoweb: {{ c.sitoweb }} (outreach manuale)">🌐</span>{% endif %}
-          {% if c.social_json %}<span class="ch-icon ch-manual" title="Social (outreach manuale)">📷</span>{% endif %}
-          {% if not (c.email or c.telegram_username or c.telegram_chat_id or c.whatsapp or c.sitoweb or c.social_json) %}<span class="muted">—</span>{% endif %}
-        </td>
-        <td>{% if c.email %}<code>{{ c.email }}</code>{% else %}—{% endif %}</td>
-        <td>
-          {% if c.telegram_username %}@{{ c.telegram_username }}{% endif %}
-          {% if c.telegram_chat_id %}<small class="muted">chat:{{ c.telegram_chat_id }}</small>{% endif %}
-          {% if not c.telegram_username and not c.telegram_chat_id %}—{% endif %}
-        </td>
-        <td class="other-channels">
-          {% if c.whatsapp %}<div><small><strong>WA:</strong> <code>{{ c.whatsapp }}</code></small></div>{% endif %}
-          {% if c.sitoweb %}<div><small><strong>Web:</strong> <a href="{{ c.sitoweb }}" target="_blank" rel="noopener">{{ c.sitoweb[:35] }}{% if c.sitoweb|length > 35 %}…{% endif %}</a></small></div>{% endif %}
-          {% if c.social_json %}
-            {% set socials = c.social_json | safe_loads %}
-            {% if socials %}
-              {% for s in socials[:3] %}
-                <div><small><strong>{{ s.platform or '?' }}:</strong> <a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.url[:35] }}{% if s.url|length > 35 %}…{% endif %}</a></small></div>
-              {% endfor %}
-              {% if socials|length > 3 %}<div><small class="muted">+{{ socials|length - 3 }} altri</small></div>{% endif %}
+        <td><small class="muted">{{ c.id }}</small></td>
+
+        {# CONTATTO: nome + sorgente compatti #}
+        <td class="col-contact">
+          <div class="contact-name">
+            {% if c.display_name %}
+              <strong>{{ c.display_name }}</strong>
+            {% else %}
+              <span class="muted">(senza nome)</span>
             {% endif %}
+          </div>
+          {% if c.source_url or c.source_domain %}
+          <div class="contact-source">
+            <small class="muted">da</small>
+            {% if c.source_url %}
+            <a href="{{ c.source_url }}" target="_blank" rel="noopener" title="{{ c.source_url }}">
+              {{ c.source_domain or 'link' }}
+            </a>
+            {% else %}
+            <small>{{ c.source_domain }}</small>
+            {% endif %}
+          </div>
           {% endif %}
-          {% if not (c.whatsapp or c.sitoweb or c.social_json) %}—{% endif %}
         </td>
-        <td><span class="status status-{{ c.status }}">{{ c.status }}</span></td>
-        <td>{% if c.qualifier_score is not none %}<span class="score-badge score-{{ 'high' if c.qualifier_score >= 8 else 'mid' if c.qualifier_score >= 5 else 'low' }}" title="Valutazione LLM 0-10. ≥5=qualified.">{{ c.qualifier_score }}/10</span>{% else %}—{% endif %}</td>
-        <td><small>{% if c.source_url %}<a href="{{ c.source_url }}" target="_blank" rel="noopener">{{ c.source_domain or 'link' }}</a>{% else %}—{% endif %}</small></td>
-        <td class="row-actions">
+
+        {# CANALI: una cella unica con icona + valore, mostra solo i canali popolati #}
+        <td class="col-channels">
+          <ul class="channel-list">
+            {% if c.email %}
+            <li title="Email">
+              <span class="ch-icon ch-auto">✉️</span>
+              <a href="mailto:{{ c.email }}"><code>{{ c.email }}</code></a>
+            </li>
+            {% endif %}
+
+            {% if c.telegram_username or c.telegram_chat_id %}
+            <li title="Telegram">
+              <span class="ch-icon ch-auto">💬</span>
+              {% if c.telegram_username %}
+              <a href="https://t.me/{{ c.telegram_username }}" target="_blank" rel="noopener">@{{ c.telegram_username }}</a>
+              {% else %}
+              <code>chat: {{ c.telegram_chat_id }}</code>
+              {% endif %}
+            </li>
+            {% endif %}
+
+            {% if c.whatsapp %}
+            <li title="WhatsApp (outreach manuale)">
+              <span class="ch-icon ch-manual">📱</span>
+              {% set wa_clean = c.whatsapp | replace(' ', '') | replace('+', '') | replace('-', '') %}
+              <a href="https://wa.me/{{ wa_clean }}" target="_blank" rel="noopener"><code>{{ c.whatsapp }}</code></a>
+            </li>
+            {% endif %}
+
+            {% if c.sitoweb %}
+            <li title="Sito web personale">
+              <span class="ch-icon ch-manual">🌐</span>
+              <a href="{{ c.sitoweb }}" target="_blank" rel="noopener" title="{{ c.sitoweb }}">
+                {{ c.sitoweb | replace('https://', '') | replace('http://', '') | truncate(40, true, '…') }}
+              </a>
+            </li>
+            {% endif %}
+
+            {% if socials %}
+              {% for s in socials %}
+              <li title="{{ s.platform }} (outreach via task outreach_social)">
+                <span class="ch-icon ch-auto">📷</span>
+                <a href="{{ s.url }}" target="_blank" rel="noopener" title="{{ s.url }}">
+                  <strong>{{ s.platform or '?' }}</strong>
+                  <span class="muted">{{ s.url | replace('https://', '') | replace('http://', '') | replace('www.', '') | truncate(32, true, '…') }}</span>
+                </a>
+              </li>
+              {% endfor %}
+            {% endif %}
+
+            {% if not (c.email or c.telegram_username or c.telegram_chat_id or c.whatsapp or c.sitoweb or socials) %}
+            <li class="muted">— nessun canale</li>
+            {% endif %}
+          </ul>
+        </td>
+
+        <td class="col-score">
+          {% if c.qualifier_score is not none %}
+            <span class="score-badge score-{{ 'high' if c.qualifier_score >= 8 else 'mid' if c.qualifier_score >= 5 else 'low' }}" title="Valutazione LLM 0-10. ≥5=qualified.">{{ c.qualifier_score }}/10</span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+
+        <td class="col-status">
+          {% if c.status %}
+          <span class="status status-{{ c.status }}">{{ c.status }}</span>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+
+        <td class="col-actions row-actions">
           {% if c.status != 'optedout' %}
             <button type="submit" formaction="/inbox/contacts/{{ c.id }}/optout"
                     class="btn-small btn-danger" formnovalidate
-                    onclick="return confirm('Opt-out manuale?');">🚫</button>
+                    title="Opt-out: non contattare più"
+                    onclick="return confirm('Opt-out manuale del contatto #{{ c.id }}?');">🚫</button>
           {% else %}
             <button type="submit" formaction="/inbox/contacts/{{ c.id }}/reset"
-                    class="btn-small" formnovalidate>↩️</button>
+                    class="btn-small" formnovalidate
+                    title="Annulla opt-out">↩️</button>
           {% endif %}
           <button type="submit" formaction="/inbox/contacts/{{ c.id }}/delete"
                   class="btn-small btn-danger" formnovalidate
+                  title="Cancella contatto (irreversibile)"
                   onclick="return confirm('Cancellare il contatto #{{ c.id }}? Threads e messaggi associati saranno cancellati anche.');">🗑️</button>
         </td>
       </tr>
