@@ -131,17 +131,57 @@ def detect_pagination(html: str, base_url: str = "") -> PaginationInfo:
                 info.evidence.append(f"text loose '{m.group(0)[:80]}' → items={v}")
                 break
 
-    # 2. Pattern URL (cerco anchor con ?page=N o /page/N e prendo il max).
-    #    Qui uso l'HTML grezzo (gli href sono dentro i tag).
+    # 2. Pattern URL (cerco anchor con ?page=N o /page/N).
+    #    PATH-AWARE: estraiamo gli href con selectolax e per ognuno verifichiamo
+    #    che il path corrisponda al seed (`base_url`). Cosi' anchor di paginatori
+    #    di sezioni diverse non vengono attribuiti al seed corrente.
+    #    Es. su /top100, un anchor `/index/A?page=869` NON viene piu' interpretato
+    #    come "/top100 ha 869 pagine" (bug K del run #21).
+    seed_path = ""
+    if base_url:
+        try:
+            seed_path = (urlparse(base_url).path or "/").rstrip("/") or "/"
+        except Exception:
+            seed_path = ""
+
+    candidate_hrefs: list[str] = []
+    try:
+        from selectolax.parser import HTMLParser
+        tree = HTMLParser(html)
+        for a in tree.css("a[href]"):
+            href = (a.attributes.get("href") or "").strip()
+            if not href:
+                continue
+            # Risolvi a URL absoluto contro seed
+            try:
+                from urllib.parse import urljoin
+                absolute = urljoin(base_url or "http://x.local/", href).split("#")[0]
+                parsed_a = urlparse(absolute)
+                href_path = (parsed_a.path or "/").rstrip("/") or "/"
+            except Exception:
+                continue
+            # Filtra: tieni solo anchor il cui path coincide col seed (paginatore della stessa directory)
+            if seed_path and href_path != seed_path:
+                continue
+            candidate_hrefs.append(absolute)
+    except Exception:
+        # Fallback: se selectolax fallisce, comportamento legacy (regex su tutto HTML)
+        candidate_hrefs = []
+
+    # Estrai numeri ?page=N / /page/N / /p/N solo dagli href filtrati per path
+    haystack = "\n".join(candidate_hrefs) if candidate_hrefs else html
     for pat in _URL_PAGE_PATTERNS:
-        nums = pat.findall(html)
+        nums = pat.findall(haystack)
         if not nums:
             continue
         max_n = max(int(n) for n in nums)
+        # Sanity: salta valori palesemente troppo alti (oltre 10k pagine e' quasi
+        # sicuramente un anchor sbagliato, non un paginatore reale)
+        if max_n > 10000:
+            continue
         if info.max_page_in_urls is None or max_n > info.max_page_in_urls:
             info.max_page_in_urls = max_n
-            # Inferisci style + param
-            sample = pat.search(html)
+            sample = pat.search(haystack)
             if sample:
                 src = sample.group(0)
                 if "/page/" in src.lower():
@@ -152,12 +192,11 @@ def detect_pagination(html: str, base_url: str = "") -> PaginationInfo:
                     info.detected_param = "p"
                 else:
                     info.detected_style = "query"
-                    # estraggo il nome del param
                     pm = re.search(r"[?&](page|p|pagina)=", src, re.IGNORECASE)
                     info.detected_param = pm.group(1).lower() if pm else "page"
             info.evidence.append(
-                f"urls: trovati anchor di paginazione fino a page={max_n} "
-                f"(style={info.detected_style}, param={info.detected_param})"
+                f"urls (path-filtered to {seed_path or 'any'}): trovati anchor paginazione fino a page={max_n} "
+                f"(style={info.detected_style}, param={info.detected_param}, {len(candidate_hrefs)} anchor candidati)"
             )
 
     return info

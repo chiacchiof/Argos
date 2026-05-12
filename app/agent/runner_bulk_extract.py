@@ -155,18 +155,22 @@ def _registrable_domain(host: str) -> str:
 
 
 def _segment_signature(seg: str) -> str:
-    """Riconosce la 'forma' di un segmento di path per raggruppare URL simili."""
+    """Riconosce la 'forma' di un segmento di path per raggruppare URL simili.
+
+    Slug = sequenza alfanumerica con `_` o `-`. Accetta sia lowercase che
+    maiuscole (es. "Ana_De_Armas" su babepedia, "John-Smith" su LinkedIn).
+    """
     if not seg:
         return ""
     if seg.isdigit():
         return "{int}"
     if re.match(r"^\d+\.html?$", seg):
         return "{int}.html"
-    if re.match(r"^[a-z0-9-]+_\d+$", seg):
+    if re.match(r"^[A-Za-z0-9_-]+_\d+$", seg):
         return "{slug}_{int}"
-    if re.match(r"^[a-z0-9-]+\.html?$", seg):
+    if re.match(r"^[A-Za-z0-9_-]+\.html?$", seg):
         return "{slug}.html"
-    if re.match(r"^[a-z0-9-]+$", seg):
+    if re.match(r"^[A-Za-z0-9_-]+$", seg):
         return "{slug}"
     if "." in seg and re.search(r"\.(html?|php|aspx?)$", seg, re.IGNORECASE):
         return "{file}"
@@ -211,7 +215,8 @@ def _url_to_pattern(url: str) -> str:
     host_parts = host.split(".")
     if len(host_parts) >= 3:
         sub = host_parts[0]
-        if re.match(r"^[a-z0-9-]+$", sub) and sub not in _GENERIC_SUBDOMAINS:
+        # host già lowercase, ma accetto comunque [A-Za-z] per robustezza + underscore
+        if re.match(r"^[A-Za-z0-9_-]+$", sub) and sub not in _GENERIC_SUBDOMAINS:
             host_pattern = "{slug}." + ".".join(host_parts[1:])
         else:
             host_pattern = host
