@@ -62,6 +62,7 @@
         <td>{{ a.daily_dm_cap }}</td>
         <td><small>{{ a.updated_at[:19] if a.updated_at else '—' }}</small></td>
         <td>
+          <a href="/settings/whatsapp/account/{{ a.id }}/edit" class="btn-small" title="Modifica metadati account">✏️ Modifica</a>
           {% if a.status == 'pending_login' %}
           <form method="post" action="/settings/whatsapp/account/{{ a.id }}/login" style="display:inline">
             <button type="submit" class="btn-small btn-primary" title="Apre Chromium headed per scansionare il QR">📱 Avvia QR login</button>
@@ -150,6 +151,7 @@
           {% else %}<span class="badge">{{ c.status }}</span>{% endif %}
         </td>
         <td>
+          <a href="/settings/whatsapp/api/{{ c.id }}/edit" class="btn-small" title="Modifica parametri (incluso re-cifra access_token)">✏️ Modifica</a>
           <button type="button" class="btn-small" onclick="testWaApi({{ c.id }})">🧪 Test</button>
           <span id="wa-api-test-{{ c.id }}" class="muted small"></span>
           {% if c.status == 'active' %}

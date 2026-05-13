@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Modifica config Meta API #{{ config.id }} — Settings{% endblock %}
+{% block content %}
+<section>
+  <h2>✏️ Modifica config Meta Cloud API #{{ config.id }}</h2>
+
+  <p class="muted">
+    Modifica i parametri della config Meta WhatsApp Cloud API. Per cambiare
+    l'access_token: compila il campo "Access Token" qui sotto (verrà ri-cifrato).
+    Lascia vuoto per mantenere il token attuale.
+  </p>
+
+  <form method="post" action="/settings/whatsapp/api/{{ config.id }}/edit" class="settings-form">
+
+    <div class="row">
+      <label>Label
+        <input name="label" required maxlength="100"
+               value="{{ config.label or '' }}"
+               placeholder="Numero business AGS">
+      </label>
+      <label>App ID <span class="hint">(opzionale)</span>
+        <input name="app_id" value="{{ config.app_id or '' }}"
+               placeholder="123456789012345">
+      </label>
+    </div>
+
+    <div class="row">
+      <label>Phone Number ID
+        <input name="phone_number_id" required value="{{ config.phone_number_id }}">
+      </label>
+      <label>WhatsApp Business Account ID
+        <input name="business_account_id" required value="{{ config.business_account_id }}">
+      </label>
+    </div>
+
+    <label>Access Token
+      <span class="hint">
+        Lascia vuoto per <strong>mantenere</strong> il token attuale (già cifrato in DB).
+        Scrivi un nuovo valore per sovrascriverlo (verrà cifrato con <code>AGENTSCRAPER_SECRET</code>).
+        Non è possibile recuperare/visualizzare il token in chiaro: il DB ha solo il blob cifrato.
+      </span>
+      <input type="password" name="access_token" value=""
+             placeholder="(vuoto = mantieni token attuale)"
+             autocomplete="off" data-lpignore="true">
+    </label>
+
+    <div class="row">
+      <label>Template di default
+        <input name="default_template_name" value="{{ config.default_template_name or '' }}"
+               placeholder="lead_outreach_v1_it">
+      </label>
+      <label>Lingua template
+        <input name="default_template_language" value="{{ config.default_template_language or 'it' }}">
+      </label>
+    </div>
+
+    <div class="row">
+      <label>Daily cap messaggi
+        <input type="number" name="daily_msg_cap" min="1"
+               value="{{ config.daily_msg_cap or 250 }}">
+      </label>
+      <label>Status
+        {% set st = config.status or 'active' %}
+        <select name="status">
+          <option value="active"       {% if st=='active' %}selected{% endif %}>active</option>
+          <option value="disabled"     {% if st=='disabled' %}selected{% endif %}>disabled</option>
+          <option value="rate_limited" {% if st=='rate_limited' %}selected{% endif %}>rate_limited</option>
+        </select>
+      </label>
+    </div>
+
+    <label>Note
+      <textarea name="notes" rows="3">{{ config.notes or '' }}</textarea>
+    </label>
+
+    <div class="actions">
+      <button type="submit" class="btn-primary">💾 Salva modifiche</button>
+      <a href="/settings/whatsapp" class="link-cancel">Annulla</a>
+    </div>
+  </form>
+
+  <hr>
+  <p class="muted small">
+    Creato: {{ config.created_at }}{% if config.updated_at %} · ult. agg. {{ config.updated_at }}{% endif %}
+  </p>
+</section>
+{% endblock %}

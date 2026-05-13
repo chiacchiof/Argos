@@ -128,8 +128,38 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         preference = "auto"
 
     # ---- 2. Carica engines ----
-    # Motore A — account WA browser
-    a_rows = db.list_social_accounts(platform="whatsapp_browser", status="active")
+    # Motore A — account WA browser.
+    # Se il task ha `whatsapp_account_id` valorizzato → SOLO quell'account
+    # (fail-fast se banned/disabled). Altrimenti: pool default = tutti active.
+    sender_account_id = task.get("whatsapp_account_id")
+    if sender_account_id:
+        single = db.get_social_account(int(sender_account_id))
+        if not single:
+            msg = f"whatsapp_account_id={sender_account_id} non trovato (eliminato?). Abort."
+            jlog(f"❌ {msg}")
+            db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+            return ""
+        if single.get("platform") != "whatsapp_browser":
+            msg = f"Account #{sender_account_id} non è whatsapp_browser (platform={single.get('platform')!r}). Abort."
+            jlog(f"❌ {msg}")
+            db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+            return ""
+        if single.get("status") != "active":
+            msg = (
+                f"Account #{sender_account_id} ('{single.get('username')}') ha "
+                f"status='{single.get('status')}' (non active). Abort (fail-fast, "
+                "nessun fallback al pool: l'utente ha scelto esplicitamente questo sender)."
+            )
+            jlog(f"❌ {msg}")
+            db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+            return ""
+        a_rows = [single]
+        jlog(f"Sender Motore A: SOLO #{single['id']} '{single.get('username')}' (single-select)")
+    else:
+        a_rows = db.list_social_accounts(platform="whatsapp_browser", status="active")
+        if a_rows:
+            jlog(f"Sender Motore A: pool default ({len(a_rows)} account active)")
+
     a_accounts: list[SocialAccount] = []
     account_id_by_uuid: dict[str, int] = {}
     for r in a_rows:
@@ -150,17 +180,46 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         account_id_by_uuid[r["uuid"]] = r["id"]
     has_engine_a = len(a_accounts) > 0
 
-    # Motore B — config API
-    b_configs = db.list_whatsapp_api_config(status="active")
+    # Motore B — config API.
+    # Stesso pattern del Motore A: single-select se task.whatsapp_api_config_id
+    # è valorizzato (fail-fast su disabled), altrimenti prima config active.
+    sender_api_id = task.get("whatsapp_api_config_id")
     b_api: WhatsAppAPI | None = None
     api_config_id: int | None = None
-    if b_configs:
+    if sender_api_id:
+        single_cfg = db.get_whatsapp_api_config(int(sender_api_id))
+        if not single_cfg:
+            msg = f"whatsapp_api_config_id={sender_api_id} non trovato. Abort."
+            jlog(f"❌ {msg}")
+            db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+            return ""
+        if single_cfg.get("status") != "active":
+            msg = (
+                f"Config API #{sender_api_id} ('{single_cfg.get('label')}') ha "
+                f"status='{single_cfg.get('status')}' (non active). Abort fail-fast."
+            )
+            jlog(f"❌ {msg}")
+            db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+            return ""
         try:
-            b_api = WhatsAppAPI(b_configs[0])
-            api_config_id = b_configs[0]["id"]
+            b_api = WhatsAppAPI(single_cfg)
+            api_config_id = single_cfg["id"]
+            jlog(f"Sender Motore B: SOLO #{single_cfg['id']} '{single_cfg.get('label')}' (single-select)")
         except Exception as e:
-            jlog(f"⚠️ Motore B disponibile ma init fallito: {e}")
-            b_api = None
+            msg = f"Motore B init fallito per config #{sender_api_id}: {e}"
+            jlog(f"❌ {msg}")
+            db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+            return ""
+    else:
+        b_configs = db.list_whatsapp_api_config(status="active")
+        if b_configs:
+            try:
+                b_api = WhatsAppAPI(b_configs[0])
+                api_config_id = b_configs[0]["id"]
+                jlog(f"Sender Motore B: prima config active = #{api_config_id}")
+            except Exception as e:
+                jlog(f"⚠️ Motore B disponibile ma init fallito: {e}")
+                b_api = None
     has_engine_b = b_api is not None
 
     if not (has_engine_a or has_engine_b):

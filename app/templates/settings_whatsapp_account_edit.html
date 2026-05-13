@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Modifica account WA #{{ account.id }} — Settings{% endblock %}
+{% block content %}
+<section>
+  <h2>✏️ Modifica account WhatsApp browser #{{ account.id }}</h2>
+
+  <p class="muted">
+    Modifica i metadati dell'account. La sessione Playwright (QR-login) NON viene toccata —
+    se l'account è già loggato resta loggato. Per re-fare il login: torna in
+    <a href="/settings/whatsapp">/settings/whatsapp</a>.
+  </p>
+
+  <form method="post" action="/settings/whatsapp/account/{{ account.id }}/edit" class="settings-form">
+
+    <div class="row">
+      <label>Label / nome interno
+        <input name="label" required maxlength="100"
+               value="{{ account.username or '' }}"
+               placeholder="Es. WA principale">
+      </label>
+      <label>Numero telefono <span class="hint">(E.164)</span>
+        <input name="phone_number" value="{{ account.phone_number or '' }}"
+               placeholder="+393331234567">
+      </label>
+    </div>
+
+    <div class="row">
+      <label>DM cap/giorno <span class="hint">(anti-ban, max consigliato 100)</span>
+        <input type="number" name="daily_dm_cap" min="1" max="500"
+               value="{{ account.daily_dm_cap or 100 }}">
+      </label>
+      <label>Proxy label
+        <input name="proxy_label" value="{{ account.proxy_label or '' }}"
+               placeholder="(vuoto = no proxy)">
+      </label>
+    </div>
+
+    <label>Status
+      {% set st = account.status or 'active' %}
+      <select name="status">
+        <option value="active"        {% if st=='active' %}selected{% endif %}>active</option>
+        <option value="disabled"      {% if st=='disabled' %}selected{% endif %}>disabled (sospeso)</option>
+        <option value="banned"        {% if st=='banned' %}selected{% endif %}>banned</option>
+        <option value="pending_login" {% if st=='pending_login' %}selected{% endif %}>pending_login (QR scan richiesto)</option>
+      </select>
+    </label>
+
+    <label>Note (testo libero)
+      <textarea name="notes" rows="3">{{ account.notes or '' }}</textarea>
+    </label>
+
+    <div class="actions">
+      <button type="submit" class="btn-primary">💾 Salva modifiche</button>
+      <a href="/settings/whatsapp" class="link-cancel">Annulla</a>
+    </div>
+  </form>
+
+  <hr>
+  <p class="muted small">
+    Session dir: <code>{{ account.session_dir or '—' }}</code><br>
+    UUID: <code>{{ account.uuid }}</code><br>
+    Creato: {{ account.created_at }}{% if account.updated_at %} · ult. agg. {{ account.updated_at }}{% endif %}
+  </p>
+</section>
+{% endblock %}

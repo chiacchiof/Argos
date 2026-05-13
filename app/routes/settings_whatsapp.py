@@ -207,6 +207,55 @@ async def _do_qr_login(account_id: int) -> None:
             pass
 
 
+@router.get("/settings/whatsapp/account/{account_id}/edit", response_class=HTMLResponse)
+async def whatsapp_account_edit_form(request: Request, account_id: int):
+    acc = db.get_social_account(account_id)
+    if not acc or acc.get("platform") != "whatsapp_browser":
+        raise HTTPException(status_code=404, detail="account WA non trovato")
+    return templates.TemplateResponse(
+        request,
+        "settings_whatsapp_account_edit.html",
+        {"account": acc},
+    )
+
+
+@router.post("/settings/whatsapp/account/{account_id}/edit")
+async def whatsapp_account_edit_submit(
+    account_id: int,
+    label: str = Form(...),
+    phone_number: str = Form(""),
+    daily_dm_cap: int = Form(100),
+    proxy_label: str = Form(""),
+    status: str = Form("active"),
+    notes: str = Form(""),
+):
+    acc = db.get_social_account(account_id)
+    if not acc or acc.get("platform") != "whatsapp_browser":
+        raise HTTPException(status_code=404, detail="account WA non trovato")
+    label = label.strip()
+    if not label:
+        return RedirectResponse(
+            "/settings/whatsapp?error=label+obbligatoria", status_code=303
+        )
+    # Status valido: active | disabled | banned | pending_login
+    st = (status or "").strip()
+    if st not in ("active", "disabled", "banned", "pending_login"):
+        st = acc.get("status") or "active"
+    db.update_social_account(
+        account_id,
+        username=label,
+        phone_number=(phone_number or "").strip() or None,
+        daily_dm_cap=int(daily_dm_cap),
+        proxy_label=(proxy_label or "").strip() or None,
+        status=st,
+        notes=(notes or "").strip() or None,
+    )
+    return RedirectResponse(
+        f"/settings/whatsapp?flash=Account+%23{account_id}+aggiornato",
+        status_code=303,
+    )
+
+
 @router.post("/settings/whatsapp/account/{account_id}/delete")
 async def whatsapp_account_delete(account_id: int):
     acc = db.get_social_account(account_id)
@@ -295,6 +344,69 @@ async def whatsapp_api_test(config_id: int):
         return JSONResponse({"ok": False, "message": str(e)}, status_code=200)
     ok, message = await api.verify_credentials()
     return JSONResponse({"ok": ok, "message": message})
+
+
+@router.get("/settings/whatsapp/api/{config_id}/edit", response_class=HTMLResponse)
+async def whatsapp_api_edit_form(request: Request, config_id: int):
+    cfg = db.get_whatsapp_api_config(config_id)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="config API non trovata")
+    return templates.TemplateResponse(
+        request,
+        "settings_whatsapp_api_edit.html",
+        {"config": cfg},
+    )
+
+
+@router.post("/settings/whatsapp/api/{config_id}/edit")
+async def whatsapp_api_edit_submit(
+    config_id: int,
+    label: str = Form(...),
+    phone_number_id: str = Form(...),
+    business_account_id: str = Form(...),
+    app_id: str = Form(""),
+    access_token: str = Form(""),
+    default_template_name: str = Form(""),
+    default_template_language: str = Form("it"),
+    daily_msg_cap: int = Form(250),
+    status: str = Form("active"),
+    notes: str = Form(""),
+):
+    cfg = db.get_whatsapp_api_config(config_id)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="config API non trovata")
+
+    # Preserve-on-empty per access_token (UI non lo ri-popola dal DB per sicurezza):
+    # campo vuoto = mantieni cifratura attuale; "CLEAR" = errore (token obbligatorio).
+    fields: dict = {
+        "label": label.strip(),
+        "phone_number_id": phone_number_id.strip(),
+        "business_account_id": business_account_id.strip(),
+        "app_id": (app_id or "").strip() or None,
+        "default_template_name": (default_template_name or "").strip() or None,
+        "default_template_language": (default_template_language or "it").strip(),
+        "daily_msg_cap": int(daily_msg_cap),
+        "notes": (notes or "").strip() or None,
+    }
+    st = (status or "").strip()
+    if st in ("active", "disabled", "rate_limited"):
+        fields["status"] = st
+
+    tok = (access_token or "").strip()
+    if tok and tok.upper() != "CLEAR":
+        try:
+            fields["encrypted_access_token"] = crypto_creds.encrypt(tok)
+        except Exception as e:
+            return RedirectResponse(
+                f"/settings/whatsapp?error=Cifratura+nuovo+token+fallita:+{e}",
+                status_code=303,
+            )
+
+    db.update_whatsapp_api_config(config_id, **fields)
+    return RedirectResponse(
+        f"/settings/whatsapp?flash=Config+API+%23{config_id}+aggiornata",
+        status_code=303,
+    )
 
 
 @router.post("/settings/whatsapp/api/{config_id}/delete")

@@ -69,6 +69,11 @@ class TaskIn(BaseModel):
     # Outreach WhatsApp (agent_mode=outreach_whatsapp)
     whatsapp_engine_preference: Literal["auto", "force_A", "force_B"] = "auto"
     whatsapp_dry_run: int = Field(default=0, ge=0, le=1)
+    # Single-select sender:
+    # - NULL = pool default (tutti gli account/config attivi, comportamento legacy)
+    # - id   = SOLO quel sender; fail-fast se è banned/disabled
+    whatsapp_account_id: int | None = None
+    whatsapp_api_config_id: int | None = None
 
     @field_validator("rating", mode="before")
     @classmethod

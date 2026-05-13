@@ -101,6 +101,37 @@ auto-poll + safety guard sui comandi destructive).
 
 ## 🚀 P1 — Quality of life
 
+### B-012 · Sender single-select uniforme per TUTTI gli outreach mode
+
+**Cosa**: estendere il pattern di WhatsApp (single-select sender per task,
+fail-fast su sender non-active) a tutti gli altri outreach mode.
+
+**Decisione utente (2026-05-13)**: il task DEVE poter scegliere ESPLICITAMENTE
+quale sender usare. Pool default come opzione (`NULL`), ma valore singolo
+quando l'utente lo decide.
+
+| Mode | Sender oggi | Cambia in |
+|---|---|---|
+| `outreach` (email) | `channel_config.email` singleton | Multi-account email → tabella `email_accounts` simile a `social_accounts` + FK `task.email_account_id` |
+| `outreach` (telegram) | `channel_config.telegram` singleton (1 bot) | Multi-bot → tabella `telegram_bots` + FK `task.telegram_bot_id` |
+| `outreach_social` | Pool TUTTI `social_accounts` con `platform=X, status=active` | FK `task.social_account_id` (single) + fail-fast se banned |
+| `outreach_whatsapp` | ✅ già fatto (B-???) | — |
+
+**Effort**:
+- Email multi-account: ~3h (nuova tabella, SMTP config per-account, route Settings dedicata, runner filtro)
+- Telegram multi-bot: ~2h (nuova tabella, route Settings, runner filtro)
+- outreach_social FK + fail-fast: ~1.5h (FK su tasks, runner filtro, UI dropdown nel form)
+
+Totale: ~6.5h se fatti tutti insieme.
+
+**Dipendenze**: nessuna. Indipendente.
+
+**Test target**:
+- Crei 2 account email (acquisti@ + info@), task A usa "acquisti@", task B usa "info@", verifica che ogni task usi il sender giusto.
+- Idem per telegram con 2 bot e per IG con 2 account.
+
+---
+
 ### B-011 · Gap anti-ban configurabile per task
 
 **Cosa**: oggi `random_gap_between_dms_min()` ritorna 8-30 min (hard-coded

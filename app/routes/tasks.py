@@ -165,6 +165,8 @@ def _form_to_dict(
     # Campi outreach_whatsapp (aggiunti 2026-05-13)
     whatsapp_engine_preference: str = "auto",
     whatsapp_dry_run: str = "",
+    whatsapp_account_id: str = "",
+    whatsapp_api_config_id: str = "",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -218,6 +220,8 @@ def _form_to_dict(
         # outreach_whatsapp
         "whatsapp_engine_preference": (whatsapp_engine_preference or "auto").strip(),
         "whatsapp_dry_run": 1 if (str(whatsapp_dry_run).strip() in ("1", "on", "true", "yes")) else 0,
+        "whatsapp_account_id": int(whatsapp_account_id) if str(whatsapp_account_id).strip().isdigit() else None,
+        "whatsapp_api_config_id": int(whatsapp_api_config_id) if str(whatsapp_api_config_id).strip().isdigit() else None,
     }
 
 
@@ -255,6 +259,28 @@ def _form_extra_context() -> dict:
         }
         for c in wa_rows
     ]
+    # Sender disponibili per outreach_whatsapp (Motore A account + Motore B config)
+    wa_accounts_rows = db.list_social_accounts(platform="whatsapp_browser")
+    wa_accounts = [
+        {
+            "id": a["id"],
+            "username": a.get("username"),
+            "phone_number": a.get("phone_number"),
+            "status": a.get("status"),
+            "daily_dm_cap": a.get("daily_dm_cap"),
+        }
+        for a in wa_accounts_rows
+    ]
+    wa_api_configs_rows = db.list_whatsapp_api_config()
+    wa_api_configs = [
+        {
+            "id": c["id"],
+            "label": c.get("label"),
+            "phone_number_id": c.get("phone_number_id"),
+            "status": c.get("status"),
+        }
+        for c in wa_api_configs_rows
+    ]
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
@@ -262,6 +288,8 @@ def _form_extra_context() -> dict:
         "env_key_status": env_key_status(),
         "contacts_by_platform": contacts_by_platform,
         "contacts_with_whatsapp": contacts_with_whatsapp,
+        "wa_accounts": wa_accounts,
+        "wa_api_configs": wa_api_configs,
     }
 
 
@@ -316,6 +344,8 @@ async def create_task(
     headed: str = Form(""),
     whatsapp_engine_preference: str = Form("auto"),
     whatsapp_dry_run: str = Form(""),
+    whatsapp_account_id: str = Form(""),
+    whatsapp_api_config_id: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -342,6 +372,8 @@ async def create_task(
         target_contact_ids=target_contact_ids_raw,
         whatsapp_engine_preference=whatsapp_engine_preference,
         whatsapp_dry_run=whatsapp_dry_run,
+        whatsapp_account_id=whatsapp_account_id,
+        whatsapp_api_config_id=whatsapp_api_config_id,
     )
     try:
         validated = TaskIn(**payload)
@@ -419,6 +451,8 @@ async def update_task(
     headed: str = Form(""),
     whatsapp_engine_preference: str = Form("auto"),
     whatsapp_dry_run: str = Form(""),
+    whatsapp_account_id: str = Form(""),
+    whatsapp_api_config_id: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -471,6 +505,8 @@ async def update_task(
         target_contact_ids=target_contact_ids_raw,
         whatsapp_engine_preference=whatsapp_engine_preference,
         whatsapp_dry_run=whatsapp_dry_run,
+        whatsapp_account_id=whatsapp_account_id,
+        whatsapp_api_config_id=whatsapp_api_config_id,
     )
     try:
         validated = TaskIn(**payload)

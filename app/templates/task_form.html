@@ -809,6 +809,44 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
       </div>
 
       <div class="row">
+        {# Sender Motore A — single-select fra gli account WA browser #}
+        <label>📱 Sender Motore A (browser)
+          {% set wa_aid = p.get('whatsapp_account_id') %}
+          <select name="whatsapp_account_id">
+            <option value="" {% if not wa_aid %}selected{% endif %}>— pool default (tutti gli account active) —</option>
+            {% for a in (wa_accounts or []) %}
+              <option value="{{ a.id }}" {% if wa_aid == a.id %}selected{% endif %}
+                      {% if a.status != 'active' %}disabled{% endif %}>
+                #{{ a.id }} · {{ a.username }}{% if a.phone_number %} ({{ a.phone_number }}){% endif %}
+                · <span class="muted">{{ a.status }}</span>{% if a.status != 'active' %} ⚠️{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+          <span class="hint">
+            Se scegli un account specifico, <strong>solo quello</strong> verrà usato.
+            Se quell'account è <code>banned</code>/<code>disabled</code> il task fallisce subito (no fallback).
+            Lascia "pool default" per usare automaticamente tutti gli account attivi.
+          </span>
+        </label>
+
+        {# Sender Motore B — single-select fra le API config #}
+        <label>🌐 Sender Motore B (API)
+          {% set wa_cid = p.get('whatsapp_api_config_id') %}
+          <select name="whatsapp_api_config_id">
+            <option value="" {% if not wa_cid %}selected{% endif %}>— prima config active —</option>
+            {% for c in (wa_api_configs or []) %}
+              <option value="{{ c.id }}" {% if wa_cid == c.id %}selected{% endif %}
+                      {% if c.status != 'active' %}disabled{% endif %}>
+                #{{ c.id }} · {{ c.label }} ({{ c.phone_number_id }})
+                · <span class="muted">{{ c.status }}</span>{% if c.status != 'active' %} ⚠️{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+          <span class="hint">Vuoto = prende la prima config <code>active</code> in DB.</span>
+        </label>
+      </div>
+
+      <div class="row">
         <label>Max DM per sessione browser (Motore A)
           <input type="number" name="max_dms_per_session" min="1" max="30" value="{{ p.get('max_dms_per_session', 5) }}">
           <span class="hint">Anti-ban: una sessione = login → N DM → close. Mai &gt; 10-15.</span>

@@ -530,6 +530,21 @@ def init_db() -> None:
                 "ALTER TABLE tasks ADD COLUMN whatsapp_dry_run "
                 "INTEGER NOT NULL DEFAULT 0"
             )
+        # Sender single-select per outreach_whatsapp:
+        # - whatsapp_account_id: FK opzionale a social_accounts.id (Motore A)
+        # - whatsapp_api_config_id: FK opzionale a whatsapp_api_config.id (Motore B)
+        # NULL = comportamento legacy (pool default tutti attivi)
+        # Valorizzato = SOLO quel sender, fail-fast se è banned/disabled.
+        if "whatsapp_account_id" not in tcols:
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN whatsapp_account_id INTEGER "
+                "REFERENCES social_accounts(id) ON DELETE SET NULL"
+            )
+        if "whatsapp_api_config_id" not in tcols:
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN whatsapp_api_config_id INTEGER "
+                "REFERENCES whatsapp_api_config(id) ON DELETE SET NULL"
+            )
 
         # whatsapp_api_config: una riga per ogni numero Business registrato su
         # Meta Cloud API. Cifrato access_token con AGENTSCRAPER_SECRET.
@@ -860,8 +875,9 @@ def create_task(data: dict[str, Any]) -> int:
                                   max_dms_per_run, max_dms_per_session, headed,
                                   target_contact_ids,
                                   whatsapp_engine_preference, whatsapp_dry_run,
+                                  whatsapp_account_id, whatsapp_api_config_id,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -913,6 +929,8 @@ def create_task(data: dict[str, Any]) -> int:
                 _dump_list([int(x) for x in (data.get("target_contact_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
                 (data.get("whatsapp_engine_preference") or "auto"),
                 1 if data.get("whatsapp_dry_run") else 0,
+                int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
+                int(data["whatsapp_api_config_id"]) if data.get("whatsapp_api_config_id") else None,
                 ts,
                 ts,
             ),
@@ -944,6 +962,7 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 max_dms_per_run = ?, max_dms_per_session = ?, headed = ?,
                 target_contact_ids = ?,
                 whatsapp_engine_preference = ?, whatsapp_dry_run = ?,
+                whatsapp_account_id = ?, whatsapp_api_config_id = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -997,6 +1016,8 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 _dump_list([int(x) for x in (data.get("target_contact_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
                 (data.get("whatsapp_engine_preference") or "auto"),
                 1 if data.get("whatsapp_dry_run") else 0,
+                int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
+                int(data["whatsapp_api_config_id"]) if data.get("whatsapp_api_config_id") else None,
                 now_iso(),
                 task_id,
             ),
