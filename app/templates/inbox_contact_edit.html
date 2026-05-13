@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Modifica contatto #{{ contact.id }} — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>✏️ Modifica contatto #{{ contact.id }}</h2>
+
+  <p class="muted">
+    Aggiorna i canali di contatto, il consenso WhatsApp, lo status. Cliccando
+    "Salva" tutti i campi presenti qui sotto vengono scritti nel DB.
+    Per cancellare un valore esistente svuota il campo prima di salvare.
+  </p>
+
+  <form method="post" action="/inbox/contacts/{{ contact.id }}/edit" class="settings-form">
+
+    <details class="collapsible-section" open>
+      <summary>📋 Anagrafica</summary>
+
+      <label>Nome visualizzato
+        <input name="display_name" maxlength="200"
+               value="{{ contact.display_name or '' }}"
+               placeholder="Es. Marco Rossi">
+      </label>
+
+      <div class="row">
+        <label>Source URL <span class="hint">(da dove il contatto è stato estratto)</span>
+          <input name="source_url" value="{{ contact.source_url or '' }}"
+                 placeholder="https://...">
+        </label>
+        <label>Source domain
+          <input name="source_domain" value="{{ contact.source_domain or '' }}"
+                 placeholder="example.com">
+        </label>
+      </div>
+    </details>
+
+    <details class="collapsible-section" open>
+      <summary>📞 Canali di contatto</summary>
+
+      <div class="row">
+        <label>Email
+          <input type="email" name="email" value="{{ contact.email or '' }}"
+                 placeholder="nome@dominio.com">
+        </label>
+        <label>Telegram username <span class="hint">(senza @)</span>
+          <input name="telegram_username" value="{{ contact.telegram_username or '' }}"
+                 placeholder="nome_telegram">
+        </label>
+      </div>
+
+      <div class="row">
+        <label>WhatsApp <span class="hint">(numero E.164, es. +393331234567)</span>
+          <input name="whatsapp" value="{{ contact.whatsapp or '' }}"
+                 placeholder="+393331234567">
+        </label>
+        <label>Sito web personale
+          <input name="sitoweb" value="{{ contact.sitoweb or '' }}"
+                 placeholder="https://...">
+        </label>
+      </div>
+    </details>
+
+    <details class="collapsible-section">
+      <summary>📱 Social</summary>
+
+      <div class="row">
+        <label>Instagram URL
+          <input name="instagram_url" value="{{ socials_by_platform.instagram or '' }}"
+                 placeholder="https://instagram.com/...">
+        </label>
+        <label>TikTok URL
+          <input name="tiktok_url" value="{{ socials_by_platform.tiktok or '' }}"
+                 placeholder="https://tiktok.com/@...">
+        </label>
+      </div>
+      <label>Facebook URL
+        <input name="facebook_url" value="{{ socials_by_platform.facebook or '' }}"
+               placeholder="https://facebook.com/...">
+      </label>
+    </details>
+
+    <details class="collapsible-section" open>
+      <summary>⚙️ Status &amp; consenso</summary>
+
+      <div class="row">
+        <label>Status
+          {% set st = contact.status or 'new' %}
+          <select name="status">
+            {% for v in ('new', 'qualified', 'rejected', 'contacted', 'replied', 'optedout', 'banned') %}
+            <option value="{{ v }}" {% if st == v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>Consent WhatsApp
+          {% set wc = contact.whatsapp_consent or 'cold' %}
+          <select name="whatsapp_consent">
+            <option value="cold"     {% if wc == 'cold' %}selected{% endif %}>cold (default — solo Motore A)</option>
+            <option value="opt_in"   {% if wc == 'opt_in' %}selected{% endif %}>opt_in (può ricevere via Motore B/API)</option>
+            <option value="optedout" {% if wc == 'optedout' %}selected{% endif %}>optedout (escluso da outreach)</option>
+          </select>
+        </label>
+      </div>
+
+      <label>Note (sovrascrive l'esistente solo se compilato)
+        <textarea name="notes" rows="3" placeholder="Note interne, contesto, esiti chiamate, ecc.">{{ contact.notes or '' }}</textarea>
+      </label>
+    </details>
+
+    <div class="actions">
+      <button type="submit" class="btn-primary">💾 Salva modifiche</button>
+      <a href="/inbox/contacts" class="link-cancel">Annulla</a>
+    </div>
+  </form>
+
+  <hr>
+  <p class="muted small">
+    🔗 <a href="/inbox/contacts">← Torna all'elenco contatti</a>
+  </p>
+</section>
+{% endblock %}

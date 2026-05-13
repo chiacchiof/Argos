@@ -267,6 +267,115 @@ async def inbox_thread_reply(
     return RedirectResponse(url=f"/inbox/{thread_id}", status_code=303)
 
 
+@router.get("/inbox/contacts/{contact_id}/edit", response_class=HTMLResponse)
+async def contact_edit_form(request: Request, contact_id: int):
+    contact = db.get_contact(contact_id)
+    if not contact:
+        raise HTTPException(status_code=404, detail="contatto non trovato")
+    # Decifra il social_json in lista comprensibile dal template
+    import json as _json
+    socials_by_platform = {"instagram": "", "tiktok": "", "facebook": ""}
+    sj = contact.get("social_json")
+    if sj:
+        try:
+            arr = _json.loads(sj) if isinstance(sj, str) else sj
+            if isinstance(arr, list):
+                for s in arr:
+                    if not isinstance(s, dict):
+                        continue
+                    plat = (s.get("platform") or "").lower()
+                    if plat in socials_by_platform:
+                        socials_by_platform[plat] = s.get("url") or ""
+        except (_json.JSONDecodeError, TypeError):
+            pass
+    return templates.TemplateResponse(
+        request,
+        "inbox_contact_edit.html",
+        {
+            "contact": contact,
+            "socials_by_platform": socials_by_platform,
+        },
+    )
+
+
+@router.post("/inbox/contacts/{contact_id}/edit")
+async def contact_edit_submit(
+    contact_id: int,
+    display_name: str = Form(""),
+    email: str = Form(""),
+    telegram_username: str = Form(""),
+    whatsapp: str = Form(""),
+    sitoweb: str = Form(""),
+    instagram_url: str = Form(""),
+    tiktok_url: str = Form(""),
+    facebook_url: str = Form(""),
+    source_url: str = Form(""),
+    source_domain: str = Form(""),
+    notes: str = Form(""),
+    status: str = Form(""),
+    whatsapp_consent: str = Form(""),
+):
+    """Aggiorna i campi modificabili di un contatto."""
+    existing = db.get_contact(contact_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="contatto non trovato")
+
+    import json as _json
+    # Costruisci nuovo social_json se almeno uno dei campi è popolato
+    socials: list[dict[str, str]] = []
+    for platform, url in (
+        ("instagram", instagram_url),
+        ("tiktok", tiktok_url),
+        ("facebook", facebook_url),
+    ):
+        url = (url or "").strip()
+        if url:
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            socials.append({"platform": platform, "url": url})
+
+    # Normalizza source_domain
+    sd = (source_domain or "").strip().lower() or None
+    src_url = (source_url or "").strip()
+    if not sd and src_url:
+        from urllib.parse import urlparse
+        try:
+            sd = (urlparse(src_url).hostname or "").lower() or None
+        except Exception:
+            sd = None
+
+    # Valida whatsapp_consent (None se vuoto = mantiene esistente)
+    wc = (whatsapp_consent or "").strip().lower()
+    if wc and wc not in ("cold", "opt_in", "optedout"):
+        wc = None  # ignora valori invalidi
+
+    # Costruisci fields da aggiornare (None = non tocco il campo, "" = azzero)
+    fields: dict[str, object] = {
+        "display_name": (display_name or "").strip() or None,
+        "email": (email or "").strip() or None,
+        "telegram_username": (telegram_username or "").strip().lstrip("@") or None,
+        "whatsapp": (whatsapp or "").strip() or None,
+        "sitoweb": (sitoweb or "").strip() or None,
+        "social_json": _json.dumps(socials, ensure_ascii=False) if socials else None,
+        "source_url": src_url or None,
+        "source_domain": sd,
+    }
+    if status:
+        fields["status"] = status.strip()
+    if wc:
+        fields["whatsapp_consent"] = wc
+
+    # Notes: aggiornato solo se l'utente lo scrive nel form
+    if notes:
+        fields["notes"] = notes.strip()
+
+    db.update_contact(contact_id, fields)
+    return RedirectResponse(
+        url=f"/inbox/contacts?flash=Contatto+%23{contact_id}+aggiornato",
+        status_code=303,
+    )
+
+
 @router.post("/inbox/contacts/{contact_id}/optout")
 async def contact_optout(contact_id: int):
     db.update_contact_status(contact_id, "optedout", notes="Opt-out manuale")

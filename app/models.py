@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 OutputFormat = Literal["txt", "md", "both"]
 AgentMode = Literal[
     "react", "browser_use", "bulk_extract", "auto_extract", "site_explorer",
-    "qualifier", "outreach", "outreach_social", "responder",
+    "qualifier", "outreach", "outreach_social", "outreach_whatsapp", "responder",
 ]
 BulkExtractionMethod = Literal["llm_per_page", "css_selectors"]
 MessageChannel = Literal["email", "telegram"]
@@ -66,6 +66,9 @@ class TaskIn(BaseModel):
     # Selezione esplicita di target outreach_social: lista di contact.id.
     # Se vuota, il runner usa TUTTI i qualified con social[platform] popolato.
     target_contact_ids: list[int] = Field(default_factory=list)
+    # Outreach WhatsApp (agent_mode=outreach_whatsapp)
+    whatsapp_engine_preference: Literal["auto", "force_A", "force_B"] = "auto"
+    whatsapp_dry_run: int = Field(default=0, ge=0, le=1)
 
     @field_validator("rating", mode="before")
     @classmethod

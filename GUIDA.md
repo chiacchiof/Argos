@@ -145,14 +145,32 @@ Quando crei un task della famiglia "Pipeline downstream" (qualifier/outreach/res
 
 In ogni caso, dopo la selezione vedi un box verde **📁 File selezionato: \<path\>** con un bottone ✕ per rimuovere la selezione e ricominciare. Il path effettivo è gestito internamente come campo nascosto.
 
+### 2.3 Infrastruttura trasversale (usata da tutti i runner di scraping)
+
+Tutti i runner della famiglia "Scraping" condividono moduli infrastrutturali che vivono in [app/agent/](app/agent/). Non si configurano per task ma è bene sapere che esistono perché spiegano comportamenti che vedi nei log.
+
+| Modulo | Cosa fa | Quando si attiva |
+|---|---|---|
+| [`http_fetcher.py`](app/agent/http_fetcher.py) | Wrappa `curl_cffi.AsyncSession` con **TLS fingerprint impersonation Chrome 120** | Sempre (sostituisce httpx). Bypassa Cloudflare e anti-bot via JA3. Fallback automatico su httpx se `curl_cffi` non è installato. |
+| [`site_recon.py`](app/agent/site_recon.py) | **Stage preliminare** al profiler: probe di path canonici (`/escorts`, `/profiles`, `/products`, `/listings`, ecc.) per sostituire una home "marketing" con la directory page paginata vera | Inizio di `auto_extract` / `site_explorer`. Se trova una directory migliore, override del seed. |
+| [`pagination_detector.py`](app/agent/pagination_detector.py) | Estrae info di paginazione: testo descrittivo ("Page 1 of 1363") + link `?page=N` / `/page/N` | Site recon + site_explorer per generare URL paginate senza chiedere all'LLM |
+| [`url_canonical.py`](app/agent/url_canonical.py) | Canonical form delle URL (cross-lingua, dedup paginazione) + detection di "service paths" (privacy, faq, ecc.) | Tutti i runner per dedup e filtro |
+| [`url_discovery_browser.py`](app/agent/url_discovery_browser.py) | Discovery URL via Chromium headless con scroll multipli | `site_explorer` quando l'objective contiene keyword-trigger tipo "infinite scroll" / "tutti i profili" |
+| [`blocked_domains.py`](app/agent/blocked_domains.py) | Lista hard-coded di domini vietati al traffico | Gate centrale richiamato da tutti i runner prima di ogni fetch |
+| [`runner_control.py`](app/agent/runner_control.py) | Helper unificato `pause`/`stop`/`resume` per i runner | Pulsanti ⏸ ⏹ della UI funzionano uniformi su tutti i runner |
+| [`asset_tags.py`](app/agent/asset_tags.py) | Deriva tag dichiarativi (key→values) dagli asset estratti, per filtri rapidi sulla tabella `assets`/`asset_tags` | Ingest nel DB dopo qualsiasi scraping |
+| **Site Playbook** (tabella DB) | Memorizza pattern URL / strategie che hanno funzionato per un dominio + asset_type. Riusato dal **re-arming**: dopo che `browser_use` ha "esplorato" un sito e ha imparato come funziona, il prossimo run di `site_explorer` parte già armato del playbook → drastica riduzione di costo/tempo | Salvato automaticamente da runner che riconoscono pattern; letto da `_maybe_rearm_site_explorer` in `auto_extract` |
+
+> 💡 **Implicazione pratica**: la prima volta che lanci `auto_extract` su un sito nuovo, può essere lento (browser_use). Le volte successive sullo stesso dominio dovrebbe convergere su `site_explorer` armato dal playbook → 10× più veloce ed economico. Non devi configurare nulla, è trasparente.
+
 ---
 
-## 3. I 8 tipi di Task (`agent_mode`)
+## 3. I 10 tipi di Task (`agent_mode`)
 
-Quando crei un task, il campo **Modalità agente** determina cosa farà. Le 8 modalità si dividono in **2 famiglie**:
+Quando crei un task, il campo **Modalità agente** determina cosa farà. Le 10 modalità si dividono in **2 famiglie**:
 
 - **Scraping** (5 modalità: `react`, `bulk_extract`, `browser_use`, `auto_extract`, `site_explorer`): trovano ed estraggono dati dal web → producono `profiles.jsonl` (o report `.md` per `react`)
-- **Pipeline downstream** (3 modalità: `qualifier`, `outreach`, `responder`): operano sui dati già estratti
+- **Pipeline downstream** (5 modalità: `qualifier`, `outreach`, `outreach_social`, `outreach_whatsapp`, `responder`): operano sui dati già estratti
 
 ### 3.0 Albero decisionale "quale modalità mi serve?"
 
@@ -179,9 +197,11 @@ Devo estrarre dati dal web?
 │   → auto-discovery FORZATA via Chromium headless
 │
 └── NO — ho già un profiles.jsonl, devo lavorarci sopra
-    ├── Filtrare/scorare i contatti via LLM ──────────► qualifier     (§3.5)
-    ├── Mandare email/telegram ai contatti ───────────► outreach      (§3.6)
-    └── Rispondere automaticamente ai messaggi ricevuti ► responder    (§3.7)
+    ├── Filtrare/scorare i contatti via LLM ──────────► qualifier        (§3.5)
+    ├── Mandare email/telegram ai contatti ───────────► outreach         (§3.6)
+    ├── Mandare DM su social (IG/TikTok) via browser ─► outreach_social  (§3.6.1)
+    ├── Mandare DM WhatsApp (browser + Cloud API) ────► outreach_whatsapp (§3.6.2)
+    └── Rispondere automaticamente ai messaggi ricevuti ► responder      (§3.7)
 ```
 
 Vedi anche §3.0.3 per la sintesi operativa dei 5 casi tipici con keyword-trigger e refresh policy.
@@ -203,7 +223,9 @@ Vedi anche §3.0.3 per la sintesi operativa dei 5 casi tipici con keyword-trigge
 | Modalità | Input | Output | Note |
 |---|---|---|---|
 | `qualifier` | `profiles.jsonl` da scraping | tabella `contacts` con score 0-10 + status `qualified`/`rejected` | 1 chiamata LLM per profilo |
-| `outreach` | `contacts` con `status='qualified'` | thread + messaggi inviati via canale | Usa template (no LLM) |
+| `outreach` | `contacts` con `status='qualified'` | thread + messaggi inviati via email/telegram | Usa template; messaggio finale generato via LLM se richiesto |
+| **`outreach_social`** | `contacts` con `social[platform]` popolato (instagram/tiktok) | DM inviato via browser automation (headed Chromium + stealth) | Pool di account social cifrati con `AGENTSCRAPER_SECRET`; humanize delays; selettori CSS fragili per design |
+| **`outreach_whatsapp`** | `contacts` con `whatsapp` populato (E.164) | DM WhatsApp: doppio motore A (browser, cold) + B (Meta Cloud API, opt-in) | Engine selector per contatto. Setup in `/settings/whatsapp`. Viola ToS Meta su Motore A. |
 | `responder` | inbox email/telegram | reply auto-generata e inviata | Auto-detect opt-out (STOP, unsubscribe) |
 
 ### 3.0.2 Regola d'oro: bulk_extract prima di tutto
@@ -979,6 +1001,75 @@ E due regole anti-fallimento osservate sul campo:
   Mario
   ```
 - Canali: `email`
+
+---
+
+### 3.5.1 `outreach_whatsapp` — DM WhatsApp con doppio motore
+
+**Cosa fa**: invia DM WhatsApp ai `contacts` qualified con il campo `whatsapp` popolato. Usa un **doppio motore** con engine selector automatico per contatto:
+
+- **Motore A — Browser** ([app/agent/social/whatsapp_browser.py](app/agent/social/whatsapp_browser.py)): apre `web.whatsapp.com` in Chromium headed (Playwright + patchright), sessione persistita via QR-login. Adatto a **cold outreach** ma viola i ToS Meta.
+- **Motore B — Cloud API** ([app/agent/social/whatsapp_api.py](app/agent/social/whatsapp_api.py)): HTTP client per Meta Cloud API ufficiale. Adatto solo a contatti **opt-in** o dentro **24h-window** dopo che hanno scritto al business number. Legale e scalabile.
+
+**Engine selector** (campo task `whatsapp_engine_preference`):
+- `auto` (default): contatti con `whatsapp_consent='opt_in'` o `whatsapp_last_inbound_at` < 24h → Motore B; resto (cold) → Motore A.
+- `force_A`: tutti via browser, ignora consent.
+- `force_B`: skippa i contatti cold (Motore B richiede opt-in).
+
+**Quando usarlo**:
+- Hai liste di contatti con numeri WhatsApp pubblici (immobiliari, B2B, professionisti) e vuoi un canale outreach più diretto di email/Telegram.
+- Hai un numero business Meta registrato e vuoi follow-up legali ai contatti che hanno già risposto.
+
+**Quando NON usarlo**:
+- Non hai consenso esplicito dei destinatari → rischio segnalazioni → ban del numero.
+- Volumi enormi (>500/giorno): WhatsApp è il canale più aggressivo nel detection automation. Per quei volumi serve Meta Cloud API + opt-in flow strutturato.
+
+**Configurazione (1 task `outreach_whatsapp`)**:
+- **Modalità agente**: `outreach_whatsapp`
+- **Obiettivo dell'outreach**: chi sei, cosa offri (usato dall'LLM per personalizzare ogni messaggio)
+- **Esempi di stile**: 2-3 messaggi-stile separati da `---` (l'LLM prende ispirazione di tono, non li copia)
+- **Engine preference**: `auto` (raccomandato)
+- **Max DM totali per esecuzione**: cap di sicurezza (default 30)
+- **Max DM per sessione browser**: solo Motore A, default 5
+- **🧪 Dry-run**: se spuntato, simula gli invii (log con `reason="dry_run"`) senza inviare DM reale
+
+**Setup preliminare** (una tantum, in `/settings/whatsapp`):
+
+1. **Motore A — account browser**: clicca "➕ Aggiungi account", inserisci label + numero. Status iniziale `pending_login`. Poi "📱 Avvia QR login" → si apre Chromium headed sul tuo desktop, scansioni il QR col telefono, status diventa `active`. Sessione salvata in `data/whatsapp_sessions/<uuid>/`, valida ~14 giorni.
+2. **Motore B — API config**: clicca "➕ Aggiungi config Meta Cloud API", inserisci `phone_number_id`, `business_account_id`, `access_token` (preso da Meta for Developers → la tua App → WhatsApp → API Setup). Click "🧪 Test" verifica le credenziali. Il token viene cifrato con `AGENTSCRAPER_SECRET`.
+
+⚠️ **Avviso ToS prominente**: il Motore A viola i ToS di Meta. Per uso massivo (>30 DM/giorno per account, contatti senza consenso), il numero viene bannato. AgentScraper rate-limita di default (30/ora, pause 30-180s) ma il rischio resta. Considerati gli aspetti legali di GDPR/ePrivacy per cold outreach via WhatsApp a consumer.
+
+**Output**:
+- `social_dm_log` (tabella DB) con riga per ogni invio: `engine='A_browser'` o `'B_api'`, `api_config_id` per B, `account_id` per A, `ok`, `reason`, `message_id`.
+- `contacts.status='contacted'` su ok.
+- `data/results/<task_id>/<ts>/report.md` riepilogo (N ok per engine, fail, opt-out skip).
+
+**Esempio**:
+```
+1. Setup:
+   - /settings/whatsapp → "➕ Aggiungi account" label="WA principale", phone="+393331234567"
+   - "📱 Avvia QR login" → Chromium si apre, scansiono col telefono, status=active
+
+2. Task outreach_whatsapp:
+   - Obiettivo: "Sono un consulente marketing locale, offro a piccoli ristoranti una review gratis"
+   - Esempi stile: 2 varianti separate da ---
+   - Engine: auto
+   - Max DM run: 20
+   - Dry-run: ON per primo test
+   - ▶ Esegui ora
+
+3. Risultato (dry-run):
+   - 20 messaggi generati e loggati con reason='dry_run'
+   - Nessun DM reale spedito → controllo i messaggi su `social_dm_log` query
+   - Tutto ok? Tolgo dry-run e ri-eseguo.
+```
+
+**Limiti noti** (vedi [PIANO_WHATSAPP.md](PIANO_WHATSAPP.md) per dettaglio):
+- Inbound (lettura reply) NON implementato in Fase 1 — i reply vanno letti manualmente nell'app WA.
+- Webhook Meta NON configurato — Cloud API solo per send.
+- Solo testo: niente media (immagini/audio/doc) — Fase 2.
+- Detection "numero esistente su WA": il Motore A naviga a `wa.me/<num>` e legge l'errore; il Motore B tenta l'invio e gestisce error 131026.
 
 ---
 

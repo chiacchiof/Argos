@@ -291,6 +291,12 @@ async def _run_job(job_id: int, task_id: int) -> None:
             from .agent.runner_outreach_social import run_agent as run_os
             # Apre browser headed (Playwright) → serve proactor thread su Windows.
             await _run_in_proactor_thread(lambda: run_os(task, job_id), job_id)
+        elif mode == "outreach_whatsapp":
+            from .agent.runner_outreach_whatsapp import run_agent as run_ow
+            # Motore A apre browser (Playwright) → proactor thread anche qui.
+            # Motore B-only funziona anche in loop normale, ma il dispatcher
+            # non sa a priori se userà A o B: meglio sempre proactor.
+            await _run_in_proactor_thread(lambda: run_ow(task, job_id), job_id)
         elif mode == "qualifier":
             from .agent.runner_qualifier import run_agent as run_q
             await run_q(task, job_id)

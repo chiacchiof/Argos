@@ -162,6 +162,9 @@ def _form_to_dict(
     max_dms_per_session: int = 5,
     headed: str = "",
     target_contact_ids: list[str] | None = None,
+    # Campi outreach_whatsapp (aggiunti 2026-05-13)
+    whatsapp_engine_preference: str = "auto",
+    whatsapp_dry_run: str = "",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -212,6 +215,9 @@ def _form_to_dict(
         "max_dms_per_session": int(max_dms_per_session or 5),
         "headed": 1 if (str(headed).strip() in ("1", "on", "true", "yes")) else 0,
         "target_contact_ids": list(target_contact_ids or []),
+        # outreach_whatsapp
+        "whatsapp_engine_preference": (whatsapp_engine_preference or "auto").strip(),
+        "whatsapp_dry_run": 1 if (str(whatsapp_dry_run).strip() in ("1", "on", "true", "yes")) else 0,
     }
 
 
@@ -234,12 +240,28 @@ def _form_extra_context() -> dict:
             }
             for c in rows
         ]
+    # Contacts disponibili per outreach_whatsapp (con whatsapp != null, no optedout)
+    wa_rows = db.list_contacts_with_whatsapp(limit=500)
+    contacts_with_whatsapp = [
+        {
+            "id": c["id"],
+            "display_name": (c.get("display_name") or "").strip() or None,
+            "source_domain": c.get("source_domain"),
+            "source_url": c.get("source_url"),
+            "status": c.get("status"),
+            "whatsapp": c.get("whatsapp"),
+            "whatsapp_consent": c.get("whatsapp_consent") or "cold",
+            "email": c.get("email"),
+        }
+        for c in wa_rows
+    ]
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
         "llm_providers": list_providers(),
         "env_key_status": env_key_status(),
         "contacts_by_platform": contacts_by_platform,
+        "contacts_with_whatsapp": contacts_with_whatsapp,
     }
 
 
@@ -292,6 +314,8 @@ async def create_task(
     max_dms_per_run: int = Form(30),
     max_dms_per_session: int = Form(5),
     headed: str = Form(""),
+    whatsapp_engine_preference: str = Form("auto"),
+    whatsapp_dry_run: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -316,6 +340,8 @@ async def create_task(
         max_dms_per_session=max_dms_per_session,
         headed=headed,
         target_contact_ids=target_contact_ids_raw,
+        whatsapp_engine_preference=whatsapp_engine_preference,
+        whatsapp_dry_run=whatsapp_dry_run,
     )
     try:
         validated = TaskIn(**payload)
@@ -391,6 +417,8 @@ async def update_task(
     max_dms_per_run: int = Form(30),
     max_dms_per_session: int = Form(5),
     headed: str = Form(""),
+    whatsapp_engine_preference: str = Form("auto"),
+    whatsapp_dry_run: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -441,6 +469,8 @@ async def update_task(
         max_dms_per_session=max_dms_per_session,
         headed=headed,
         target_contact_ids=target_contact_ids_raw,
+        whatsapp_engine_preference=whatsapp_engine_preference,
+        whatsapp_dry_run=whatsapp_dry_run,
     )
     try:
         validated = TaskIn(**payload)

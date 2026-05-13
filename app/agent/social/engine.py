@@ -34,6 +34,7 @@ from .platform_base import DMResult, HealthStatus, SocialAccount, SocialPlatform
 from .proxy_pool import assign_proxy_to_account, proxy_to_playwright_kwargs
 from .session_manager import load_session_state, save_session
 from .tiktok import TikTok
+from .whatsapp_browser import WhatsAppBrowser
 
 if TYPE_CHECKING:
     pass
@@ -45,7 +46,22 @@ PLATFORMS: dict[str, type[SocialPlatform]] = {
     "instagram": Instagram,
     "tiktok": TikTok,
     "facebook": Facebook,
+    "whatsapp_browser": WhatsAppBrowser,
 }
+
+
+def _get_session_dir_from_db(uuid: str) -> str | None:
+    """Recupera session_dir per un account WA browser dal DB (fallback se non
+    è già nell'oggetto SocialAccount in memoria)."""
+    try:
+        from ... import db as _db
+        rows = _db.list_social_accounts(platform="whatsapp_browser")
+        for r in rows:
+            if r.get("uuid") == uuid:
+                return r.get("session_dir") or None
+    except Exception:
+        pass
+    return None
 
 
 class OutreachEngine:
@@ -76,16 +92,20 @@ class OutreachEngine:
         return async_playwright, "playwright"
 
     async def _open_browser_for_account(self, account: SocialAccount, p):
-        """Apre browser + context per un account con proxy + session restore + stealth."""
+        """Apre browser + context per un account con proxy + session restore + stealth.
+
+        WhatsApp ha bisogno di IndexedDB persistito (chat keys E2E), che
+        `storage_state` NON gestisce. Per account con `auth_method='qr_session'`
+        E `session_dir` valida, usiamo `launch_persistent_context(user_data_dir)`
+        invece di `browser.new_context()`. Così il QR viene scansionato una volta
+        sola e la sessione resta valida fino a quando WA non la invalida
+        (~14 giorni in genere).
+
+        Per IG/TikTok/Facebook resta il flusso classico browser.new_context +
+        storage_state (cookies/localStorage) — funziona bene per quelle.
+        """
         proxy_cfg = assign_proxy_to_account(account.uuid)
         proxy_kwargs = proxy_to_playwright_kwargs(proxy_cfg)
-        browser = await p.chromium.launch(
-            headless=not self.headed,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-default-browser-check",
-            ],
-        )
         ctx_kwargs = {
             "viewport": {"width": 1280, "height": 800},
             "user_agent": (
@@ -96,6 +116,36 @@ class OutreachEngine:
             "timezone_id": "Europe/Rome",
         }
         ctx_kwargs.update(proxy_kwargs)
+
+        # Persistent context per WhatsApp (user_data_dir = path Playwright completo).
+        # Restituiamo (None, context, page): browser è inglobato dentro il context
+        # ed è chiuso quando si chiude il context.
+        sess_dir = getattr(account, "session_dir", None) or _get_session_dir_from_db(account.uuid)
+        if sess_dir and getattr(account, "platform", "") == "whatsapp_browser":
+            log.info("[wa] open browser via launch_persistent_context (dir=%s)", sess_dir)
+            from pathlib import Path as _P
+            _P(sess_dir).mkdir(parents=True, exist_ok=True)
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir=sess_dir,
+                headless=not self.headed,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-default-browser-check",
+                ],
+                **ctx_kwargs,
+            )
+            # Use existing about:blank page if available, else open new
+            page = context.pages[0] if context.pages else await context.new_page()
+            return None, context, page
+
+        # Path classico (IG/TikTok/Facebook): browser + new_context + storage_state
+        browser = await p.chromium.launch(
+            headless=not self.headed,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-default-browser-check",
+            ],
+        )
         state = load_session_state(account.uuid)
         if state:
             ctx_kwargs["storage_state"] = state
@@ -242,16 +292,34 @@ class OutreachEngine:
                             _say(f"⚠️ health degradata ({health_now.value}) — interrompo sessione")
                             self.pool.release(rt.account.uuid, dm_sent=result.ok, health=health_now)
                             return results
-                        # Random gap human-like (compresso a min se siamo a fine sessione)
+                        # Random gap human-like tra un DM e il successivo.
+                        # Range: random_gap_between_dms_min() ritorna 8-30 min
+                        # (anti-ban su IG/TikTok). Per WhatsApp è eccessivo: il
+                        # cap a 2 min lo rende usabile per test pur restando
+                        # umano. Comunque scriviamo SEMPRE nel job log così
+                        # l'utente sa che il runner sta facendo idle, non è
+                        # bloccato.
                         if i < n_to_send - 1:
                             gap_min = random_gap_between_dms_min()
+                            if platform_name == "whatsapp_browser":
+                                gap_min = min(gap_min, 2.0)  # cap 2 min su WA
                             log.debug("Gap %.1f min...", gap_min)
+                            _say(f"  ⏳ gap anti-ban: idle per {gap_min:.1f} min prima del prossimo DM")
                             await asyncio.sleep(gap_min * 60)
                     # Save session aggiornata
                     await save_session(context, rt.account.uuid)
                 finally:
-                    await context.close()
-                    await browser.close()
+                    # Per persistent_context (WhatsApp) browser è None: chiudere
+                    # solo il context (chiude internamente il chromium child).
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
+                    if browser is not None:
+                        try:
+                            await browser.close()
+                        except Exception:
+                            pass
         except Exception as e:
             log.exception("Engine session crash: %s", e)
             _say(f"💥 engine crash: {type(e).__name__}: {e}")

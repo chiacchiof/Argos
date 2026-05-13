@@ -45,6 +45,7 @@ class SocialAccount:
     proxy_label: str | None = None
     daily_dm_cap: int = 10
     status: str = "active"  # active | quarantine | banned
+    session_dir: str | None = None  # Playwright user_data_dir (WA Web persistent)
 
 
 @dataclass

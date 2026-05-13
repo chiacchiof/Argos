@@ -48,6 +48,7 @@
         <option value="qualifier" {% if mode=='qualifier' %}selected{% endif %}>qualifier — LLM filtra/scora contatti</option>
         <option value="outreach" {% if mode=='outreach' %}selected{% endif %}>outreach — invio email/telegram</option>
         <option value="outreach_social" {% if mode=='outreach_social' %}selected{% endif %}>outreach_social — DM via Instagram/TikTok (browser stealth + Playwright)</option>
+        <option value="outreach_whatsapp" {% if mode=='outreach_whatsapp' %}selected{% endif %}>outreach_whatsapp — DM WhatsApp (Motore A browser + Motore B Cloud API)</option>
         <option value="responder" {% if mode=='responder' %}selected{% endif %}>responder — auto-reply LLM ai messaggi inbound</option>
       </select>
       <small class="hint mode-hint" data-mode-hint>Scegli la modalità: il form si adatterà automaticamente.</small>
@@ -541,7 +542,7 @@
     {# ============================================================
        SEZIONE 9: PROVIDER LLM — tutti tranne outreach (outreach è solo template-fill)
        ============================================================ #}
-    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer qualifier responder outreach_social">
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer qualifier responder outreach_social outreach_whatsapp">
       <summary>Modello LLM <span class="hint dyn-hint" data-modes-hint="outreach_social">(per outreach_social: usato per generare messaggi DM personalizzati — Qwen locale consigliato per $0)</span></summary>
 
       <label>Provider
@@ -703,6 +704,123 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
       <p class="muted small">
         📊 <a href="/social/accounts" target="_blank">Dashboard account</a> (status, dms_today, quarantine)
       </p>
+    </details>
+
+    {# ============================================================
+       SEZIONE 8c: CONFIGURAZIONE OUTREACH WHATSAPP (Motore A browser + B API)
+       Riusa i campi `outreach_intent` + `message_template_variants` dalla sez 8b
+       (visibili anche per outreach_whatsapp grazie a data-modes esteso più sotto).
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="outreach_whatsapp">
+      <summary>💬 Configurazione outreach WhatsApp <span class="hint">(doppio motore: A browser + B Cloud API)</span></summary>
+
+      <div class="warning-box" style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.6rem 0.8rem;margin-bottom:0.8rem">
+        ⚠️ <strong>Avviso ToS Meta</strong>: il Motore A (browser su web.whatsapp.com) viola i ToS.
+        Rischio ban del numero per uso massivo a contatti senza opt-in. Il Motore B (Meta Cloud API)
+        è legale ma limitato a opt-in / 24h-window.
+        Configura account/API in <a href="/settings/whatsapp" target="_blank">/settings/whatsapp</a>.
+      </div>
+
+      <label>Obiettivo / intent dell'outreach
+        <span class="hint">Spiega chi sei e cosa offri. Usato dall'LLM per personalizzare ogni messaggio.</span>
+        <textarea name="outreach_intent" rows="3"
+                  placeholder="Es. Sono un consulente di marketing locale, propongo a piccoli ristoranti una review gratuita della loro presenza online.">{{ p.get('outreach_intent', '') }}</textarea>
+      </label>
+
+      <label>Esempi di stile <span class="hint">(uno per blocco, separati da <code>---</code>. L'LLM li userà come ispirazione di tono.)</span>
+        <textarea name="message_template_variants" rows="6"
+                  placeholder="Ciao Marco, ho visto il tuo ristorante online e mi piace molto. Volevo proporti una review gratuita della tua presenza digitale. Ti va di sentirci?
+---
+Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche idea per migliorare visibilità su Google e social. Vi interessa una chiacchierata?">{{ p.get('message_template_variants', '') }}</textarea>
+      </label>
+
+      {# Selettore esplicito target — checkbox sui contacts con whatsapp #}
+      {% set wa_selected = p.get('target_contact_ids') or [] %}
+      {% set wa_selected_set = wa_selected if wa_selected is iterable else [] %}
+      <div class="contact-targets-block">
+        <label class="contact-targets-label">
+          <strong>📋 Contatti da contattare</strong>
+          <span class="hint">
+            Spunta i contatti dall'inbox che vuoi destinatari di questa run. Se non spunti
+            niente, il runner userà <em>tutti</em> i contacts <code>qualified</code> con il
+            campo <code>whatsapp</code> popolato (esclusi <code>optedout</code>).
+          </span>
+        </label>
+
+        {% if contacts_with_whatsapp %}
+        <div class="contact-targets-list" data-target-platform="whatsapp">
+          <div class="contact-targets-actions">
+            <button type="button" class="btn-small" data-targets-toggle="all" data-target-platform="whatsapp">Tutti</button>
+            <button type="button" class="btn-small btn-secondary" data-targets-toggle="none" data-target-platform="whatsapp">Nessuno</button>
+            <span class="muted small" data-targets-count="whatsapp">0 / {{ contacts_with_whatsapp | length }} selezionati</span>
+          </div>
+          <div class="contact-targets-grid">
+            {% for c in contacts_with_whatsapp %}
+            <label class="contact-target-row">
+              <input type="checkbox" name="target_contact_ids" value="{{ c.id }}"
+                     data-target-checkbox="whatsapp"
+                     {% if c.id in wa_selected_set %}checked{% endif %}>
+              <span class="contact-target-info">
+                <strong>{{ c.display_name or c.whatsapp }}</strong>
+                <small class="muted">
+                  #{{ c.id }} ·
+                  <code>{{ c.whatsapp }}</code>
+                  {% if c.email %} · {{ c.email }}{% endif %}
+                  · consent:
+                  {% if c.whatsapp_consent == 'opt_in' %}<span class="badge badge-ok">✓ opt_in</span>
+                  {% elif c.whatsapp_consent == 'optedout' %}<span class="badge badge-err">⛔ optedout</span>
+                  {% else %}<span class="badge badge-muted">cold</span>{% endif %}
+                  · status: {{ c.status or '—' }}
+                  {% if c.source_domain %} · src: {{ c.source_domain }}{% endif %}
+                </small>
+              </span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+        {% else %}
+        <p class="muted small" style="padding:0.5rem;background:#f9fafb;border-radius:4px">
+          ⚠️ Nessun contatto con campo <code>whatsapp</code> popolato nel DB.
+          Vai a <a href="/inbox/contacts" target="_blank">Inbox › Contatti</a> per aggiungerne manualmente,
+          oppure lancia un task <code>auto_extract</code> / <code>bulk_extract</code>
+          su uno schema (es. <code>profile_contacts</code>) che estragga numeri WA.
+        </p>
+        {% endif %}
+      </div>
+
+      <div class="row">
+        <label>Engine preference
+          {% set ep = p.get('whatsapp_engine_preference') or 'auto' %}
+          <select name="whatsapp_engine_preference">
+            <option value="auto"     {% if ep=='auto' %}selected{% endif %}>auto (consigliato — sceglie il motore per ogni contatto)</option>
+            <option value="force_A"  {% if ep=='force_A' %}selected{% endif %}>force_A — solo browser (anche per opt-in)</option>
+            <option value="force_B"  {% if ep=='force_B' %}selected{% endif %}>force_B — solo Cloud API (saltati i cold)</option>
+          </select>
+          <span class="hint">
+            <code>auto</code>: contatti opt-in / 24h-window → Motore B; cold → Motore A. <br>
+            <code>force_B</code>: salta i contatti cold (no API senza consenso).
+          </span>
+        </label>
+
+        <label>Max DM totali per esecuzione
+          <input type="number" name="max_dms_per_run" min="1" max="500" value="{{ p.get('max_dms_per_run', 30) }}">
+          <span class="hint">Cap di sicurezza. Default 30.</span>
+        </label>
+      </div>
+
+      <div class="row">
+        <label>Max DM per sessione browser (Motore A)
+          <input type="number" name="max_dms_per_session" min="1" max="30" value="{{ p.get('max_dms_per_session', 5) }}">
+          <span class="hint">Anti-ban: una sessione = login → N DM → close. Mai &gt; 10-15.</span>
+        </label>
+
+        <label class="inline-checkbox" style="align-self:flex-end">
+          <input type="checkbox" name="whatsapp_dry_run" value="1"
+                 {% if p.get('whatsapp_dry_run') %}checked{% endif %}>
+          <strong>🧪 Dry-run</strong>
+          <span class="hint">Simula gli invii: niente DM reale, solo log con reason="dry_run". Per testare il flusso.</span>
+        </label>
+      </div>
     </details>
 
     {# ============================================================
@@ -986,6 +1104,8 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
       site_explorer: "Architettura 2-fasi: il LLM fa SOLO il mapping del sito (identifica categorie, listing, paginazione e li accoda). Poi il runner prende il controllo e estrae deterministicamente, fetch_page+extract_target su ogni URL fresco di ogni listing, fino al cap target o all'esaurimento della queue. Niente loop LLM-driven che si pianta a metà. Perfetto per siti listing→dettaglio (immobili, e-commerce, directory, profili).",
       qualifier: "Legge un profiles.jsonl e filtra i contatti via LLM, scorando 0-10.",
       outreach: "Manda email/telegram ai contatti qualified. Usa il template che definisci sotto.",
+      outreach_social: "DM via Instagram/TikTok/Facebook con browser stealth + Playwright. LLM rephrase per messaggi personalizzati.",
+      outreach_whatsapp: "DM WhatsApp con doppio motore: A (browser su web.whatsapp.com — cold outreach, viola ToS) + B (Meta Cloud API — opt-in + template). Engine selector automatico per contatto.",
       responder: "Risponde automaticamente ai messaggi inbound usando un LLM. Opt-out detection inclusa."
     };
     if (modeHint && modeHints[mode]) modeHint.textContent = modeHints[mode];
@@ -1196,7 +1316,12 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
   const platSel = document.getElementById('social-platform-select');
   if (!platSel) return;
 
-  const lists = document.querySelectorAll('.contact-targets-list[data-target-platform]');
+  // Solo le liste delle 3 piattaforme social — la lista WhatsApp ha la propria
+  // sezione condizionata da data-modes="outreach_whatsapp" e NON va toccata qui.
+  const SOCIAL_PLATS = ['instagram', 'tiktok', 'facebook'];
+  const lists = Array.from(
+    document.querySelectorAll('.contact-targets-list[data-target-platform]')
+  ).filter(d => SOCIAL_PLATS.includes(d.dataset.targetPlatform));
   if (!lists.length) return;
 
   function updateVisibility() {

@@ -475,6 +475,85 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_social_dm_log_target "
             "ON social_dm_log(target_contact_id)"
         )
+
+        # ===== WhatsApp (Fase 1) =====
+        # Estensione di social_accounts per ospitare account WhatsApp browser:
+        # - phone_number: numero E.164 (es. "+393331234567")
+        # - auth_method: 'password' (default IG/TikTok) | 'qr_session' (WA) | 'api_token'
+        # - session_dir: path Playwright user_data_dir per persistenza WA Web
+        sa_cols = {r["name"] for r in con.execute("PRAGMA table_info(social_accounts)").fetchall()}
+        if "phone_number" not in sa_cols:
+            con.execute("ALTER TABLE social_accounts ADD COLUMN phone_number TEXT")
+        if "auth_method" not in sa_cols:
+            con.execute(
+                "ALTER TABLE social_accounts ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'password'"
+            )
+        if "session_dir" not in sa_cols:
+            con.execute("ALTER TABLE social_accounts ADD COLUMN session_dir TEXT")
+
+        # Estensione di social_dm_log per supportare due engine:
+        # - engine: 'A_browser' | 'B_api' | NULL (record legacy IG/TikTok)
+        # - api_config_id: FK a whatsapp_api_config (popolata quando engine='B_api')
+        # Inoltre account_id va reso NULLABLE: record Motore B non hanno un
+        # social_accounts collegato, hanno solo api_config_id.
+        sdl_cols = {r["name"] for r in con.execute("PRAGMA table_info(social_dm_log)").fetchall()}
+        if "engine" not in sdl_cols:
+            con.execute("ALTER TABLE social_dm_log ADD COLUMN engine TEXT")
+        if "api_config_id" not in sdl_cols:
+            con.execute(
+                "ALTER TABLE social_dm_log ADD COLUMN api_config_id INTEGER "
+                "REFERENCES whatsapp_api_config(id) ON DELETE SET NULL"
+            )
+        # Rendi account_id NULLABLE se non lo è già (SQLite non supporta
+        # ALTER COLUMN: ricreazione tabella preservando i dati).
+        _make_social_dm_log_account_nullable(con)
+
+        # Estensione di contacts per consent management WhatsApp:
+        # - whatsapp_consent: 'cold' (default) | 'opt_in' | 'optedout'
+        # - whatsapp_last_inbound_at: ultima volta che il contatto ha scritto al
+        #   business number (per la 24h-window di Meta Cloud API free-form)
+        if "whatsapp_consent" not in ccols:
+            con.execute(
+                "ALTER TABLE contacts ADD COLUMN whatsapp_consent TEXT NOT NULL DEFAULT 'cold'"
+            )
+        if "whatsapp_last_inbound_at" not in ccols:
+            con.execute("ALTER TABLE contacts ADD COLUMN whatsapp_last_inbound_at TEXT")
+
+        # tasks: campi specifici outreach_whatsapp
+        if "whatsapp_engine_preference" not in tcols:
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN whatsapp_engine_preference "
+                "TEXT NOT NULL DEFAULT 'auto'"
+            )
+        if "whatsapp_dry_run" not in tcols:
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN whatsapp_dry_run "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+
+        # whatsapp_api_config: una riga per ogni numero Business registrato su
+        # Meta Cloud API. Cifrato access_token con AGENTSCRAPER_SECRET.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS whatsapp_api_config (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              label TEXT NOT NULL,
+              phone_number_id TEXT NOT NULL,
+              business_account_id TEXT NOT NULL,
+              app_id TEXT,
+              encrypted_access_token BLOB NOT NULL,
+              default_template_name TEXT,
+              default_template_language TEXT NOT NULL DEFAULT 'it',
+              status TEXT NOT NULL DEFAULT 'active',
+              daily_msg_cap INTEGER NOT NULL DEFAULT 250,
+              notes TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+        """)
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_whatsapp_api_config_status "
+            "ON whatsapp_api_config(status)"
+        )
         # Indici su workflow_edges (creati qui dopo che workflow_id esiste sicuramente)
         con.execute("CREATE INDEX IF NOT EXISTS idx_workflow_edges_from ON workflow_edges(from_task_id, enabled)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflow_id)")
@@ -532,6 +611,57 @@ def _fix_obsolete_fks_to_projects(con: sqlite3.Connection) -> None:
         con.execute("CREATE INDEX IF NOT EXISTS idx_threads_contact ON threads(contact_id)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_threads_external ON threads(channel, external_id)")
+    finally:
+        con.execute("PRAGMA foreign_keys = ON")
+
+
+def _make_social_dm_log_account_nullable(con: sqlite3.Connection) -> None:
+    """Rende `social_dm_log.account_id` NULLABLE per ospitare i record del Motore
+    B (Meta Cloud API) che non hanno un social_accounts collegato, solo un
+    api_config_id. SQLite non supporta ALTER COLUMN: ricreiamo la tabella
+    preservando i dati esistenti. Idempotente: ricrea solo se necessario.
+    """
+    info = con.execute("PRAGMA table_info(social_dm_log)").fetchall()
+    by_name = {r["name"]: r for r in info}
+    account_col = by_name.get("account_id")
+    if not account_col or int(account_col["notnull"]) == 0:
+        return  # già nullable o tabella assente, nulla da fare
+
+    col_names = [r["name"] for r in info]
+    cols_csv = ", ".join(col_names)
+    con.execute("PRAGMA foreign_keys = OFF")
+    try:
+        con.execute("DROP TABLE IF EXISTS _social_dm_log_new")
+        con.execute("""
+            CREATE TABLE _social_dm_log_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              account_id INTEGER REFERENCES social_accounts(id) ON DELETE CASCADE,
+              job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+              target_contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+              target_platform TEXT NOT NULL,
+              target_username TEXT NOT NULL,
+              message TEXT NOT NULL,
+              sent_at TEXT NOT NULL,
+              ok INTEGER NOT NULL,
+              reason TEXT,
+              health_post TEXT,
+              engine TEXT,
+              api_config_id INTEGER REFERENCES whatsapp_api_config(id) ON DELETE SET NULL
+            )
+        """)
+        con.execute(
+            f"INSERT INTO _social_dm_log_new ({cols_csv}) SELECT {cols_csv} FROM social_dm_log"
+        )
+        con.execute("DROP TABLE social_dm_log")
+        con.execute("ALTER TABLE _social_dm_log_new RENAME TO social_dm_log")
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_social_dm_log_account "
+            "ON social_dm_log(account_id, sent_at)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_social_dm_log_target "
+            "ON social_dm_log(target_contact_id)"
+        )
     finally:
         con.execute("PRAGMA foreign_keys = ON")
 
@@ -729,8 +859,9 @@ def create_task(data: dict[str, Any]) -> int:
                                   social_platform, outreach_intent, message_template_variants,
                                   max_dms_per_run, max_dms_per_session, headed,
                                   target_contact_ids,
+                                  whatsapp_engine_preference, whatsapp_dry_run,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -780,6 +911,8 @@ def create_task(data: dict[str, Any]) -> int:
                 int(data.get("max_dms_per_session") or 5),
                 int(data.get("headed") or 0),
                 _dump_list([int(x) for x in (data.get("target_contact_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
+                (data.get("whatsapp_engine_preference") or "auto"),
+                1 if data.get("whatsapp_dry_run") else 0,
                 ts,
                 ts,
             ),
@@ -810,6 +943,7 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 social_platform = ?, outreach_intent = ?, message_template_variants = ?,
                 max_dms_per_run = ?, max_dms_per_session = ?, headed = ?,
                 target_contact_ids = ?,
+                whatsapp_engine_preference = ?, whatsapp_dry_run = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -861,6 +995,8 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 int(data.get("max_dms_per_session") or 5),
                 int(data.get("headed") or 0),
                 _dump_list([int(x) for x in (data.get("target_contact_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
+                (data.get("whatsapp_engine_preference") or "auto"),
+                1 if data.get("whatsapp_dry_run") else 0,
                 now_iso(),
                 task_id,
             ),
@@ -1432,6 +1568,23 @@ def list_contacts_with_social_platform(
     return out
 
 
+def list_contacts_with_whatsapp(limit: int = 500) -> list[dict[str, Any]]:
+    """Ritorna contacts con campo `whatsapp` popolato (qualsiasi status,
+    esclusi optedout). Usato dalla UI del task `outreach_whatsapp` per il
+    selettore esplicito di target.
+    """
+    sql = (
+        "SELECT * FROM contacts "
+        "WHERE whatsapp IS NOT NULL AND whatsapp != '' "
+        "AND (whatsapp_consent IS NULL OR whatsapp_consent != 'optedout') "
+        "AND status NOT IN ('optedout','banned') "
+        "ORDER BY id DESC LIMIT ?"
+    )
+    with connect() as con:
+        rows = con.execute(sql, (max(1, int(limit)),)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_contacts_by_ids(ids: list[int]) -> list[dict[str, Any]]:
     """Recupera contatti per lista di ID. Niente filtri su status."""
     clean = [int(i) for i in ids if str(i).strip().lstrip("-").isdigit()]
@@ -1454,6 +1607,39 @@ def list_contact_source_domains(limit: int = 100) -> list[tuple[str, int]]:
     with connect() as con:
         rows = con.execute(sql, (limit,)).fetchall()
     return [(r["source_domain"], int(r["n"])) for r in rows]
+
+
+def update_contact(contact_id: int, fields: dict[str, Any]) -> None:
+    """Update generico di un contatto.
+
+    Accetta SOLO le colonne whitelisted (no SQL injection via key utente). Le
+    chiavi non riconosciute vengono ignorate. `updated_at` viene aggiornato
+    sempre. Per cambi specifici di status/qualifier_score/whatsapp_consent ci
+    sono helper dedicati che è meglio preferire.
+    """
+    if not fields:
+        return
+    ALLOWED = {
+        "display_name", "email", "telegram_username", "telegram_chat_id",
+        "whatsapp", "sitoweb", "social_json", "source_url", "source_domain",
+        "status", "qualifier_score", "notes", "raw_json",
+        "whatsapp_consent", "whatsapp_last_inbound_at",
+    }
+    sets: list[str] = []
+    vals: list[Any] = []
+    for k, v in fields.items():
+        if k not in ALLOWED:
+            continue
+        sets.append(f"{k} = ?")
+        vals.append(v)
+    if not sets:
+        return
+    sets.append("updated_at = ?")
+    vals.append(now_iso())
+    vals.append(contact_id)
+    sql = f"UPDATE contacts SET {', '.join(sets)} WHERE id = ?"
+    with connect() as con:
+        con.execute(sql, vals)
 
 
 def update_contact_status(contact_id: int, status: str, notes: str | None = None) -> None:
@@ -2500,14 +2686,23 @@ def delete_social_account(account_id: int) -> None:
 
 
 def insert_social_dm_log(data: dict) -> int:
+    """Log di un singolo DM inviato.
+
+    Per IG/TikTok/Facebook e WhatsApp browser (Motore A): popolare `account_id`,
+    lasciare `api_config_id` e `engine` (eventualmente 'A_browser') a None/scelta.
+    Per WhatsApp API (Motore B): popolare `api_config_id` + `engine='B_api'`,
+    lasciare `account_id=None`.
+    """
+    account_id = data.get("account_id")
     with connect() as con:
         cur = con.execute(
             """INSERT INTO social_dm_log
             (account_id, job_id, target_contact_id, target_platform,
-             target_username, message, sent_at, ok, reason, health_post)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             target_username, message, sent_at, ok, reason, health_post,
+             engine, api_config_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                int(data["account_id"]),
+                int(account_id) if account_id is not None else None,
                 data.get("job_id"),
                 data.get("target_contact_id"),
                 data["target_platform"],
@@ -2517,6 +2712,8 @@ def insert_social_dm_log(data: dict) -> int:
                 1 if data.get("ok") else 0,
                 data.get("reason"),
                 data.get("health_post"),
+                data.get("engine"),
+                data.get("api_config_id"),
             ),
         )
         return int(cur.lastrowid)
@@ -2543,3 +2740,138 @@ def count_social_dms_today(account_id: int) -> int:
             (account_id, cutoff),
         ).fetchone()
     return int(r[0]) if r else 0
+
+
+# ===========================================================================
+# WhatsApp API config (Motore B — Meta Cloud API)
+# ===========================================================================
+
+def insert_whatsapp_api_config(data: dict) -> int:
+    """Crea una nuova configurazione Meta Cloud API.
+
+    Required: label, phone_number_id, business_account_id, encrypted_access_token (bytes).
+    Optional: app_id, default_template_name, default_template_language ('it' default),
+              status ('active' default), daily_msg_cap (250 default), notes.
+    """
+    ts = now_iso()
+    with connect() as con:
+        cur = con.execute(
+            """INSERT INTO whatsapp_api_config
+            (label, phone_number_id, business_account_id, app_id,
+             encrypted_access_token, default_template_name, default_template_language,
+             status, daily_msg_cap, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                data["label"],
+                data["phone_number_id"],
+                data["business_account_id"],
+                data.get("app_id"),
+                data["encrypted_access_token"],
+                data.get("default_template_name"),
+                data.get("default_template_language", "it"),
+                data.get("status", "active"),
+                int(data.get("daily_msg_cap", 250)),
+                data.get("notes"),
+                ts, ts,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_whatsapp_api_config(status: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM whatsapp_api_config"
+    args: list = []
+    if status:
+        sql += " WHERE status = ?"; args.append(status)
+    sql += " ORDER BY id DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_whatsapp_api_config(config_id: int) -> dict | None:
+    with connect() as con:
+        r = con.execute(
+            "SELECT * FROM whatsapp_api_config WHERE id = ?", (config_id,)
+        ).fetchone()
+    return dict(r) if r else None
+
+
+def update_whatsapp_api_config(config_id: int, **fields) -> None:
+    if not fields:
+        return
+    sets = [f"{k} = ?" for k in fields]
+    sql = f"UPDATE whatsapp_api_config SET {', '.join(sets)}, updated_at = ? WHERE id = ?"
+    with connect() as con:
+        con.execute(sql, (*fields.values(), now_iso(), config_id))
+
+
+def delete_whatsapp_api_config(config_id: int) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM whatsapp_api_config WHERE id = ?", (config_id,))
+
+
+def count_whatsapp_api_msgs_today(api_config_id: int) -> int:
+    """Numero di messaggi Motore B (engine='B_api') inviati con ok=1 oggi (UTC) da
+    questa config. Usato per il daily_msg_cap.
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    with connect() as con:
+        r = con.execute(
+            "SELECT COUNT(*) FROM social_dm_log "
+            "WHERE api_config_id = ? AND engine = 'B_api' AND ok = 1 AND sent_at >= ?",
+            (api_config_id, cutoff),
+        ).fetchone()
+    return int(r[0]) if r else 0
+
+
+# ===========================================================================
+# Contacts — helpers WhatsApp (consent + inbound tracking)
+# ===========================================================================
+
+def update_contact_whatsapp_consent(contact_id: int, consent: str) -> None:
+    """Aggiorna `contacts.whatsapp_consent`. Valori validi: 'cold'|'opt_in'|'optedout'."""
+    if consent not in ("cold", "opt_in", "optedout"):
+        raise ValueError(f"whatsapp_consent invalido: {consent!r}")
+    with connect() as con:
+        con.execute(
+            "UPDATE contacts SET whatsapp_consent = ?, updated_at = ? WHERE id = ?",
+            (consent, now_iso(), contact_id),
+        )
+
+
+def touch_contact_whatsapp_inbound(contact_id: int) -> None:
+    """Segna che il contatto ha appena scritto al business number — abilita la
+    24h-window per messaggi free-form via Motore B.
+    """
+    ts = now_iso()
+    with connect() as con:
+        con.execute(
+            "UPDATE contacts SET whatsapp_last_inbound_at = ?, updated_at = ? WHERE id = ?",
+            (ts, ts, contact_id),
+        )
+
+
+def list_contacts_for_whatsapp_outreach(
+    only_qualified: bool = True,
+    exclude_optedout: bool = True,
+    exclude_contacted: bool = True,
+    limit: int = 1000,
+) -> list[dict]:
+    """Carica i contatti idonei a outreach_whatsapp.
+
+    Filtri di default: status='qualified', whatsapp_consent != 'optedout',
+    status != 'contacted', whatsapp IS NOT NULL.
+    """
+    sql = "SELECT * FROM contacts WHERE whatsapp IS NOT NULL AND whatsapp != ''"
+    if only_qualified:
+        sql += " AND status = 'qualified'"
+    if exclude_optedout:
+        sql += " AND (whatsapp_consent IS NULL OR whatsapp_consent != 'optedout')"
+    if exclude_contacted:
+        sql += " AND status != 'contacted'"
+    sql += " ORDER BY id DESC LIMIT ?"
+    with connect() as con:
+        rows = con.execute(sql, (limit,)).fetchall()
+    return [dict(r) for r in rows]

@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}WhatsApp — Settings — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <h2>💬 WhatsApp — Settings</h2>
+
+  {% if flash %}<div class="flash-ok">✓ {{ flash }}</div>{% endif %}
+  {% if error %}<div class="errors">⚠️ {{ error }}</div>{% endif %}
+
+  <div class="warning-banner" style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.8rem 1rem;margin:1rem 0">
+    <strong>⚠️ Avviso ToS WhatsApp</strong><br>
+    <p style="margin:0.3rem 0 0 0">
+      Il <strong>Motore A</strong> (browser automation su <code>web.whatsapp.com</code>) <strong>viola i Termini di Servizio di Meta</strong>.
+      L'uso massivo per cold outreach può comportare <strong>ban del numero</strong>. AgentScraper non ti protegge da queste conseguenze.
+      Procedi a tuo rischio. Il <strong>Motore B</strong> (Meta Cloud API ufficiale) è legale ma richiede opt-in dei contatti e
+      template pre-approvati: <strong>non è adatto al cold outreach</strong>.
+    </p>
+  </div>
+
+  {% if not secret_configured %}
+  <div class="errors">
+    <strong>AGENTSCRAPER_SECRET non configurata</strong> in <code>.env</code>. Senza questa variabile non si possono cifrare i token. Aggiungila prima di proseguire.
+  </div>
+  {% endif %}
+
+  <hr>
+
+  {# ===================== MOTORE A — ACCOUNT BROWSER ===================== #}
+  <h3>① Motore A — Account browser (web.whatsapp.com)</h3>
+  <p class="muted small">
+    Pool di account WA per outreach a freddo. Ogni account ha una sessione Playwright persistente
+    in <code>data/whatsapp_sessions/&lt;uuid&gt;/</code>. Login via QR code: il telefono va scansionato
+    una sola volta, poi la sessione resta valida per ~14 giorni.
+  </p>
+
+  {% if accounts %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Label</th>
+        <th>Numero</th>
+        <th>Status</th>
+        <th>DM cap/giorno</th>
+        <th>Ultimo agg.</th>
+        <th>Azioni</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in accounts %}
+      <tr>
+        <td>{{ a.id }}</td>
+        <td>{{ a.username }}</td>
+        <td><code>{{ a.phone_number or '—' }}</code></td>
+        <td>
+          {% if a.status == 'active' %}<span class="badge badge-ok">✓ active</span>
+          {% elif a.status == 'pending_login' %}<span class="badge badge-warn">⏳ pending login</span>
+          {% elif a.status == 'disabled' %}<span class="badge badge-muted">⏸ disabled</span>
+          {% elif a.status == 'banned' %}<span class="badge badge-err">❌ banned</span>
+          {% else %}<span class="badge">{{ a.status }}</span>{% endif %}
+        </td>
+        <td>{{ a.daily_dm_cap }}</td>
+        <td><small>{{ a.updated_at[:19] if a.updated_at else '—' }}</small></td>
+        <td>
+          {% if a.status == 'pending_login' %}
+          <form method="post" action="/settings/whatsapp/account/{{ a.id }}/login" style="display:inline">
+            <button type="submit" class="btn-small btn-primary" title="Apre Chromium headed per scansionare il QR">📱 Avvia QR login</button>
+          </form>
+          {% endif %}
+          {% if a.status == 'active' %}
+          <form method="post" action="/settings/whatsapp/account/{{ a.id }}/disable" style="display:inline">
+            <button type="submit" class="btn-small" title="Disabilita temporaneamente">⏸ Disabilita</button>
+          </form>
+          {% elif a.status == 'disabled' %}
+          <form method="post" action="/settings/whatsapp/account/{{ a.id }}/enable" style="display:inline">
+            <button type="submit" class="btn-small">▶ Riattiva</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/settings/whatsapp/account/{{ a.id }}/delete"
+                style="display:inline"
+                onsubmit="return confirm('Elimino l\'account {{ a.username }} + cartella sessione?');">
+            <button type="submit" class="btn-small btn-danger">🗑️ Elimina</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Nessun account WA browser configurato.</p>
+  {% endif %}
+
+  <details {% if not accounts %}open{% endif %} style="margin-top:0.8rem">
+    <summary><strong>➕ Aggiungi account WhatsApp browser</strong></summary>
+    <form method="post" action="/settings/whatsapp/account/new" class="settings-form" style="margin-top:0.6rem">
+      <div class="row">
+        <label>Label <span class="hint">(nome interno, es. "WA principale")</span>
+          <input name="label" required maxlength="100" placeholder="WA principale">
+        </label>
+        <label>Numero telefono <span class="hint">(opzionale, E.164 — es. +393331234567)</span>
+          <input name="phone_number" placeholder="+393331234567">
+        </label>
+      </div>
+      <div class="row">
+        <label>DM cap/giorno <span class="hint">(anti-ban, max consigliato 100)</span>
+          <input type="number" name="daily_dm_cap" value="100" min="1" max="500">
+        </label>
+        <label>Proxy label <span class="hint">(opzionale, se hai configurato proxy_pool)</span>
+          <input name="proxy_label" placeholder="(vuoto = no proxy)">
+        </label>
+      </div>
+      <button type="submit" class="btn-primary">➕ Crea account (poi farai QR login)</button>
+    </form>
+  </details>
+
+  <hr style="margin:2rem 0">
+
+  {# ===================== MOTORE B — API CONFIG ===================== #}
+  <h3>② Motore B — Meta Cloud API (ufficiale)</h3>
+  <p class="muted small">
+    Per <strong>follow-up</strong> a contatti che hanno scritto al business number (24h-window) o per
+    <strong>template message</strong> pre-approvati. Richiede un'app Meta Business + numero registrato
+    su WhatsApp Business API.
+  </p>
+
+  {% if api_configs %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Label</th>
+        <th>Phone Number ID</th>
+        <th>WABA ID</th>
+        <th>Template default</th>
+        <th>Status</th>
+        <th>Azioni</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in api_configs %}
+      <tr>
+        <td>{{ c.id }}</td>
+        <td>{{ c.label }}</td>
+        <td><code>{{ c.phone_number_id }}</code></td>
+        <td><code>{{ c.business_account_id }}</code></td>
+        <td><code>{{ c.default_template_name or '—' }}</code> ({{ c.default_template_language }})</td>
+        <td>
+          {% if c.status == 'active' %}<span class="badge badge-ok">✓ active</span>
+          {% elif c.status == 'disabled' %}<span class="badge badge-muted">⏸ disabled</span>
+          {% else %}<span class="badge">{{ c.status }}</span>{% endif %}
+        </td>
+        <td>
+          <button type="button" class="btn-small" onclick="testWaApi({{ c.id }})">🧪 Test</button>
+          <span id="wa-api-test-{{ c.id }}" class="muted small"></span>
+          {% if c.status == 'active' %}
+          <form method="post" action="/settings/whatsapp/api/{{ c.id }}/disable" style="display:inline">
+            <button type="submit" class="btn-small">⏸ Disabilita</button>
+          </form>
+          {% else %}
+          <form method="post" action="/settings/whatsapp/api/{{ c.id }}/enable" style="display:inline">
+            <button type="submit" class="btn-small">▶ Riattiva</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/settings/whatsapp/api/{{ c.id }}/delete"
+                style="display:inline"
+                onsubmit="return confirm('Elimino la config API {{ c.label }}?');">
+            <button type="submit" class="btn-small btn-danger">🗑️ Elimina</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Nessuna config Meta Cloud API configurata.</p>
+  {% endif %}
+
+  <details {% if not api_configs %}open{% endif %} style="margin-top:0.8rem">
+    <summary><strong>➕ Aggiungi config Meta Cloud API</strong></summary>
+    <p class="muted small" style="margin:0.5rem 0">
+      I valori si trovano nella console Meta for Developers → la tua App → WhatsApp → API Setup.
+    </p>
+    <form method="post" action="/settings/whatsapp/api/new" class="settings-form" style="margin-top:0.6rem">
+      <div class="row">
+        <label>Label <span class="hint">(nome interno)</span>
+          <input name="label" required maxlength="100" placeholder="Numero business AGS">
+        </label>
+        <label>App ID <span class="hint">(opzionale, per webhook futuri)</span>
+          <input name="app_id" placeholder="123456789012345">
+        </label>
+      </div>
+      <div class="row">
+        <label>Phone Number ID
+          <input name="phone_number_id" required placeholder="111111111111111">
+        </label>
+        <label>WhatsApp Business Account ID
+          <input name="business_account_id" required placeholder="222222222222222">
+        </label>
+      </div>
+      <label>Access Token <span class="hint">(verrà cifrato con AGENTSCRAPER_SECRET prima del salvataggio)</span>
+        <input type="password" name="access_token" required placeholder="EAAxxxxx..." autocomplete="off" data-lpignore="true">
+      </label>
+      <div class="row">
+        <label>Template di default
+          <input name="default_template_name" placeholder="lead_outreach_v1_it">
+        </label>
+        <label>Lingua template
+          <input name="default_template_language" value="it" placeholder="it">
+        </label>
+      </div>
+      <label>Daily cap messaggi
+        <input type="number" name="daily_msg_cap" value="250" min="1">
+      </label>
+      <button type="submit" class="btn-primary">➕ Crea config API</button>
+    </form>
+  </details>
+
+  <hr>
+  <p class="muted small">
+    📖 Per usare i task <code>outreach_whatsapp</code> serve almeno un account browser <strong>OR</strong>
+    una config API attivi. Vedi <a href="/?status_tag=working">elenco task</a> per creare un task.
+  </p>
+</section>
+
+<script>
+async function testWaApi(configId) {
+  const span = document.getElementById('wa-api-test-' + configId);
+  span.textContent = '...';
+  try {
+    const r = await fetch('/settings/whatsapp/api/' + configId + '/test', {method: 'POST'});
+    const data = await r.json();
+    if (data.ok) {
+      span.innerHTML = '<span style="color:#16a34a">✓ ' + (data.message || 'OK') + '</span>';
+    } else {
+      span.innerHTML = '<span style="color:#dc2626">❌ ' + (data.message || 'error') + '</span>';
+    }
+  } catch (e) {
+    span.innerHTML = '<span style="color:#dc2626">❌ ' + e.message + '</span>';
+  }
+}
+</script>
+{% endblock %}

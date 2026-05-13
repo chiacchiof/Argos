@@ -284,6 +284,7 @@
         </td>
 
         <td class="col-actions row-actions">
+          <a href="/inbox/contacts/{{ c.id }}/edit" class="btn-small" title="Modifica contatto">✏️</a>
           {% if c.status != 'optedout' %}
             <button type="submit" formaction="/inbox/contacts/{{ c.id }}/optout"
                     class="btn-small btn-danger" formnovalidate
