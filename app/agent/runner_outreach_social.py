@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -321,10 +322,13 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         batch = pairs[:max_per_session]
         pairs = pairs[max_per_session:]
         jlog(f"→ Sessione: {len(batch)} DM via {platform}")
+        # Warmup variabile 3-5 min: rende meno prevedibile il pattern temporale
+        # session → DM (un fisso 5min dopo login e' un signal facilmente fingerprintabile).
+        warmup_min = random.uniform(3.0, 5.0)
         results = await engine.run_session(
             platform_name=platform,
             targets=batch,
-            warmup_min=5.0,
+            warmup_min=warmup_min,
             max_dms_per_session=max_per_session,
             jlog=jlog,
         )

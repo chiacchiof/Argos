@@ -217,7 +217,7 @@ class OutreachEngine:
 
                     # Warmup
                     log.info("[%s/%s] warmup browse %d min", platform_name, rt.account.username, warmup_min)
-                    _say(f"Warmup browse ~{warmup_min} min...")
+                    _say(f"Warmup browse ~{warmup_min:.1f} min...")
                     await platform.warmup_browse(page, minutes=warmup_min)
 
                     # Loop DM

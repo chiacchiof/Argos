@@ -165,6 +165,12 @@ class Facebook(SocialPlatform):
         try:
             await page.goto(target, wait_until="domcontentloaded")
             await human_wait(4, 7)
+            # Modali da chiudere prima di poter scrivere:
+            # 1) "Invia un codice monouso per ripristinare la cronologia delle tue chat"
+            #    (FB mostra al primo accesso Messenger su nuovo dispositivo per le
+            #    chat E2E). NON vogliamo "Invia codice" — chiudiamo con X.
+            # 2) Altri popup di onboarding Messenger ("Notifiche", "Tema", ecc.).
+            await self._dismiss_messenger_modals(page)
             # Se non puoi messaggiare (es. profilo non amico o blocked):
             # FB mostra messaggio "Questa persona non puo' ricevere messaggi"
             try:
@@ -238,6 +244,87 @@ class Facebook(SocialPlatform):
                 ok=False, reason=f"exception: {type(e).__name__}: {e}",
                 target_username=username_clean,
             )
+
+    async def _dismiss_messenger_modals(self, page: "Page") -> None:
+        """Chiude modali di onboarding Messenger che bloccano l'accesso al
+        textbox della chat. Loop fino a 3 modali consecutive (FB ne incatena
+        spesso 2: la principale + un dialog di conferma).
+
+        Conosciute al 2026-05-12:
+        - "Invia un codice monouso per ripristinare la cronologia delle tue chat"
+          → la X in alto-destra apre un dialog di conferma:
+        - "Vuoi continuare senza ripristinare?" → bottone "Non ripristinare i
+          messaggi" / "Don't restore messages" e' la chiusura definitiva.
+        Si chiudono nell'ordine, quindi prima provo le conferme positive (che
+        chiudono lo stack di modali), poi le X.
+        """
+        import asyncio, time
+        from .humanize import human_wait
+
+        # Bottoni che chiudono in modo "definitivo" la modale corrente senza
+        # side-effect mobile/email. Ordinati: prima le risposte di conferma a
+        # dialog secondari, poi le X di chiusura.
+        confirm_labels = [
+            "Non ripristinare i messaggi",
+            "Don't restore messages",
+            "Continua senza ripristinare",
+            "Continue without restoring",
+        ]
+        close_labels = [
+            "Chiudi", "Close",
+            "Not now", "Non ora",
+            "Forse più tardi", "Maybe later",
+        ]
+
+        async def _try_click_any() -> bool:
+            # 1) Conferme positive (priorità: chiudono lo stack)
+            for lbl in confirm_labels:
+                try:
+                    loc = page.get_by_role("button", name=lbl, exact=True).first
+                    if await loc.is_visible(timeout=250):
+                        await loc.click(delay=70)
+                        await human_wait(0.5, 1.2)
+                        return True
+                except Exception:
+                    pass
+            # 2) X / Chiudi / Not now via accessibility tree
+            for lbl in close_labels:
+                try:
+                    loc = page.get_by_role("button", name=lbl, exact=True).first
+                    if await loc.is_visible(timeout=250):
+                        await loc.click(delay=70)
+                        await human_wait(0.5, 1.2)
+                        return True
+                except Exception:
+                    pass
+            # 3) Fallback CSS per X via aria-label
+            for sel in (
+                "div[aria-label='Chiudi']",
+                "div[aria-label='Close']",
+                "[role='button'][aria-label='Chiudi']",
+                "[role='button'][aria-label='Close']",
+            ):
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.is_visible(timeout=250):
+                        await loc.click(delay=70)
+                        await human_wait(0.5, 1.2)
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        # Polling per ~6s totali, max 3 modali consecutive
+        deadline = time.time() + 6.0
+        dismissed = 0
+        while time.time() < deadline and dismissed < 3:
+            if await _try_click_any():
+                dismissed += 1
+                # Dopo aver chiuso una modale, aspetta breve e ricontrolla
+                # per il dialog di conferma che FB spesso incatena.
+                await asyncio.sleep(0.6)
+                continue
+            await asyncio.sleep(0.4)
 
     async def check_health(self, page: "Page") -> HealthStatus:
         url = page.url
