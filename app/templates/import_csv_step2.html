@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Import CSV — Step 2 Mapping{% endblock %}
+{% block content %}
+<section style="max-width:1100px;margin:auto">
+  <h2>📥 Import CSV → Mappatura colonne</h2>
+
+  <nav class="wizard-stepper" aria-label="Wizard progress">
+    <ol style="list-style:none;padding:0;display:flex;gap:1rem;font-size:0.9rem">
+      <li class="muted">1. Metadata + Upload ✓</li>
+      <li><strong>2. Mappatura colonne</strong></li>
+      <li class="muted">3. Anteprima &amp; Conferma</li>
+    </ol>
+  </nav>
+
+  <details class="collapsible-section" open>
+    <summary>ℹ️ Riepilogo metadata</summary>
+    <ul style="margin:0.4rem 0">
+      <li><strong>Import name:</strong> {{ import_name }}</li>
+      <li>
+        <strong>Asset type:</strong> <code>{{ asset_type }}</code>
+        {% if type_is_new %}
+          <span style="display:inline-block;background:#e8f5e9;color:#2e7d32;padding:0.15rem 0.5rem;border-radius:3px;font-size:0.82rem;margin-left:0.4rem">🆕 NUOVO — verrà creato</span>
+        {% else %}
+          <span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:0.15rem 0.5rem;border-radius:3px;font-size:0.82rem;margin-left:0.4rem">📂 ESISTENTE — {{ type_existing_count }} record presenti</span>
+        {% endif %}
+      </li>
+      {% if known_tag_keys %}
+      <li>
+        <strong>Attributi (tag) già noti per <code>{{ asset_type }}</code>:</strong>
+        {% for k in known_tag_keys %}<code style="background:#e3f2fd;padding:0.1rem 0.4rem;border-radius:3px;margin:0.1rem;font-size:0.85rem">{{ k }}</code>{% endfor %}
+        <br><small class="muted">Riusa questi nomi nei "Tag key" sotto per mantenere coerenza con i record esistenti.</small>
+      </li>
+      {% elif not type_is_new %}
+      <li><small class="muted">Nessun attributo tag definito per questo type — solo campi base (title, source_url, ecc.)</small></li>
+      {% endif %}
+      {% if description %}<li><strong>Descrizione:</strong> {{ description }}</li>{% endif %}
+      <li><strong>File:</strong> <code>{{ filename }}</code> ({{ preview_count }} righe parsate)</li>
+    </ul>
+  </details>
+
+  <datalist id="known-tag-keys-list">
+    {% for k in known_tag_keys %}<option value="{{ k }}">{% endfor %}
+  </datalist>
+
+  {% if warnings %}
+  <div class="warning-box" style="background:#fff3cd;border:1px solid #ffc107;padding:0.6rem;margin:1rem 0;border-radius:4px">
+    <strong>⚠️ Avvisi parsing:</strong>
+    <ul style="margin:0.4rem 0">
+      {% for w in warnings %}<li>{{ w }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <details class="collapsible-section" open>
+    <summary>🔍 Anteprima prime 5 righe</summary>
+    <div style="overflow-x:auto;margin-top:0.6rem">
+      <table style="border-collapse:collapse;font-size:0.85rem;min-width:100%">
+        <thead>
+          <tr style="background:#f5f5f5">
+            {% for h in headers %}
+              <th style="border:1px solid #ddd;padding:0.4rem;text-align:left;white-space:nowrap">{{ h }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in preview_rows %}
+          <tr>
+            {% for cell in row %}
+              <td style="border:1px solid #ddd;padding:0.4rem;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ cell }}">{{ cell }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <form method="post" action="/import/preview" style="margin-top:1.5rem">
+    <input type="hidden" name="import_name" value="{{ import_name }}">
+    <input type="hidden" name="asset_type" value="{{ asset_type }}">
+    <input type="hidden" name="description" value="{{ description }}">
+    <input type="hidden" name="upload_path" value="{{ upload_path }}">
+
+    <h3>3️⃣ Mappa ogni colonna del CSV</h3>
+    <p class="muted">
+      Scegli il target per ogni colonna. <strong>Almeno una colonna</strong> deve essere mappata
+      su <code>Asset · nome (title)</code> e una su <code>Asset · URL canonico</code> o un
+      <code>Social · *.url</code> (necessaria per dedup).
+    </p>
+
+    <table style="border-collapse:collapse;width:100%;font-size:0.9rem">
+      <thead>
+        <tr style="background:#f5f5f5">
+          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">#</th>
+          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Colonna CSV</th>
+          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Esempio (riga 1)</th>
+          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Target</th>
+          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Tag key <span class="hint">(se "Tag")</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in headers %}
+        {% set i = loop.index0 %}
+        {% set sample = preview_rows[0][i] if preview_rows and preview_rows[0]|length > i else '' %}
+        {% set sug = suggested[i] if i in suggested else ('ignore', '') %}
+        {% set sug_target = sug[0] %}
+        {% set sug_tagkey = sug[1] %}
+        <tr>
+          <td style="border:1px solid #ddd;padding:0.4rem;color:#888">{{ i }}</td>
+          <td style="border:1px solid #ddd;padding:0.4rem"><code>{{ h }}</code></td>
+          <td style="border:1px solid #ddd;padding:0.4rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ sample }}">{{ sample[:60] }}{% if sample|length > 60 %}…{% endif %}</td>
+          <td style="border:1px solid #ddd;padding:0.4rem">
+            <select name="map__{{ i }}" style="width:100%">
+              {% for kind, field, label in target_fields %}
+                {% set value = kind if kind in ('tag','ignore') else kind ~ '.' ~ field %}
+                <option value="{{ value }}" {% if sug_target == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td style="border:1px solid #ddd;padding:0.4rem">
+            <input type="text" name="tag_key__{{ i }}" value="{{ sug_tagkey }}"
+                   placeholder="es. municipality" style="width:100%"
+                   pattern="[a-z][a-z0-9_\-]{0,49}" maxlength="50"
+                   list="known-tag-keys-list">
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div style="margin-top:1.5rem;display:flex;gap:0.8rem">
+      <a href="/import" style="padding:0.6rem 1.2rem;text-decoration:none;background:#eee;color:#333;border-radius:4px">← Indietro</a>
+      <button type="submit" style="padding:0.6rem 1.2rem;font-size:1rem">
+        Anteprima import (dry-run) →
+      </button>
+    </div>
+  </form>
+</section>
+{% endblock %}

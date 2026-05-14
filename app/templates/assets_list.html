@@ -2,11 +2,23 @@
 {% block title %}Assets — AgentScraper{% endblock %}
 {% block content %}
 <section>
-  <h2>📦 Assets</h2>
-  <p class="muted">Tutto il materiale estratto dai task (annunci, prodotti, profili, eventi, articoli, ...). Filtra per tipo o tag.</p>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
+    <div>
+      <h2 style="margin-bottom:0.3rem">📦 Assets</h2>
+      <p class="muted" style="margin:0">Tutto il materiale estratto dai task (annunci, prodotti, profili, eventi, articoli, ...). Filtra per tipo o tag.</p>
+    </div>
+    <a href="/import" style="padding:0.6rem 1rem;background:#1565c0;color:white;text-decoration:none;border-radius:4px;font-weight:500;white-space:nowrap">
+      📥 Import CSV
+    </a>
+  </div>
 
   {% if request.query_params.get('flash') %}
   <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
+  {% endif %}
+  {% if request.query_params.get('imported') %}
+  <div class="flash-ok" style="background:#e8f5e9;border:1px solid #4caf50;padding:0.6rem 0.8rem;border-radius:4px;margin:0.8rem 0">
+    ✅ Import completato: <strong>{{ request.query_params.get('imported') }}</strong> record processati.
+  </div>
   {% endif %}
 
   <form method="get" action="/assets" class="assets-filter">

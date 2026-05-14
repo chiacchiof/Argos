@@ -407,6 +407,18 @@ def init_db() -> None:
             con.execute("ALTER TABLE contacts ADD COLUMN sitoweb TEXT")
         if "social_json" not in ccols:
             con.execute("ALTER TABLE contacts ADD COLUMN social_json TEXT")
+        # FK contacts.asset_id → assets(id): permette di legare un contatto al
+        # suo asset (es. palestra). 1 asset può avere N contatti (handle IG,
+        # FB, email, tel). Popolato dall'import CSV; legacy contacts restano
+        # con NULL.
+        if "asset_id" not in ccols:
+            con.execute(
+                "ALTER TABLE contacts ADD COLUMN asset_id INTEGER "
+                "REFERENCES assets(id) ON DELETE CASCADE"
+            )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contacts_asset ON contacts(asset_id)"
+        )
 
         # tasks: campi per outreach_social
         if "social_platform" not in tcols:
@@ -575,6 +587,15 @@ def init_db() -> None:
             # falsi positivi su omonimi).
             con.execute(
                 "ALTER TABLE tasks ADD COLUMN seed_queries_friends TEXT"
+            )
+        if "input_asset_filter" not in tcols:
+            # JSON-encoded filter per leggere asset esistenti dalla tabella
+            # `assets` come input al task (qualifier/outreach_social/ecc.).
+            # Schema (v1): `{"asset_type": "palestra"}`. Estendibile a `status`,
+            # `tags` in v2. Quando valorizzato ha PRIORITÀ su upstream da
+            # workflow_edges e su input_artifact_path nel runner_qualifier.
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN input_asset_filter TEXT"
             )
 
         # Tabelle dedicate recon (R3 checkpoint/resume + dedup visited)
@@ -879,6 +900,31 @@ def _coerce_status_tag(value: Any) -> str | None:
     return s if s in VALID_STATUS_TAGS else None
 
 
+def _serialize_input_asset_filter(value: Any) -> str | None:
+    """Accetta dict (es. {'asset_type': 'palestra'}) o stringa JSON.
+    Ritorna stringa JSON o None se vuoto/non valido."""
+    if not value:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        # già JSON: validalo
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, dict) and parsed:
+                return json.dumps(parsed, ensure_ascii=False)
+        except Exception:
+            return None
+        return None
+    if isinstance(value, dict):
+        clean = {k: v for k, v in value.items() if v}
+        if not clean:
+            return None
+        return json.dumps(clean, ensure_ascii=False)
+    return None
+
+
 def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["seed_queries"] = _load_list(d.get("seed_queries"))
@@ -886,6 +932,14 @@ def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
     d["allowed_domains"] = _load_list(d.get("allowed_domains"))
     d["blocked_domains"] = _load_list(d.get("blocked_domains"))
     d["message_channels"] = _load_list(d.get("message_channels"))
+    raw_filter = d.get("input_asset_filter")
+    if raw_filter:
+        try:
+            d["input_asset_filter"] = json.loads(raw_filter) if isinstance(raw_filter, str) else raw_filter
+        except Exception:
+            d["input_asset_filter"] = None
+    else:
+        d["input_asset_filter"] = None
     raw_ids = _load_list(d.get("target_contact_ids"))
     coerced_ids: list[int] = []
     for v in raw_ids:
@@ -956,8 +1010,9 @@ def create_task(data: dict[str, Any]) -> int:
                                   recon_mode, recon_social_account_id, recon_hypothesis,
                                   recon_max_targets_per_day, recon_score_threshold,
                                   seed_queries_friends,
+                                  input_asset_filter,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -1017,6 +1072,7 @@ def create_task(data: dict[str, Any]) -> int:
                 int(data.get("recon_max_targets_per_day") or 50),
                 int(data.get("recon_score_threshold") or 6),
                 _dump_list(data.get("seed_queries_friends")),
+                _serialize_input_asset_filter(data.get("input_asset_filter")),
                 ts,
                 ts,
             ),
@@ -1052,6 +1108,7 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 recon_mode = ?, recon_social_account_id = ?, recon_hypothesis = ?,
                 recon_max_targets_per_day = ?, recon_score_threshold = ?,
                 seed_queries_friends = ?,
+                input_asset_filter = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -1113,6 +1170,7 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 int(data.get("recon_max_targets_per_day") or 50),
                 int(data.get("recon_score_threshold") or 6),
                 _dump_list(data.get("seed_queries_friends")),
+                _serialize_input_asset_filter(data.get("input_asset_filter")),
                 now_iso(),
                 task_id,
             ),
@@ -1447,6 +1505,12 @@ def upsert_contact(data: dict[str, Any]) -> int:
             existing = con.execute(
                 "SELECT id FROM contacts WHERE source_url = ? LIMIT 1", (source_url,)
             ).fetchone()
+        asset_id = data.get("asset_id")
+        if asset_id is not None:
+            try:
+                asset_id = int(asset_id)
+            except (TypeError, ValueError):
+                asset_id = None
         if existing:
             cid = int(existing["id"])
             con.execute(
@@ -1463,6 +1527,7 @@ def upsert_contact(data: dict[str, Any]) -> int:
                   sitoweb           = COALESCE(?, sitoweb),
                   social_json       = COALESCE(?, social_json),
                   raw_json          = COALESCE(?, raw_json),
+                  asset_id          = COALESCE(?, asset_id),
                   updated_at        = ?
                 WHERE id = ?
                 """,
@@ -1478,6 +1543,7 @@ def upsert_contact(data: dict[str, Any]) -> int:
                     sitoweb,
                     social_json,
                     data.get("raw_json"),
+                    asset_id,
                     ts,
                     cid,
                 ),
@@ -1489,8 +1555,8 @@ def upsert_contact(data: dict[str, Any]) -> int:
             (source_task_id, source_job_id, source_url, source_domain,
              display_name, email, telegram_username, telegram_chat_id,
              whatsapp, sitoweb, social_json,
-             raw_json, status, qualifier_score, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             raw_json, status, qualifier_score, notes, asset_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_task,
@@ -1508,6 +1574,7 @@ def upsert_contact(data: dict[str, Any]) -> int:
                 data.get("status") or "new",
                 data.get("qualifier_score"),
                 data.get("notes"),
+                asset_id,
                 ts,
                 ts,
             ),
@@ -2129,18 +2196,38 @@ def delete_assets_bulk(asset_ids: list[int]) -> int:
 
 
 def update_asset_qualifier(asset_id: int, score: int, status: str, notes: str | None = None) -> None:
-    """Aggiorna asset.qualifier_score + status (qualified/rejected) in un colpo."""
+    """Aggiorna asset.qualifier_score + status (qualified/rejected) in un colpo.
+
+    CASCATA: propaga `status` e `qualifier_score` ANCHE ai `contacts` collegati
+    via `asset_id`. Cosi' i runner downstream (outreach, ecc.) che leggono dalla
+    tabella contacts trovano subito il nuovo stato. Pattern: status='qualified'
+    sull'asset → status='qualified' sui contacts linkati.
+    """
+    ts = now_iso()
     with connect() as con:
         if notes is not None:
             con.execute(
                 "UPDATE assets SET qualifier_score = ?, status = ?, notes = ?, updated_at = ? WHERE id = ?",
-                (int(score), status, notes, now_iso(), asset_id),
+                (int(score), status, notes, ts, asset_id),
             )
         else:
             con.execute(
                 "UPDATE assets SET qualifier_score = ?, status = ?, updated_at = ? WHERE id = ?",
-                (int(score), status, now_iso(), asset_id),
+                (int(score), status, ts, asset_id),
             )
+        # Cascata sui contacts. Update solo se lo status del contact e' ancora 'new'
+        # o uguale a quello dell'asset (preserva 'optedout' e altri stati terminali).
+        con.execute(
+            """
+            UPDATE contacts SET
+              status = ?,
+              qualifier_score = ?,
+              updated_at = ?
+            WHERE asset_id = ?
+              AND status IN ('new', 'qualified', 'rejected')
+            """,
+            (status, int(score), ts, asset_id),
+        )
 
 
 def list_asset_types_in_use() -> list[dict[str, Any]]:

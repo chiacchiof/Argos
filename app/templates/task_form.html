@@ -318,14 +318,14 @@
        oltre che inserire il path manualmente.
        ============================================================ #}
     <details class="collapsible-section dyn-section" data-modes="bulk_extract qualifier outreach responder">
-      <summary>📂 Input upstream <span class="hint">(file <code>.jsonl</code>)</span></summary>
+      <summary>📂 Input upstream <span class="hint">(file <code>.jsonl</code> o asset dal DB)</span></summary>
 
       <p class="muted small">
         Per <code>qualifier</code>/<code>outreach</code>/<code>responder</code>: <strong>obbligatorio</strong>
-        — è il file con i profili/contatti da elaborare.<br>
-        Per <code>bulk_extract</code>: opzionale — se compilato, gli URL del file vengono <strong>uniti</strong>
+        scegliere almeno UNA sorgente fra le 3 sotto.<br>
+        Per <code>bulk_extract</code>: opzionale — se compilato, gli URL vengono <strong>uniti</strong>
         a quelli del campo "URL da processare" sopra.<br>
-        Se l'edge DAG di un workflow passa automaticamente l'artifact, lascia vuoto.
+        Se l'edge DAG di un workflow passa automaticamente l'artifact, lascia tutto vuoto.
       </p>
 
       <div class="input-options">
@@ -349,6 +349,29 @@
           </p>
           <input type="file" id="artifact-file-upload" accept=".jsonl,.ndjson">
           <div id="artifact-upload-status" class="muted small"></div>
+        </div>
+
+        {# Opzione 3: asset esistenti nel DB (importati da CSV o estratti da task) #}
+        <div class="input-option">
+          <h5>③ Asset esistenti nel DB <span class="hint">(filtro per tipo)</span></h5>
+          <p class="muted small">
+            Usa gli asset già presenti nella tabella <code>assets</code> (importati da
+            CSV via <a href="/import" target="_blank">/import</a> o estratti da task di scraping).
+            Il runner pesca tutti gli asset del tipo selezionato con <code>status='new'</code>.
+          </p>
+          {% set current_filter = p.get('input_asset_filter') %}
+          {% set current_filter_type = current_filter.get('asset_type') if current_filter else '' %}
+          <label>
+            Tipo asset
+            <select name="input_asset_filter_type">
+              <option value="" {% if not current_filter_type %}selected{% endif %}>— nessun filtro (usa opzioni ① o ②) —</option>
+              {% for t in (asset_types_in_use or []) %}
+                <option value="{{ t.asset_type }}" {% if current_filter_type == t.asset_type %}selected{% endif %}>
+                  {{ t.asset_type }} — {{ t.count }} record
+                </option>
+              {% endfor %}
+            </select>
+          </label>
         </div>
 
         {# Display del file selezionato (read-only) — il valore reale è nel hidden input #}

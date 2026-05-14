@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from . import db, jobs
 from .config import settings
 from .routes import assets as assets_routes
+from .routes import import_csv as import_csv_routes
 from .routes import inbox as inbox_routes
 from .routes import jobs as jobs_routes
 from .routes import orchestrator as orchestrator_routes
@@ -48,6 +49,7 @@ app.include_router(inbox_routes.router)
 app.include_router(workflows_routes.router)
 app.include_router(orchestrator_routes.router)
 app.include_router(assets_routes.router)
+app.include_router(import_csv_routes.router)
 app.include_router(site_memory_routes.router)
 app.include_router(social_accounts_routes.router)
 

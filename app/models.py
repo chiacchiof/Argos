@@ -85,6 +85,12 @@ class TaskIn(BaseModel):
     # (FB) o following list (IG/TikTok) dell'account loggato. Zero ambiguità
     # da omonimi rispetto al `seed_queries` con search globale.
     seed_queries_friends: list[str] = Field(default_factory=list)
+    # Filtro per leggere asset esistenti dalla tabella `assets` come input al
+    # task (alternativa a `input_artifact_path` e a edges upstream).
+    # Schema v1: {"asset_type": "palestra"}. Quando valorizzato, il runner
+    # qualifier/outreach prima cerca asset DB matching, poi cade su upstream
+    # / artifact path.
+    input_asset_filter: dict | None = None
 
     @field_validator("rating", mode="before")
     @classmethod

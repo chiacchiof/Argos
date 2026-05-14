@@ -174,6 +174,7 @@ def _form_to_dict(
     recon_max_targets_per_day: int = 50,
     recon_score_threshold: int = 6,
     seed_queries_friends: str = "",
+    input_asset_filter_type: str = "",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -236,6 +237,11 @@ def _form_to_dict(
         "recon_max_targets_per_day": int(recon_max_targets_per_day or 50),
         "recon_score_threshold": int(recon_score_threshold or 6),
         "seed_queries_friends": seed_queries_friends,
+        "input_asset_filter": (
+            {"asset_type": input_asset_filter_type.strip().lower()}
+            if (input_asset_filter_type or "").strip()
+            else None
+        ),
     }
 
 
@@ -308,6 +314,13 @@ def _form_extra_context() -> dict:
         for a in recon_accounts_rows
         if (a.get("platform") or "") in ("facebook", "instagram", "tiktok")
     ]
+    # asset_types disponibili con count, per popolare il filtro "Asset DB"
+    # nel form qualifier/outreach (alternativa a input_artifact_path).
+    try:
+        asset_types_in_use = db.list_asset_types_in_use()
+    except Exception:
+        asset_types_in_use = []
+
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
@@ -318,6 +331,7 @@ def _form_extra_context() -> dict:
         "wa_accounts": wa_accounts,
         "wa_api_configs": wa_api_configs,
         "recon_accounts": recon_accounts,
+        "asset_types_in_use": asset_types_in_use,
     }
 
 
@@ -380,6 +394,7 @@ async def create_task(
     recon_max_targets_per_day: int = Form(50),
     recon_score_threshold: int = Form(6),
     seed_queries_friends: str = Form(""),
+    input_asset_filter_type: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -414,6 +429,7 @@ async def create_task(
         recon_max_targets_per_day=recon_max_targets_per_day,
         recon_score_threshold=recon_score_threshold,
         seed_queries_friends=seed_queries_friends,
+        input_asset_filter_type=input_asset_filter_type,
     )
     try:
         validated = TaskIn(**payload)
@@ -499,6 +515,7 @@ async def update_task(
     recon_max_targets_per_day: int = Form(50),
     recon_score_threshold: int = Form(6),
     seed_queries_friends: str = Form(""),
+    input_asset_filter_type: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -559,6 +576,7 @@ async def update_task(
         recon_max_targets_per_day=recon_max_targets_per_day,
         recon_score_threshold=recon_score_threshold,
         seed_queries_friends=seed_queries_friends,
+        input_asset_filter_type=input_asset_filter_type,
     )
     try:
         validated = TaskIn(**payload)

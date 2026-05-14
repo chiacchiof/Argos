@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Import CSV — Step 1{% endblock %}
+{% block content %}
+<section style="max-width:780px;margin:auto">
+  <h2>📥 Import CSV → Asset + Contatti</h2>
+
+  <nav class="wizard-stepper" aria-label="Wizard progress">
+    <ol style="list-style:none;padding:0;display:flex;gap:1rem;font-size:0.9rem">
+      <li><strong>1. Metadata + Upload</strong></li>
+      <li class="muted">2. Mappatura colonne</li>
+      <li class="muted">3. Anteprima &amp; Conferma</li>
+    </ol>
+  </nav>
+
+  <p class="muted">
+    Carica un CSV generico (es. lista palestre con handle Instagram). Al passo successivo
+    mappi ciascuna colonna del CSV su un campo asset/contact o su un tag dichiarativo.
+    Dedup automatico per <code>source_url + asset_type</code>: re-importare lo stesso CSV
+    aggiorna i record esistenti.
+  </p>
+
+  <form method="post" action="/import/upload" enctype="multipart/form-data">
+    <details class="collapsible-section" open>
+      <summary>1️⃣ Metadata della run di import</summary>
+
+      <label style="display:block;margin-top:0.6rem">
+        Nome import <span class="hint">(per tracciabilità in <code>asset.notes</code>)</span>
+        <input type="text" name="import_name" required maxlength="200"
+               placeholder="Es. 'Palestre Catania ottobre 2026'" style="width:100%">
+      </label>
+
+      <label style="display:block;margin-top:0.6rem">
+        Tipo di asset <span class="hint">(lowercase, a-z 0-9 _ -, max 50 char)</span>
+        <input type="text" name="asset_type" required maxlength="50" pattern="[a-z][a-z0-9_\-]{0,49}"
+               list="asset-types-list"
+               placeholder="palestra (o un nuovo tipo da creare ora)" style="width:100%">
+        <datalist id="asset-types-list">
+          {% for t in existing_types %}
+            <option value="{{ t.asset_type }}">{{ t.count }} record già presenti</option>
+          {% endfor %}
+        </datalist>
+        <span class="hint">
+          Se il tipo è già esistente, gli attributi (tag) già definiti verranno
+          suggeriti nel prossimo step. Se è nuovo, lo crei contestualmente all'import:
+          gli attributi diventano quelli che mappi tu.
+        </span>
+      </label>
+
+      {% if existing_types %}
+      <details class="collapsible-section" style="margin-top:0.8rem">
+        <summary>📚 Tipi di asset già definiti ({{ existing_types|length }}) e attributi conosciuti</summary>
+        <div style="margin-top:0.6rem;font-size:0.9rem">
+          <table style="border-collapse:collapse;width:100%">
+            <thead>
+              <tr style="background:#f5f5f5">
+                <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Tipo</th>
+                <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Record</th>
+                <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Attributi (tag_keys) noti</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for t in existing_types %}
+              <tr>
+                <td style="border:1px solid #ddd;padding:0.4rem"><code>{{ t.asset_type }}</code></td>
+                <td style="border:1px solid #ddd;padding:0.4rem">{{ t.count }}</td>
+                <td style="border:1px solid #ddd;padding:0.4rem">
+                  {% if t.tag_keys %}
+                    {% for k in t.tag_keys %}<span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:0.15rem 0.45rem;border-radius:3px;margin:0.1rem;font-size:0.82rem"><code>{{ k }}</code></span>{% endfor %}
+                  {% else %}
+                    <span class="muted">— nessun tag definito</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="muted small" style="margin-top:0.6rem">
+          💡 Riutilizzando il nome di un type esistente, i nuovi record si uniscono
+          a quelli già presenti. Usando un nome <strong>nuovo</strong> (es. <code>ristorante</code>)
+          crei un nuovo type al volo: i suoi attributi verranno definiti dalla tua mappatura.
+        </p>
+      </details>
+      {% endif %}
+
+      <label style="display:block;margin-top:0.6rem">
+        Descrizione <span class="hint">(opzionale)</span>
+        <textarea name="description" rows="2" maxlength="500"
+                  placeholder="Sorgente del CSV, criteri di selezione, note..."
+                  style="width:100%"></textarea>
+      </label>
+    </details>
+
+    <details class="collapsible-section" open style="margin-top:1rem">
+      <summary>2️⃣ File CSV</summary>
+
+      <label style="display:block;margin-top:0.6rem">
+        File <span class="hint">(.csv, max 10 MB, max 50.000 righe)</span>
+        <input type="file" name="file" accept=".csv" required>
+      </label>
+
+      <p class="muted small" style="margin-top:0.6rem">
+        Il CSV deve avere la prima riga con i nomi delle colonne (header). Encoding
+        accettati: UTF-8 (preferito), UTF-8 con BOM (Excel), latin-1.
+      </p>
+    </details>
+
+    <div style="margin-top:1rem">
+      <button type="submit" style="padding:0.6rem 1.2rem;font-size:1rem">
+        Carica e configura mappatura →
+      </button>
+    </div>
+  </form>
+</section>
+{% endblock %}

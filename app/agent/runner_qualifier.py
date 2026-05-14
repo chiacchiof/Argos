@@ -110,25 +110,45 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     db.set_control_signal(job_id, None)
     jlog(f"Avvio qualifier per task #{task['id']} \"{task['name']}\" — modello {task['model']}")
 
-    # SORGENTE PRIMARIA: tabella `assets`. Trova i task upstream collegati a
-    # questo qualifier (tramite workflow_edges) e prendi i loro asset 'new'.
-    # Cosi' il qualifier opera sui dati gia' filtrati dal validator (post-ingest)
-    # invece che sul profiles.jsonl raw (che include 90%+ di pagine indice).
-    edges_in = db.list_edges(to_task_id=task["id"])
-    upstream_ids = sorted({int(e["from_task_id"]) for e in edges_in if e.get("from_task_id")})
+    # SORGENTE 1 (priorità più alta): `input_asset_filter` esplicito.
+    # Permette di processare asset preesistenti senza task upstream — es. asset
+    # importati da CSV via /import. Schema: {"asset_type": "palestra"}.
     assets_to_judge: list[dict[str, Any]] = []
-    if upstream_ids:
-        for src_tid in upstream_ids:
-            assets_to_judge.extend(
-                db.list_assets(source_task_id=src_tid, status="new", limit=10000)
-            )
+    upstream_ids: list[int] = []
+    iaf = task.get("input_asset_filter") or {}
+    if isinstance(iaf, str):
+        try:
+            import json as _json
+            iaf = _json.loads(iaf) or {}
+        except Exception:
+            iaf = {}
+    filter_type = (iaf or {}).get("asset_type") if isinstance(iaf, dict) else None
+    if filter_type:
+        assets_to_judge.extend(
+            db.list_assets(asset_type=filter_type, status="new", limit=10000)
+        )
         jlog(
-            f"Sorgente: tabella `assets` (task upstream {upstream_ids}): "
-            f"{len(assets_to_judge)} asset 'new' da valutare."
+            f"Sorgente: tabella `assets` con filtro asset_type={filter_type!r}, "
+            f"status='new': {len(assets_to_judge)} asset da valutare."
         )
 
-    # FALLBACK: se nessun asset (es. task standalone senza workflow), leggi
-    # il profiles.jsonl come prima.
+    # SORGENTE 2: tabella `assets` via task upstream da workflow_edges.
+    # Cosi' il qualifier opera sui dati gia' filtrati dal validator (post-ingest)
+    # invece che sul profiles.jsonl raw.
+    if not assets_to_judge:
+        edges_in = db.list_edges(to_task_id=task["id"])
+        upstream_ids = sorted({int(e["from_task_id"]) for e in edges_in if e.get("from_task_id")})
+        if upstream_ids:
+            for src_tid in upstream_ids:
+                assets_to_judge.extend(
+                    db.list_assets(source_task_id=src_tid, status="new", limit=10000)
+                )
+            jlog(
+                f"Sorgente: tabella `assets` (task upstream {upstream_ids}): "
+                f"{len(assets_to_judge)} asset 'new' da valutare."
+            )
+
+    # SORGENTE 3 (fallback): profiles.jsonl da `input_artifact_path`.
     artifact = task.get("input_artifact_path")
     use_fallback_jsonl = not assets_to_judge and bool(artifact)
     if use_fallback_jsonl:
@@ -141,8 +161,9 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         jlog(f"Sorgente: profiles.jsonl fallback (`{artifact}`).")
     elif not assets_to_judge:
         msg = (
-            "Nessun asset upstream da valutare e nessun input_artifact_path. "
-            "Collega il qualifier a un task upstream nel workflow, oppure imposta input_artifact_path."
+            "Nessun asset da valutare. Hai 3 opzioni: (1) imposta `input_asset_filter` "
+            "(es. asset_type=palestra), (2) collega il qualifier a un task upstream nel "
+            "workflow, (3) imposta `input_artifact_path` su un .jsonl esistente."
         )
         jlog(msg)
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
@@ -319,11 +340,15 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     fmt = task.get("output_format") or "md"
     report_ext = "md" if fmt in ("md", "both") else "txt"
-    source_label = (
-        f"tabella `assets` (task upstream {upstream_ids})"
-        if assets_to_judge
-        else f"profiles.jsonl `{artifact}`"
-    )
+    if assets_to_judge:
+        if filter_type:
+            source_label = f"tabella `assets` filtrata (asset_type={filter_type!r})"
+        elif upstream_ids:
+            source_label = f"tabella `assets` (task upstream {upstream_ids})"
+        else:
+            source_label = "tabella `assets`"
+    else:
+        source_label = f"profiles.jsonl `{artifact}`"
     report = (
         f"# Qualifier run {ts}\n\n"
         f"- **Task**: {task['name']} (#{task['id']})\n"
