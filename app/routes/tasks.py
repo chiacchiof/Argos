@@ -175,6 +175,10 @@ def _form_to_dict(
     recon_score_threshold: int = 6,
     seed_queries_friends: str = "",
     input_asset_filter_type: str = "",
+    output_asset_type: str = "",
+    speed_profile: str = "safe",
+    outreach_filter_source_task_id: str = "",
+    outreach_filter_source_follower_of: str = "",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -242,28 +246,72 @@ def _form_to_dict(
             if (input_asset_filter_type or "").strip()
             else None
         ),
+        "output_asset_type": (output_asset_type or "").strip().lower() or None,
+        "speed_profile": (speed_profile or "safe").strip().lower(),
+        "outreach_filter_source_task_id": (
+            int(outreach_filter_source_task_id) if str(outreach_filter_source_task_id).strip().isdigit() else None
+        ),
+        "outreach_filter_source_follower_of": (outreach_filter_source_follower_of or "").strip() or None,
     }
 
 
 def _form_extra_context() -> dict:
-    # Contacts disponibili per outreach_social, raggruppati per platform.
-    # Limit 500/platform: oltre il quale la UI con checkbox non scala — l'utente
-    # in quel caso lascia vuota la selezione (fallback: tutti i qualified).
-    contacts_by_platform: dict[str, list[dict]] = {}
-    for plat in ("instagram", "tiktok", "facebook"):
-        rows = db.list_contacts_with_social_platform(plat, limit=500)
-        # Forma compatta per il template
-        contacts_by_platform[plat] = [
-            {
+    # Helper: per ogni contatto con asset_id linkato, restituisce
+    # (asset_type, [(tag_key, tag_value), ...] top 2) per arricchire la UI di
+    # selezione (filtri e visualizzazione). Cache batch per ridurre query.
+    def _enrich_contacts_with_asset_info(rows: list[dict]) -> list[dict]:
+        if not rows:
+            return []
+        asset_ids = sorted({int(c["asset_id"]) for c in rows if c.get("asset_id")})
+        assets_meta: dict[int, dict] = {}
+        if asset_ids:
+            with db.connect() as con:
+                placeholders = ",".join("?" * len(asset_ids))
+                # asset_type per ogni asset_id
+                for r in con.execute(
+                    f"SELECT id, asset_type FROM assets WHERE id IN ({placeholders})",
+                    asset_ids,
+                ):
+                    assets_meta[int(r["id"])] = {"asset_type": r["asset_type"], "tags": []}
+                # tag dei top-2 per ogni asset, escludendo le keys "tecniche"
+                # che non aiutano a filtrare contatti
+                blacklist = {"platform", "source_domain", "source_url", "language", "source_follower_of"}
+                for r in con.execute(
+                    f"SELECT asset_id, tag_key, tag_value FROM asset_tags "
+                    f"WHERE asset_id IN ({placeholders}) ORDER BY asset_id, tag_key",
+                    asset_ids,
+                ):
+                    aid = int(r["asset_id"])
+                    if aid not in assets_meta:
+                        continue
+                    if r["tag_key"] in blacklist:
+                        continue
+                    if len(assets_meta[aid]["tags"]) >= 2:
+                        continue
+                    assets_meta[aid]["tags"].append((r["tag_key"], r["tag_value"]))
+        out: list[dict] = []
+        for c in rows:
+            aid = c.get("asset_id")
+            meta = assets_meta.get(int(aid)) if aid else None
+            out.append({
                 "id": c["id"],
                 "display_name": (c.get("display_name") or "").strip() or None,
                 "source_domain": c.get("source_domain"),
                 "status": c.get("status"),
                 "url": c.get("_platform_url"),
                 "email": c.get("email"),
-            }
-            for c in rows
-        ]
+                "asset_id": aid,
+                "asset_type": (meta or {}).get("asset_type") or "(senza asset)",
+                "top_tags": (meta or {}).get("tags") or [],
+            })
+        return out
+
+    # Contacts disponibili per outreach_social + recon_social, raggruppati per
+    # platform. Limit 1000/platform (era 500 — alzato per accomodare DB grandi).
+    contacts_by_platform: dict[str, list[dict]] = {}
+    for plat in ("instagram", "tiktok", "facebook"):
+        rows = db.list_contacts_with_social_platform(plat, limit=1000)
+        contacts_by_platform[plat] = _enrich_contacts_with_asset_info(rows)
     # Contacts disponibili per outreach_whatsapp (con whatsapp != null, no optedout)
     wa_rows = db.list_contacts_with_whatsapp(limit=500)
     contacts_with_whatsapp = [
@@ -321,6 +369,16 @@ def _form_extra_context() -> dict:
     except Exception:
         asset_types_in_use = []
 
+    # Per outreach_filter dropdown: task generatori di contacts + source_follower_of distinct
+    try:
+        outreach_source_tasks = db.list_distinct_contact_source_tasks()
+    except Exception:
+        outreach_source_tasks = []
+    try:
+        outreach_source_followers = db.list_distinct_source_follower_of()
+    except Exception:
+        outreach_source_followers = []
+
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
@@ -332,6 +390,8 @@ def _form_extra_context() -> dict:
         "wa_api_configs": wa_api_configs,
         "recon_accounts": recon_accounts,
         "asset_types_in_use": asset_types_in_use,
+        "outreach_source_tasks": outreach_source_tasks,
+        "outreach_source_followers": outreach_source_followers,
     }
 
 
@@ -395,6 +455,10 @@ async def create_task(
     recon_score_threshold: int = Form(6),
     seed_queries_friends: str = Form(""),
     input_asset_filter_type: str = Form(""),
+    output_asset_type: str = Form(""),
+    speed_profile: str = Form("safe"),
+    outreach_filter_source_task_id: str = Form(""),
+    outreach_filter_source_follower_of: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -430,6 +494,10 @@ async def create_task(
         recon_score_threshold=recon_score_threshold,
         seed_queries_friends=seed_queries_friends,
         input_asset_filter_type=input_asset_filter_type,
+        output_asset_type=output_asset_type,
+        speed_profile=speed_profile,
+        outreach_filter_source_task_id=outreach_filter_source_task_id,
+        outreach_filter_source_follower_of=outreach_filter_source_follower_of,
     )
     try:
         validated = TaskIn(**payload)
@@ -516,6 +584,10 @@ async def update_task(
     recon_score_threshold: int = Form(6),
     seed_queries_friends: str = Form(""),
     input_asset_filter_type: str = Form(""),
+    output_asset_type: str = Form(""),
+    speed_profile: str = Form("safe"),
+    outreach_filter_source_task_id: str = Form(""),
+    outreach_filter_source_follower_of: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -577,6 +649,10 @@ async def update_task(
         recon_score_threshold=recon_score_threshold,
         seed_queries_friends=seed_queries_friends,
         input_asset_filter_type=input_asset_filter_type,
+        output_asset_type=output_asset_type,
+        speed_profile=speed_profile,
+        outreach_filter_source_task_id=outreach_filter_source_task_id,
+        outreach_filter_source_follower_of=outreach_filter_source_follower_of,
     )
     try:
         validated = TaskIn(**payload)

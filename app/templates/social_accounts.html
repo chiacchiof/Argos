@@ -85,6 +85,7 @@
         <td><small>{{ a.proxy_label or '—' }}</small></td>
         <td><small>{{ a.created_at[:10] if a.created_at else '—' }}</small></td>
         <td class="row-actions">
+          <a href="/social/accounts/{{ a.id }}/edit" class="btn-small" title="Modifica username, password, cap, status, note">✏️ edit</a>
           <form method="post" action="/social/accounts/{{ a.id }}/toggle-status" style="display:inline;">
             {% if a.status == 'active' %}
               <button type="submit" class="btn-small btn-secondary">⏸ quarantine</button>

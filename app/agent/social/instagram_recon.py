@@ -409,6 +409,264 @@ async def load_following_list(
     return out
 
 
+_IG_NAV_BLACKLIST = {
+    "reels", "explore", "direct", "stories", "accounts", "p", "about",
+    "press", "api", "developer", "jobs", "privacy", "terms", "locations",
+    "hashtag", "tv", "challenge", "legal", "blog", "help", "ads",
+    "your_activity", "saved", "settings", "graphql",
+}
+
+
+async def enumerate_followers_of_target(
+    page: "Page",
+    safe,
+    target_handle: str,
+    *,
+    cap: int = 100,
+    jlog=None,
+    debug_dir=None,
+) -> list[dict[str, str]]:
+    """Enumera i FOLLOWER di un account IG target.
+
+    Diverso da `load_following_list` (che è "chi io seguo"). Apre il profilo
+    target, **clicca sul link 'follower'** (NON via URL diretto — IG 2026
+    cambia layout e la URL `/followers/` può non aprire la modale), aspetta
+    la modale `div[role="dialog"]`, poi scrolla finché cap raggiunto o
+    fine lista.
+
+    Strict: se la modale non si apre, ABORT (no fallback body) per evitare
+    di pescare i link della NAV IG (Home/Reels/Direct/...) come falsi positivi.
+
+    Ritorna list di {handle, display_name, profile_url}. Best-effort.
+    """
+    def _log(msg: str) -> None:
+        log.info("[ig-followers] %s", msg)
+        if jlog:
+            jlog(msg)
+
+    target_handle = (target_handle or "").strip().lstrip("@")
+    if not target_handle or not re.match(r"^[A-Za-z0-9._]{1,30}$", target_handle):
+        _log(f"  ❌ target_handle non valido: {target_handle!r}")
+        return []
+
+    profile_url = f"https://www.instagram.com/{target_handle}/"
+    try:
+        await safe.safe_goto(profile_url, label=f"ig_target_{target_handle}")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10_000)
+        except Exception:
+            pass
+        await asyncio.sleep(random.uniform(2.5, 4.0))
+    except Exception as e:
+        _log(f"  goto target fail: {e}")
+        return []
+
+    # Click sul link "follower" del profilo. Strategia: trovare l'anchor con
+    # href contenente "/followers" (o anche aria-label/testo con 'follower'/'seguaci')
+    # e cliccarlo. Apre la modale IG con role=dialog.
+    follower_link_selectors = [
+        f'a[href="/{target_handle}/followers/"]',
+        f'a[href*="/{target_handle}/followers"]',
+        'a[href$="/followers/"]',
+        'a[href*="/followers"]:not([href*="/web"])',
+        'a:has-text("follower")',
+        'a:has-text("Follower")',
+        'a:has-text("seguaci")',
+        'a:has-text("Seguaci")',
+    ]
+    clicked = False
+    for sel in follower_link_selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=1_500):
+                await loc.click(timeout=5_000)
+                _log(f"  click su link follower: {sel!r}")
+                clicked = True
+                break
+        except Exception:
+            continue
+    if not clicked:
+        _log(f"  ⚠️ link 'follower' non trovato nel profilo @{target_handle}. "
+             f"Profilo privato o layout sconosciuto.")
+        if debug_dir is not None:
+            try:
+                from pathlib import Path as _P
+                dd = _P(str(debug_dir))
+                dd.mkdir(parents=True, exist_ok=True)
+                safe_n = re.sub(r"[^A-Za-z0-9_]+", "_", target_handle)[:60]
+                await page.screenshot(path=str(dd / f"ig_no_followlink_{safe_n}.png"))
+            except Exception:
+                pass
+        return []
+
+    # Aspetta modale role=dialog visibile
+    try:
+        await page.wait_for_load_state("networkidle", timeout=6_000)
+    except Exception:
+        pass
+    await asyncio.sleep(random.uniform(1.5, 2.5))
+
+    modal_selectors = [
+        'div[role="dialog"][aria-label*="ollower"]',
+        'div[role="dialog"][aria-label*="eguaci"]',
+        'div[role="dialog"]',
+    ]
+    container = None
+    used_sel = None
+    for sel in modal_selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=3_000):
+                container = loc
+                used_sel = sel
+                break
+        except Exception:
+            continue
+    if container is None:
+        _log(f"  ❌ modale follower non aperta dopo click. Abort.")
+        if debug_dir is not None:
+            try:
+                from pathlib import Path as _P
+                dd = _P(str(debug_dir))
+                dd.mkdir(parents=True, exist_ok=True)
+                safe_n = re.sub(r"[^A-Za-z0-9_]+", "_", target_handle)[:60]
+                await page.screenshot(path=str(dd / f"ig_no_modal_{safe_n}.png"))
+            except Exception:
+                pass
+        return []
+    _log(f"  ✅ modale follower aperta ({used_sel})")
+
+    # Scroll incrementale DENTRO la modale finché cap o fine. Anchor pescati
+    # SOLO da dentro la modale (selettore con ancestor role=dialog).
+    out: dict[str, dict[str, str]] = {}
+    consecutive_no_growth = 0
+    max_total_scrolls = max(30, cap // 2)
+    _log(f"  inizio enumeration, cap={cap}, max_scrolls={max_total_scrolls}")
+
+    for scroll_i in range(max_total_scrolls):
+        before_n = len(out)
+        try:
+            # SOLO anchor dentro la modale, NIENTE fallback body
+            anchors = page.locator('div[role="dialog"] a[role="link"][href^="/"]')
+            n = await anchors.count()
+            for i in range(min(n, 800)):
+                try:
+                    a = anchors.nth(i)
+                    href = await a.get_attribute("href")
+                    if not href:
+                        continue
+                    # Filter: solo URL profilo (/handle/), skip /p/, /reel/, /explore/, /direct/, ecc.
+                    if any(bad in href for bad in ("/p/", "/reel/", "/explore/", "/direct/", "/stories/")):
+                        continue
+                    handle = href.strip("/").split("/")[0].lstrip("@")
+                    if not handle:
+                        continue
+                    if handle.lower() in _IG_NAV_BLACKLIST:
+                        continue
+                    if not re.match(r"^[A-Za-z0-9._]{2,30}$", handle):
+                        continue
+                    if handle == target_handle:
+                        continue  # skip il target stesso
+                    if handle in out:
+                        continue
+                    label = (await a.text_content() or "").strip()[:120]
+                    display_name = label or handle
+                    out[handle] = {
+                        "handle": handle,
+                        "display_name": display_name,
+                        "profile_url": f"https://www.instagram.com/{handle}/",
+                    }
+                    if len(out) >= cap:
+                        break
+                except Exception:
+                    continue
+        except Exception as e:
+            _log(f"  scroll {scroll_i} extract fail: {e}")
+
+        if len(out) >= cap:
+            _log(f"  ✅ cap {cap} raggiunto allo scroll #{scroll_i}")
+            break
+
+        after_n = len(out)
+        if after_n == before_n:
+            consecutive_no_growth += 1
+            if consecutive_no_growth >= 4:
+                _log(f"  ⏹ nessun nuovo follower dopo 4 scroll: stop a {after_n}")
+                break
+        else:
+            consecutive_no_growth = 0
+
+        # Scroll dentro la modale: il `div[role="dialog"]` NON è lo scrollable —
+        # IG annida lo scrollable in un elemento child con overflow-y:auto. Lo
+        # cerco dinamicamente. Ritorno scrollTop per debug.
+        try:
+            scroll_info = await container.evaluate("""
+                (root) => {
+                    function findScrollable(r) {
+                        // Prima cerca il primo discendente con overflow-y scroll/auto
+                        // E scrollHeight > clientHeight (cioè davvero scrollable)
+                        const all = r.querySelectorAll('*');
+                        for (const child of all) {
+                            const cs = getComputedStyle(child);
+                            const ov = cs.overflowY;
+                            if ((ov === 'auto' || ov === 'scroll') && child.scrollHeight > child.clientHeight + 5) {
+                                return child;
+                            }
+                        }
+                        return r;
+                    }
+                    const sc = findScrollable(root);
+                    const before = sc.scrollTop;
+                    sc.scrollBy(0, 1200);
+                    return {
+                        top: sc.scrollTop,
+                        before: before,
+                        height: sc.scrollHeight,
+                        client: sc.clientHeight,
+                        tag: sc.tagName + '.' + (sc.className || '').split(' ').slice(0, 2).join('.'),
+                    };
+                }
+            """)
+            # Log scrollTop ogni 5 scroll per debug
+            if scroll_i % 5 == 0:
+                _log(
+                    f"  scroll #{scroll_i}: scrollTop {scroll_info.get('before')}→"
+                    f"{scroll_info.get('top')}, "
+                    f"height={scroll_info.get('height')}, "
+                    f"target=<{scroll_info.get('tag')}>"
+                )
+            # Se scrollTop non avanza per 4 volte → siamo al fondo
+            if scroll_info.get('top', 0) == scroll_info.get('before', 0):
+                # Stesso valore → niente più scroll possibile
+                consecutive_no_growth = max(consecutive_no_growth, 3)
+        except Exception as e:
+            log.debug("scroll evaluate fail: %s", e)
+            # Fallback: scroll tastiera (PageDown sul body)
+            try:
+                await page.keyboard.press("End")
+            except Exception:
+                break
+        await asyncio.sleep(random.uniform(1.5, 2.8))
+
+    result = list(out.values())[:cap]
+    _log(f"  ✅ enumerati {len(result)} follower di @{target_handle}")
+
+    if debug_dir is not None and result:
+        try:
+            from pathlib import Path as _P
+            dd = _P(str(debug_dir))
+            dd.mkdir(parents=True, exist_ok=True)
+            safe_name = re.sub(r"[^A-Za-z0-9_]+", "_", target_handle)[:60]
+            lines = [f"{f['handle']}\t{f['display_name']}\t{f['profile_url']}" for f in result]
+            (dd / f"ig_followers_{safe_name}.txt").write_text(
+                "\n".join(lines), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    return result
+
+
 def match_friend(name_query: str, following_list: dict[str, str]) -> tuple[str, str] | None:
     """Cerca `name_query` nella following list IG pre-caricata.
 

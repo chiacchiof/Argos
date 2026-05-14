@@ -361,27 +361,82 @@ async def _ensure_logged_in(
         return False
     await asyncio.sleep(2.0)
 
-    # Detection "non loggato" platform-specific
+    # Tenta di accettare il banner cookie (IG mostra "Consenti tutti i cookie"
+    # / "Rifiuta cookie facoltativi" su prima visita). Se non c'e' va bene.
+    async def _dismiss_cookie_banner() -> None:
+        cookie_buttons = [
+            'button:has-text("Consenti tutti")',
+            'button:has-text("Allow all")',
+            'button:has-text("Accept All")',
+            'button:has-text("Accetta tutto")',
+            'button:has-text("Rifiuta")',
+            'button:has-text("Decline")',
+        ]
+        for sel in cookie_buttons:
+            try:
+                btn = page.locator(sel).first
+                if await btn.is_visible(timeout=600):
+                    await btn.click()
+                    jlog(f"  🍪 cookie banner accettato (selettore: {sel!r})")
+                    await asyncio.sleep(1.2)
+                    return
+            except Exception:
+                continue
+    await _dismiss_cookie_banner()
+
+    # Detection "non loggato" platform-specific. Strategia POSITIVA: cerco
+    # segnali SPECIFICI di account loggato. Se non trovo NULLA di loggato,
+    # assumo non loggato.
     async def _is_login_required() -> bool:
+        url_low = (page.url or "").lower()
         if plat == "facebook":
-            # Form di login: input[name=email] + input[name=pass]
             try:
                 if await page.locator('input[name="email"]').first.is_visible(timeout=1500):
                     if await page.locator('input[name="pass"]').first.is_visible(timeout=800):
                         return True
             except Exception:
                 pass
-            # Fallback: URL contiene "/login"
-            if "/login" in (page.url or "").lower():
+            if "/login" in url_low:
                 return True
         elif plat == "instagram":
-            try:
-                if await page.locator('input[name="username"]').first.is_visible(timeout=1500):
-                    return True
-            except Exception:
-                pass
-            if "/accounts/login" in (page.url or "").lower():
+            # URL check: se è in /accounts/login/emailsignup → sicuramente NON loggato
+            if "/accounts/login" in url_low or "/accounts/emailsignup" in url_low:
                 return True
+            # Segnali di NON loggato (presenti SOLO sulla landing anonima):
+            # bottone "Accedi" o "Iscriviti" prominenti in topbar
+            negative_markers = [
+                'a[href="/accounts/login/"]',
+                'a[href*="/accounts/emailsignup"]',
+                'button:has-text("Accedi")',
+                'button:has-text("Log in")',
+                'div:has-text("Hai un account?")',
+                'div:has-text("Have an account?")',
+            ]
+            for sel in negative_markers:
+                try:
+                    if await page.locator(sel).first.is_visible(timeout=600):
+                        return True  # vedo bottone Accedi → NOT logged
+                except Exception:
+                    continue
+            # Segnale POSITIVO di loggato: presenza di nav-icon SPECIFICI
+            # per utente loggato (Casa con aria-label preciso, NON 'Instagram')
+            positive_markers = [
+                'a[href="/"][role="link"] svg[aria-label="Home"]',
+                'a[href="/"][role="link"] svg[aria-label="Casa"]',
+                'a[href*="/direct/"] svg',  # icona messaggi DM (solo loggato)
+                'svg[aria-label="Direct"]',
+                'svg[aria-label="Messenger"]',
+            ]
+            for sel in positive_markers:
+                try:
+                    if await page.locator(sel).first.is_visible(timeout=600):
+                        return False  # icone loggato visibili → LOGGED
+                except Exception:
+                    continue
+            # Default conservativo: se non vedo né markers di loggato né
+            # di non-loggato, assumo NON LOGGATO (più sicuro che procedere
+            # con session sbagliata e prendere "5 skeleton followers")
+            return True
         elif plat == "tiktok":
             try:
                 if await page.locator('button:has-text("Log in")').first.is_visible(timeout=1500):
@@ -393,42 +448,86 @@ async def _ensure_logged_in(
     not_logged = await _is_login_required()
     if not not_logged:
         audit.log_event("LOGIN_CHECK", platform=plat, status="logged_in_native")
+        jlog(f"  ✅ {plat}: sessione loggata rilevata")
         return True
+    jlog(f"  ⚠️ {plat}: NON loggato (landing page o login wall rilevato)")
 
-    # NON loggato: prova migrazione legacy storage_state
-    jlog(f"  ⚠️ Sessione persistent vuota per {plat}. Tento migrazione one-shot da legacy storage_state...")
+    # NON loggato: prova migrazione legacy storage_state (one-shot, da
+    # vecchi outreach_social). Se non c'è, skipperemo la migrazione e
+    # passeremo direttamente al wait login manuale.
+    jlog(f"  ⚠️ Sessione persistent vuota per {plat}. Provo migrazione one-shot da legacy storage_state...")
     from .social.session_manager import load_session_state
     state = load_session_state(account["uuid"])
-    if not state or not state.get("cookies"):
-        jlog(f"  ❌ Nessun storage_state legacy in data/sessions/{account['uuid']}.json. "
-             "Login manuale richiesto: vai a /social/accounts e fai login.")
+    if state and state.get("cookies"):
+        try:
+            await context.add_cookies(state["cookies"])
+            jlog(f"  🔄 importati {len(state['cookies'])} cookies legacy")
+            audit.log_event("LOGIN_MIGRATED_COOKIES", platform=plat, n_cookies=len(state["cookies"]))
+            try:
+                await page.goto(home_url, wait_until="domcontentloaded", timeout=30_000)
+            except Exception:
+                pass
+            await asyncio.sleep(2.0)
+            still_not_logged = await _is_login_required()
+            if not still_not_logged:
+                jlog(f"  ✅ Login OK dopo migrazione cookies. Sessione persistita.")
+                audit.log_event("LOGIN_OK_AFTER_MIGRATION", platform=plat)
+                return True
+            jlog(f"  ⚠️ Migrazione cookies insufficiente (sessione legacy scaduta).")
+        except Exception as e:
+            jlog(f"  ⚠️ add_cookies fail: {e}")
+    else:
+        jlog(f"  ℹ️ Nessun legacy state per {account['uuid']}. Skip migrazione, vado al login manuale.")
         audit.log_event("LOGIN_NO_LEGACY_STATE", platform=plat)
-        return False
 
+    # WAIT LOGIN MANUALE: il browser è headed (raccomandato per recon_social).
+    # Naviga al form di login e ASPETTA fino a 15 minuti che l'utente faccia
+    # login a mano. La sessione persistente conserverà i cookie per i run
+    # successivi → niente login richiesto al prossimo run.
+    jlog(f"  ⏳ Apro la pagina di login e ATTENDO che tu faccia login a mano (max 15 min).")
+    audit.log_event("LOGIN_WAIT_MANUAL", platform=plat)
+    login_url = {
+        "facebook": "https://www.facebook.com/login",
+        "instagram": "https://www.instagram.com/accounts/login/",
+        "tiktok": "https://www.tiktok.com/login",
+    }.get(plat, home_url)
     try:
-        await context.add_cookies(state["cookies"])
-        jlog(f"  🔄 migrazione: importati {len(state['cookies'])} cookies dal legacy storage_state")
-        audit.log_event("LOGIN_MIGRATED_COOKIES", platform=plat, n_cookies=len(state["cookies"]))
-    except Exception as e:
-        jlog(f"  ❌ add_cookies fail: {e}")
-        return False
-
-    # Reload + re-check
-    try:
-        await page.goto(home_url, wait_until="domcontentloaded", timeout=30_000)
+        await page.goto(login_url, wait_until="domcontentloaded", timeout=30_000)
+        await asyncio.sleep(1.5)
+        # Riprova ad accettare il cookie banner se si è ripresentato
+        await _dismiss_cookie_banner()
     except Exception:
         pass
-    await asyncio.sleep(2.0)
-    still_not_logged = await _is_login_required()
-    if still_not_logged:
-        jlog(f"  ❌ Migrazione cookies non sufficiente — la sessione legacy potrebbe essere scaduta. "
-             f"Vai a /social/accounts e ri-fai login per {plat}.")
-        audit.log_event("LOGIN_MIGRATION_FAILED", platform=plat)
-        return False
 
-    jlog(f"  ✅ Login OK dopo migrazione cookies (one-shot). Sessione ora persistita.")
-    audit.log_event("LOGIN_OK_AFTER_MIGRATION", platform=plat)
-    return True
+    jlog(f"  👤 Vai sul browser e fai login con account {account.get('username')!r}. "
+         f"Hai tempo (max 15 min, anche con 2FA/email). Il task riprende AUTOMATICAMENTE "
+         f"appena rilevo la sessione.")
+
+    # Polling NON invasivo: max 15 min, check ogni 8s. is_visible() è read-only
+    # quindi non interferisce con il login dell'utente.
+    max_wait_s = 900
+    poll_every_s = 8
+    elapsed = 0
+    while elapsed < max_wait_s:
+        await asyncio.sleep(poll_every_s)
+        elapsed += poll_every_s
+        try:
+            still_not_logged = await _is_login_required()
+        except Exception:
+            still_not_logged = True
+        if not still_not_logged:
+            jlog(f"  ✅ Login rilevato dopo {elapsed}s. Sessione ora persistita per i run futuri "
+                 f"(niente più login richiesto, salvo scadenza cookie).")
+            audit.log_event("LOGIN_OK_AFTER_MANUAL", platform=plat, wait_s=elapsed)
+            return True
+        # Log progress ogni 60s circa
+        if elapsed % 64 < poll_every_s:
+            mins_left = max(0, (max_wait_s - elapsed) // 60)
+            jlog(f"  ⏳ Attendo login... ({elapsed}s elapsed, ~{mins_left} min rimasti)")
+
+    jlog(f"  ❌ Timeout {max_wait_s}s: login manuale non rilevato. Abort.")
+    audit.log_event("LOGIN_MANUAL_TIMEOUT", platform=plat, wait_s=max_wait_s)
+    return False
 
 
 async def run_agent(task: dict[str, Any], job_id: int) -> str:
@@ -440,6 +539,23 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         db.append_job_log(job_id, line)
 
     jlog(f'Avvio recon_social per task #{task["id"]} "{task["name"]}"')
+
+    # ---- 0. Speed profile (anti-ban tuning) ----
+    # `safe` (default, conservativo), `balanced` (~40% più veloce),
+    # `aggressive` (~65% più veloce, alto rischio ban).
+    speed = (task.get("speed_profile") or "safe").lower()
+    if speed not in ("safe", "balanced", "aggressive"):
+        speed = "safe"
+    pause_min, pause_max = {
+        "safe": (30, 180),
+        "balanced": (15, 60),
+        "aggressive": (10, 30),
+    }[speed]
+    do_subpages = speed != "aggressive"
+    jlog(
+        f"⚡ Speed profile: '{speed}' — pause anti-ban {pause_min}-{pause_max}s, "
+        f"sub-pages={'ON' if do_subpages else 'OFF'}"
+    )
 
     # ---- 1. Kill-switch + validazioni ----
     if is_recon_disabled():
@@ -455,8 +571,9 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         return ""
 
     recon_mode = (task.get("recon_mode") or "url_driven").strip()
-    if recon_mode not in ("url_driven", "exploration"):
-        msg = f"recon_mode '{recon_mode}' non valido. Solo 'url_driven' o 'exploration'."
+    if recon_mode not in ("url_driven", "exploration", "follower_scrape"):
+        msg = (f"recon_mode '{recon_mode}' non valido. Accettati: "
+               "'url_driven', 'exploration', 'follower_scrape'.")
         jlog(f"❌ {msg}")
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
         return ""
@@ -506,16 +623,30 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         seed_friends = [u.strip() for u in seed_friends.splitlines() if u.strip()]
     seed_friends = [u for u in seed_friends if u]
 
-    if not seed_generic and not seed_friends:
-        msg = ("Nessun target nel seed (sia seed_queries che seed_queries_friends "
-               "sono vuoti). Abort.")
+    # follower_scrape può popolare i target anche dai contatti selezionati
+    # (sezione "📇 Target IG da contatti DB" nella UI): salta l'abort se
+    # ci sono `target_contact_ids` valorizzati.
+    _tcids_for_recon = task.get("target_contact_ids") or []
+    if (
+        not seed_generic
+        and not seed_friends
+        and not (recon_mode == "follower_scrape" and _tcids_for_recon)
+    ):
+        msg = ("Nessun target. Per follower_scrape: scrivi un handle nel seed "
+               "OPPURE spunta dei contatti IG nella sezione 'Target IG da contatti DB'. "
+               "Per url_driven: scrivi URL/nomi nel seed.")
         jlog(f"❌ {msg}")
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
         return ""
 
-    # Combina: prima processiamo gli "amici" (matching contro friend list),
-    # poi i generici (URL diretti o nomi via search globale).
-    seed = [("friend", x) for x in seed_friends] + [("generic", x) for x in seed_generic]
+    # Combina seed: tuple (kind, entry, source_meta).
+    # source_meta: per kind=='follower' è l'handle del target di cui era follower.
+    # In follower_scrape mode il seed iniziale è la lista degli account TARGET di
+    # cui scaricare i follower; viene poi ESPANSA sotto in lista di follower URLs.
+    seed: list[tuple[str, str, str | None]] = (
+        [("friend", x, None) for x in seed_friends]
+        + [("generic", x, None) for x in seed_generic]
+    )
     jlog(f"Target totali: {len(seed)} ({len(seed_friends)} amici + {len(seed_generic)} generici)")
 
     # ---- 4. LLM config (per schema fill) ----
@@ -640,8 +771,127 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     jlog(f"  ⚠️ platform={account_platform} non ha matcher friend list — "
                          f"i seed amici saranno fatti via search globale (fallback)")
 
-        # ---- 8. Loop target (amici prima, poi generici) ----
-        for i, (seed_kind, seed_entry) in enumerate(seed, start=1):
+        # ---- 7d. FOLLOWER_SCRAPE mode: espandi target accounts → follower URLs ----
+        # Per ogni target account (sia dal seed_queries testuale, sia pescato
+        # dai `target_contact_ids` selezionati nella UI), enumera i suoi
+        # follower (cap N) e sostituisci il seed con la lista espansa di URL
+        # follower.
+        if recon_mode == "follower_scrape":
+            if account_platform != "instagram":
+                msg = (f"recon_mode='follower_scrape' è implementato solo per Instagram. "
+                       f"L'account selezionato è {account_platform}.")
+                jlog(f"❌ {msg}")
+                db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+                return ""
+
+            # Pesca anche dai contatti selezionati: estrai handle/URL IG dal
+            # social_json del contatto e aggiungili al seed di target.
+            extra_from_contacts: list[str] = []
+            # Dedup target_contact_ids preservando ordine (il form può inviare
+            # duplicati se due sezioni del template hanno entrambe `name="target_contact_ids"`)
+            target_cids_raw = task.get("target_contact_ids") or []
+            seen_cids: set[int] = set()
+            target_cids: list[int] = []
+            for x in target_cids_raw:
+                try:
+                    xi = int(x)
+                except (TypeError, ValueError):
+                    continue
+                if xi not in seen_cids:
+                    seen_cids.add(xi)
+                    target_cids.append(xi)
+            if len(target_cids) < len(target_cids_raw):
+                jlog(f"  ℹ️ dedup target_contact_ids: {len(target_cids_raw)} → {len(target_cids)} unici")
+            if target_cids:
+                jlog(f"📇 Recupero handle IG da {len(target_cids)} contatti selezionati...")
+                for cid in target_cids:
+                    try:
+                        c = db.get_contact(int(cid))
+                    except Exception:
+                        continue
+                    if not c:
+                        continue
+                    sj = c.get("social_json") or ""
+                    try:
+                        import json as _json
+                        arr = _json.loads(sj) if sj else []
+                    except Exception:
+                        arr = []
+                    ig_entry = next(
+                        (e for e in arr if isinstance(e, dict) and e.get("platform") == "instagram"),
+                        None,
+                    )
+                    if not ig_entry:
+                        continue
+                    handle_or_url = (
+                        ig_entry.get("handle")
+                        or ig_entry.get("url")
+                        or ""
+                    ).strip()
+                    if handle_or_url:
+                        extra_from_contacts.append(handle_or_url)
+                        jlog(f"  + contact#{cid} {c.get('display_name')!r} → {handle_or_url}")
+                jlog(f"  ✅ {len(extra_from_contacts)} handle IG aggiunti dai contatti")
+
+            # Combina seed testuale + contatti
+            combined_targets = list(seed) + [
+                ("generic", h, None) for h in extra_from_contacts
+            ]
+            if not combined_targets:
+                msg = ("recon_mode='follower_scrape': nessun target. Inserisci nomi/URL "
+                       "nel Seed o spunta dei contatti IG nella sezione 'Target IG da contatti DB'.")
+                jlog(f"❌ {msg}")
+                db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+                return ""
+
+            cap_per_target = int(task.get("recon_max_targets_per_day") or 100)
+            expanded_seed: list[tuple[str, str, str | None]] = []
+            for _, target_entry, _ in combined_targets:
+                # Estrai handle IG dal target (URL o handle libero)
+                te = (target_entry or "").strip().lstrip("@")
+                if te.startswith(("http://", "https://")):
+                    handle_from_url = instagram_recon._ig_username_from_url(te)
+                    target_handle = handle_from_url or ""
+                elif re.match(r"^[A-Za-z0-9._]{1,30}$", te):
+                    target_handle = te
+                else:
+                    target_handle = ""
+                if not target_handle:
+                    jlog(f"  ⚠️ Skip '{target_entry}': handle IG non estrabile")
+                    continue
+                jlog(f"📥 Enumero follower di @{target_handle} (cap={cap_per_target})...")
+                audit.log_event("FOLLOWERS_ENUM_START", target=target_handle, cap=cap_per_target)
+                try:
+                    followers = await instagram_recon.enumerate_followers_of_target(
+                        page, safe, target_handle,
+                        cap=cap_per_target, jlog=jlog,
+                        debug_dir=run_dir / "follower_lists",
+                    )
+                except Exception as e:
+                    jlog(f"  ❌ enumeration fail per @{target_handle}: {type(e).__name__}: {e}")
+                    audit.log_event("FOLLOWERS_ENUM_FAIL", target=target_handle, error=str(e))
+                    continue
+                audit.log_event(
+                    "FOLLOWERS_ENUM_DONE", target=target_handle, n_followers=len(followers),
+                )
+                for f in followers:
+                    expanded_seed.append(
+                        ("follower", f["profile_url"], f"@{target_handle}")
+                    )
+                # Pausa anti-bot tra account target (oltre il cap pause già
+                # nel loop dei profili sotto)
+                if expanded_seed:
+                    await asyncio.sleep(random.uniform(20, 60))
+            if not expanded_seed:
+                msg = "Nessun follower enumerato da nessun target. Abort."
+                jlog(f"❌ {msg}")
+                db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+                return ""
+            seed = expanded_seed
+            jlog(f"Follower totali da processare: {len(seed)}")
+
+        # ---- 8. Loop target (amici prima, poi generici/follower) ----
+        for i, (seed_kind, seed_entry, source_meta) in enumerate(seed, start=1):
             try:
                 await wait_if_paused_or_stop(job_id, jlog)
             except RunnerStopped:
@@ -792,9 +1042,10 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 # ARRICCHIMENTO platform-specific: visita 1-2 sotto-pagine ad alto
                 # valore (FB: /about + /likes_pages; IG: /reels + /tagged; TT:
                 # /playlists). Best-effort: se non accessibili, skip silenzioso.
+                # speed_profile='aggressive' → skip totale per velocità (-25-30s/profilo).
                 sub_texts: dict[str, str] = {}
                 collect_fn = getattr(module, "collect_subpage_texts", None)
-                if collect_fn:
+                if collect_fn and do_subpages:
                     try:
                         # piccola pausa "umana" tra main e sub-pages
                         await asyncio.sleep(random.uniform(2.0, 4.0))
@@ -807,6 +1058,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     except Exception as e:
                         log.debug("collect_subpage_texts fail: %s", e)
                         audit.log_event("SUBPAGES_FAIL", url=url, error=str(e))
+                elif not do_subpages:
+                    audit.log_event("SUBPAGES_SKIPPED", url=url, reason="speed_aggressive")
 
                 text_for_llm_parts = []
                 if structured_text.strip():
@@ -892,7 +1145,71 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 obj["source_domain"] = urlparse(url).hostname
                 obj["platform"] = plat
                 obj["crawled_at"] = db.now_iso()
+                if source_meta:  # follower_scrape mode
+                    obj["source_follower_of"] = source_meta
                 obj["_recon_raw"] = profile_data  # debug
+
+                # MATERIALIZZA in DB se output_asset_type valorizzato sul task.
+                # asset_type viene definito dall'utente nel form (es. 'ig_profile').
+                # Default: 'social_profile' se non specificato.
+                output_atype = (task.get("output_asset_type") or "social_profile").strip().lower()
+                try:
+                    # Costruisci tag derivati dai campi dell'obj:
+                    asset_tags: dict[str, list[str]] = {"platform": [plat]}
+                    if source_meta:
+                        asset_tags["source_follower_of"] = [source_meta]
+                    if obj.get("location"):
+                        asset_tags["location"] = [str(obj["location"])[:200]]
+                    if obj.get("professional_field"):
+                        asset_tags["professional_field"] = [str(obj["professional_field"])[:200]]
+                    if obj.get("language"):
+                        asset_tags["language"] = [str(obj["language"])[:10]]
+                    for k in ("hobbies", "interests_inferred", "liked_pages_visible"):
+                        v = obj.get(k) or []
+                        if isinstance(v, list):
+                            cleaned = [str(x)[:120] for x in v if x and isinstance(x, (str, int))]
+                            if cleaned:
+                                asset_tags[k] = cleaned[:30]  # cap a 30 per tag_key
+
+                    title = obj.get("display_name") or obj.get("username") or url
+                    asset_id = db.upsert_asset(
+                        {
+                            "asset_type": output_atype,
+                            "source_task_id": task["id"],
+                            "source_job_id": job_id,
+                            "source_url": url,
+                            "source_domain": obj.get("source_domain"),
+                            "title": str(title)[:200],
+                            "raw_json": obj,  # tutto incluso narrative_summary
+                            "notes": (obj.get("evidence_quote") or "")[:300] or None,
+                        },
+                        tags=asset_tags,
+                    )
+                    # Crea/aggiorna contact linkato all'asset, con social_json
+                    # per il profilo IG/FB/TT. Display name = il nome estratto.
+                    social_entry = {"platform": plat, "url": url}
+                    if obj.get("username"):
+                        social_entry["handle"] = str(obj["username"])[:60]
+                    elif obj.get("username_or_id"):
+                        social_entry["handle"] = str(obj["username_or_id"])[:60]
+                    db.upsert_contact({
+                        "asset_id": asset_id,
+                        "source_task_id": task["id"],
+                        "source_job_id": job_id,
+                        "source_url": url,
+                        "source_domain": obj.get("source_domain"),
+                        "display_name": str(title)[:200],
+                        "social": [social_entry],
+                        "raw_json": json.dumps(obj, ensure_ascii=False),
+                        "status": "new",
+                    })
+                    audit.log_event(
+                        "ASSET_MATERIALIZED", url=url, asset_id=asset_id,
+                        asset_type=output_atype, n_tags=sum(len(v) for v in asset_tags.values()),
+                    )
+                except Exception as e:
+                    log.warning("upsert asset/contact fail: %s", e)
+                    audit.log_event("ASSET_MATERIALIZE_FAIL", url=url, error=str(e))
 
                 with profiles_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(obj, ensure_ascii=False) + "\n")
@@ -909,10 +1226,11 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 # Periodic screenshot
                 await audit.capture_step(page, step_label=url)
 
-                # Pausa anti-bot: 30-180s tra profili
+                # Pausa anti-bot: range dipende da speed_profile (safe 30-180s,
+                # balanced 15-60s, aggressive 10-30s)
                 if i < len(seed):
-                    pause = random.uniform(30, 180)
-                    jlog(f"    pause {pause:.0f}s")
+                    pause = random.uniform(pause_min, pause_max)
+                    jlog(f"    pause {pause:.0f}s [{speed}]")
                     await asyncio.sleep(pause)
 
             except BlockedActionError as e:

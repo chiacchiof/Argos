@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Modifica asset #{{ asset.id }}{% endblock %}
+{% block content %}
+<section style="max-width:1000px;margin:auto">
+  <p><a href="/assets/{{ asset.id }}">← Asset #{{ asset.id }}</a> · <a href="/assets">Tutti</a></p>
+  <h2>✏️ Modifica asset #{{ asset.id }}</h2>
+
+  {% if request.query_params.get('flash') %}
+  <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
+  {% endif %}
+
+  <form method="post" action="/assets/{{ asset.id }}/edit" class="settings-form">
+    <div class="row">
+      <label>Tipo asset
+        <input name="asset_type" required maxlength="50" pattern="[a-z][a-z0-9_\-]{0,49}"
+               value="{{ asset.asset_type }}"
+               list="asset-types-edit-list">
+        <datalist id="asset-types-edit-list">
+          {% for t in (existing_types or []) %}<option value="{{ t.asset_type }}">{% endfor %}
+        </datalist>
+      </label>
+      <label>Stato
+        <select name="status">
+          {% for s in ["new", "qualified", "rejected", "archived"] %}
+          <option value="{{ s }}" {% if s == asset.status %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <label>Titolo / nome
+      <input name="title" required maxlength="200" value="{{ asset.title or '' }}">
+    </label>
+
+    <label>Source URL
+      <input name="source_url" value="{{ asset.source_url or '' }}" placeholder="https://...">
+    </label>
+
+    <label>Note
+      <textarea name="notes" rows="3">{{ asset.notes or '' }}</textarea>
+    </label>
+
+    <details class="collapsible-section">
+      <summary>🔍 Raw JSON <span class="hint">(modifica solo se sai cosa fai — sovrascrive il blob)</span></summary>
+      <p class="muted small">Lascia INVARIATO per non toccarlo (vuoto = nessun cambio).</p>
+      <textarea name="raw_json" rows="14" style="font-family:monospace;font-size:0.85rem;width:100%">{{ raw_pretty }}</textarea>
+    </details>
+
+    {% if n_linked_contacts and n_linked_contacts > 0 %}
+    <div style="margin-top:1rem;padding:0.6rem 0.8rem;background:#fff3e0;border:1px solid #ffc107;border-radius:4px">
+      <strong>📇 {{ n_linked_contacts }} contact{% if n_linked_contacts != 1 %}s{% endif %} linkat{% if n_linked_contacts == 1 %}o{% else %}i{% endif %} a questo asset.</strong>
+      <p style="margin:0.3rem 0 0.5rem 0;font-size:0.9rem">
+        Per default le modifiche all'asset NON toccano i contact. Spunta sotto se vuoi
+        propagare <code>title</code> → <code>contact.display_name</code> e
+        <code>source_url</code> → <code>contact.source_url</code>.
+        <br><small class="muted">⚠️ Sovrascrive eventuali modifiche manuali fatte sul contact.</small>
+      </p>
+      <label style="display:inline-flex;align-items:center;gap:0.4rem;margin:0">
+        <input type="checkbox" name="propagate_to_contacts" value="1">
+        <span>Propaga al{% if n_linked_contacts > 1 %}i{% else %}{% endif %} {{ n_linked_contacts }} contact linkat{% if n_linked_contacts == 1 %}o{% else %}i{% endif %}</span>
+      </label>
+    </div>
+    {% endif %}
+
+    <div class="actions" style="margin-top:1rem">
+      <button type="submit" class="btn-primary">💾 Salva modifiche</button>
+      <a href="/assets/{{ asset.id }}" class="link-cancel">Annulla</a>
+    </div>
+  </form>
+
+  <hr style="margin:2rem 0">
+
+  <h3>🏷️ Tag attributi</h3>
+  {% if asset.tags %}
+  <table class="data" style="font-size:0.9rem">
+    <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+    <tbody>
+      {% for k, vs in asset.tags.items() %}
+        {% for v in vs %}
+        <tr>
+          <td><code>{{ k }}</code></td>
+          <td>{{ v }}</td>
+          <td>
+            <form method="post" action="/assets/{{ asset.id }}/tags/remove" style="display:inline"
+                  onsubmit="return confirm('Rimuovere tag {{ k }}:{{ v }}?');">
+              <input type="hidden" name="tag_key" value="{{ k }}">
+              <input type="hidden" name="tag_value" value="{{ v }}">
+              <button type="submit" class="btn-small btn-danger" title="rimuovi">🗑️</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Nessun tag su questo asset.</p>
+  {% endif %}
+
+  <form method="post" action="/assets/{{ asset.id }}/tags/add" class="settings-form" style="margin-top:0.8rem">
+    <strong>+ Aggiungi tag</strong>
+    <div class="row" style="margin-top:0.3rem">
+      <label style="flex:1">Tag key
+        <input name="tag_key" required maxlength="50" pattern="[a-z][a-z0-9_\-]{0,49}"
+               placeholder="es. municipality">
+      </label>
+      <label style="flex:2">Tag value
+        <input name="tag_value" required maxlength="200" placeholder="es. Aci Bonaccorsi">
+      </label>
+      <button type="submit" class="btn-primary">Aggiungi</button>
+    </div>
+  </form>
+
+  <hr style="margin:2rem 0">
+
+  <p class="muted small">
+    Creato: {{ asset.created_at }}{% if asset.updated_at %} · Aggiornato: {{ asset.updated_at }}{% endif %}
+    {% if asset.source_task_id %}· da task <a href="/tasks/{{ asset.source_task_id }}">#{{ asset.source_task_id }}</a>{% endif %}
+  </p>
+</section>
+{% endblock %}

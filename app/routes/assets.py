@@ -7,7 +7,7 @@ una lista filtrabile per asset_type + tag.
 from __future__ import annotations
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .. import db
 from ..templates import templates
@@ -117,15 +117,232 @@ async def assets_list(
     )
 
 
+# === Search HTMX + preview JSON (per import in form contact) ===
+# Definiti PRIMA di /assets/{asset_id} per evitare conflitto di routing.
+
+@router.get("/assets/search", response_class=HTMLResponse)
+async def asset_search_htmx(
+    request: Request,
+    q: str = "",
+    asset_type: str = "",
+    limit: int = 10,
+):
+    """Search HTMX: ritorna lista di asset matching `q` su title / asset_type /
+    tag value. Usata dal modal 'Aggiungi contatto' per importare info da un
+    asset esistente.
+    """
+    q = (q or "").strip()
+    asset_type = (asset_type or "").strip().lower()
+    limit = max(1, min(int(limit or 10), 30))
+    if len(q) < 2 and not asset_type:
+        return HTMLResponse("")
+    pat = f"%{q.lower()}%"
+    sql = (
+        "SELECT DISTINCT a.id, a.asset_type, a.title, a.source_url, a.status "
+        "FROM assets a "
+        "LEFT JOIN asset_tags t ON t.asset_id = a.id "
+        "WHERE 1=1 "
+    )
+    args: list = []
+    if q:
+        sql += "AND (LOWER(a.title) LIKE ? OR LOWER(a.asset_type) LIKE ? OR LOWER(t.tag_value) LIKE ?) "
+        args += [pat, pat, pat]
+    if asset_type:
+        sql += "AND a.asset_type = ? "
+        args.append(asset_type)
+    sql += "ORDER BY a.id DESC LIMIT ?"
+    args.append(limit)
+    with db.connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    items = [dict(r) for r in rows]
+    return templates.TemplateResponse(
+        request,
+        "_asset_search_results.html",
+        {"items": items, "q": q},
+    )
+
+
+@router.get("/assets/{asset_id}/preview_json")
+async def asset_preview_json(asset_id: int) -> JSONResponse:
+    """Ritorna i campi key di un asset, pre-formattati per popolare il form
+    'Aggiungi contatto'. Estrae:
+    - display_name = asset.title
+    - source_url / source_domain
+    - email/telegram/whatsapp/sitoweb da raw_json (se presenti)
+    - instagram/tiktok/facebook URL da raw_json['social'] o tag
+    """
+    asset = db.get_asset(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="asset non trovato")
+    import json as _json
+    raw: dict = {}
+    try:
+        rj = asset.get("raw_json") or ""
+        parsed = _json.loads(rj) if isinstance(rj, str) else rj
+        if isinstance(parsed, dict):
+            raw = parsed
+    except Exception:
+        pass
+
+    # URL social estratti dal raw_json (formato: list[{platform, url}] o campi
+    # diretti tipo 'instagram_url')
+    social_urls: dict[str, str] = {}
+    socials = raw.get("social") or raw.get("socials") or []
+    if isinstance(socials, list):
+        for s in socials:
+            if not isinstance(s, dict):
+                continue
+            plat = (s.get("platform") or "").lower()
+            if plat in ("instagram", "tiktok", "facebook"):
+                social_urls[plat] = s.get("url") or social_urls.get(plat) or ""
+    for plat in ("instagram", "tiktok", "facebook"):
+        if not social_urls.get(plat):
+            v = raw.get(f"{plat}_url") or raw.get(f"{plat}")
+            if v:
+                social_urls[plat] = str(v)
+    # source_url stesso può essere il link social principale
+    src_url = asset.get("source_url") or ""
+    src_low = src_url.lower()
+    for plat in ("instagram", "tiktok", "facebook"):
+        if plat + ".com" in src_low and not social_urls.get(plat):
+            social_urls[plat] = src_url
+
+    return JSONResponse({
+        "asset_id": asset["id"],
+        "asset_type": asset.get("asset_type"),
+        "display_name": asset.get("title") or "",
+        "source_url": asset.get("source_url") or "",
+        "source_domain": asset.get("source_domain") or "",
+        "email": raw.get("email") or "",
+        "telegram_username": raw.get("telegram") or raw.get("telegram_username") or "",
+        "whatsapp": raw.get("whatsapp") or "",
+        "sitoweb": raw.get("sitoweb") or raw.get("website") or "",
+        "instagram_url": social_urls.get("instagram", ""),
+        "tiktok_url": social_urls.get("tiktok", ""),
+        "facebook_url": social_urls.get("facebook", ""),
+        "notes": (asset.get("notes") or "")[:300],
+    })
+
+
+# === ADD MANUALE === (definito PRIMA di /assets/{asset_id} per evitare che
+# "new" venga matchato come asset_id int → 422.)
+
+@router.get("/assets/new", response_class=HTMLResponse)
+async def asset_new_form(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "asset_new.html",
+        {
+            "existing_types": db.list_asset_types_in_use(),
+        },
+    )
+
+
+@router.post("/assets/new")
+async def asset_new_submit(
+    request: Request,
+    asset_type: str = Form(""),
+    title: str = Form(""),
+    source_url: str = Form(""),
+    notes: str = Form(""),
+    status: str = Form("new"),
+    raw_json: str = Form(""),
+):
+    asset_type = asset_type.strip().lower()
+    title = title.strip()
+    source_url = source_url.strip()
+    status = status.strip() or "new"
+
+    import re as _re
+    if not _re.match(r"^[a-z][a-z0-9_-]{0,49}$", asset_type):
+        raise HTTPException(status_code=400, detail="asset_type non valido (lowercase a-z 0-9 _-, max 50)")
+    if not title:
+        raise HTTPException(status_code=400, detail="title obbligatorio")
+    if status not in {"new", "qualified", "rejected", "archived"}:
+        raise HTTPException(status_code=400, detail="status non valido")
+    import json as _json
+    raw_data: dict = {}
+    if raw_json.strip():
+        try:
+            raw_data = _json.loads(raw_json)
+            if not isinstance(raw_data, dict):
+                raise ValueError("raw_json deve essere un oggetto JSON")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"raw_json non valido: {e}")
+
+    form = await request.form()
+    asset_tags: dict[str, list[str]] = {}
+    for k, v in (form.multi_items() if hasattr(form, "multi_items") else form.items()):
+        if not isinstance(k, str) or not k.startswith("tag_key__"):
+            continue
+        idx = k[len("tag_key__"):]
+        key = (v or "").strip().lower()
+        val = (form.get(f"tag_value__{idx}") or "").strip()
+        if not key or not val:
+            continue
+        if not _re.match(r"^[a-z][a-z0-9_-]{0,49}$", key):
+            continue
+        asset_tags.setdefault(key, []).append(val[:200])
+
+    asset_id = db.upsert_asset(
+        {
+            "asset_type": asset_type,
+            "title": title,
+            "source_url": source_url or None,
+            "notes": notes.strip() or None,
+            "raw_json": raw_data,
+        },
+        tags=asset_tags,
+    )
+    if status != "new":
+        db.update_asset_status(asset_id, status)
+    return RedirectResponse(
+        url=f"/assets/{asset_id}?flash=Asset+%23{asset_id}+creato",
+        status_code=303,
+    )
+
+
 @router.get("/assets/{asset_id}", response_class=HTMLResponse)
 async def asset_detail(request: Request, asset_id: int):
     asset = db.get_asset(asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="asset non trovato")
+
+    # Parsing del raw_json per rendering ricco (narrative, interests, liked_pages, ecc.)
+    import json as _json
+    raw_data: dict = {}
+    raw_pretty: str = asset.get("raw_json") or ""
+    try:
+        parsed = _json.loads(raw_pretty) if isinstance(raw_pretty, str) else raw_pretty
+        if isinstance(parsed, dict):
+            raw_data = parsed
+            raw_pretty = _json.dumps(parsed, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    # Contact linkati a questo asset (1 → N)
+    linked_contacts = []
+    try:
+        with db.connect() as con:
+            rows = con.execute(
+                "SELECT id, display_name, email, telegram_username, whatsapp, "
+                "sitoweb, social_json, status, qualifier_score "
+                "FROM contacts WHERE asset_id = ? ORDER BY id",
+                (asset_id,),
+            ).fetchall()
+            linked_contacts = [dict(r) for r in rows]
+    except Exception:
+        pass
+
     return templates.TemplateResponse(
         request,
         "asset_detail.html",
-        {"asset": asset},
+        {
+            "asset": asset,
+            "raw_data": raw_data,
+            "raw_pretty": raw_pretty,
+            "linked_contacts": linked_contacts,
+        },
     )
 
 
@@ -141,6 +358,137 @@ async def asset_set_status(
         raise HTTPException(status_code=404, detail="asset non trovato")
     db.update_asset_status(asset_id, status.strip(), notes=(notes.strip() or None))
     return RedirectResponse(url=f"/assets/{asset_id}?flash=Stato+aggiornato", status_code=303)
+
+
+# === EDIT manuale ===
+
+@router.get("/assets/{asset_id}/edit", response_class=HTMLResponse)
+async def asset_edit_form(request: Request, asset_id: int):
+    asset = db.get_asset(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="asset non trovato")
+    import json as _json
+    raw_pretty = asset.get("raw_json") or ""
+    try:
+        parsed = _json.loads(raw_pretty) if isinstance(raw_pretty, str) else raw_pretty
+        if isinstance(parsed, dict):
+            raw_pretty = _json.dumps(parsed, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    # Conta contact linkati per warning + checkbox propaga
+    n_linked = 0
+    try:
+        with db.connect() as con:
+            n_linked = con.execute(
+                "SELECT COUNT(*) FROM contacts WHERE asset_id = ?", (asset_id,)
+            ).fetchone()[0]
+    except Exception:
+        pass
+    return templates.TemplateResponse(
+        request,
+        "asset_edit.html",
+        {
+            "asset": asset,
+            "raw_pretty": raw_pretty,
+            "existing_types": db.list_asset_types_in_use(),
+            "n_linked_contacts": n_linked,
+        },
+    )
+
+
+@router.post("/assets/{asset_id}/edit")
+async def asset_edit_submit(
+    asset_id: int,
+    asset_type: str = Form(""),
+    title: str = Form(""),
+    source_url: str = Form(""),
+    notes: str = Form(""),
+    status: str = Form("new"),
+    raw_json: str = Form(""),
+    propagate_to_contacts: str = Form(""),
+):
+    asset = db.get_asset(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="asset non trovato")
+    asset_type = asset_type.strip().lower()
+    title = title.strip()
+    source_url = source_url.strip()
+    status = status.strip() or "new"
+
+    import re as _re
+    if not _re.match(r"^[a-z][a-z0-9_-]{0,49}$", asset_type):
+        raise HTTPException(status_code=400, detail="asset_type non valido")
+    if not title:
+        raise HTTPException(status_code=400, detail="title obbligatorio")
+    if status not in {"new", "qualified", "rejected", "archived"}:
+        raise HTTPException(status_code=400, detail="status non valido")
+    import json as _json
+    raw_value = None
+    if raw_json.strip():
+        try:
+            raw_value = _json.loads(raw_json)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"raw_json non valido: {e}")
+
+    update_fields: dict = {
+        "asset_type": asset_type,
+        "title": title,
+        "source_url": source_url or None,
+        "notes": notes.strip() or None,
+        "status": status,
+    }
+    if raw_value is not None:
+        update_fields["raw_json"] = raw_value
+    db.update_asset(asset_id, **update_fields)
+
+    # Propagazione opzionale ai contact linkati (display_name + source_url).
+    # Se la checkbox è valorizzata ("1"/"on"/"true"), aggiorna i contact
+    # con asset_id = questo asset.
+    propagate = (propagate_to_contacts or "").strip().lower() in ("1", "on", "true", "yes")
+    flash = "Asset+aggiornato"
+    if propagate:
+        n_updated = 0
+        try:
+            with db.connect() as con:
+                cur = con.execute(
+                    "UPDATE contacts SET display_name = ?, source_url = ?, updated_at = ? "
+                    "WHERE asset_id = ?",
+                    (title, source_url or None, db.now_iso(), asset_id),
+                )
+                n_updated = cur.rowcount
+        except Exception:
+            pass
+        flash = f"Asset+aggiornato+(propagato+a+{n_updated}+contact)"
+    return RedirectResponse(
+        url=f"/assets/{asset_id}?flash={flash}",
+        status_code=303,
+    )
+
+
+# === TAG add/remove ===
+
+@router.post("/assets/{asset_id}/tags/add")
+async def asset_tag_add(
+    asset_id: int,
+    tag_key: str = Form(""),
+    tag_value: str = Form(""),
+):
+    if not db.get_asset(asset_id):
+        raise HTTPException(status_code=404, detail="asset non trovato")
+    db.add_asset_tag(asset_id, tag_key, tag_value)
+    return RedirectResponse(url=f"/assets/{asset_id}/edit?flash=Tag+aggiunto", status_code=303)
+
+
+@router.post("/assets/{asset_id}/tags/remove")
+async def asset_tag_remove(
+    asset_id: int,
+    tag_key: str = Form(""),
+    tag_value: str = Form(""),
+):
+    if not db.get_asset(asset_id):
+        raise HTTPException(status_code=404, detail="asset non trovato")
+    db.remove_asset_tag(asset_id, tag_key, tag_value)
+    return RedirectResponse(url=f"/assets/{asset_id}/edit?flash=Tag+rimosso", status_code=303)
 
 
 @router.post("/assets/{asset_id}/delete")

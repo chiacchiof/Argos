@@ -42,6 +42,8 @@ async def inbox_contacts(
     channel: str | None = None,
     source_domain: str | None = None,
     score_min: str | None = None,  # str perche' il <select> manda "" quando "qualsiasi"
+    source_task_id: str | None = None,
+    source_follower_of: str | None = None,
     page: str | int = 1,
     per_page: str | int = _CONTACTS_PAGE_SIZE,
 ):
@@ -58,6 +60,13 @@ async def inbox_contacts(
     q_clean = (q or "").strip() or None
     channel_clean = (channel or "").strip().lower() or None
     domain_clean = (source_domain or "").strip().lower() or None
+    follower_of_clean = (source_follower_of or "").strip() or None
+    task_id_clean: int | None = None
+    if source_task_id:
+        try:
+            task_id_clean = int(str(source_task_id).strip())
+        except (TypeError, ValueError):
+            pass
     # Parsing tollerante: "" / non-int → None, altrimenti clamp [0..10]
     score_clean: int | None = None
     if score_min:
@@ -77,6 +86,8 @@ async def inbox_contacts(
         channel=channel_clean,
         source_domain=domain_clean,
         score_min=score_clean,
+        source_task_id=task_id_clean,
+        source_follower_of=follower_of_clean,
     )
     total_pages = max(1, (total + per_page - 1) // per_page)
     if page > total_pages:
@@ -89,12 +100,16 @@ async def inbox_contacts(
         channel=channel_clean,
         source_domain=domain_clean,
         score_min=score_clean,
+        source_task_id=task_id_clean,
+        source_follower_of=follower_of_clean,
         limit=per_page,
         offset=offset,
     )
 
-    # Per dropdown filtri: domini source noti
+    # Per dropdown filtri: domini source noti + task generatori + follower_of distinct
     available_domains = db.list_contact_source_domains(limit=50)
+    available_source_tasks = db.list_distinct_contact_source_tasks()
+    available_follower_of = db.list_distinct_source_follower_of()
 
     # Querystring base (preserva filtri attivi nei link di paginazione)
     from urllib.parse import urlencode
@@ -104,6 +119,8 @@ async def inbox_contacts(
     if channel_clean: qs_dict["channel"] = channel_clean
     if domain_clean: qs_dict["source_domain"] = domain_clean
     if score_clean is not None: qs_dict["score_min"] = score_clean
+    if task_id_clean is not None: qs_dict["source_task_id"] = task_id_clean
+    if follower_of_clean: qs_dict["source_follower_of"] = follower_of_clean
     if per_page != _CONTACTS_PAGE_SIZE: qs_dict["per_page"] = per_page
     qs_base = urlencode(qs_dict)
 
@@ -117,7 +134,11 @@ async def inbox_contacts(
             "filter_channel": channel_clean or "",
             "filter_source_domain": domain_clean or "",
             "filter_score_min": score_clean if score_clean is not None else "",
+            "filter_source_task_id": task_id_clean if task_id_clean is not None else "",
+            "filter_source_follower_of": follower_of_clean or "",
             "available_domains": available_domains,
+            "available_source_tasks": available_source_tasks,
+            "available_follower_of": available_follower_of,
             "page": page,
             "per_page": per_page,
             "total": total,
@@ -143,6 +164,7 @@ async def inbox_contacts_add(
     source_domain: str = Form(""),
     notes: str = Form(""),
     status: str = Form("qualified"),
+    asset_id: str = Form(""),
 ):
     """Inserisce manualmente un contatto outreach. Almeno UN canale (email,
     telegram, whatsapp, sitoweb, social) deve essere valorizzato — altrimenti
@@ -189,6 +211,13 @@ async def inbox_contacts_add(
     if not sd:
         sd = "manual"
 
+    # asset_id opzionale: se valorizzato + esiste, linka via FK
+    aid_int: int | None = None
+    if (asset_id or "").strip().isdigit():
+        candidate = int(asset_id.strip())
+        if db.get_asset(candidate):
+            aid_int = candidate
+
     payload = {
         "source_url": (source_url or "").strip() or f"manual:{(email or telegram_username or whatsapp or 'unnamed').strip()}",
         "source_domain": sd,
@@ -202,13 +231,18 @@ async def inbox_contacts_add(
             "_manual_entry": True,
             "display_name": display_name,
             "notes": notes,
+            "imported_from_asset_id": aid_int,
         }, ensure_ascii=False),
         "status": (status or "qualified").strip() or "qualified",
+        "asset_id": aid_int,
     }
     cid = db.upsert_contact(payload)
     # Status (upsert_contact non lo gestisce direttamente, lo settiamo)
     db.update_contact_status(cid, payload["status"], notes=notes.strip() or None)
-    return RedirectResponse(url=f"/inbox/contacts?flash=Contatto+%23{cid}+aggiunto", status_code=303)
+    flash = f"Contatto+%23{cid}+aggiunto"
+    if aid_int:
+        flash += f"+(linkato+asset+%23{aid_int})"
+    return RedirectResponse(url=f"/inbox/contacts?flash={flash}", status_code=303)
 
 
 @router.get("/inbox/{thread_id}", response_class=HTMLResponse)
@@ -288,12 +322,34 @@ async def contact_edit_form(request: Request, contact_id: int):
                         socials_by_platform[plat] = s.get("url") or ""
         except (_json.JSONDecodeError, TypeError):
             pass
+
+    # Parsing raw_json + asset linkato (per visualizzazione ricca)
+    raw_data: dict = {}
+    raw_pretty: str = contact.get("raw_json") or ""
+    try:
+        parsed = _json.loads(raw_pretty) if isinstance(raw_pretty, str) else raw_pretty
+        if isinstance(parsed, dict):
+            raw_data = parsed
+            raw_pretty = _json.dumps(parsed, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    linked_asset = None
+    if contact.get("asset_id"):
+        try:
+            linked_asset = db.get_asset(int(contact["asset_id"]))
+        except Exception:
+            pass
+
     return templates.TemplateResponse(
         request,
         "inbox_contact_edit.html",
         {
             "contact": contact,
             "socials_by_platform": socials_by_platform,
+            "raw_data": raw_data,
+            "raw_pretty": raw_pretty,
+            "linked_asset": linked_asset,
         },
     )
 

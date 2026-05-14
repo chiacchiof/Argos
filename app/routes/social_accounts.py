@@ -109,3 +109,78 @@ async def toggle_social_account_status(account_id: int):
     new_status = "quarantine" if current == "active" else "active"
     db.update_social_account(account_id, status=new_status)
     return RedirectResponse(url="/social/accounts", status_code=303)
+
+
+@router.get("/social/accounts/{account_id}/edit", response_class=HTMLResponse)
+async def edit_social_account_form(request: Request, account_id: int):
+    """Form di modifica metadati account social (username, password,
+    daily_dm_cap, proxy_label, notes, status). La password ha preserve-on-empty:
+    se l'utente lascia il campo vuoto, la password salvata resta com'era."""
+    a = db.get_social_account(account_id)
+    if not a:
+        raise HTTPException(status_code=404, detail="account non trovato")
+    return templates.TemplateResponse(
+        request,
+        "social_account_edit.html",
+        {"account": a, "is_secret_configured": is_configured()},
+    )
+
+
+@router.post("/social/accounts/{account_id}/edit")
+async def update_social_account(
+    request: Request,
+    account_id: int,
+    username: str = Form(...),
+    password: str = Form(""),
+    daily_dm_cap: int = Form(10),
+    proxy_label: str = Form(""),
+    notes: str = Form(""),
+    status: str = Form("active"),
+):
+    """Salva modifiche. Pattern preserve-on-empty per la password:
+    - se `password` è vuoto → non tocchiamo `encrypted_password` esistente
+    - se `password` è "CLEAR" (sentinel) → azzeriamo (account non potrà più loggarsi)
+    - altrimenti → cifriamo e sostituiamo
+    """
+    existing = db.get_social_account(account_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="account non trovato")
+
+    username = username.strip().lstrip("@")
+    if not username:
+        raise HTTPException(status_code=400, detail="username obbligatorio")
+    status = status.strip().lower()
+    if status not in ("active", "warming_up", "quarantine", "banned"):
+        raise HTTPException(status_code=400, detail=f"status '{status}' non valido")
+
+    fields: dict[str, object] = {
+        "username": username,
+        "daily_dm_cap": max(1, min(daily_dm_cap, 500)),
+        "proxy_label": (proxy_label.strip() or None),
+        "notes": (notes.strip() or None),
+        "status": status,
+    }
+
+    pwd = (password or "").strip()
+    if pwd:
+        if pwd.upper() == "CLEAR":
+            fields["encrypted_password"] = None
+        else:
+            if not is_configured():
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "AGENTSCRAPER_SECRET non impostata: impossibile cifrare la "
+                        "nuova password. Lascia il campo vuoto per preservare la "
+                        "password esistente."
+                    ),
+                )
+            fields["encrypted_password"] = encrypt(pwd)
+    # se pwd vuoto → niente da fare (preserve)
+
+    db.update_social_account(account_id, **fields)
+    log.info(
+        "social account updated: id=%s username=%s status=%s pwd_changed=%s",
+        account_id, username, status, bool(pwd),
+    )
+    return RedirectResponse(url="/social/accounts", status_code=303)

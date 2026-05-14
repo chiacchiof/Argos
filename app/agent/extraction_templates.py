@@ -277,10 +277,11 @@ i modelli aperti tendono a troncare gli ultimi campi se finiscono i token.
   "recent_topics": ["fino a 8 temi/parole-chiave dai post più recenti, es. 'viaggio in Giappone', 'partita Inter'"],
   "language": "codice ISO-639 della lingua predominante (es. 'it')",
   "evidence_quote": "1-2 frasi testuali esemplificative tratte dal profilo, per supportare i campi sopra (string|null)",
+  "source_follower_of": "valorizzato dal runner quando questo profilo è stato pescato come follower di un account target (es. '@palestra_xxx'). Non inferire dal testo: lo iniettiamo noi. (string|null)",
   "confidence": "low|medium|high — quanto sei sicuro dei campi inferiti"
 }
 
-NOTA: `platform` e `source_url` sono iniettati dal runner; NON includerli nel JSON.
+NOTA: `platform`, `source_url`, `source_follower_of` sono iniettati dal runner; NON includerli nel JSON o lasciali null.
 
 REGOLE:
 - SOLO contenuto effettivamente PRESENTE nelle sezioni fornite (no allucinazioni).

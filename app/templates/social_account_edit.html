@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Modifica account social #{{ account.id }}{% endblock %}
+{% block content %}
+<section>
+  <h2>✏️ Modifica account social #{{ account.id }}</h2>
+
+  <p class="muted">
+    Modifica i metadati dell'account <strong>{{ account.platform }} / {{ account.username }}</strong>.
+    La sessione di login (cookie/IndexedDB del browser persistent) NON viene toccata —
+    se l'account è già loggato resta loggato. Per re-fare login: torna in
+    <a href="/social/accounts">/social/accounts</a> e elimina+ricrea l'account.
+  </p>
+
+  {% if not is_secret_configured %}
+  <div class="warning-box">
+    ⚠️ <strong>AGENTSCRAPER_SECRET non configurata</strong>: puoi modificare i metadati ma
+    NON la password (la cifratura è disabilitata).
+  </div>
+  {% endif %}
+
+  <form method="post" action="/social/accounts/{{ account.id }}/edit" class="settings-form">
+
+    <div class="row">
+      <label>Piattaforma <span class="hint">(non modificabile)</span>
+        <input type="text" value="{{ account.platform }}" readonly disabled
+               style="background:#f5f5f5">
+      </label>
+      <label>Username (senza @)
+        <input name="username" required maxlength="100"
+               value="{{ account.username or '' }}"
+               placeholder="es. anna_marketing">
+      </label>
+    </div>
+
+    <label>Password
+      <input type="password" name="password" autocomplete="new-password"
+             placeholder="(lascia vuoto per non cambiare; digita CLEAR per azzerare)">
+      <span class="hint">
+        <strong>Vuoto</strong> = preserva la password esistente. <strong>CLEAR</strong> = azzera
+        (l'account non potrà più rifare login automatico). Altrimenti la nuova password viene cifrata via Fernet.
+      </span>
+    </label>
+
+    <div class="row">
+      <label>Daily DM cap <span class="hint">(anti-ban, max 500)</span>
+        <input type="number" name="daily_dm_cap" min="1" max="500"
+               value="{{ account.daily_dm_cap or 10 }}">
+      </label>
+      <label>Proxy label <span class="hint">(opz., deve esistere in AGENTSCRAPER_PROXIES env)</span>
+        <input name="proxy_label" value="{{ account.proxy_label or '' }}"
+               placeholder="(vuoto = no proxy)">
+      </label>
+    </div>
+
+    <label>Status
+      {% set st = account.status or 'active' %}
+      <select name="status">
+        <option value="active"      {% if st=='active' %}selected{% endif %}>active</option>
+        <option value="warming_up"  {% if st=='warming_up' %}selected{% endif %}>warming_up (in fase di warmup, non usare per DM)</option>
+        <option value="quarantine"  {% if st=='quarantine' %}selected{% endif %}>quarantine (sospeso temporaneamente)</option>
+        <option value="banned"      {% if st=='banned' %}selected{% endif %}>banned (account bannato dalla piattaforma)</option>
+      </select>
+    </label>
+
+    <label>Note <span class="hint">(libero — es. "warmup completato", "challenge ricevuto il 2026-04-01")</span>
+      <textarea name="notes" rows="3">{{ account.notes or '' }}</textarea>
+    </label>
+
+    <div class="actions" style="margin-top: 1rem;">
+      <button type="submit" class="btn-primary">💾 Salva modifiche</button>
+      <a href="/social/accounts" class="link-cancel">Annulla</a>
+    </div>
+  </form>
+
+  <hr style="margin: 1.5rem 0;">
+  <p class="muted small">
+    UUID: <code>{{ account.uuid }}</code><br>
+    Session dir: <code>data/social_sessions/{{ account.uuid }}/</code><br>
+    Creato: {{ account.created_at }}{% if account.updated_at %} · Ult. agg.: {{ account.updated_at }}{% endif %}<br>
+    Auth method: <code>{{ account.auth_method or '—' }}</code>
+  </p>
+</section>
+{% endblock %}

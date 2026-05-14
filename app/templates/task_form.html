@@ -168,6 +168,24 @@
           {% include "partials/extraction_schema_field_initial.html" %}
         {% endif %}
       </label>
+
+      <label style="margin-top:1rem">
+        🏷️ Tipo asset prodotto <span class="hint">(es. <code>ig_profile</code>, <code>palestra</code>, <code>follower</code>)</span>
+        <input type="text" name="output_asset_type" maxlength="50"
+               pattern="[a-z0-9_\-]{1,50}"
+               value="{{ p.get('output_asset_type','') or '' }}"
+               placeholder="lowercase, a-z 0-9 _ -, max 50 char"
+               list="asset-types-output-list">
+        <datalist id="asset-types-output-list">
+          {% for t in (asset_types_in_use or []) %}<option value="{{ t.asset_type }}">{% endfor %}
+        </datalist>
+        <span class="hint">
+          asset_type assegnato ai record salvati in tabella <code>assets</code> da questo
+          task. Lascia vuoto per usare il default del runner (es. recon_social →
+          <code>social_profile</code>). Riusare un asset_type esistente unisce i nuovi
+          record agli stessi (con dedup su source_url).
+        </span>
+      </label>
     </details>
 
     {# ============================================================
@@ -470,6 +488,54 @@
       syncDisplay();
     })();
     </script>
+
+    {# ============================================================
+       SEZIONE 6b: FILTRA CONTATTI DESTINATARI — solo outreach + outreach_social + outreach_whatsapp
+       Restringe la pool di contatti che il task contatterà. Si applica
+       solo se `target_contact_ids` (sezione successiva, selezione manuale)
+       è vuoto. Se selezioni esplicitamente dei contatti, vincono.
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="outreach outreach_social outreach_whatsapp">
+      <summary>📤 Filtra contatti destinatari <span class="hint">(restringi la pool — applicato SE non selezioni manualmente)</span></summary>
+
+      <p class="muted small" style="margin:0 0 0.6rem 0">
+        I filtri sotto restringono i contatti che questo task contatterà. Le condizioni
+        sono in AND. Se nella sezione "Contatti da includere" sotto selezioni
+        esplicitamente dei contatti, la <strong>selezione manuale vince</strong> e i
+        filtri vengono <em>ignorati</em>.
+      </p>
+
+      {% set fp_tid = p.get('outreach_filter_source_task_id') %}
+      {% set fp_fof = p.get('outreach_filter_source_follower_of') or '' %}
+
+      <div class="row">
+        <label>🔗 Task generatore <span class="hint">(solo contatti creati da questo task upstream)</span>
+          <select name="outreach_filter_source_task_id">
+            <option value="">— qualsiasi —</option>
+            {% for t in (outreach_source_tasks or []) %}
+              <option value="{{ t.task_id }}" {% if fp_tid and fp_tid|int == t.task_id %}selected{% endif %}>
+                #{{ t.task_id }} {{ t.name|truncate(35, true, '…') }} · {{ t.agent_mode }} ({{ t.count }})
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>👥 Source follower of <span class="hint">(per IG/TT: "follower di @X"; FB: "amico di @X")</span>
+          <select name="outreach_filter_source_follower_of">
+            <option value="">— qualsiasi —</option>
+            {% for f in (outreach_source_followers or []) %}
+              <option value="{{ f.value }}" {% if fp_fof == f.value %}selected{% endif %}>{{ f.value }} ({{ f.count }})</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <p class="muted small" style="margin:0.6rem 0 0 0">
+        💡 Esempio: <code>Source follower of = @ekipe_club</code> → il task contatterà
+        solo i 12 follower di Ekipe estratti dal recon_social. Combinabile con il filtro
+        "Tipo di asset" / "Stato" della pool generale.
+      </p>
+    </details>
 
     {# ============================================================
        SEZIONE 7: OUTREACH — solo outreach
@@ -901,12 +967,18 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
         {% set rmode = p.get('recon_mode') or 'url_driven' %}
         <select name="recon_mode">
           <option value="url_driven"  {% if rmode=='url_driven' %}selected{% endif %}>url_driven (R1) — lista URL → extract</option>
+          <option value="follower_scrape" {% if rmode=='follower_scrape' %}selected{% endif %}>follower_scrape — per ogni account IG nel seed scarica i suoi follower (cap N) ed estrae profilo di ciascuno</option>
           <option value="exploration" {% if rmode=='exploration' %}selected{% endif %} disabled>exploration (R2) — agente ReAct (backlog B-014, NON disponibile)</option>
         </select>
         <span class="hint">
-          <code>url_driven</code>: per ogni URL nel campo "Seed" della sezione di ricerca,
-          apre il profilo con il tuo account loggato ed estrae dati. Nessuna decisione LLM
-          su navigazione.
+          <code>url_driven</code>: per ogni URL/nome nel "Seed", apre il profilo e ne
+          estrae i dati.
+          <br><code>follower_scrape</code> (solo Instagram, account loggato richiesto):
+          per ogni handle nel "Seed" naviga al profilo target, apre i suoi follower,
+          enumera fino al cap ("Max profili/giorno" sotto, default 50), e per ciascun
+          follower fa il recon completo (bio, interessi, sub-pagine). Iniezione
+          <code>source_follower_of</code> nel JSON di output.
+          <strong>⚠️ Viola ToS Instagram</strong> — rischio ban dell'account loggato.
         </span>
       </label>
 
@@ -949,6 +1021,21 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
         </label>
       </div>
 
+      <label style="margin-top:0.8rem">
+        ⚡ Profilo velocità estrazione
+        {% set sp = p.get('speed_profile') or 'safe' %}
+        <select name="speed_profile">
+          <option value="safe"       {% if sp=='safe' %}selected{% endif %}>Safe (default) — pause 30-180s, sub-pages complete. Rischio ban: BASSO</option>
+          <option value="balanced"   {% if sp=='balanced' %}selected{% endif %}>Balanced — ~40% più veloce: pause 15-60s, skip /tagged se /reels vuoto. Rischio: BASSO/MEDIO</option>
+          <option value="aggressive" {% if sp=='aggressive' %}selected{% endif %}>Aggressive — ~65% più veloce: pause 10-30s, NO sub-pages. Rischio: MEDIO/ALTO</option>
+        </select>
+        <span class="hint">
+          Bilancia velocità e rischio ban dell'account social. <code>safe</code> per
+          account principali. <code>aggressive</code> solo per account "warmup" sacrificabili.
+          Vale per <code>recon_social</code>.
+        </span>
+      </label>
+
       <label style="margin-top:1rem">
         🤝 Amici / Following (matching contro la lista dell'account loggato)
         <span class="hint">
@@ -969,6 +1056,152 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
         <textarea name="seed_queries_friends" rows="4"
                   placeholder="fabio famoso&#10;paolo maugeri&#10;carlotta castoro">{{ seed_friends_text }}</textarea>
       </label>
+
+      {# === Target IG da contatti DB (solo follower_scrape) ===
+         Mostra una lista di contatti che hanno un URL Instagram nel
+         social_json. L'utente può spuntarli per usarli come "target accounts"
+         da cui scaricare i follower. Riusa `target_contact_ids` (lo stesso
+         campo usato per outreach_social, semantica polimorfa per agent_mode).
+         #}
+      {% set ig_contacts = contacts_by_platform.get('instagram', []) %}
+      {% set selected_ids_recon = p.get('target_contact_ids') or [] %}
+      {% set selected_set_recon = selected_ids_recon if selected_ids_recon is iterable else [] %}
+      <div style="margin-top:1.5rem;padding:0.8rem;border:1px solid #ddd;border-radius:6px;background:#fafafa">
+        <strong>📇 Target IG da contatti del DB <span class="hint">(per <code>follower_scrape</code>)</span></strong>
+        <p class="muted small" style="margin:0.3rem 0 0.6rem 0">
+          Spunta i contatti Instagram di cui vuoi scaricare i follower. Per
+          ognuno il runner pesca l'handle IG dal <code>social_json</code> del
+          contatto e lo usa come target. <strong>Alternativa al seed</strong>
+          sopra: se selezioni contatti qui, gli handle vengono aggiunti
+          automaticamente alla lista dei target IG.
+          <br>Filtro: solo contatti con un URL <code>instagram.com</code>
+          nel campo <code>social_json</code>.
+        </p>
+        {% if ig_contacts %}
+          {# Asset_type distinct nei contatti IG (per popolare il filtro) #}
+          {% set ig_asset_types = (ig_contacts | map(attribute='asset_type') | unique | list | sort) %}
+
+          <div class="recon-target-filters" style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:center;margin-bottom:0.6rem;padding:0.5rem;background:#fff;border:1px solid #ddd;border-radius:4px">
+            <label style="margin:0;display:inline-flex;align-items:center;gap:0.3rem">
+              <span class="hint">🏷️ Tipo asset:</span>
+              <select id="recon-ig-filter-type" style="padding:0.2rem 0.4rem;font-size:0.9rem">
+                <option value="">— tutti ({{ ig_contacts|length }}) —</option>
+                {% for at in ig_asset_types %}
+                  {% set cnt = (ig_contacts | selectattr('asset_type', 'equalto', at) | list | length) %}
+                  <option value="{{ at }}">{{ at }} ({{ cnt }})</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label style="margin:0;display:inline-flex;align-items:center;gap:0.3rem;flex:1;min-width:200px">
+              <span class="hint">🔎 Cerca:</span>
+              <input type="search" id="recon-ig-filter-search"
+                     placeholder="nome, handle, tag value..."
+                     style="flex:1;padding:0.2rem 0.4rem;font-size:0.9rem">
+            </label>
+            <button type="button" class="btn-small" data-targets-toggle="all" data-target-platform="instagram">Tutti (visibili)</button>
+            <button type="button" class="btn-small btn-secondary" data-targets-toggle="none" data-target-platform="instagram">Nessuno</button>
+            <span class="muted small" data-targets-count="instagram">
+              {{ (ig_contacts | selectattr('id', 'in', selected_set_recon) | list | length) if selected_set_recon else 0 }}
+              / {{ ig_contacts | length }} selezionati
+            </span>
+          </div>
+
+          <div class="contact-targets-grid" id="recon-ig-targets-grid" style="max-height:380px;overflow-y:auto;border:1px solid #eee;padding:0.4rem;background:white">
+            {% for c in ig_contacts %}
+            {# Index searchable: nome + url + tag values (lowercase) #}
+            {% set search_idx = ((c.display_name or '') ~ ' ' ~ (c.url or '') ~ ' ' ~ (c.top_tags | map(attribute=1) | join(' ')))|lower %}
+            <label class="contact-target-row recon-ig-row"
+                   data-asset-type="{{ c.asset_type }}"
+                   data-search="{{ search_idx }}"
+                   style="display:block;padding:0.35rem 0.4rem;border-bottom:1px solid #f5f5f5;cursor:pointer">
+              <div style="display:flex;align-items:start;gap:0.5rem">
+                <input type="checkbox" name="target_contact_ids" value="{{ c.id }}"
+                       data-target-checkbox="instagram"
+                       {% if c.id in selected_set_recon %}checked{% endif %}
+                       style="margin-top:0.25rem">
+                <div style="flex:1;min-width:0">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem">
+                    <strong>{{ c.display_name or c.url }}</strong>
+                    <span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.75rem;white-space:nowrap"><code>{{ c.asset_type }}</code></span>
+                  </div>
+                  <small class="muted" style="display:block">
+                    #{{ c.id }} ·
+                    <a href="{{ c.url }}" target="_blank" rel="noopener" onclick="event.stopPropagation()">{{ c.url }}</a>
+                    {% if c.status %}· <code>{{ c.status }}</code>{% endif %}
+                  </small>
+                  {% if c.top_tags %}
+                  <div style="margin-top:0.15rem">
+                    {% for tk, tv in c.top_tags %}
+                    <span style="display:inline-block;background:#fff3e0;color:#e65100;padding:0.08rem 0.4rem;border-radius:3px;margin-right:0.25rem;font-size:0.78rem"><strong>{{ tk }}:</strong> {{ tv|truncate(40, true, '…') }}</span>
+                    {% endfor %}
+                  </div>
+                  {% endif %}
+                </div>
+              </div>
+            </label>
+            {% endfor %}
+          </div>
+          <p class="muted small" style="margin-top:0.4rem">
+            💡 Usa il filtro <strong>Tipo asset</strong> per restringere e <strong>Cerca</strong>
+            per nome/handle/tag (es. cerca "Catania" se municipality:Catania è nei tag).
+            "Tutti" seleziona solo le righe attualmente visibili dopo i filtri.
+          </p>
+
+          <script>
+          (function () {
+            const grid = document.getElementById('recon-ig-targets-grid');
+            const fType = document.getElementById('recon-ig-filter-type');
+            const fSearch = document.getElementById('recon-ig-filter-search');
+            if (!grid || !fType || !fSearch) return;
+            const rows = Array.from(grid.querySelectorAll('.recon-ig-row'));
+            function apply() {
+              const t = fType.value.trim();
+              const s = fSearch.value.trim().toLowerCase();
+              let visibleN = 0;
+              rows.forEach(r => {
+                const atOk = !t || r.dataset.assetType === t;
+                const sOk = !s || (r.dataset.search || '').includes(s);
+                const show = atOk && sOk;
+                r.style.display = show ? '' : 'none';
+                if (show) visibleN++;
+              });
+            }
+            fType.addEventListener('change', apply);
+            fSearch.addEventListener('input', apply);
+            // Modifica "Tutti" per agire solo sulle righe visibili
+            const btnAll = grid.parentElement.querySelector('[data-targets-toggle="all"][data-target-platform="instagram"]');
+            const btnNone = grid.parentElement.querySelector('[data-targets-toggle="none"][data-target-platform="instagram"]');
+            if (btnAll) {
+              btnAll.addEventListener('click', (e) => {
+                e.preventDefault();
+                rows.forEach(r => {
+                  if (r.style.display !== 'none') {
+                    const cb = r.querySelector('input[type=checkbox]');
+                    if (cb) cb.checked = true;
+                  }
+                });
+              }, true);
+            }
+            if (btnNone) {
+              btnNone.addEventListener('click', (e) => {
+                e.preventDefault();
+                rows.forEach(r => {
+                  const cb = r.querySelector('input[type=checkbox]');
+                  if (cb) cb.checked = false;
+                });
+              }, true);
+            }
+          })();
+          </script>
+        {% else %}
+          <p class="muted small" style="margin:0">
+            Nessun contatto con URL <code>instagram.com</code> nel DB. Importa
+            un CSV con handle IG da <a href="/import" target="_blank">/import</a>,
+            oppure lancia un task di scraping che estrae IG nel
+            <code>social_json</code>.
+          </p>
+        {% endif %}
+      </div>
     </details>
 
     {# ============================================================

@@ -7,9 +7,14 @@
       <h2 style="margin-bottom:0.3rem">📦 Assets</h2>
       <p class="muted" style="margin:0">Tutto il materiale estratto dai task (annunci, prodotti, profili, eventi, articoli, ...). Filtra per tipo o tag.</p>
     </div>
-    <a href="/import" style="padding:0.6rem 1rem;background:#1565c0;color:white;text-decoration:none;border-radius:4px;font-weight:500;white-space:nowrap">
-      📥 Import CSV
-    </a>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+      <a href="/assets/new" style="padding:0.6rem 1rem;background:#2e7d32;color:white;text-decoration:none;border-radius:4px;font-weight:500;white-space:nowrap">
+        ➕ Nuovo asset
+      </a>
+      <a href="/import" style="padding:0.6rem 1rem;background:#1565c0;color:white;text-decoration:none;border-radius:4px;font-weight:500;white-space:nowrap">
+        📥 Import CSV
+      </a>
+    </div>
   </div>
 
   {% if request.query_params.get('flash') %}
@@ -143,11 +148,14 @@
           <a href="/tasks/{{ a.source_task_id }}">task #{{ a.source_task_id }}</a>
           {% endif %}
         </td>
-        <td>
+        <td style="white-space:nowrap">
+          <a href="/assets/{{ a.id }}" class="btn-small" title="Dettaglio asset">👁️</a>
+          <a href="/assets/{{ a.id }}/edit" class="btn-small" title="Modifica asset">✏️</a>
           <button type="submit" formaction="/assets/{{ a.id }}/delete"
                   class="btn-small btn-danger"
                   formnovalidate
-                  onclick="return confirm('Cancellare l\'asset #{{ a.id }}?');">🗑️</button>
+                  title="Elimina asset (CASCADE su contact linkati)"
+                  onclick="return confirm('Cancellare l\'asset #{{ a.id }}?\n\n⚠️ Verranno cancellati anche i contact linkati (CASCADE).');">🗑️</button>
         </td>
       </tr>
       {% endfor %}

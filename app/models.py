@@ -75,8 +75,8 @@ class TaskIn(BaseModel):
     # - id   = SOLO quel sender; fail-fast se è banned/disabled
     whatsapp_account_id: int | None = None
     whatsapp_api_config_id: int | None = None
-    # Recon social (R1 ora; R2/R3 nel backlog)
-    recon_mode: Literal["url_driven", "exploration"] | None = None
+    # Recon social (R1 url_driven, follower_scrape; R2/R3 nel backlog)
+    recon_mode: Literal["url_driven", "exploration", "follower_scrape"] | None = None
     recon_social_account_id: int | None = None
     recon_hypothesis: str | None = None
     recon_max_targets_per_day: int = Field(default=50, ge=1, le=500)
@@ -91,6 +91,20 @@ class TaskIn(BaseModel):
     # qualifier/outreach prima cerca asset DB matching, poi cade su upstream
     # / artifact path.
     input_asset_filter: dict | None = None
+    # asset_type assegnato agli asset PRODOTTI dal task (es. 'ig_profile',
+    # 'palestra', 'follower'). Lowercase libero. Se None, il runner sceglie
+    # un default per il proprio agent_mode (es. recon_social → 'social_profile').
+    output_asset_type: str | None = None
+    # Profilo velocità (vedi runner_recon_social per applicazione):
+    #   'safe'       — default, prudente (pause 30-180s, sub-pages sempre)
+    #   'balanced'   — ~40% più veloce (pause 15-60s, skip /tagged se vuoto)
+    #   'aggressive' — ~65% più veloce (pause 10-30s, niente sub-pages)
+    speed_profile: Literal["safe", "balanced", "aggressive"] = "safe"
+    # Filtri per restringere i contatti DESTINATARI di task outreach*.
+    # Si combinano AND fra loro. Se `target_contact_ids` è non-vuoto, la
+    # selezione manuale vince (i filtri non vengono applicati).
+    outreach_filter_source_task_id: int | None = None
+    outreach_filter_source_follower_of: str | None = None
 
     @field_validator("rating", mode="before")
     @classmethod

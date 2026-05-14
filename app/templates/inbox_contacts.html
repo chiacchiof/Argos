@@ -8,7 +8,7 @@
       <p class="muted" style="margin: 0.3rem 0 0 0">
         <a href="/inbox">← Inbox</a> &middot;
         <strong>{{ total }}</strong> contatti
-        {% if filter_status or filter_q or filter_channel or filter_source_domain or filter_score_min != '' %}
+        {% if filter_status or filter_q or filter_channel or filter_source_domain or filter_score_min != '' or filter_source_task_id != '' or filter_source_follower_of or filter_source_task_id != '' or filter_source_follower_of %}
           (filtrati)
         {% endif %}
       </p>
@@ -27,7 +27,7 @@
     <div class="search-row">
       <input type="search" name="q" value="{{ filter_q }}" placeholder="🔍 Cerca nome, email, telegram, dominio, note…" class="search-input">
       <button type="submit" class="btn-primary">Cerca</button>
-      {% if filter_q or filter_channel or filter_source_domain or filter_score_min != '' %}
+      {% if filter_q or filter_channel or filter_source_domain or filter_score_min != '' or filter_source_task_id != '' or filter_source_follower_of %}
       <a href="/inbox/contacts{% if filter_status %}?status={{ filter_status }}{% endif %}" class="btn-link">✕ Reset filtri</a>
       {% endif %}
     </div>
@@ -77,8 +77,89 @@
           {% endfor %}
         </select>
       </label>
+
+      <label>Task generatore
+        <select name="source_task_id" onchange="this.form.submit()">
+          <option value="">— tutti —</option>
+          {% for t in (available_source_tasks or []) %}
+            <option value="{{ t.task_id }}" {% if filter_source_task_id == t.task_id %}selected{% endif %}>
+              #{{ t.task_id }} {{ t.name|truncate(30, true, '…') }} · {{ t.agent_mode }} ({{ t.count }})
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>Source follower of
+        <span class="hint" title="Per IG/TT: 'follower di @account'. Per FB: 'amico di @profilo'.">ⓘ</span>
+        <select name="source_follower_of" onchange="this.form.submit()">
+          <option value="">— tutti —</option>
+          {% for f in (available_follower_of or []) %}
+            <option value="{{ f.value }}" {% if filter_source_follower_of == f.value %}selected{% endif %}>{{ f.value }} ({{ f.count }})</option>
+          {% endfor %}
+        </select>
+      </label>
     </div>
   </form>
+
+  {# JS helpers per import da asset nel modal "Aggiungi contatto" #}
+  <script>
+  async function importFromAsset(assetId) {
+    try {
+      const r = await fetch(`/assets/${assetId}/preview_json`);
+      if (!r.ok) {
+        alert('Errore caricamento asset #' + assetId);
+        return;
+      }
+      const d = await r.json();
+      const form = document.getElementById('add-contact-form');
+      if (!form) return;
+      const setValue = (name, val) => {
+        const el = form.querySelector(`[name="${name}"]`);
+        if (el && val) el.value = val;
+      };
+      setValue('display_name', d.display_name);
+      setValue('source_url', d.source_url);
+      setValue('source_domain', d.source_domain);
+      setValue('email', d.email);
+      setValue('telegram_username', d.telegram_username);
+      setValue('whatsapp', d.whatsapp);
+      setValue('sitoweb', d.sitoweb);
+      setValue('instagram_url', d.instagram_url);
+      setValue('tiktok_url', d.tiktok_url);
+      setValue('facebook_url', d.facebook_url);
+      // notes: solo se vuoto, non sovrascrivere
+      const notesEl = form.querySelector('[name="notes"]');
+      if (notesEl && d.notes && !notesEl.value) {
+        notesEl.value = '[da asset #' + d.asset_id + ': ' + d.asset_type + '] ' + d.notes;
+      }
+      // hidden asset_id
+      const aid = document.getElementById('asset-id-hidden');
+      if (aid) aid.value = d.asset_id;
+      // Mostra badge "importato"
+      const box = document.getElementById('imported-from-asset');
+      const nameEl = document.getElementById('imported-asset-name');
+      const linkEl = document.getElementById('imported-asset-link');
+      if (box && nameEl) {
+        nameEl.textContent = (d.display_name || ('asset #' + d.asset_id)) + ' (' + d.asset_type + ')';
+        if (linkEl) linkEl.href = '/assets/' + d.asset_id;
+        box.style.display = '';
+      }
+      // Pulisci la search
+      const sq = document.getElementById('asset-search-q');
+      if (sq) sq.value = '';
+      const sr = document.getElementById('asset-search-results');
+      if (sr) sr.innerHTML = '';
+    } catch (e) {
+      alert('Errore: ' + e);
+    }
+  }
+  function clearAssetImport() {
+    const aid = document.getElementById('asset-id-hidden');
+    if (aid) aid.value = '';
+    const box = document.getElementById('imported-from-asset');
+    if (box) box.style.display = 'none';
+  }
+  </script>
 
   {# Modal aggiungi contatto #}
   <div id="add-contact-modal" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('open');">
@@ -87,7 +168,37 @@
         <h3 style="margin:0">➕ Aggiungi contatto manuale</h3>
         <button type="button" class="btn-link" onclick="document.getElementById('add-contact-modal').classList.remove('open');">✕</button>
       </div>
-      <form method="post" action="/inbox/contacts/add" class="add-contact-form">
+      <form method="post" action="/inbox/contacts/add" class="add-contact-form" id="add-contact-form">
+
+        {# === Importa da asset (opzionale) === #}
+        <details class="optional-block" style="background:#f0f7ff;border:1px solid #b3d4f5;border-radius:4px;padding:0.4rem 0.6rem;margin-bottom:0.5rem">
+          <summary><strong>🔗 Importa da asset esistente</strong> <span class="hint">(opzionale — pre-popola i campi sotto)</span></summary>
+          <p class="muted small" style="margin:0.3rem 0">
+            Cerca un asset (palestra, ig_profile, ecc.) per nome / asset_type / valore tag.
+            Cliccando un risultato i campi del form vengono pre-popolati dalle info dell'asset:
+            <strong>name, source_url, social URLs, email/whatsapp/sitoweb</strong> (se presenti
+            nel raw_json). Poi modifica liberamente prima di salvare.
+            Il contatto creato sarà <strong>linkato</strong> all'asset (FK).
+          </p>
+          <label style="margin:0.2rem 0;display:block">
+            🔎 Cerca asset
+            <input type="search" id="asset-search-q" placeholder="Min 2 caratteri (es. 'palestra', 'Catania', 'evolution')"
+                   hx-get="/assets/search"
+                   hx-trigger="keyup changed delay:300ms, search"
+                   hx-target="#asset-search-results"
+                   hx-swap="innerHTML"
+                   name="q"
+                   style="width:100%">
+          </label>
+          <div id="asset-search-results"></div>
+          <div id="imported-from-asset" style="display:none;margin-top:0.4rem;padding:0.3rem 0.5rem;background:#e8f5e9;border-radius:3px;font-size:0.85rem">
+            ✅ Importato da: <strong id="imported-asset-name"></strong>
+            <a id="imported-asset-link" href="" target="_blank" style="margin-left:0.3rem"><small>vedi asset →</small></a>
+            <button type="button" onclick="clearAssetImport()" class="btn-link" style="float:right">✕ rimuovi link</button>
+          </div>
+          <input type="hidden" name="asset_id" id="asset-id-hidden" value="">
+        </details>
+
         <label>Nome / display name
           <input type="text" name="display_name" placeholder="Es. Mario Rossi">
         </label>

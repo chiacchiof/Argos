@@ -162,19 +162,36 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     if artifact:
         _ingest_artifact(task["id"], job_id, artifact, jlog)
 
-    # 4. seleziona contatti target
-    upstream_tid = _resolve_source_task_for_contacts(task)
+    # 4. seleziona contatti target.
+    # Priorità delle sorgenti dei contatti candidati:
+    #   1. `outreach_filter_source_task_id` (filtro esplicito dal form) — vince su upstream
+    #   2. `outreach_filter_source_follower_of` (asset_tag, JOIN) — applicato AND con 1
+    #   3. fallback upstream da workflow_edges o source_task_id=current
+    filter_tid_raw = task.get("outreach_filter_source_task_id")
+    filter_tid = int(filter_tid_raw) if str(filter_tid_raw or "").strip().isdigit() else None
+    filter_fof = (task.get("outreach_filter_source_follower_of") or "").strip() or None
+    if filter_tid or filter_fof:
+        jlog(
+            f"📤 Filtri destinatari: source_task_id={filter_tid}, "
+            f"source_follower_of={filter_fof!r}"
+        )
+
+    upstream_tid = filter_tid if filter_tid is not None else _resolve_source_task_for_contacts(task)
     target_status_eligible = ("qualified", "new")
     candidates: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
     for st in target_status_eligible:
-        for c in db.list_contacts(status=st, source_task_id=upstream_tid):
+        for c in db.list_contacts(
+            status=st,
+            source_task_id=upstream_tid,
+            source_follower_of=filter_fof,
+        ):
             if c["id"] in seen_ids:
                 continue
             seen_ids.add(c["id"])
             candidates.append(c)
-    # Quando non c'è upstream esplicito, considera contatti ingestiti col job corrente
-    if not upstream_tid and not candidates:
+    # Quando non c'è upstream esplicito né filtro, considera contatti ingestiti col job corrente
+    if not upstream_tid and not filter_fof and not candidates:
         for st in target_status_eligible:
             for c in db.list_contacts(status=st, source_task_id=task["id"]):
                 if c["id"] in seen_ids:

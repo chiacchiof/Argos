@@ -117,10 +117,20 @@ def _load_targets_for_platform(
     explicit_ids = [int(x) for x in explicit_ids if str(x).strip().lstrip("-").isdigit()]
 
     if explicit_ids:
+        # Selezione manuale vince: ignora i filtri del task
         candidates = db.get_contacts_by_ids(explicit_ids)
     else:
         target_status = task.get("target_status_in") or "qualified"
-        candidates = db.list_contacts(status=target_status, limit=limit * 5)
+        # Applica i filtri di task (source_task_id, source_follower_of) se valorizzati
+        f_tid_raw = task.get("outreach_filter_source_task_id")
+        f_tid = int(f_tid_raw) if str(f_tid_raw or "").strip().isdigit() else None
+        f_fof = (task.get("outreach_filter_source_follower_of") or "").strip() or None
+        candidates = db.list_contacts(
+            status=target_status,
+            source_task_id=f_tid,
+            source_follower_of=f_fof,
+            limit=limit * 5,
+        )
 
     out: list[dict[str, Any]] = []
     for c in candidates:

@@ -597,6 +597,38 @@ def init_db() -> None:
             con.execute(
                 "ALTER TABLE tasks ADD COLUMN input_asset_filter TEXT"
             )
+        if "output_asset_type" not in tcols:
+            # asset_type da assegnare quando il task PRODUCE asset (scraping /
+            # recon_social / browser_use / ecc). Permette al task di definire
+            # la propria tassonomia. Se NULL, il runner usa il default per il
+            # suo agent_mode (es. recon_social → 'social_profile').
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN output_asset_type TEXT"
+            )
+        if "speed_profile" not in tcols:
+            # Profilo velocità per runner che fanno scraping rate-limited
+            # (recon_social, outreach_social): 'safe' (default, prudente),
+            # 'balanced' (~40% più veloce), 'aggressive' (~65% più veloce, alto
+            # rischio ban). Il runner sceglie come applicarlo (pause, sub-pages,
+            # model swap). Vedi runner_recon_social.run_agent.
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN speed_profile TEXT "
+                "NOT NULL DEFAULT 'safe'"
+            )
+        if "outreach_filter_source_task_id" not in tcols:
+            # Restringe i contatti destinatari di un task outreach* a quelli
+            # generati da uno specifico task upstream (es. solo follower
+            # estratti dal task 39).
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN outreach_filter_source_task_id INTEGER"
+            )
+        if "outreach_filter_source_follower_of" not in tcols:
+            # Restringe i contatti destinatari di un task outreach* a quelli
+            # con asset_tag (source_follower_of, value). Es. solo follower di
+            # @ekipe_club. Funziona via JOIN su asset_tags.
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN outreach_filter_source_follower_of TEXT"
+            )
 
         # Tabelle dedicate recon (R3 checkpoint/resume + dedup visited)
         con.execute("""
@@ -900,6 +932,12 @@ def _coerce_status_tag(value: Any) -> str | None:
     return s if s in VALID_STATUS_TAGS else None
 
 
+def _coerce_speed_profile(value: Any) -> str:
+    """Accetta 'safe', 'balanced', 'aggressive' (case-insensitive). Default 'safe'."""
+    s = (value or "").strip().lower() if isinstance(value, str) else ""
+    return s if s in ("safe", "balanced", "aggressive") else "safe"
+
+
 def _serialize_input_asset_filter(value: Any) -> str | None:
     """Accetta dict (es. {'asset_type': 'palestra'}) o stringa JSON.
     Ritorna stringa JSON o None se vuoto/non valido."""
@@ -1011,8 +1049,12 @@ def create_task(data: dict[str, Any]) -> int:
                                   recon_max_targets_per_day, recon_score_threshold,
                                   seed_queries_friends,
                                   input_asset_filter,
+                                  output_asset_type,
+                                  speed_profile,
+                                  outreach_filter_source_task_id,
+                                  outreach_filter_source_follower_of,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -1073,6 +1115,10 @@ def create_task(data: dict[str, Any]) -> int:
                 int(data.get("recon_score_threshold") or 6),
                 _dump_list(data.get("seed_queries_friends")),
                 _serialize_input_asset_filter(data.get("input_asset_filter")),
+                (data.get("output_asset_type") or "").strip().lower() or None,
+                _coerce_speed_profile(data.get("speed_profile")),
+                int(data["outreach_filter_source_task_id"]) if data.get("outreach_filter_source_task_id") else None,
+                (data.get("outreach_filter_source_follower_of") or "").strip() or None,
                 ts,
                 ts,
             ),
@@ -1109,6 +1155,10 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 recon_max_targets_per_day = ?, recon_score_threshold = ?,
                 seed_queries_friends = ?,
                 input_asset_filter = ?,
+                output_asset_type = ?,
+                speed_profile = ?,
+                outreach_filter_source_task_id = ?,
+                outreach_filter_source_follower_of = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -1171,6 +1221,10 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 int(data.get("recon_score_threshold") or 6),
                 _dump_list(data.get("seed_queries_friends")),
                 _serialize_input_asset_filter(data.get("input_asset_filter")),
+                (data.get("output_asset_type") or "").strip().lower() or None,
+                _coerce_speed_profile(data.get("speed_profile")),
+                int(data["outreach_filter_source_task_id"]) if data.get("outreach_filter_source_task_id") else None,
+                (data.get("outreach_filter_source_follower_of") or "").strip() or None,
                 now_iso(),
                 task_id,
             ),
@@ -1669,6 +1723,22 @@ def _build_contacts_filters(
     return sql, args
 
 
+def _add_source_follower_of_filter(where_sql: str, args: list, source_follower_of: str | None) -> tuple[str, list]:
+    """Aggiunge una clausola EXISTS per filtrare contacts il cui asset linkato
+    ha un asset_tag (source_follower_of, value). Usato per IG follower_scrape
+    (es. 'mostrami i contatti raccolti come follower di @ekipe_club')."""
+    if not source_follower_of:
+        return where_sql, args
+    where_sql += (
+        " AND EXISTS (SELECT 1 FROM asset_tags t "
+        " WHERE t.asset_id = contacts.asset_id "
+        "   AND t.tag_key = 'source_follower_of' "
+        "   AND t.tag_value = ?)"
+    )
+    args.append(source_follower_of.strip())
+    return where_sql, args
+
+
 def count_contacts(
     status: str | None = None,
     source_task_id: int | None = None,
@@ -1676,11 +1746,13 @@ def count_contacts(
     search: str | None = None,
     channel: str | None = None,
     score_min: int | None = None,
+    source_follower_of: str | None = None,
 ) -> int:
     """Conta i contatti che matchano i filtri di list_contacts. Per paginazione UI."""
     where_sql, args = _build_contacts_filters(
         status, source_task_id, source_domain, search, channel, score_min
     )
+    where_sql, args = _add_source_follower_of_filter(where_sql, args, source_follower_of)
     sql = "SELECT COUNT(*) FROM contacts" + where_sql
     with connect() as con:
         return int(con.execute(sql, args).fetchone()[0])
@@ -1695,15 +1767,53 @@ def list_contacts(
     score_min: int | None = None,
     limit: int = 500,
     offset: int = 0,
+    source_follower_of: str | None = None,
 ) -> list[dict[str, Any]]:
     where_sql, args = _build_contacts_filters(
         status, source_task_id, source_domain, search, channel, score_min
     )
+    where_sql, args = _add_source_follower_of_filter(where_sql, args, source_follower_of)
     sql = "SELECT * FROM contacts" + where_sql + " ORDER BY id DESC LIMIT ? OFFSET ?"
     args.extend([limit, max(0, int(offset))])
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_distinct_source_follower_of() -> list[dict[str, Any]]:
+    """Ritorna i valori distinct di asset_tags.tag_value WHERE tag_key='source_follower_of',
+    con count di contacts che li hanno (via asset linkato). Per popolare il
+    filtro dropdown in /inbox/contacts."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT t.tag_value AS v, COUNT(DISTINCT c.id) AS n "
+            "FROM asset_tags t JOIN contacts c ON c.asset_id = t.asset_id "
+            "WHERE t.tag_key = 'source_follower_of' "
+            "GROUP BY t.tag_value ORDER BY n DESC, t.tag_value"
+        ).fetchall()
+    return [{"value": r["v"], "count": int(r["n"])} for r in rows]
+
+
+def list_distinct_contact_source_tasks() -> list[dict[str, Any]]:
+    """Ritorna i task che hanno generato contacts (distinct source_task_id),
+    con count. Joina con tasks per arricchire col nome."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT c.source_task_id AS tid, t.name AS tname, t.agent_mode AS amode, "
+            "       COUNT(*) AS n "
+            "FROM contacts c LEFT JOIN tasks t ON t.id = c.source_task_id "
+            "WHERE c.source_task_id IS NOT NULL "
+            "GROUP BY c.source_task_id ORDER BY n DESC"
+        ).fetchall()
+    return [
+        {
+            "task_id": r["tid"],
+            "name": r["tname"] or f"task #{r['tid']}",
+            "agent_mode": r["amode"] or "?",
+            "count": int(r["n"]),
+        }
+        for r in rows
+    ]
 
 
 def list_contacts_with_social_platform(
@@ -2174,6 +2284,70 @@ def update_asset_status(asset_id: int, status: str, notes: str | None = None) ->
                 "UPDATE assets SET status = ?, updated_at = ? WHERE id = ?",
                 (status, now_iso(), asset_id),
             )
+
+
+def update_asset(asset_id: int, **fields: Any) -> None:
+    """Update generico per i campi base di un asset. Salta `id`, `created_at`,
+    `qualifier_score`. Se `source_url` cambia, ricalcola anche `source_url_canonical`.
+    Ignora field vuoti/None (per non azzerare per errore)."""
+    if not fields:
+        return
+    # Filtra solo campi modificabili in edit manuale
+    ALLOWED = {"asset_type", "source_url", "source_domain", "title", "raw_json", "notes", "status"}
+    safe: dict[str, Any] = {}
+    for k, v in fields.items():
+        if k not in ALLOWED:
+            continue
+        safe[k] = v
+    if not safe:
+        return
+    # Se source_url è cambiato, aggiorna anche source_url_canonical
+    if "source_url" in safe:
+        try:
+            from .agent.url_canonical import canonical_url as _canon
+            safe["source_url_canonical"] = _canon(safe["source_url"]) if safe["source_url"] else None
+        except Exception:
+            pass
+    # Se raw_json è dict, serializza
+    if "raw_json" in safe and not isinstance(safe["raw_json"], str):
+        safe["raw_json"] = json.dumps(safe["raw_json"], ensure_ascii=False)
+    sets = [f"{k} = ?" for k in safe]
+    sql = f"UPDATE assets SET {', '.join(sets)}, updated_at = ? WHERE id = ?"
+    with connect() as con:
+        con.execute(sql, (*safe.values(), now_iso(), asset_id))
+
+
+def add_asset_tag(asset_id: int, tag_key: str, tag_value: str) -> bool:
+    """Aggiunge un (tag_key, tag_value) a un asset. Ritorna True se inserito,
+    False se duplicato. PK(asset_id, tag_key, tag_value) impone univocità."""
+    tag_key = (tag_key or "").strip().lower()
+    tag_value = (tag_value or "").strip()
+    if not tag_key or not tag_value:
+        return False
+    try:
+        with connect() as con:
+            con.execute(
+                "INSERT OR IGNORE INTO asset_tags (asset_id, tag_key, tag_value) VALUES (?, ?, ?)",
+                (asset_id, tag_key, tag_value),
+            )
+            # rowcount per detect duplicato
+            cur = con.execute(
+                "SELECT 1 FROM asset_tags WHERE asset_id=? AND tag_key=? AND tag_value=?",
+                (asset_id, tag_key, tag_value),
+            ).fetchone()
+            return cur is not None
+    except Exception:
+        return False
+
+
+def remove_asset_tag(asset_id: int, tag_key: str, tag_value: str) -> int:
+    """Rimuove un tag puntuale (asset_id, tag_key, tag_value). Ritorna n righe cancellate."""
+    with connect() as con:
+        cur = con.execute(
+            "DELETE FROM asset_tags WHERE asset_id=? AND tag_key=? AND tag_value=?",
+            (asset_id, tag_key, tag_value),
+        )
+        return cur.rowcount
 
 
 def delete_asset(asset_id: int) -> int:
