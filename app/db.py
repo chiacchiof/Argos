@@ -546,6 +546,82 @@ def init_db() -> None:
                 "REFERENCES whatsapp_api_config(id) ON DELETE SET NULL"
             )
 
+        # Recon social (R1+R2+R3). Vedi PIANO_RECON_SOCIAL.md
+        if "recon_mode" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN recon_mode TEXT")
+            # 'url_driven' (R1) | 'exploration' (R2)
+        if "recon_social_account_id" not in tcols:
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN recon_social_account_id INTEGER "
+                "REFERENCES social_accounts(id) ON DELETE SET NULL"
+            )
+        if "recon_hypothesis" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN recon_hypothesis TEXT")
+            # Per R2: l'ipotesi NL ("trova chi ama il sushi")
+        if "recon_max_targets_per_day" not in tcols:
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN recon_max_targets_per_day "
+                "INTEGER NOT NULL DEFAULT 50"
+            )
+        if "recon_score_threshold" not in tcols:
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN recon_score_threshold "
+                "INTEGER NOT NULL DEFAULT 6"
+            )
+        if "seed_queries_friends" not in tcols:
+            # JSON-encoded list of names da risolvere contro la friend list /
+            # following list dell'account loggato (recon_social). Differente da
+            # `seed_queries` che usa search globale + slug match (con possibili
+            # falsi positivi su omonimi).
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN seed_queries_friends TEXT"
+            )
+
+        # Tabelle dedicate recon (R3 checkpoint/resume + dedup visited)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS recon_runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+              job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+              social_account_id INTEGER REFERENCES social_accounts(id) ON DELETE SET NULL,
+              status TEXT NOT NULL DEFAULT 'running',
+              started_at TEXT NOT NULL,
+              last_active_at TEXT,
+              finished_at TEXT,
+              target_count INTEGER NOT NULL DEFAULT 0,
+              notes TEXT
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS recon_checkpoints (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id INTEGER NOT NULL REFERENCES recon_runs(id) ON DELETE CASCADE,
+              snapshot_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS recon_visited (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id INTEGER NOT NULL REFERENCES recon_runs(id) ON DELETE CASCADE,
+              target_url TEXT NOT NULL,
+              target_platform TEXT NOT NULL,
+              visited_at TEXT NOT NULL,
+              classified INTEGER NOT NULL DEFAULT 0,
+              score INTEGER,
+              reason TEXT,
+              UNIQUE(run_id, target_url)
+            )
+        """)
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recon_visited_run "
+            "ON recon_visited(run_id, visited_at)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recon_runs_status "
+            "ON recon_runs(status, task_id)"
+        )
+
         # whatsapp_api_config: una riga per ogni numero Business registrato su
         # Meta Cloud API. Cifrato access_token con AGENTSCRAPER_SECRET.
         con.execute("""
@@ -806,6 +882,7 @@ def _coerce_status_tag(value: Any) -> str | None:
 def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["seed_queries"] = _load_list(d.get("seed_queries"))
+    d["seed_queries_friends"] = _load_list(d.get("seed_queries_friends"))
     d["allowed_domains"] = _load_list(d.get("allowed_domains"))
     d["blocked_domains"] = _load_list(d.get("blocked_domains"))
     d["message_channels"] = _load_list(d.get("message_channels"))
@@ -876,8 +953,11 @@ def create_task(data: dict[str, Any]) -> int:
                                   target_contact_ids,
                                   whatsapp_engine_preference, whatsapp_dry_run,
                                   whatsapp_account_id, whatsapp_api_config_id,
+                                  recon_mode, recon_social_account_id, recon_hypothesis,
+                                  recon_max_targets_per_day, recon_score_threshold,
+                                  seed_queries_friends,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -931,6 +1011,12 @@ def create_task(data: dict[str, Any]) -> int:
                 1 if data.get("whatsapp_dry_run") else 0,
                 int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
                 int(data["whatsapp_api_config_id"]) if data.get("whatsapp_api_config_id") else None,
+                (data.get("recon_mode") or None),
+                int(data["recon_social_account_id"]) if data.get("recon_social_account_id") else None,
+                (data.get("recon_hypothesis") or "").strip() or None,
+                int(data.get("recon_max_targets_per_day") or 50),
+                int(data.get("recon_score_threshold") or 6),
+                _dump_list(data.get("seed_queries_friends")),
                 ts,
                 ts,
             ),
@@ -963,6 +1049,9 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 target_contact_ids = ?,
                 whatsapp_engine_preference = ?, whatsapp_dry_run = ?,
                 whatsapp_account_id = ?, whatsapp_api_config_id = ?,
+                recon_mode = ?, recon_social_account_id = ?, recon_hypothesis = ?,
+                recon_max_targets_per_day = ?, recon_score_threshold = ?,
+                seed_queries_friends = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -1018,6 +1107,12 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 1 if data.get("whatsapp_dry_run") else 0,
                 int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
                 int(data["whatsapp_api_config_id"]) if data.get("whatsapp_api_config_id") else None,
+                (data.get("recon_mode") or None),
+                int(data["recon_social_account_id"]) if data.get("recon_social_account_id") else None,
+                (data.get("recon_hypothesis") or "").strip() or None,
+                int(data.get("recon_max_targets_per_day") or 50),
+                int(data.get("recon_score_threshold") or 6),
+                _dump_list(data.get("seed_queries_friends")),
                 now_iso(),
                 task_id,
             ),

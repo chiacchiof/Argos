@@ -167,6 +167,13 @@ def _form_to_dict(
     whatsapp_dry_run: str = "",
     whatsapp_account_id: str = "",
     whatsapp_api_config_id: str = "",
+    # Campi recon_social (R1)
+    recon_mode: str = "",
+    recon_social_account_id: str = "",
+    recon_hypothesis: str = "",
+    recon_max_targets_per_day: int = 50,
+    recon_score_threshold: int = 6,
+    seed_queries_friends: str = "",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -222,6 +229,13 @@ def _form_to_dict(
         "whatsapp_dry_run": 1 if (str(whatsapp_dry_run).strip() in ("1", "on", "true", "yes")) else 0,
         "whatsapp_account_id": int(whatsapp_account_id) if str(whatsapp_account_id).strip().isdigit() else None,
         "whatsapp_api_config_id": int(whatsapp_api_config_id) if str(whatsapp_api_config_id).strip().isdigit() else None,
+        # recon_social
+        "recon_mode": (recon_mode or "").strip() or None,
+        "recon_social_account_id": int(recon_social_account_id) if str(recon_social_account_id).strip().isdigit() else None,
+        "recon_hypothesis": (recon_hypothesis or "").strip() or None,
+        "recon_max_targets_per_day": int(recon_max_targets_per_day or 50),
+        "recon_score_threshold": int(recon_score_threshold or 6),
+        "seed_queries_friends": seed_queries_friends,
     }
 
 
@@ -281,6 +295,19 @@ def _form_extra_context() -> dict:
         }
         for c in wa_api_configs_rows
     ]
+    # Account social loggati per recon_social (esclude whatsapp_browser =
+    # è solo per messaggi WA; recon_social usa fb/ig/tiktok).
+    recon_accounts_rows = db.list_social_accounts()
+    recon_accounts = [
+        {
+            "id": a["id"],
+            "platform": a.get("platform"),
+            "username": a.get("username"),
+            "status": a.get("status"),
+        }
+        for a in recon_accounts_rows
+        if (a.get("platform") or "") in ("facebook", "instagram", "tiktok")
+    ]
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
@@ -290,6 +317,7 @@ def _form_extra_context() -> dict:
         "contacts_with_whatsapp": contacts_with_whatsapp,
         "wa_accounts": wa_accounts,
         "wa_api_configs": wa_api_configs,
+        "recon_accounts": recon_accounts,
     }
 
 
@@ -346,6 +374,12 @@ async def create_task(
     whatsapp_dry_run: str = Form(""),
     whatsapp_account_id: str = Form(""),
     whatsapp_api_config_id: str = Form(""),
+    recon_mode: str = Form(""),
+    recon_social_account_id: str = Form(""),
+    recon_hypothesis: str = Form(""),
+    recon_max_targets_per_day: int = Form(50),
+    recon_score_threshold: int = Form(6),
+    seed_queries_friends: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -374,6 +408,12 @@ async def create_task(
         whatsapp_dry_run=whatsapp_dry_run,
         whatsapp_account_id=whatsapp_account_id,
         whatsapp_api_config_id=whatsapp_api_config_id,
+        recon_mode=recon_mode,
+        recon_social_account_id=recon_social_account_id,
+        recon_hypothesis=recon_hypothesis,
+        recon_max_targets_per_day=recon_max_targets_per_day,
+        recon_score_threshold=recon_score_threshold,
+        seed_queries_friends=seed_queries_friends,
     )
     try:
         validated = TaskIn(**payload)
@@ -453,6 +493,12 @@ async def update_task(
     whatsapp_dry_run: str = Form(""),
     whatsapp_account_id: str = Form(""),
     whatsapp_api_config_id: str = Form(""),
+    recon_mode: str = Form(""),
+    recon_social_account_id: str = Form(""),
+    recon_hypothesis: str = Form(""),
+    recon_max_targets_per_day: int = Form(50),
+    recon_score_threshold: int = Form(6),
+    seed_queries_friends: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -507,6 +553,12 @@ async def update_task(
         whatsapp_dry_run=whatsapp_dry_run,
         whatsapp_account_id=whatsapp_account_id,
         whatsapp_api_config_id=whatsapp_api_config_id,
+        recon_mode=recon_mode,
+        recon_social_account_id=recon_social_account_id,
+        recon_hypothesis=recon_hypothesis,
+        recon_max_targets_per_day=recon_max_targets_per_day,
+        recon_score_threshold=recon_score_threshold,
+        seed_queries_friends=seed_queries_friends,
     )
     try:
         validated = TaskIn(**payload)

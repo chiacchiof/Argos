@@ -165,12 +165,13 @@ Tutti i runner della famiglia "Scraping" condividono moduli infrastrutturali che
 
 ---
 
-## 3. I 10 tipi di Task (`agent_mode`)
+## 3. I 11 tipi di Task (`agent_mode`)
 
-Quando crei un task, il campo **Modalità agente** determina cosa farà. Le 10 modalità si dividono in **2 famiglie**:
+Quando crei un task, il campo **Modalità agente** determina cosa farà. Le 11 modalità si dividono in **3 famiglie**:
 
 - **Scraping** (5 modalità: `react`, `bulk_extract`, `browser_use`, `auto_extract`, `site_explorer`): trovano ed estraggono dati dal web → producono `profiles.jsonl` (o report `.md` per `react`)
 - **Pipeline downstream** (5 modalità: `qualifier`, `outreach`, `outreach_social`, `outreach_whatsapp`, `responder`): operano sui dati già estratti
+- **Recon social** (1 modalità: `recon_social`): navigazione **read-only** dei profili social (Facebook / Instagram / TikTok) con un tuo account loggato per profilare gli **interessi** dei tuoi contatti — niente DM, niente like, solo lettura + classificazione LLM
 
 ### 3.0 Albero decisionale "quale modalità mi serve?"
 
@@ -196,12 +197,16 @@ Devo estrarre dati dal web?
 │   nell'objective ("tutti i profili", "infinite scroll", ecc.)
 │   → auto-discovery FORZATA via Chromium headless
 │
-└── NO — ho già un profiles.jsonl, devo lavorarci sopra
-    ├── Filtrare/scorare i contatti via LLM ──────────► qualifier        (§3.5)
-    ├── Mandare email/telegram ai contatti ───────────► outreach         (§3.6)
-    ├── Mandare DM su social (IG/TikTok) via browser ─► outreach_social  (§3.6.1)
-    ├── Mandare DM WhatsApp (browser + Cloud API) ────► outreach_whatsapp (§3.6.2)
-    └── Rispondere automaticamente ai messaggi ricevuti ► responder      (§3.7)
+├── NO — ho già un profiles.jsonl, devo lavorarci sopra
+│   ├── Filtrare/scorare i contatti via LLM ──────────► qualifier        (§3.5)
+│   ├── Mandare email/telegram ai contatti ───────────► outreach         (§3.6)
+│   ├── Mandare DM su social (IG/TikTok) via browser ─► outreach_social  (§3.6.1)
+│   ├── Mandare DM WhatsApp (browser + Cloud API) ────► outreach_whatsapp (§3.6.2)
+│   └── Rispondere automaticamente ai messaggi ricevuti ► responder      (§3.7)
+│
+└── NO — voglio PROFILARE I MIEI CONTATTI SOCIAL già visibili
+    (capire gusti / hobby / pagine liked di amici FB/IG/TikTok
+     SENZA mandare DM — solo lettura del profilo) ─────► recon_social    (§3.8)
 ```
 
 Vedi anche §3.0.3 per la sintesi operativa dei 5 casi tipici con keyword-trigger e refresh policy.
@@ -227,6 +232,12 @@ Vedi anche §3.0.3 per la sintesi operativa dei 5 casi tipici con keyword-trigge
 | **`outreach_social`** | `contacts` con `social[platform]` popolato (instagram/tiktok) | DM inviato via browser automation (headed Chromium + stealth) | Pool di account social cifrati con `AGENTSCRAPER_SECRET`; humanize delays; selettori CSS fragili per design |
 | **`outreach_whatsapp`** | `contacts` con `whatsapp` populato (E.164) | DM WhatsApp: doppio motore A (browser, cold) + B (Meta Cloud API, opt-in) | Engine selector per contatto. Setup in `/settings/whatsapp`. Viola ToS Meta su Motore A. |
 | `responder` | inbox email/telegram | reply auto-generata e inviata | Auto-detect opt-out (STOP, unsubscribe) |
+
+#### Famiglia "Recon social"
+
+| Modalità | Input | Output | Note |
+|---|---|---|---|
+| **`recon_social`** | Lista di URL FB/IG/TikTok oppure NOMI di amici (search-by-name su FB) | `profiles.jsonl` con schema `profile_interests` (hobby, pagine liked, gruppi, narrative_summary 300-500 parole in italiano) | Richiede un tuo account social loggato (gestito in `/social/accounts`). Navigazione **read-only**: blacklist hard-enforced di click su like/comment/follow/DM. Sub-pagine visitate: FB `/about` + `/about_contact_and_basic_info`; IG `/reels` + `/tagged`; TikTok `/playlists`. Audit log + screenshot ogni N step. Kill-switch globale `RECON_SOCIAL_DISABLED=1`. |
 
 ### 3.0.2 Regola d'oro: bulk_extract prima di tutto
 
@@ -1104,6 +1115,92 @@ E due regole anti-fallimento osservate sul campo:
 - System prompt: vedi sopra
 - Modello: `gpt-4o-mini`
 - Cron: `*/30 * * * *` (ogni 30 min)
+
+---
+
+### 3.8 `recon_social` — Profilare interessi dei contatti social (read-only)
+
+**Cosa fa**: apre il browser con un tuo account social loggato (FB / Instagram / TikTok) e per ogni profilo target visita in lettura la pagina principale **e 1-2 sotto-pagine ad alto valore informativo**, raccoglie il body text raw + selettori specifici, e usa un LLM per riempire uno schema strutturato con **interessi, hobby, pagine liked, gruppi, sintesi narrativa**. È pensato per audience clustering ("trova fra i miei amici quelli interessati al sushi", "chi ama il calcio", "amici-medici").
+
+⚠️ **Non manda DM, non mette like, non commenta**: la `SafeBrowser` enforce-a una **blacklist hard** di selettori di azione (like / comment / share / DM / follow / add friend). Ogni navigazione è loggata su `recon_audit_log.jsonl` + screenshot ogni 5 step.
+
+**Quando usarlo**:
+- Capire i gusti dei tuoi contatti reali (segmentation per outreach personalizzato a valle)
+- Profilare un piccolo gruppo (10-50 amici) prima di decidere cosa proporgli
+- **NON** per scraping di sconosciuti a freddo: per quello vedi `outreach_social` + `qualifier`
+
+**Configurazione** (sezione "🔍 Configurazione recon social" nel wizard):
+
+1. **Modalità recon**: `url_driven` (R1) — l'unica disponibile al momento. Visita URL/nomi del seed uno per uno. `exploration` (R2) e multi-session checkpoint (R3) sono in backlog.
+
+2. **Account social**: scegli da `/social/accounts` un account loggato (es. il tuo profilo FB). L'account determina la piattaforma su cui faremo recon. Sessione persistente in `data/social_sessions/<uuid>/` (IndexedDB preservato → no QR ad ogni run).
+
+3. **Target seed** (`Seed queries`): una riga per target. Accetta:
+   - **URL diretti**: `https://www.facebook.com/mario.rossi`, `https://www.instagram.com/mario.rossi/`, `https://www.tiktok.com/@mariorossi`
+   - **Nomi**: `mario rossi` — il runner fa **search interna** alla piattaforma loggata e prende il primo match. Per FB: matching via slug del URL (es. "fabio famoso" matcha `facebook.com/famoso.fabio` perché entrambi i token sono nello slug) + fallback cognome match su label/aria-label.
+
+4. **Ipotesi recon** (opzionale): nota descrittiva sullo scopo del recon ("trova amici che amano il sushi") — utile per ricordare l'obiettivo del task; il LLM in R1 non la usa direttamente, in R2 sì.
+
+5. **Max target / day** (default 50, max 500): cap di sicurezza per non far girare la pipeline troppo a lungo.
+
+6. **Score threshold** (default 6, range 0-10): soglia di confidence sotto cui il profilo viene marcato `low_confidence`. Non scarta nulla, è solo un flag.
+
+7. **Schema di estrazione**: scegli **«Profili social — interessi»** (`profile_interests`) dal dropdown. È lo schema specifico per questo agent_mode con campi: `display_name`, `location`, `professional_field`, `education`, `work_history`, `hobbies`, `interests_inferred`, `liked_pages_visible`, `joined_groups_visible`, `tagged_themes`, `recent_topics`, `language`, `evidence_quote`, `narrative_summary` (300-500 parole di prosa italiana che riassume "chi è questa persona"), `confidence`.
+
+8. **Modello LLM**: medio-grande consigliato perché deve generare 300-500 parole di narrative. Locale: `gpt-oss:20b` o `llama3.1:8b` su Ollama (gratis). Cloud: `gpt-4o-mini` (costo trascurabile, ~$0.001 per profilo). Evita modelli con thinking mode (`qwen3.5`) che lasciano `content` vuoto.
+
+**Sub-pagine visitate (best-effort, skip se 404/login wall/private)**:
+
+| Piattaforma | Sub-pagine | Cosa ci trovo |
+|---|---|---|
+| **Facebook** | `/about`, `/about_contact_and_basic_info` | Bio strutturata (lavoro, studi, città), contatti pubblici, lingue. La sezione "Mi piace e interessi" è embedded in `/about`. La vecchia URL `/likes_pages` è 404 su FB 2026. |
+| **Instagram** | `/reels`, `/tagged` | Reel pubblicati (cosa produce attivamente) + foto/video in cui è taggato (cosa fa in vita) |
+| **TikTok** | `/playlists` | Playlist tematiche organizzate dal soggetto = interessi strutturati |
+
+Il body text di ogni sub-pagina (max 4000 char) viene concatenato al prompt LLM con sezioni etichettate:
+```
+=== DATI ESTRATTI (selettori specifici) === ...
+=== BODY TEXT PROFILO (pagina principale, raw) === ...
+=== SOTTO-PAGINA: /about === ...
+=== SOTTO-PAGINA: /about_contact_and_basic_info === ...
+```
+
+**Output**: directory `data/results/<task_id>/<timestamp>/`:
+- `profiles.jsonl` — una riga per profilo estratto, schema `profile_interests` + meta (`source_url`, `crawled_at`, `_recon_raw` per debug)
+- `recon_audit_log.jsonl` — ogni evento DOM tracciato (GOTO, SCROLL, EXTRACT_DONE, SUBPAGES_DONE, TEXT_FOR_LLM_BUILT, PROFILE_OK, BLOCKED_ACTION) per audit
+- `screenshots/` — screenshot full-page ogni 5 step + (se nomi nel seed) `search_debug/fb_search_<nome>.png` con i risultati FB della search
+- `report.md` — sommario totali
+
+**Vincoli e best practice**:
+- **Pause anti-bot 30-180s** randomizzate tra profili (rispetta il rate-limit dei provider e riduce rischio detection).
+- L'account social deve essere **loggato** prima del run (vai a `/social/accounts`, click "Login" → fai QR/password manualmente, sessione viene salvata).
+- **GDPR / ePrivacy**: profilare contatti reali è regolamentato. Per uso personale (capire gli interessi dei tuoi amici per regalo / conversazione) è lecito. Per uso commerciale serve base giuridica documentata.
+- **ToS social**: anche se non clicchiamo nulla, il browser automation può essere detettato. Usa un account "warmup" se vuoi minimizzare rischio sul tuo account principale.
+- **Kill-switch globale**: imposta `RECON_SOCIAL_DISABLED=1` in `.env` per bloccare tutti i task `recon_social` (utile in caso di emergenza ToS / cease-and-desist).
+
+**Esempio**:
+- Nome task: "Recon amici-medici"
+- Agent mode: `recon_social`
+- Modalità recon: `url_driven`
+- Account: il tuo FB
+- Seed:
+  ```
+  https://www.facebook.com/mario.rossi.medico
+  carlotta castoro
+  paolo maugeri
+  https://www.facebook.com/profile.php?id=100012345678
+  ```
+- Schema: `profile_interests`
+- Modello: `gpt-oss:20b` (locale, gratis)
+
+A fine run leggi `profiles.jsonl` — ogni riga ha `narrative_summary` (300-500 parole su quel profilo) + `interests_inferred` + `liked_pages_visible`. Puoi grepare per parola chiave (`grep -i "medic" profiles.jsonl` per filtrare profili medici) o passarlo a un `qualifier` downstream.
+
+**Stato attuale (rev. 2026-05-14)**:
+- ✅ Facebook end-to-end funzionante (URL + search-by-name con slug match)
+- ✅ Instagram: estrazione profilo + sub-pagine implementate; search-by-name solo se l'input è già lo username
+- ✅ TikTok: come IG
+- 🚧 R2 (`exploration` mode — naviga la timeline / friends list partendo da un'ipotesi tipo "trova chi ama il sushi") in backlog
+- 🚧 R3 (multi-session resilient con checkpoint/resume) in backlog
 
 ---
 

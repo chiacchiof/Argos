@@ -297,6 +297,10 @@ async def _run_job(job_id: int, task_id: int) -> None:
             # Motore B-only funziona anche in loop normale, ma il dispatcher
             # non sa a priori se userà A o B: meglio sempre proactor.
             await _run_in_proactor_thread(lambda: run_ow(task, job_id), job_id)
+        elif mode == "recon_social":
+            from .agent.runner_recon_social import run_agent as run_rs
+            # Apre Chromium persistent → proactor thread su Windows.
+            await _run_in_proactor_thread(lambda: run_rs(task, job_id), job_id)
         elif mode == "qualifier":
             from .agent.runner_qualifier import run_agent as run_q
             await run_q(task, job_id)

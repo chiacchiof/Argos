@@ -9,6 +9,7 @@ OutputFormat = Literal["txt", "md", "both"]
 AgentMode = Literal[
     "react", "browser_use", "bulk_extract", "auto_extract", "site_explorer",
     "qualifier", "outreach", "outreach_social", "outreach_whatsapp", "responder",
+    "recon_social",
 ]
 BulkExtractionMethod = Literal["llm_per_page", "css_selectors"]
 MessageChannel = Literal["email", "telegram"]
@@ -74,6 +75,16 @@ class TaskIn(BaseModel):
     # - id   = SOLO quel sender; fail-fast se è banned/disabled
     whatsapp_account_id: int | None = None
     whatsapp_api_config_id: int | None = None
+    # Recon social (R1 ora; R2/R3 nel backlog)
+    recon_mode: Literal["url_driven", "exploration"] | None = None
+    recon_social_account_id: int | None = None
+    recon_hypothesis: str | None = None
+    recon_max_targets_per_day: int = Field(default=50, ge=1, le=500)
+    recon_score_threshold: int = Field(default=6, ge=0, le=10)
+    # Solo per recon_social: nomi/URL da risolvere contro la friend list
+    # (FB) o following list (IG/TikTok) dell'account loggato. Zero ambiguità
+    # da omonimi rispetto al `seed_queries` con search globale.
+    seed_queries_friends: list[str] = Field(default_factory=list)
 
     @field_validator("rating", mode="before")
     @classmethod
@@ -96,7 +107,7 @@ class TaskIn(BaseModel):
             return [c.strip() for c in v.split(",") if c.strip()]
         return v or []
 
-    @field_validator("seed_queries", "allowed_domains", "blocked_domains", mode="before")
+    @field_validator("seed_queries", "seed_queries_friends", "allowed_domains", "blocked_domains", mode="before")
     @classmethod
     def split_lines(cls, v):
         if isinstance(v, str):

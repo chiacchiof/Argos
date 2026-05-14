@@ -240,11 +240,75 @@ CAMPI DA ESTRARRE (schema JSON, UNA riga per ogni pagina valida in profiles.json
 """
 
 
+PROFILE_INTERESTS = """\
+OBIETTIVO: profilare un utente social (Facebook / Instagram / TikTok) a partire
+dal contenuto VISIBILE delle sue pagine-profilo, INFERENDO i suoi interessi.
+
+QUESTO SCHEMA SI USA QUANDO L'OBIETTIVO È:
+- Capire i gusti dei propri contatti ("interessati al sushi", "amano il calcio")
+- Profilare per audience clustering (lifestyle, sport, lavoro, viaggi, cibo)
+- NON per outreach commerciale a sconosciuti (per quello usa profile_contacts)
+
+INPUT: riceverai più sezioni etichettate (es. "=== DATI ESTRATTI ===",
+"=== BODY TEXT PROFILO ===", "=== SOTTO-PAGINA: /about ===",
+"=== SOTTO-PAGINA: /likes_pages ===", "=== SOTTO-PAGINA: /tagged ===",
+"=== SOTTO-PAGINA: /playlists ===" ecc.). La SOTTO-PAGINA /about contiene la
+bio strutturata (lavoro, studi, città). La SOTTO-PAGINA /likes_pages elenca
+le pagine che l'utente ha messo "mi piace": è il SEGNALE PIÙ FORTE di
+interessi diretti, popolala in `liked_pages_visible` integralmente.
+
+CAMPI DA ESTRARRE (schema JSON, UNA riga per profilo). ⚠️ ORDINE IMPORTANTE:
+`narrative_summary` è il PRIMO campo di output perché è il più importante e perché
+i modelli aperti tendono a troncare gli ultimi campi se finiscono i token.
+
+{
+  "narrative_summary": "OBBLIGATORIO. Testo italiano 300-500 parole. Racconta come uno scout chi è questa persona: identità (nome, età stimata, città, lavoro/studi), interessi e passioni principali con evidenze, tono dei contenuti (serio/ironico/professionale/personale), eventuale rete sociale e attivismo, ipotesi su lifestyle e demografia. Cita le pagine liked / hobby più caratteristici per dare colore. Non inventare; se i dati sono pochi, scrivi 100-150 parole spiegando perché. Sempre stringa NON null.",
+  "display_name": "nome visualizzato sulla pagina (string|null)",
+  "username_or_id": "handle/username/ID profilo se visibile (string|null)",
+  "location": "città/regione se visibile in bio o intro (string|null)",
+  "professional_field": "ambito professionale inferito (medico, designer, studente, ecc.) (string|null)",
+  "education": "scuola/università se visibile in /about (string|null)",
+  "work_history": ["lavori/aziende citati in /about, ordine cronologico se possibile"],
+  "hobbies": ["lista di hobby/passioni esplicite dichiarate o fortemente inferite, es. 'fotografia', 'corsa'"],
+  "interests_inferred": ["interessi probabili dedotti dai contenuti (post, like, pagine seguite), es. 'cucina giapponese', 'serie TV anni 80'"],
+  "liked_pages_visible": ["pagine/profili che il soggetto ha messo 'mi piace' (riempire DA /likes_pages se presente, ELENCO COMPLETO fino a 50)"],
+  "joined_groups_visible": ["gruppi di cui fa parte se visibili"],
+  "tagged_themes": ["temi che emergono dalle foto/video in cui il soggetto è taggato (es. matrimoni, sport, eventi musicali) — solo se la sezione /tagged è presente"],
+  "recent_topics": ["fino a 8 temi/parole-chiave dai post più recenti, es. 'viaggio in Giappone', 'partita Inter'"],
+  "language": "codice ISO-639 della lingua predominante (es. 'it')",
+  "evidence_quote": "1-2 frasi testuali esemplificative tratte dal profilo, per supportare i campi sopra (string|null)",
+  "confidence": "low|medium|high — quanto sei sicuro dei campi inferiti"
+}
+
+NOTA: `platform` e `source_url` sono iniettati dal runner; NON includerli nel JSON.
+
+REGOLE:
+- SOLO contenuto effettivamente PRESENTE nelle sezioni fornite (no allucinazioni).
+- Se un campo non si può inferire, metti null o lista vuota.
+- `liked_pages_visible`: se vedi la sezione "=== SOTTO-PAGINA: /likes_pages ===",
+  estrai integralmente tutti i nomi delle pagine elencate (fino a 50), senza
+  inventarne — sono interessi diretti dichiarati dal soggetto.
+- `narrative_summary` è OBBLIGATORIO: 300-500 parole, prosa fluida in italiano,
+  riassume tutte le sezioni viste. Se il profilo è quasi vuoto, scrivi 100-150
+  parole spiegando perché.
+- "interests_inferred" deve essere supportato da almeno una traccia testuale
+  (post, pagina liked, gruppo, foto taggata). Se non c'è evidenza → lista vuota.
+- "confidence": low se solo pagina principale è visibile e poche evidenze;
+  medium se ≥1 sotto-pagina ha contenuto + alcuni post; high se /about +
+  /likes_pages popolati e post recenti chiari.
+"""
+
+
 TEMPLATES: dict[str, Template] = {
     "profile_contacts": {
         "name": "Profili con contatti",
         "description": "Pagine personali (modelle, annunci, freelance) con contatti pubblici",
         "schema": PROFILE_CONTACTS,
+    },
+    "profile_interests": {
+        "name": "Profili social — interessi",
+        "description": "Profilo per AUDIENCE clustering: hobby, interessi, gusti, gruppi. Per recon_social.",
+        "schema": PROFILE_INTERESTS,
     },
     "ecommerce_products": {
         "name": "Prodotti e-commerce",

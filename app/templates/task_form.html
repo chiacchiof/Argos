@@ -49,6 +49,7 @@
         <option value="outreach" {% if mode=='outreach' %}selected{% endif %}>outreach — invio email/telegram</option>
         <option value="outreach_social" {% if mode=='outreach_social' %}selected{% endif %}>outreach_social — DM via Instagram/TikTok (browser stealth + Playwright)</option>
         <option value="outreach_whatsapp" {% if mode=='outreach_whatsapp' %}selected{% endif %}>outreach_whatsapp — DM WhatsApp (Motore A browser + Motore B Cloud API)</option>
+        <option value="recon_social" {% if mode=='recon_social' %}selected{% endif %}>recon_social — navigazione profili social con account loggato (READ-ONLY)</option>
         <option value="responder" {% if mode=='responder' %}selected{% endif %}>responder — auto-reply LLM ai messaggi inbound</option>
       </select>
       <small class="hint mode-hint" data-mode-hint>Scegli la modalità: il form si adatterà automaticamente.</small>
@@ -84,7 +85,7 @@
        SEZIONE 4: SCRAPING — seed queries, domini, max iter
        Solo per react / browser_use
        ============================================================ #}
-    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer">
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer recon_social">
       <summary>Configurazione di ricerca</summary>
 
       <label>
@@ -137,8 +138,8 @@
     {# ============================================================
        SEZIONE 5: SCHEMA DI ESTRAZIONE — solo browser_use
        ============================================================ #}
-    <details class="collapsible-section extraction-fieldset dyn-section" data-modes="browser_use bulk_extract auto_extract site_explorer">
-      <summary>Schema di estrazione</summary>
+    <details class="collapsible-section extraction-fieldset dyn-section" data-modes="browser_use bulk_extract auto_extract site_explorer recon_social">
+      <summary>Schema di estrazione <span class="hint dyn-hint" data-hint-reconsocial="Per <code>recon_social</code> usa &laquo;Profili social &mdash; interessi&raquo;: estrae hobby/interessi/gruppi dal contenuto visibile."></span></summary>
 
       {% set selected_template = p.get('extraction_template') or 'profile_contacts' %}
       <label>Template di partenza
@@ -542,7 +543,7 @@
     {# ============================================================
        SEZIONE 9: PROVIDER LLM — tutti tranne outreach (outreach è solo template-fill)
        ============================================================ #}
-    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer qualifier responder outreach_social outreach_whatsapp">
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer qualifier responder outreach_social outreach_whatsapp recon_social">
       <summary>Modello LLM <span class="hint dyn-hint" data-modes-hint="outreach_social">(per outreach_social: usato per generare messaggi DM personalizzati — Qwen locale consigliato per $0)</span></summary>
 
       <label>Provider
@@ -862,6 +863,92 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
     </details>
 
     {# ============================================================
+       SEZIONE 8d: RECON SOCIAL — solo recon_social (R1 url_driven attiva)
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="recon_social">
+      <summary>🔍 Configurazione recon social <span class="hint">(navigazione READ-ONLY con account loggato)</span></summary>
+
+      <div class="warning-box" style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.6rem 0.8rem;margin-bottom:0.8rem">
+        ⚠️ <strong>Caveat legale + ToS</strong>: profilare la tua rete social senza consenso esplicito
+        può violare GDPR/ePrivacy. Automation viola i ToS di Meta/TikTok (rischio ban). AgentScraper
+        fornisce solo lo strumento — conformità e responsabilità sono tue.
+      </div>
+
+      <label>Modalità recon
+        {% set rmode = p.get('recon_mode') or 'url_driven' %}
+        <select name="recon_mode">
+          <option value="url_driven"  {% if rmode=='url_driven' %}selected{% endif %}>url_driven (R1) — lista URL → extract</option>
+          <option value="exploration" {% if rmode=='exploration' %}selected{% endif %} disabled>exploration (R2) — agente ReAct (backlog B-014, NON disponibile)</option>
+        </select>
+        <span class="hint">
+          <code>url_driven</code>: per ogni URL nel campo "Seed" della sezione di ricerca,
+          apre il profilo con il tuo account loggato ed estrae dati. Nessuna decisione LLM
+          su navigazione.
+        </span>
+      </label>
+
+      <label>Account social loggato
+        {% set rsa = p.get('recon_social_account_id') %}
+        <select name="recon_social_account_id">
+          <option value="" {% if not rsa %}selected{% endif %}>— seleziona un account social —</option>
+          {% for a in (recon_accounts or []) %}
+            <option value="{{ a.id }}" {% if rsa == a.id %}selected{% endif %}
+                    {% if a.status != 'active' %}disabled{% endif %}>
+              #{{ a.id }} · {{ a.platform }} / {{ a.username }} · <span class="muted">{{ a.status }}</span>
+              {% if a.status != 'active' %} ⚠️{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+        <span class="hint">
+          Account loggato (FB, IG o TikTok) usato per aprire i profili target. Configurali in
+          <a href="/social/accounts" target="_blank">/social/accounts</a>.
+          Se l'URL del seed NON è della stessa piattaforma dell'account, il runner ci prova
+          comunque ma probabilmente fallisce.
+        </span>
+      </label>
+
+      <label>Ipotesi / obiettivo NL <span class="hint">(usato solo in R2 exploration, ignorato in R1)</span>
+        <textarea name="recon_hypothesis" rows="2"
+                  placeholder="Es. 'trova chi è interessato al sushi' — per R2, non per R1">{{ p.get('recon_hypothesis','') or '' }}</textarea>
+      </label>
+
+      <div class="row">
+        <label>Max profili/giorno/account
+          <input type="number" name="recon_max_targets_per_day" min="1" max="500"
+                 value="{{ p.get('recon_max_targets_per_day', 50) }}">
+          <span class="hint">Cap anti-detection. Default 50.</span>
+        </label>
+
+        <label>Score minimo report (R2)
+          <input type="number" name="recon_score_threshold" min="0" max="10"
+                 value="{{ p.get('recon_score_threshold', 6) }}">
+          <span class="hint">Solo profili con score ≥ N finiscono nel report finale (R2). Ignorato in R1.</span>
+        </label>
+      </div>
+
+      <label style="margin-top:1rem">
+        🤝 Amici / Following (matching contro la lista dell'account loggato)
+        <span class="hint">
+          Nomi (uno per riga) da risolvere <strong>contro la friend list (FB) o following list (IG/TikTok)</strong>
+          del tuo account loggato. Garantisce zero ambiguità da omonimi: per "fabio famoso"
+          prende il tuo amico reale, non un random "Fabio Famoso" della search globale.
+          <br>Lascia vuoto se non ne hai bisogno. Per nomi non amici o URL diretti, usa la sezione
+          "Seed / Targets" sopra.
+        </span>
+        {% set seed_friends_raw = p.get('seed_queries_friends') %}
+        {% if seed_friends_raw is string %}
+          {% set seed_friends_text = seed_friends_raw %}
+        {% elif seed_friends_raw %}
+          {% set seed_friends_text = seed_friends_raw | join('\n') %}
+        {% else %}
+          {% set seed_friends_text = '' %}
+        {% endif %}
+        <textarea name="seed_queries_friends" rows="4"
+                  placeholder="fabio famoso&#10;paolo maugeri&#10;carlotta castoro">{{ seed_friends_text }}</textarea>
+      </label>
+    </details>
+
+    {# ============================================================
        SEZIONE 9a: DISCOVERY LLM — solo bulk_extract / auto_extract (LLM per auto-detect pattern URL)
        Spostata qui (era dentro "Configurazione bulk") perché logicamente è uno dei 3 ruoli LLM.
        ============================================================ #}
@@ -1144,6 +1231,7 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
       outreach: "Manda email/telegram ai contatti qualified. Usa il template che definisci sotto.",
       outreach_social: "DM via Instagram/TikTok/Facebook con browser stealth + Playwright. LLM rephrase per messaggi personalizzati.",
       outreach_whatsapp: "DM WhatsApp con doppio motore: A (browser su web.whatsapp.com — cold outreach, viola ToS) + B (Meta Cloud API — opt-in + template). Engine selector automatico per contatto.",
+      recon_social: "Naviga profili social (FB/IG/TikTok) con un tuo account loggato in modalità READ-ONLY (no like/commenta/DM/follow). Per ogni URL nel seed estrae bio + post visibili + classifica via LLM. Vedi caveat GDPR/ToS.",
       responder: "Risponde automaticamente ai messaggi inbound usando un LLM. Opt-out detection inclusa."
     };
     if (modeHint && modeHints[mode]) modeHint.textContent = modeHints[mode];

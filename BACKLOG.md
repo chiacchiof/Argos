@@ -101,6 +101,27 @@ auto-poll + safety guard sui comandi destructive).
 
 ## 🚀 P1 — Quality of life
 
+### B-013 / B-014 / B-015 · `recon_social` (R1 + R2 + R3) × IG + TikTok + FB
+
+**Cosa**: nuovo agent_mode `recon_social` per esplorare social loggato in
+3 fasi incrementali. Vedi piano dettagliato in [PIANO_RECON_SOCIAL.md](PIANO_RECON_SOCIAL.md).
+
+| Sub | Cosa | Effort |
+|---|---|---|
+| **B-013 (R1)** | URL-driven recon: lista URL → extract con session loggata | 5-6h |
+| **B-014 (R2)** | Exploration goal-driven: agente ReAct + tool whitelist + safety guards (blacklist click su like/commenta/DM/follow) | 12-15h |
+| **B-015 (R3)** | Multi-session resilient: checkpoint, resume, pool account rotation, kill-switch | 5h |
+
+**Decisione utente (2026-05-13)**: vuole tutti e tre, su tutte e 3 le
+piattaforme target (IG + TikTok + FB; WA escluso = messaging).
+
+**Caveat**: GDPR/ePrivacy + ToS Meta/TikTok = zona grigia. Disclaimer
+prominente nell'UI obbligatorio.
+
+**Totale**: 22-26h di sviluppo + design completo già scritto in piano.
+
+---
+
 ### B-012 · Sender single-select uniforme per TUTTI gli outreach mode
 
 **Cosa**: estendere il pattern di WhatsApp (single-select sender per task,
