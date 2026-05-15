@@ -267,8 +267,23 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 continue
             targets_raw.append(c)
     else:
-        jlog("Selezione automatica: tutti i contacts qualified con whatsapp.")
-        targets_raw = db.list_contacts_for_whatsapp_outreach(limit=max_dms_per_run * 2)
+        # Multi-tag filter: AND fra (interests_inferred=fitness, location=Catania, ...)
+        tag_filters_raw = task.get("outreach_filter_tags") or []
+        contact_tag_filters: list[tuple[str, str]] = []
+        for tf in tag_filters_raw:
+            if isinstance(tf, dict):
+                k, v = (tf.get("key") or "").strip(), (tf.get("value") or "").strip()
+                if k and v:
+                    contact_tag_filters.append((k, v))
+        if contact_tag_filters:
+            chips = ", ".join(f"{k}={v}" for k, v in contact_tag_filters)
+            jlog(f"Selezione automatica: contacts qualified con whatsapp + tag-filter [{chips}].")
+        else:
+            jlog("Selezione automatica: tutti i contacts qualified con whatsapp.")
+        targets_raw = db.list_contacts_for_whatsapp_outreach(
+            limit=max_dms_per_run * 2,
+            contact_tag_filters=contact_tag_filters or None,
+        )
 
     if not targets_raw:
         jlog("⚠️ Nessun contatto da contattare (selezione vuota o filtri esclusi tutti).")

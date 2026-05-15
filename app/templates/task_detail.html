@@ -55,8 +55,14 @@
             hx-target="#job-status" hx-swap="innerHTML">
       ▶ Esegui ora
     </button>
-    <a href="/tasks/{{ task.id }}/edit">Modifica</a>
-    <a href="/tasks/{{ task.id }}/results">Risultati salvati</a>
+    <a href="/tasks/{{ task.id }}/edit" class="btn-link-action">✏️ Modifica</a>
+    <form method="post" action="/tasks/{{ task.id }}/clone">
+      <button type="submit" class="btn-secondary"
+              title="Crea una copia editabile di questo task (utile per pattern '1 task per agente target')">
+        📋 Clona
+      </button>
+    </form>
+    <a href="/tasks/{{ task.id }}/results" class="btn-link-action">📂 Risultati salvati</a>
   </div>
 
   <h3>Stato esecuzione corrente</h3>

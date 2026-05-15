@@ -26,9 +26,9 @@
         <td>{{ w.n_tasks }}</td>
         <td>{{ w.n_edges }}</td>
         <td><small>{{ w.updated_at }}</small></td>
-        <td>
-          <a href="/workflows/{{ w.id }}/edit">modifica</a>
-          <form method="post" action="/workflows/{{ w.id }}/toggle-disabled" style="display:inline; margin-left: 0.4rem;">
+        <td class="row-actions">
+          <a href="/workflows/{{ w.id }}/edit" class="btn-small btn-link-action" title="Modifica nome/descrizione">✏️ modifica</a>
+          <form method="post" action="/workflows/{{ w.id }}/toggle-disabled" style="display:inline">
             <input type="hidden" name="redirect_to" value="/workflows">
             {% if w.disabled %}
               <button type="submit" class="btn-small" title="Riabilita il workflow">✓ abilita</button>

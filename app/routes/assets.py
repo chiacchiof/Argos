@@ -120,6 +120,28 @@ async def assets_list(
 # === Search HTMX + preview JSON (per import in form contact) ===
 # Definiti PRIMA di /assets/{asset_id} per evitare conflitto di routing.
 
+@router.get("/assets/tag_values", response_class=HTMLResponse)
+async def asset_tag_values_htmx(request: Request, key: str = ""):
+    """HTMX endpoint: ritorna <option> per il dropdown tag_value dato un
+    tag_key. Usato dal form task per popolare dinamicamente i value disponibili
+    quando l'utente sceglie una key (filtro outreach multi-tag).
+    """
+    key = (key or "").strip().lower()
+    if not key:
+        return HTMLResponse('<option value="">— prima scegli una key —</option>')
+    try:
+        values = db.list_distinct_tag_values_for_contacts(key, limit=100)
+    except Exception:
+        values = []
+    parts = ['<option value="">— seleziona —</option>']
+    for v in values:
+        # Escape HTML semplice
+        val = (v.get("value") or "").replace('"', "&quot;").replace("<", "&lt;")
+        n = v.get("count", 0)
+        parts.append(f'<option value="{val}">{val} ({n})</option>')
+    return HTMLResponse("".join(parts))
+
+
 @router.get("/assets/search", response_class=HTMLResponse)
 async def asset_search_htmx(
     request: Request,

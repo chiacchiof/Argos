@@ -64,6 +64,15 @@ PAGE_ZERO_QUERY: frozenset[str] = frozenset({
     "p", "page", "offset", "start", "from",
 })
 
+# Tracking/analytics params: stessa risorsa, parametri puramente di attribuzione.
+# IG: igsh (deep-link share). Meta: fbclid. Google: gclid, gbraid, wbraid.
+# Mailchimp: mc_cid, mc_eid. Adobe: cid, icid. UTM family.
+TRACKING_QUERY_PREFIXES: tuple[str, ...] = ("utm_", "mc_")
+TRACKING_QUERY_KEYS: frozenset[str] = frozenset({
+    "fbclid", "gclid", "gbraid", "wbraid", "igsh", "igshid",
+    "cid", "icid", "ref", "ref_src", "ref_url", "_ga",
+})
+
 
 def looks_like_service_path(url: str) -> bool:
     """True se l'URL ha un segmento di path che matcha un service-token noto.
@@ -125,11 +134,15 @@ def canonical_url(url: str) -> str:
     elif len(segments) == 2 and segments[1].lower() in LANGUAGE_CODES:
         path = "/"
 
-    # 2. Strip query params di lingua + paginazione-zero
+    # 2. Strip query params di lingua + paginazione-zero + tracking/analytics
     new_query_pairs = []
     for k, v in parse_qsl(parsed.query, keep_blank_values=False):
         k_l = k.lower()
         if k_l in LANG_QUERY_PARAMS:
+            continue
+        if k_l in TRACKING_QUERY_KEYS:
+            continue
+        if any(k_l.startswith(pref) for pref in TRACKING_QUERY_PREFIXES):
             continue
         if k_l in PAGE_ZERO_QUERY:
             try:

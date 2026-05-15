@@ -170,10 +170,21 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     filter_tid_raw = task.get("outreach_filter_source_task_id")
     filter_tid = int(filter_tid_raw) if str(filter_tid_raw or "").strip().isdigit() else None
     filter_fof = (task.get("outreach_filter_source_follower_of") or "").strip() or None
-    if filter_tid or filter_fof:
+    filter_tags_raw = task.get("outreach_filter_tags") or []
+    if isinstance(filter_tags_raw, str):
+        try:
+            import json as _json
+            filter_tags_raw = _json.loads(filter_tags_raw) or []
+        except Exception:
+            filter_tags_raw = []
+    filter_tags = [
+        (t.get("key"), t.get("value")) for t in filter_tags_raw
+        if isinstance(t, dict) and t.get("key") and t.get("value")
+    ]
+    if filter_tid or filter_fof or filter_tags:
         jlog(
             f"📤 Filtri destinatari: source_task_id={filter_tid}, "
-            f"source_follower_of={filter_fof!r}"
+            f"source_follower_of={filter_fof!r}, tags={filter_tags}"
         )
 
     upstream_tid = filter_tid if filter_tid is not None else _resolve_source_task_for_contacts(task)
@@ -185,13 +196,14 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             status=st,
             source_task_id=upstream_tid,
             source_follower_of=filter_fof,
+            contact_tag_filters=filter_tags or None,
         ):
             if c["id"] in seen_ids:
                 continue
             seen_ids.add(c["id"])
             candidates.append(c)
     # Quando non c'è upstream esplicito né filtro, considera contatti ingestiti col job corrente
-    if not upstream_tid and not filter_fof and not candidates:
+    if not upstream_tid and not filter_fof and not filter_tags and not candidates:
         for st in target_status_eligible:
             for c in db.list_contacts(status=st, source_task_id=task["id"]):
                 if c["id"] in seen_ids:

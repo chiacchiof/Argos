@@ -121,14 +121,25 @@ def _load_targets_for_platform(
         candidates = db.get_contacts_by_ids(explicit_ids)
     else:
         target_status = task.get("target_status_in") or "qualified"
-        # Applica i filtri di task (source_task_id, source_follower_of) se valorizzati
+        # Applica i filtri di task (source_task_id, source_follower_of, tags) se valorizzati
         f_tid_raw = task.get("outreach_filter_source_task_id")
         f_tid = int(f_tid_raw) if str(f_tid_raw or "").strip().isdigit() else None
         f_fof = (task.get("outreach_filter_source_follower_of") or "").strip() or None
+        f_tags_raw = task.get("outreach_filter_tags") or []
+        if isinstance(f_tags_raw, str):
+            try:
+                f_tags_raw = json.loads(f_tags_raw) or []
+            except Exception:
+                f_tags_raw = []
+        f_tags = [
+            (t.get("key"), t.get("value")) for t in f_tags_raw
+            if isinstance(t, dict) and t.get("key") and t.get("value")
+        ]
         candidates = db.list_contacts(
             status=target_status,
             source_task_id=f_tid,
             source_follower_of=f_fof,
+            contact_tag_filters=f_tags or None,
             limit=limit * 5,
         )
 

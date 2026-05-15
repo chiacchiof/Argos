@@ -535,6 +535,52 @@
         solo i 12 follower di Ekipe estratti dal recon_social. Combinabile con il filtro
         "Tipo di asset" / "Stato" della pool generale.
       </p>
+
+      {# Multi-tag AND filter — solo per pattern "agente_outreach_sportivi" e simili #}
+      <hr style="margin:1rem 0;border:none;border-top:1px solid #eee">
+      <strong>🎯 Filtri tag multipli (AND)</strong>
+      <p class="muted small" style="margin:0.3rem 0 0.5rem 0">
+        Aggiungi fino a 5 coppie <code>tag_key:tag_value</code>. Il task contatterà
+        SOLO i contatti che hanno TUTTI i tag selezionati (clausole AND).
+        Es. <code>interests_inferred:fitness</code> + <code>location:Catania</code>
+        → agente outreach sportivi/catanesi.
+      </p>
+      {% set _existing_tags = p.get('outreach_filter_tags') or [] %}
+      {% if _existing_tags is string %}
+        {% set _existing_tags = [] %}
+      {% endif %}
+      <div id="outreach-tag-filters-rows">
+        {% for i in range(5) %}
+          {% set _tag = _existing_tags[i] if i < (_existing_tags|length) else {} %}
+          {% set _k = _tag.get('key') if _tag else '' %}
+          {% set _v = _tag.get('value') if _tag else '' %}
+          <div class="row outreach-tag-row" style="margin-bottom:0.3rem;{% if i > 0 and not _k %}display:none{% endif %}">
+            <label style="flex:1">{% if i == 0 %}Tag key{% endif %}
+              <select name="outreach_filter_tag_key__{{ i }}"
+                      hx-get="/assets/tag_values"
+                      hx-trigger="change"
+                      hx-target="next select"
+                      hx-swap="innerHTML"
+                      hx-vals='js:{key: event.target.value}'>
+                <option value="">— nessun filtro —</option>
+                {% for tk in (outreach_tag_keys or []) %}
+                  <option value="{{ tk.key }}" {% if _k == tk.key %}selected{% endif %}>{{ tk.key }} ({{ tk.count }})</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label style="flex:1">{% if i == 0 %}Tag value{% endif %}
+              <select name="outreach_filter_tag_value__{{ i }}">
+                {% if _v %}<option value="{{ _v }}" selected>{{ _v }}</option>{% endif %}
+                <option value="">— scegli key prima —</option>
+              </select>
+            </label>
+          </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-small btn-secondary"
+              onclick="(function(){ const rows = document.querySelectorAll('.outreach-tag-row'); for (const r of rows) { if (r.style.display === 'none') { r.style.display = ''; break; } } })()">
+        + Aggiungi tag
+      </button>
     </details>
 
     {# ============================================================
@@ -1009,9 +1055,14 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
 
       <div class="row">
         <label>Max profili/giorno/account
-          <input type="number" name="recon_max_targets_per_day" min="1" max="500"
+          <input type="number" name="recon_max_targets_per_day" min="1" max="5000"
                  value="{{ p.get('recon_max_targets_per_day', 50) }}">
-          <span class="hint">Cap anti-detection. Default 50.</span>
+          <span class="hint">
+            Cap anti-detection. Default 50. ⚠️ <strong>&gt;500/giorno</strong>
+            aumenta significativamente il rischio ban — usa solo con account
+            "warmup" sacrificabili. Per scaling massivo (~1000/agente)
+            dividi su più task clonati con cron sfalsato.
+          </span>
         </label>
 
         <label>Score minimo report (R2)
@@ -1020,6 +1071,20 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
           <span class="hint">Solo profili con score ≥ N finiscono nel report finale (R2). Ignorato in R1.</span>
         </label>
       </div>
+
+      <label style="margin-top:0.8rem">
+        ♻️ Refresh policy (giorni) <span class="hint">(dedup recente: skip profili già recenti)</span>
+        <input type="number" name="refresh_policy_days" min="-1" max="365"
+               value="{{ p.get('refresh_policy_days', 7) }}">
+        <span class="hint">
+          <strong>N&gt;0</strong>: re-scrape solo se l'asset è più vecchio di N giorni (es. 7).
+          <strong>0</strong>: skip se esiste in DB (mai re-scrape).
+          <strong>-1</strong>: sempre re-scrape (ignora dedup).
+          Vale per <code>recon_social</code> — evita di sprecare quota su follower
+          già processati di recente. Re-run di un task con stesso target salta
+          subito i 12/100/1000 profili recenti.
+        </span>
+      </label>
 
       <label style="margin-top:0.8rem">
         ⚡ Profilo velocità estrazione

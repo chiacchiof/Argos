@@ -218,13 +218,56 @@ async def extract_profile_data(page: "Page") -> dict[str, Any]:
     except Exception:
         pass
 
-    # Display name
-    try:
-        loc = page.locator(DISPLAY_NAME).first
-        if await loc.is_visible(timeout=1_500):
-            data["display_name"] = (await loc.text_content() or "").strip()
-    except Exception:
-        pass
+    # Display name — prova multipli selettori (layout IG cambia), poi validazione
+    display_name_selectors = [
+        'header section h1',                # layout 2026
+        'header section span > span',       # fallback layout vecchio
+    ]
+    for _dn_sel in display_name_selectors:
+        try:
+            loc = page.locator(_dn_sel).first
+            if await loc.is_visible(timeout=1_500):
+                val = (await loc.text_content() or "").strip()
+                if val:
+                    data["display_name"] = val
+                    break
+        except Exception:
+            continue
+
+    # Validazione display_name: se è puramente numerico → ha pescato un counter
+    # follower/following/posts. Fallback su og:title / page title / username URL.
+    _dn = (data.get("display_name") or "").strip()
+    if not _dn or _dn.isdigit() or (len(_dn) <= 3 and any(ch.isdigit() for ch in _dn)):
+        data["display_name"] = None
+        # 1. og:title (es. "Carmen Faro (@_carmen_faro_) • Instagram photos and videos")
+        try:
+            og_loc = page.locator('meta[property="og:title"]').first
+            og = await og_loc.get_attribute("content", timeout=1_500)
+            if og:
+                m = re.match(r"^(.+?)\s*\(@", og)
+                if m:
+                    cand = m.group(1).strip()
+                    if cand and not cand.isdigit():
+                        data["display_name"] = cand
+        except Exception:
+            pass
+        # 2. page title parsing (stesso pattern)
+        if not data.get("display_name"):
+            try:
+                t = data.get("title") or await page.title()
+                if t:
+                    m = re.match(r"^(.+?)\s*\(@", t)
+                    if m:
+                        cand = m.group(1).strip()
+                        if cand and not cand.isdigit():
+                            data["display_name"] = cand
+            except Exception:
+                pass
+        # 3. fallback finale: username dall'URL (sempre meglio di un numero)
+        if not data.get("display_name"):
+            handle = _ig_username_from_url(page.url)
+            if handle:
+                data["display_name"] = handle
 
     # Bio
     try:
@@ -543,16 +586,71 @@ async def enumerate_followers_of_target(
     max_total_scrolls = max(30, cap // 2)
     _log(f"  inizio enumeration, cap={cap}, max_scrolls={max_total_scrolls}")
 
+    # OPTIMIZATION: trova il container scrollable UNA SOLA VOLTA (era O(N) ad
+    # ogni scroll). Marca con __ig_sc_pinned__ così le misure successive sono O(1).
+    # Bug fix di "scroll esponenzialmente più lento": prima si chiamava
+    # querySelectorAll('*') + getComputedStyle su ogni node ad ogni scroll,
+    # con modal che cresceva → reflow costoso che scalava O(n_followers²).
+    try:
+        pin_info = await container.evaluate("""
+            (root) => {
+                if (root.__ig_sc_pinned__) {
+                    const sc = root.__ig_sc_pinned__;
+                    const r = sc.getBoundingClientRect();
+                    return { rect_x: r.left, rect_y: r.top, rect_w: r.width, rect_h: r.height,
+                             tag: sc.tagName, pinned: true };
+                }
+                const all = root.querySelectorAll('*');
+                for (const child of all) {
+                    const cs = getComputedStyle(child);
+                    const ov = cs.overflowY;
+                    if ((ov === 'auto' || ov === 'scroll') && child.scrollHeight > child.clientHeight + 5) {
+                        root.__ig_sc_pinned__ = child;
+                        const r = child.getBoundingClientRect();
+                        return { rect_x: r.left, rect_y: r.top, rect_w: r.width, rect_h: r.height,
+                                 tag: child.tagName + '.' + (child.className || '').split(' ').slice(0, 2).join('.'),
+                                 pinned: false };
+                    }
+                }
+                root.__ig_sc_pinned__ = root;
+                const r = root.getBoundingClientRect();
+                return { rect_x: r.left, rect_y: r.top, rect_w: r.width, rect_h: r.height,
+                         tag: 'root.fallback', pinned: false };
+            }
+        """)
+        cx = pin_info.get("rect_x", 0) + pin_info.get("rect_w", 400) / 2
+        cy = pin_info.get("rect_y", 0) + pin_info.get("rect_h", 400) / 2 + 40
+        _log(f"  📌 scrollable container pinned: <{pin_info.get('tag')}> @({cx:.0f},{cy:.0f})")
+    except Exception as e:
+        log.warning("pin scrollable fail, fallback to keyboard End: %s", e)
+        cx, cy = 632, 446  # fallback coords
+
     for scroll_i in range(max_total_scrolls):
         before_n = len(out)
         try:
-            # SOLO anchor dentro la modale, NIENTE fallback body
-            anchors = page.locator('div[role="dialog"] a[role="link"][href^="/"]')
-            n = await anchors.count()
-            for i in range(min(n, 800)):
+            # OPTIMIZATION: estrai TUTTI gli anchor in UNA SOLA evaluate JS.
+            # Prima: 2N IPC Playwright per scroll (get_attribute + text_content
+            # per ogni anchor); a scroll #30 = 800 IPC = ~30s di solo overhead.
+            # Ora: 1 IPC che ritorna lista [{href, text}, ...] → ~50ms.
+            anchor_data = await page.evaluate("""
+                () => {
+                    const anchors = document.querySelectorAll(
+                        'div[role="dialog"] a[role="link"][href^="/"]'
+                    );
+                    const out = [];
+                    for (const a of anchors) {
+                        out.push({
+                            href: a.getAttribute('href') || '',
+                            text: (a.textContent || '').trim().slice(0, 120),
+                        });
+                        if (out.length >= 800) break;
+                    }
+                    return out;
+                }
+            """)
+            for ad in anchor_data:
                 try:
-                    a = anchors.nth(i)
-                    href = await a.get_attribute("href")
+                    href = ad.get("href") or ""
                     if not href:
                         continue
                     # Filter: solo URL profilo (/handle/), skip /p/, /reel/, /explore/, /direct/, ecc.
@@ -569,7 +667,7 @@ async def enumerate_followers_of_target(
                         continue  # skip il target stesso
                     if handle in out:
                         continue
-                    label = (await a.text_content() or "").strip()[:120]
+                    label = (ad.get("text") or "")[:120]
                     display_name = label or handle
                     out[handle] = {
                         "handle": handle,
@@ -596,57 +694,89 @@ async def enumerate_followers_of_target(
         else:
             consecutive_no_growth = 0
 
-        # Scroll dentro la modale: il `div[role="dialog"]` NON è lo scrollable —
-        # IG annida lo scrollable in un elemento child con overflow-y:auto. Lo
-        # cerco dinamicamente. Ritorno scrollTop per debug.
+        # Scroll dentro la modale. IG ha un guard anti-bot che rifiuta scroll
+        # PROGRAMMATICI (element.scrollBy / scrollTop=N): non triggera il
+        # lazy-load di nuovi follower. Soluzione: WHEEL umano via mouse.wheel.
+        # Misuriamo top/height SOLO sul container pinned (O(1), non O(n²)).
         try:
-            scroll_info = await container.evaluate("""
+            # Pre-measure leggera (no findScrollable)
+            before_info = await container.evaluate("""
                 (root) => {
-                    function findScrollable(r) {
-                        // Prima cerca il primo discendente con overflow-y scroll/auto
-                        // E scrollHeight > clientHeight (cioè davvero scrollable)
-                        const all = r.querySelectorAll('*');
-                        for (const child of all) {
-                            const cs = getComputedStyle(child);
-                            const ov = cs.overflowY;
-                            if ((ov === 'auto' || ov === 'scroll') && child.scrollHeight > child.clientHeight + 5) {
-                                return child;
-                            }
-                        }
-                        return r;
-                    }
-                    const sc = findScrollable(root);
-                    const before = sc.scrollTop;
-                    sc.scrollBy(0, 1200);
-                    return {
-                        top: sc.scrollTop,
-                        before: before,
-                        height: sc.scrollHeight,
-                        client: sc.clientHeight,
-                        tag: sc.tagName + '.' + (sc.className || '').split(' ').slice(0, 2).join('.'),
-                    };
+                    const sc = root.__ig_sc_pinned__ || root;
+                    return { top: sc.scrollTop, height: sc.scrollHeight };
                 }
             """)
-            # Log scrollTop ogni 5 scroll per debug
+            before_top = before_info.get("top", 0)
+            before_height = before_info.get("height", 0)
+
+            # Humanize wheel: varianza maggiore → meno pattern-matching antibot.
+            # - 2-5 wheel per burst (era fisso 3)
+            # - step 180-520px per wheel (era fisso 320)
+            # - pause 50-900ms tra wheel (era 150-400ms)
+            # - micro mouse-move tra wheel (±15px x, ±8px y)
+            # - ogni ~10 scroll, scroll-up accidentale -120/-260px poi continua
+            try:
+                # Mouse move iniziale con leggera jitter
+                jx = cx + random.uniform(-12, 12)
+                jy = cy + random.uniform(-8, 8)
+                await page.mouse.move(jx, jy)
+
+                # Scroll-up accidentale ogni 8-12 scroll (umano "rilegge" una riga sopra)
+                if scroll_i > 4 and scroll_i % random.randint(8, 12) == 0:
+                    up_amount = random.randint(120, 260)
+                    await page.mouse.wheel(0, -up_amount)
+                    await asyncio.sleep(random.uniform(0.4, 1.1))
+
+                # Burst principale
+                n_wheels = random.randint(2, 5)
+                for _w in range(n_wheels):
+                    step = random.randint(180, 520)
+                    await page.mouse.wheel(0, step)
+                    # Micro mouse-move tra wheel (umano sposta leggermente il mouse)
+                    if random.random() < 0.35:
+                        await page.mouse.move(
+                            cx + random.uniform(-18, 18),
+                            cy + random.uniform(-10, 10),
+                        )
+                    # Pause inter-wheel: distribuzione a coda lunga (occasionale 0.8-1.2s)
+                    pause = random.uniform(0.05, 0.45)
+                    if random.random() < 0.18:
+                        pause = random.uniform(0.6, 1.4)
+                    await asyncio.sleep(pause)
+            except Exception as we:
+                log.debug("mouse.wheel fail: %s", we)
+                # Fallback: scroll programmatico via container pinned
+                await container.evaluate(
+                    "(root) => { const sc = root.__ig_sc_pinned__ || root; sc.scrollBy(0, 1200); }"
+                )
+
+            # Post-measure leggera (no findScrollable)
+            after_info = await container.evaluate("""
+                (root) => {
+                    const sc = root.__ig_sc_pinned__ || root;
+                    return { top: sc.scrollTop, height: sc.scrollHeight };
+                }
+            """)
+            after_top = after_info.get("top", 0)
+            after_height = after_info.get("height", 0)
+
             if scroll_i % 5 == 0:
                 _log(
-                    f"  scroll #{scroll_i}: scrollTop {scroll_info.get('before')}→"
-                    f"{scroll_info.get('top')}, "
-                    f"height={scroll_info.get('height')}, "
-                    f"target=<{scroll_info.get('tag')}>"
+                    f"  scroll #{scroll_i}: scrollTop {before_top:.0f}→{after_top:.0f}, "
+                    f"height {before_height}→{after_height}, "
+                    f"followers_seen={len(out)}"
                 )
-            # Se scrollTop non avanza per 4 volte → siamo al fondo
-            if scroll_info.get('top', 0) == scroll_info.get('before', 0):
-                # Stesso valore → niente più scroll possibile
+            # Se scrollTop non avanza E height non cresce → niente più follower
+            if after_top == before_top and after_height == before_height:
                 consecutive_no_growth = max(consecutive_no_growth, 3)
         except Exception as e:
             log.debug("scroll evaluate fail: %s", e)
-            # Fallback: scroll tastiera (PageDown sul body)
             try:
                 await page.keyboard.press("End")
             except Exception:
                 break
-        await asyncio.sleep(random.uniform(1.5, 2.8))
+        # Pause finale tra burst: più varianza (era 1.5-2.8s)
+        await asyncio.sleep(random.uniform(0.6, 2.2))
 
     result = list(out.values())[:cap]
     _log(f"  ✅ enumerati {len(result)} follower di @{target_handle}")

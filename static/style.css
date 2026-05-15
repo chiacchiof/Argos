@@ -1315,3 +1315,362 @@ details.llm-roles-overview[open] > summary {
   overflow-wrap: anywhere;
   word-break: break-all;
 }
+
+
+/* =========================================================================
+   UX UPGRADE 2026-05-15 — uniformare panel/filtri/empty-state/status
+   ========================================================================= */
+
+/* Allarga main per pagine list (assets, inbox, contacts) */
+main.wide { max-width: 1300px; }
+
+/* Page header: titolo + descrizione + actions */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+.page-header h2 { margin: 0 0 0.25rem 0; }
+.page-header .page-subtitle { color: var(--muted); margin: 0; font-size: 0.9em; }
+.page-header .page-actions {
+  display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
+}
+
+/* Stats pills (numero totale, filtri attivi, ecc.) */
+.stats-bar {
+  display: flex; gap: 0.5rem; flex-wrap: wrap;
+  margin: 0.4rem 0 0.8rem 0;
+  font-size: 0.86em;
+}
+.stats-pill {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.2rem 0.6rem;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  color: #334155;
+}
+.stats-pill strong { color: #1e293b; }
+.stats-pill.stats-pill-active { background: #dbeafe; border-color: #93c5fd; color: #1e40af; }
+.stats-pill.stats-pill-warn { background: #fef3c7; border-color: #fde68a; color: #92400e; }
+.stats-pill .pill-close {
+  margin-left: 0.2rem; text-decoration: none; color: inherit; font-weight: 700;
+  border-left: 1px solid currentColor; padding-left: 0.4rem; opacity: 0.7;
+}
+.stats-pill .pill-close:hover { opacity: 1; color: var(--danger); }
+
+/* Panel card: box bianco con bordo e ombra leggera */
+.panel-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.2rem;
+  margin: 0.6rem 0;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+.panel-card > h3:first-child,
+.panel-card > h4:first-child { margin-top: 0; }
+
+/* Filter panel: container per filtri, con accent left + sticky opzionale */
+.filter-panel {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+  margin: 0.8rem 0;
+}
+.filter-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #1f2937;
+  padding: 0.2rem 0;
+  user-select: none;
+}
+.filter-panel summary::marker { color: var(--accent); }
+.filter-panel[open] > summary {
+  margin-bottom: 0.5rem;
+  border-bottom: 1px dashed #cbd5e1;
+}
+.filter-panel .filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.6rem 0.8rem;
+  align-items: end;
+}
+.filter-panel .filter-grid label {
+  display: flex; flex-direction: column;
+  font-size: 0.85em; color: #475569;
+  margin: 0;
+}
+.filter-panel .filter-grid select,
+.filter-panel .filter-grid input[type="text"],
+.filter-panel .filter-grid input[type="search"],
+.filter-panel .filter-grid input[type="number"] {
+  margin-top: 0.2rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #fff;
+}
+.filter-panel .filter-actions {
+  margin-top: 0.6rem;
+  display: flex; gap: 0.5rem; flex-wrap: wrap;
+  align-items: center;
+}
+.filter-panel .filter-actions button {
+  padding: 0.4rem 1rem;
+}
+
+/* Tabelle .data: row hover + zebra + cell-padding consistente */
+table.data { border-radius: 4px; overflow: hidden; }
+table.data tbody tr { transition: background 0.12s; }
+table.data tbody tr:hover { background: #f7fafc; }
+table.data tbody tr.row-disabled:hover { background: #f0f0f0; }
+
+/* Status badges — colori più ricchi (alcuni esistevano già, qui completiamo) */
+.status-new       { background: #94a3b8; }
+.status-qualified { background: #16a34a; }
+.status-contacted { background: #0284c7; }
+.status-replied   { background: #7c3aed; }
+.status-rejected  { background: #dc2626; }
+.status-archived  { background: #6b7280; }
+.status-optedout  { background: #dc2626; }
+.status-open      { background: #2563eb; }
+.status-closed    { background: #64748b; }
+
+/* Empty state più visibile */
+.empty-state {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: var(--muted);
+  background: #fafafa;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  margin: 1rem 0;
+}
+.empty-state .empty-icon {
+  font-size: 2.6rem;
+  display: block;
+  margin-bottom: 0.5rem;
+  opacity: 0.6;
+}
+.empty-state .empty-title {
+  color: #374151;
+  font-size: 1.05em;
+  font-weight: 600;
+  margin-bottom: 0.3rem;
+}
+.empty-state .empty-hint {
+  font-size: 0.9em;
+  max-width: 480px;
+  margin: 0 auto;
+  line-height: 1.5;
+}
+
+/* Asset detail: sezioni più moderne (sostituisce gli inline style) */
+.detail-summary-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.2rem;
+  margin: 0.8rem 0;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+.detail-summary-card .summary-top {
+  display: flex; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; align-items: flex-start;
+}
+.detail-summary-card .summary-title { margin: 0 0 0.3rem 0; }
+.detail-summary-card .summary-meta { color: var(--muted); font-size: 0.9em; margin: 0; }
+.detail-summary-card .summary-actions {
+  display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;
+}
+
+/* Container links source su detail */
+.detail-source-row {
+  margin: 0.5rem 0 0 0;
+  padding: 0.5rem 0.8rem;
+  background: #eff6ff;
+  border-left: 3px solid var(--accent);
+  border-radius: 3px;
+  font-size: 0.92em;
+  word-break: break-all;
+}
+
+/* Interest chip moderne (usate in asset_detail) */
+.interest-chip {
+  display: inline-block;
+  background: #e0e7ff;
+  color: #3730a3;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  margin: 0.1rem 0.15rem;
+  font-size: 0.82em;
+  border: 1px solid #c7d2fe;
+}
+
+/* Filter chip rimovibile (replica di .tag-chip ma per i filtri generici) */
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.18rem 0.55rem;
+  background: #fef3c7; color: #92400e;
+  border: 1px solid #fde68a;
+  border-radius: 999px;
+  font-size: 0.82em;
+  text-decoration: none;
+}
+.filter-chip a.chip-remove {
+  color: inherit; text-decoration: none; font-weight: 700;
+  border-left: 1px solid currentColor; padding-left: 0.4rem; opacity: 0.7;
+}
+.filter-chip a.chip-remove:hover { opacity: 1; color: var(--danger); }
+
+/* Inbox list — search bar + stats */
+.inbox-actions { display: flex; gap: 0.8rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.6rem; }
+.inbox-actions a { text-decoration: none; color: var(--accent); }
+.inbox-actions a:hover { text-decoration: underline; }
+
+
+/* =========================================================================
+   ACTION BAR — uniforma i bottoni nelle sezioni di task/workflow/inbox/asset
+   ========================================================================= */
+
+/* Container azioni: row coerente di bottoni */
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 1rem 0;
+}
+.actions > form { margin: 0; display: inline-flex; }
+.actions > small.muted { margin-left: 0.4rem; }
+
+/* Link "vergini" dentro .actions o .summary-actions → outlined button */
+.actions > a,
+.summary-actions > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  text-decoration: none;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, transform 0.12s;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.actions > a:hover,
+.summary-actions > a:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.actions > a:active,
+.summary-actions > a:active {
+  transform: translateY(1px);
+}
+
+/* Eccezione: link minimali ("Annulla", "Reset") rimangono link */
+.actions > a.link-cancel,
+.summary-actions > a.link-cancel,
+.actions > a.btn-link,
+.summary-actions > a.btn-link {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  padding: 0.5rem 0.6rem;
+}
+.actions > a.link-cancel:hover,
+.summary-actions > a.link-cancel:hover,
+.actions > a.btn-link:hover,
+.summary-actions > a.btn-link:hover {
+  color: var(--fg);
+  background: #f3f4f6;
+  text-decoration: none;
+}
+
+/* Bottoni nel container actions */
+.actions > button,
+.actions > form > button,
+.summary-actions > button,
+.summary-actions > form > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* Primario = bottone azione primaria (Esegui ora, Crea, Invia): verde pieno */
+.actions > button:not(.btn-danger):not(.btn-danger-inline):not(.btn-secondary):not(.danger):not(.btn-link):not(.btn-small),
+.actions > form > button:not(.btn-danger):not(.btn-danger-inline):not(.btn-secondary):not(.danger):not(.btn-link):not(.btn-small) {
+  background: var(--done);
+  border: 1px solid var(--done);
+  color: #fff;
+}
+.actions > button:not(.btn-danger):not(.btn-danger-inline):not(.btn-secondary):not(.danger):hover,
+.actions > form > button:not(.btn-danger):not(.btn-danger-inline):not(.btn-secondary):not(.danger):hover {
+  filter: brightness(0.92);
+}
+
+/* Bottoni "danger" outlined (Elimina, Opt-out) */
+.actions button.btn-danger-inline,
+.actions form > button.btn-danger-inline,
+.actions button.danger,
+.actions form > button.danger {
+  background: #fff;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+.actions button.btn-danger-inline:hover,
+.actions form > button.btn-danger-inline:hover,
+.actions button.danger:hover,
+.actions form > button.danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* Bottoni "btn-link-action" già hanno il loro stile, ma li uniformiamo qui */
+.actions > a.btn-link-action,
+.summary-actions > a.btn-link-action {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 0.5rem 1rem;
+}
+.actions > a.btn-link-action:hover,
+.summary-actions > a.btn-link-action:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Action bar nelle pagine di edit (form):
+   il vecchio CSS .actions { margin-top: 1rem; display: flex; gap: 0.7rem }
+   resta valido. Aggiungiamo solo bottoni più cliccabili. */
+form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
+
+/* Page-actions (header pagina): bottoni colorati */
+.page-actions > a:not(.btn-link-action):not(.btn-link):not(.link-cancel) {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.5rem 0.9rem;
+  background: #fff; color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px; text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.page-actions > a:not(.btn-link-action):not(.btn-link):not(.link-cancel):hover {
+  background: var(--accent); color: #fff;
+}

@@ -20,7 +20,7 @@
       <a href="/settings">⚙️ Settings</a>
     </nav>
   </header>
-  <main>
+  <main class="{% block main_class %}{% endblock %}">
     {% block content %}{% endblock %}
   </main>
   <footer>

@@ -1,33 +1,37 @@
 {% extends "base.html" %}
 {% block title %}Asset #{{ asset.id }} — {{ asset.title or asset.asset_type }}{% endblock %}
 {% block content %}
-<section style="max-width:1100px;margin:auto">
-  <p><a href="/assets?asset_type={{ asset.asset_type }}">← {{ asset.asset_type }}</a> ·
-     <a href="/assets">tutti gli asset</a></p>
+<section>
+  <p style="margin:0.4rem 0">
+    <a href="/assets?asset_type={{ asset.asset_type }}">← {{ asset.asset_type }}</a> ·
+    <a href="/assets">tutti gli asset</a>
+  </p>
 
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap">
-    <div>
-      <h2 style="margin-bottom:0.3rem">{{ asset.title or "(senza titolo)" }}</h2>
-      <p class="muted" style="margin:0">
-        Asset #{{ asset.id }} · <code>{{ asset.asset_type }}</code>
-        {% if asset.qualifier_score is not none %} · qualifier_score: <strong>{{ asset.qualifier_score }}</strong>{% endif %}
-      </p>
+  <div class="detail-summary-card">
+    <div class="summary-top">
+      <div>
+        <h2 class="summary-title">{{ asset.title or "(senza titolo)" }}</h2>
+        <p class="summary-meta">
+          Asset #{{ asset.id }} · <code>{{ asset.asset_type }}</code>
+          {% if asset.qualifier_score is not none %} · qualifier_score: <strong>{{ asset.qualifier_score }}</strong>{% endif %}
+        </p>
+      </div>
+      <div class="summary-actions">
+        <a href="/assets/{{ asset.id }}/edit" class="btn-link-action">✏️ Modifica</a>
+        <span class="status status-{{ asset.status }}" style="font-size:0.95rem;padding:0.3rem 0.8rem">{{ asset.status }}</span>
+      </div>
     </div>
-    <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-      <a href="/assets/{{ asset.id }}/edit" class="btn-small" style="padding:0.4rem 0.8rem;background:#1565c0;color:white;text-decoration:none;border-radius:4px">✏️ Modifica</a>
-      <span class="status status-{{ asset.status }}" style="font-size:0.95rem;padding:0.3rem 0.8rem">{{ asset.status }}</span>
+
+    {% if asset.source_url %}
+    <div class="detail-source-row">
+      🔗 <a href="{{ asset.source_url }}" target="_blank" rel="noopener"><strong>{{ asset.source_url }}</strong></a>
+      {% if asset.source_domain %}<small class="muted">· {{ asset.source_domain }}</small>{% endif %}
     </div>
+    {% endif %}
   </div>
 
   {% if request.query_params.get('flash') %}
   <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
-  {% endif %}
-
-  {% if asset.source_url %}
-  <p style="margin-top:1rem">
-    🔗 <a href="{{ asset.source_url }}" target="_blank" rel="noopener"><strong>{{ asset.source_url }}</strong></a>
-    {% if asset.source_domain %}<small class="muted">· {{ asset.source_domain }}</small>{% endif %}
-  </p>
   {% endif %}
 
   <details open class="collapsible-section">
@@ -48,7 +52,7 @@
   {% if raw_data.get('narrative_summary') %}
   <details open class="collapsible-section">
     <summary>📝 Narrative summary <span class="hint">({{ raw_data.narrative_summary|length }} char)</span></summary>
-    <div style="margin:0.6rem 0;padding:0.8rem;background:#f9f9f9;border-left:3px solid #1565c0;border-radius:4px;line-height:1.55;white-space:pre-wrap">{{ raw_data.narrative_summary }}</div>
+    <div class="detail-source-row" style="white-space:pre-wrap;line-height:1.55;background:#f9f9f9;border-left-color:#1565c0">{{ raw_data.narrative_summary }}</div>
   </details>
   {% endif %}
 
@@ -76,7 +80,7 @@
       {% if items %}
       <div style="margin:0.5rem 0">
         <strong>{{ lbl }}:</strong>
-        {% for v in items %}<span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:0.2rem 0.5rem;border-radius:3px;margin:0.15rem;font-size:0.85rem">{{ v }}</span>{% endfor %}
+        {% for v in items %}<span class="interest-chip">{{ v }}</span>{% endfor %}
       </div>
       {% endif %}
     {% endfor %}
@@ -114,8 +118,7 @@
       {% for k, vs in asset.tags.items() %}
         {% for v in vs %}
         <a href="/assets?asset_type={{ asset.asset_type }}&tags={{ k }}:{{ v }}"
-           class="tag-chip-mini" title="filtra per {{ k }}:{{ v }}"
-           style="background:#fff3e0;color:#e65100"><code>{{ k }}</code>:{{ v }}</a>
+           class="tag-chip-mini" title="filtra per {{ k }}:{{ v }}"><code>{{ k }}</code>:{{ v }}</a>
         {% endfor %}
       {% endfor %}
     </div>
@@ -132,7 +135,7 @@
       <tbody>
         {% for c in linked_contacts %}
         <tr>
-          <td>{{ c.id }}</td>
+          <td><small class="muted">{{ c.id }}</small></td>
           <td><strong>{{ c.display_name or '—' }}</strong></td>
           <td><span class="status status-{{ c.status }}">{{ c.status }}</span></td>
           <td style="font-size:0.85rem">
@@ -148,7 +151,10 @@
       </tbody>
     </table>
     {% else %}
-    <p class="muted">Nessun contatto linkato a questo asset.</p>
+    <div class="empty-state" style="padding:1.4rem">
+      <span class="empty-icon" style="font-size:1.8rem">📇</span>
+      <p class="empty-hint" style="margin:0">Nessun contatto linkato a questo asset.</p>
+    </div>
     {% endif %}
   </details>
 
@@ -186,7 +192,7 @@
       L'operazione è <strong>irreversibile</strong>.
     </p>
     <form method="post" action="/assets/{{ asset.id }}/delete" style="margin-top:0.5rem"
-          onsubmit="return confirm('Eliminare asset #{{ asset.id }} {{ (asset.title or \"\")|truncate(40, true) }}?\n\nVerranno eliminati anche:\n- {{ asset.tags.values()|map(\"length\")|sum if asset.tags else 0 }} tag attributi\n- {{ n_linked }} contact linkat{% if n_linked == 1 %}o{% else %}i{% endif %} (CASCADE)\n\nNon è possibile annullare.');">
+          onsubmit="return confirm('Eliminare asset e relativi contact in cascata? Operazione irreversibile.');">
       <button type="submit" class="btn-small btn-danger">🗑️ Elimina asset + {{ n_linked }} contact</button>
     </form>
   </details>

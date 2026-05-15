@@ -2330,3 +2330,296 @@ trovagnocca.
 ---
 
 Il piano è allineabile a tutto questo — basta chiedere quale punto attivare per primo.
+
+## 17. Recon social `follower_scrape` — scaling massivo (2026-05-15)
+
+Modalità che estrae **tutti i follower** di uno o più account Instagram target, materializzandoli come asset (`ig_profile`) e contact. Pensato per costruire audience pool segmentate (es. "tutti i follower di palestre catanesi") da usare poi in outreach con multi-tag filter (cap. 18).
+
+### 17.1 Architettura
+
+Task con `agent_mode=recon_social` + `recon_mode=follower_scrape`. Per ogni target:
+1. Login persistente IG (session cookie persistito in `data/social_sessions/`)
+2. `goto` profilo del target → click su contatore "follower" → apre modale follower
+3. Scroll incrementale dentro la modale con `page.mouse.wheel` umanizzato (≠ scroll programmatico, IG lo rifiuta)
+4. Estrazione anchor dei profili follower via `evaluate()` batch (1 IPC vs 2N IPC)
+5. Per ogni profilo enumerato: navigazione individuale + extract DOM + LLM extract schema → `upsert_asset` + `upsert_contact`
+
+**Cap configurabile**: `recon_max_targets_per_day` da 500 a 5000 nella UI. Sopra 500 mostra warning anti-ban.
+
+### 17.2 Workflow "1 task per agente target" (pattern Clone)
+
+Scaling sostenibile: invece di un task gigante con 10 target, **1 task per ogni account target**, cron sfalsati. Pattern d'uso:
+
+1. Crea task base `Donald_Scrap_Template_IG` (recon_social, follower_scrape, account Donald, refresh 7d, speed=balanced, schema profile_interests)
+2. Apri `/tasks/{id}` → click bottone **📋 Clona**
+3. Nuovo task `Donald_Scrap_Template (copy)` si apre in `/edit`
+4. Cambia `name`, `target_contact_ids` (o seed handle), `cron` ("0 9 * * 1" lunedì 9am)
+5. Ripeti per Ekipe, Sportlife, ecc. con cron sfalsati (Mar 10:00, Mer 14:00, …)
+
+Endpoint `POST /tasks/{id}/clone` ([app/routes/tasks.py](app/routes/tasks.py)). Strip campi non clonabili (`id`, `created_at`, `updated_at`, `cron`), `status_tag` ridotto a "tuning" se era "working".
+
+### 17.3 Dedup `refresh_policy_days`
+
+Campo numerico nel task (default 7). Semantica:
+- `0` = mai re-scrape se asset già esiste
+- `-1` = sempre re-scrape (ignora dedup)
+- `N>0` = re-scrape solo se asset più vecchio di N giorni
+
+In `runner_recon_social.py`, prima di ogni `safe_goto(url)` controlla `db.has_recent_asset(url, output_asset_type, max_age_days=refresh_days)`. Se True → SKIP, log `SKIP_RECENT`.
+
+UI: campo `refresh_policy_days` esposto in `task_form.html` sezione recon_social.
+
+### 17.4 Speed profile (anti-ban tuning)
+
+Campo `speed_profile` (default `safe`):
+
+| Profile | Pause range | Sub-pages | Throughput | Rischio ban |
+|---|---|---|---|---|
+| `safe` | 30-180s | ON (/about, /reels) | ~1 profilo/2-5min | Minimo |
+| `balanced` | 15-60s | ON | ~1 profilo/40s | Medio |
+| `aggressive` | 10-30s | OFF | ~1 profilo/25s | Alto |
+
+Usabile con account warmup (no nuovi). In assoluto: 1000 profili/giorno a balanced = sostenibile, oltre rischia.
+
+### 17.5 Target da contatti DB
+
+Alternativa al seed testuale: nella sezione "📇 Target IG da contatti del DB" del task form, spunta contatti IG già materializzati in DB. Per ogni contatto selezionato il runner pesca l'handle IG dal `social_json` e lo aggiunge al pool target.
+
+Filtro UI: `asset_type` filter + search bar live + select "Tutti (visibili)" / "Nessuno".
+
+### 17.6 Materializzazione asset+contact
+
+Per ogni profilo enumerato e scrappato con success:
+- `assets`: `asset_type='ig_profile'` (configurabile in `output_asset_type`), `source_url`, `source_url_canonical` (per dedup), `title=display_name`, `raw_json` con narrative_summary + interests_inferred + ecc.
+- `asset_tags`: derivati dai campi LLM — `platform=instagram`, `source_follower_of=@target`, `location=...`, `professional_field=...`, `language=...`, `interests_inferred=[..]`, `hobbies=[..]`
+- `contacts`: `display_name`, `social_json=[{platform: instagram, url, handle}]`, status=`new`, linked all'asset
+
+I tag derivati sono la base per i filtri multi-tag dell'outreach (cap. 18).
+
+### 17.7 Output del runner
+
+- `data/results/<task_id>/<ts>/profiles.jsonl` — 1 riga per URL processato
+- `data/results/<task_id>/<ts>/recon_audit_log.jsonl` — audit DOM completo
+- `data/results/<task_id>/<ts>/follower_lists/ig_followers_<target>.txt` — handle dei follower enumerati
+- `data/results/<task_id>/<ts>/screenshots/` — screenshot ogni 5 step
+- `data/results/<task_id>/<ts>/report.md` — riepilogo
+
+### 17.8 Performance benchmark (validato 2026-05-15)
+
+Job#147 con 3 target (cap 500 ciascuno), speed=aggressive:
+- Enumeration 3 target: **8m 20s** totali (1258 follower enumerati)
+- Throughput scraping: **~42s/profilo** (LLM+pause aggressive)
+- Title quality: **0 numerici / 0 URL** (bug#3 fixato, vedi cap. 20)
+
+Riferimento per pre-fix scroll: stesso workload prendeva 24-48h (vedi cap. 20.4).
+
+## 18. Outreach multi-tag filter (audience-driven, 2026-05-15)
+
+Filtra i contatti destinatari per **tag attributi AND multipli**, costruiti dai tag derivati dall'extract LLM (cap. 17.6). Esempio: `interests_inferred=fitness AND location=Catania` → contatta SOLO i contatti che hanno entrambi.
+
+### 18.1 Funzionamento
+
+Campo task: `outreach_filter_tags` (JSON array `[{key, value}, ...]`, max 5 in UI). Esempi:
+```json
+[
+  {"key": "interests_inferred", "value": "fitness"},
+  {"key": "location", "value": "Catania"}
+]
+```
+
+DB layer ([app/db.py](app/db.py)):
+- `_add_contact_tag_filters_clause()` aggiunge `EXISTS (SELECT 1 FROM asset_tags WHERE asset_id=contacts.asset_id AND tag_key=? AND tag_value=?)` per ogni tag, combinati in AND.
+- Estensione di `list_contacts(contact_tag_filters=...)` e `count_contacts(...)`.
+- `list_distinct_tag_keys_for_contacts()` — keys disponibili nella UI (escluso `source_follower_of`, ha il suo filtro dedicato)
+- `list_distinct_tag_values_for_contacts(tag_key)` — values per dropdown HTMX
+
+### 18.2 UI multi-tag
+
+Nel task form, sezione "📤 Filtra contatti destinatari" (visibile per outreach + outreach_social + outreach_whatsapp):
+- 5 righe collassabili con 2 dropdown affiancati: `tag_key` + `tag_value`
+- Quando l'utente cambia `tag_key`, il secondo dropdown viene popolato via HTMX (`GET /assets/tag_values?key=X`)
+- Bottone "+ Aggiungi tag" mostra la riga successiva (JS client-side)
+- Chip rimovibili sopra il form mostrano i filtri attivi
+
+### 18.3 Integrazione runner
+
+Tutti e 3 i runner outreach supportano `outreach_filter_tags`:
+- [`runner_outreach.py`](app/agent/runner_outreach.py) (email/telegram)
+- [`runner_outreach_social.py`](app/agent/runner_outreach_social.py)
+- [`runner_outreach_whatsapp.py`](app/agent/runner_outreach_whatsapp.py) (integrato 2026-05-15, vedi cap. 20.5)
+
+Logica:
+```python
+tag_filters = task.get("outreach_filter_tags") or []
+contact_tag_filters = [(tf["key"], tf["value"]) for tf in tag_filters if tf.get("key") and tf.get("value")]
+targets = db.list_contacts(..., contact_tag_filters=contact_tag_filters)
+```
+
+`target_contact_ids` (selezione manuale UI) ha sempre precedenza su `outreach_filter_tags` quando entrambi valorizzati.
+
+### 18.4 Combinazione con `source_follower_of`
+
+I tag derivati dal `recon_social/follower_scrape` includono automaticamente `source_follower_of=@target`. Puoi combinare:
+- `source_follower_of=@ekipe_club AND interests_inferred=fitness` → solo follower di Ekipe interessati a fitness
+- `source_follower_of=@ekipe_club AND location=Catania AND language=it` → segmentazione più stretta
+
+Esempio workflow:
+1. 5 task `recon_social/follower_scrape` su 5 palestre catanesi (cron sfalsati) → ~5000 contacts taggati
+2. 1 task `outreach_social` con filtro `interests_inferred=fitness AND location=Catania` → contatta i ~500 più rilevanti
+
+## 19. UI 2026-05-15 — pannelli, filtri, empty state
+
+Refactoring UX di assets/inbox/contacts list e detail per uniformare visual hierarchy.
+
+### 19.1 CSS pattern aggiunti (in `static/style.css`)
+
+- `.page-header` — titolo + descrizione a sinistra, actions a destra, separator bottom
+- `.page-actions` — container bottoni primari dell'header (outlined accent)
+- `.stats-bar` + `.stats-pill` — info compatte: "212 contatti filtrati", chip rimovibili con `×`
+- `.panel-card` — box bianco con bordo e shadow leggera
+- `.filter-panel` — accent left blu, grid responsive, collassabile con `<details>`. Contiene `.filter-grid` (auto-fit minmax 180px)
+- `.empty-state` — centered, icona grande, hint con CTA
+- `.detail-summary-card` — box top di asset_detail con summary-top (titolo+meta a sinistra, actions a destra)
+- `.detail-source-row` — highlight URL sorgente con accent left
+- `.interest-chip` — chip moderni per interessi inferiti
+- `table.data tbody tr:hover` — highlight row
+- Status badges colorati: `status-qualified` (verde), `status-contacted` (blu), `status-replied` (viola), `status-optedout` (rosso), `status-archived` (grigio)
+- `main.wide` — max-width 1300px per opt-in pagine list larghe
+
+### 19.2 Action-bar uniforme
+
+Pattern CSS per stilizzare automaticamente `<a>` e `<button>` dentro `.actions` / `.summary-actions` / `.page-actions`:
+- `<a>` vergini → outlined accent button con hover pieno
+- `<button>` primario → verde pieno (Esegui, Salva, Invia)
+- `.btn-danger-inline` → outlined rosso
+- `.link-cancel` / `.btn-link` → minimali (Annulla, Reset)
+- `.btn-link-action` → outlined accent (Modifica, Clona, Risultati salvati)
+
+Risultato: nelle sezioni task/workflow/asset il bottone "Modifica" si vede sempre — prima era un `<a>` nudo confuso col testo.
+
+### 19.3 Pagine ridisegnate
+
+| Pagina | Modifiche |
+|---|---|
+| [assets_list.html](app/templates/assets_list.html) | page-header, stats-bar con chip rimovibili, filter-panel collassabile, empty-state, wide main |
+| [inbox_contacts.html](app/templates/inbox_contacts.html) | Stesso pattern + search bar separata in alto sopra il filter-panel |
+| [inbox_list.html](app/templates/inbox_list.html) | Redesign completo: stats, filtri in panel, empty-state esplicativo |
+| [asset_detail.html](app/templates/asset_detail.html) | Summary card con titolo+meta+actions, source URL highlighted, interest chip eleganti |
+| [task_detail.html](app/templates/task_detail.html) | Bottoni Modifica/Clona/Risultati stilizzati come outlined button (era link nudo) |
+| [tasks_list.html](app/templates/tasks_list.html) + [workflows_list.html](app/templates/workflows_list.html) | "modifica" → `btn-small btn-link-action` con icona ✏️ |
+| [base.html](app/templates/base.html) | Aggiunto `{% block main_class %}` per opt-in wide pages |
+
+### 19.4 Fix 500 su /assets/{id} (2026-05-15)
+
+Bug critico fixato: sequenza `\"` invalida in Jinja dentro l'`onsubmit=` di [asset_detail.html:189](app/templates/asset_detail.html#L189). Sostituito con confirm statico ("Eliminare asset e relativi contact in cascata? Operazione irreversibile.") — le info dettagliate restano visibili nell'`<ul>` sopra.
+
+## 20. Bug fix 2026-05-15 — recon_social refinement
+
+Sequenza di bug emersi durante lo scaling massivo (job#143-147 su task follower_scrape Ekipe + 3 palestre Catania) e relativi fix.
+
+### 20.1 Bug#1 — counter `n_ok` errato (FIXED)
+
+**Sintomo**: log finale "0 estratti, 338 falliti" anche se DB aveva asset materializzati.
+
+**Causa**: `n_ok += 1` era alla fine del block, fuori dal try di materializzazione. Se l'upsert riusciva ma `profiles.jsonl` write o `update recon_runs` falliva, l'outer except catturava e marcava come `n_fail += 1`.
+
+**Fix**: `n_ok += 1` spostato dentro al try dell'upsert, subito dopo `ASSET_MATERIALIZED`. `n_fail += 1` esplicito nell'except. Write `profiles.jsonl` wrappato in try separato. Vedi [app/agent/runner_recon_social.py:1225](app/agent/runner_recon_social.py#L1225).
+
+### 20.2 Bug#2 — canonical URL + tracking params (FIXED, in parte non-bug)
+
+**Sintomo apparente**: solo 73 SKIP su ~212 attesi nel job#144.
+
+**Diagnosi reale**: il modal IG carica follower in ordine non-deterministico → run successive vedono subset diverso, intersezione coi recenti è naturalmente bassa. NON era bug del canonical.
+
+**Fix preventivo**: esteso `canonical_url()` con strip di tracking params universali (`utm_*`, `mc_*`, `fbclid`, `gclid`, `gbraid`, `wbraid`, `igsh`, `igshid`, `cid`, `icid`, `ref`, `_ga`). Migliora dedup cross-platform anche per altri runner (bulk_extract, site_explorer). Vedi [app/agent/url_canonical.py:62](app/agent/url_canonical.py#L62).
+
+### 20.3 Bug#3 — `title` numerico ("298", "69", "6") + soft-fix retroattivo (FIXED)
+
+**Sintomo**: ~176 asset IG con `title='298'`, `'6'`, `'1'` invece del display name reale.
+
+**Causa**: selettore `DISPLAY_NAME = 'header section span > span'` troppo generico — pescava il counter follower visualizzato come grosso testo nell'header. Il valore numerico finiva in `_recon_raw['display_name']` PRIMA che l'LLM lo vedesse.
+
+**Fix codice** in `extract_profile_data()` di [instagram_recon.py:221](app/agent/social/instagram_recon.py#L221):
+1. Selettore primario `header section h1` (layout IG 2026), fallback `span > span`
+2. Validazione: se `display_name.isdigit()` o ≤3 char con cifre → invalido
+3. Cascata di fallback:
+   - `meta[property="og:title"]` parsato con regex `^(.+?)\s*\(@` (es. "Carmen Faro (@_carmen_faro_) • Instagram..." → "Carmen Faro")
+   - Page title con stesso pattern
+   - Username dall'URL come fallback finale
+
+**Soft-fix retroattivo**: 231 asset puliti in DB:
+- 176 asset con title numerico → `title = username` dall'URL
+- 15 numerici creati durante job#144
+- 40 con `title = URL completo` (fallback errato) → `title = username`
+
+`raw_json.display_name` e `raw_json._recon_raw.display_name` aggiornati per coerenza.
+
+**Validazione sul campo (job#147)**: 0 title numerici / 0 title=URL su 300+ asset materializzati.
+
+### 20.4 Bug scroll modale IG — fix v1 (pin scrollable) + v2 (batch evaluate)
+
+**Sintomo**: rallentamento esponenziale dello scroll modale follower. Job#145 (cap 400, @kreabenessere):
+
+| Intervallo | Scroll | s/scroll |
+|---|---|---|
+| #0 → #5 | 5 | 17s |
+| #5 → #10 | 5 | 51s |
+| #15 → #20 | 5 | **280s** |
+
+ETA 24-48h totali per 3 target.
+
+**Causa (analisi)**: `findScrollable()` JS scansionava `querySelectorAll('*')` + `getComputedStyle(child)` su tutti i discendenti del modal ad ogni scroll, **2 volte per scroll** (pre + post measurement). Per N nodi, 4N forced reflow per scroll. Modal cresceva → tempo per scroll quadratico nel numero di scroll.
+
+In più, il loop Python `for i in range(n): a.get_attribute('href'); a.text_content()` faceva **2N IPC Playwright cross-process** per scroll. A scroll #30 (400 follower in modal): 800 IPC × ~40ms = 32s di overhead.
+
+**Fix v1 — pin scrollable container** ([instagram_recon.py:584](app/agent/social/instagram_recon.py#L584)):
+- `findScrollable()` chiamato UNA volta pre-loop, container salvato come marker `root.__ig_sc_pinned__`
+- Misure successive: `sc.scrollTop` / `sc.scrollHeight` puri → O(1)
+- Speed: scroll #20 da 280s → ~60s
+
+**Fix v2 — batch anchor evaluate** ([instagram_recon.py:630](app/agent/social/instagram_recon.py#L630)):
+- Sostituito loop Python `for i: get_attribute + text_content` con UNA sola `page.evaluate()` che ritorna `[{href, text}, ...]` di tutti gli anchor in un colpo
+- Da 2N IPC → **1 IPC** per scroll
+- Speed: scroll #20 da ~60s → **~3.5s**
+
+**Humanize wheel anti-pattern**:
+- Burst 2-5 wheel (era fisso 3)
+- Step 180-520px (era fisso 320)
+- Pause inter-wheel 50-450ms con coda lunga 600-1400ms al 18% (era 150-400ms)
+- Micro mouse-move tra wheel al 35%
+- Scroll-up accidentale ogni 8-12 scroll: -120/-260px poi continua
+- Jitter mouse iniziale (±12px x, ±8px y)
+- Pause finale tra burst: 0.6-2.2s (era 1.5-2.8s)
+
+**Benchmark v2 (job#147)**:
+- Target #1 @kreabenessere (415 follower): **2:20 min**
+- Target #2 @fitactivecatanialezagare (424 follower): **3:00 min**
+- Target #3 @fitandgo_ct (419 follower): **2:30 min**
+- **Totale enumeration 1258 follower in 8m 20s** — speedup ~138× vs job#144 originale
+
+### 20.5 Bug#4 — `outreach_filter_tags` non integrato in WhatsApp runner (FIXED)
+
+**Sintomo**: multi-tag filter implementato per outreach + outreach_social ma NON per `runner_outreach_whatsapp` che usa `list_contacts_for_whatsapp_outreach()` dedicato.
+
+**Fix**:
+- `db.list_contacts_for_whatsapp_outreach()` accetta `contact_tag_filters: list[tuple[str,str]] | list[dict] | None`
+- Applica `_add_contact_tag_filters_clause()` (stesso pattern EXISTS multipli AND)
+- `runner_outreach_whatsapp.py` parsa `task.outreach_filter_tags` e li passa al DB helper. Log chip-style "filter interests_inferred=fitness, location=Catania"
+
+### 20.6 Monitoring detection IG
+
+Nuovo monitor potenziato traccia segnali di detection IG durante job recon_social:
+
+**Keyword scan** sul log job (case-insensitive):
+- `captcha`, `verify it`, `try again later`, `rate limit`, `action_blocked`, `too many requests`, `temporarily blocked`, `we restrict`, `blocked from using`, `login wall`, `login_wall`
+
+**Soglie alert**:
+- LLM fail rate sopra 15% → `[!!! FAIL_RATE]` con %
+- Gap > 90s tra due `[N/total]` consecutivi → `[!!! SLOW_NAV]` (normale 25-45s)
+- Keyword detection trovata → `[!!! DETECTION]` con keyword
+
+Validato su job#147 (durata >4h, 300+ profili): **0 detection signals**, fail rate **7.3%** costante, rate **42.9s/asset** costante. Account `donald_epstein90` non flagged.
+
+---
+
+Cap. 17-20 documentano lo stato post-2026-05-15. Per fix bug emersi in run successivi vedere git log + memory `project_bugs_recon_social.md` se presente.

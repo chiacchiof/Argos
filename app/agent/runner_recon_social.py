@@ -990,6 +990,24 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             if account_platform and account_platform != plat:
                 jlog(f"  [{i}/{len(seed)}] ⚠️ account è {account_platform} ma URL è {plat}: provo comunque")
 
+            # DEDUP RECENTE: skip se esiste già un asset di questo type con
+            # source_url + updated_at < refresh_policy_days. Default 7 giorni.
+            # -1 = sempre re-scrape (no skip).
+            refresh_days = int(task.get("refresh_policy_days") or 7)
+            output_atype = (task.get("output_asset_type") or "social_profile").strip().lower()
+            if refresh_days >= 0:
+                try:
+                    if db.has_recent_asset(url, output_atype, max_age_days=refresh_days):
+                        jlog(f"  [{i}/{len(seed)}] {url} → SKIP (asset recente, ≤{refresh_days}d)")
+                        audit.log_event(
+                            "SKIP_RECENT", url=url, asset_type=output_atype,
+                            max_age_days=refresh_days,
+                        )
+                        n_skip += 1
+                        continue
+                except Exception as e:
+                    log.debug("has_recent_asset fail (proseguo): %s", e)
+
             jlog(f"  [{i}/{len(seed)}] {plat} ← {url}")
             try:
                 await safe.safe_goto(url, label=f"target_{i}")
@@ -1207,14 +1225,22 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         "ASSET_MATERIALIZED", url=url, asset_id=asset_id,
                         asset_type=output_atype, n_tags=sum(len(v) for v in asset_tags.values()),
                     )
+                    # Incrementa n_ok SUBITO dopo materializzazione riuscita.
+                    # Spostato qui dal fondo del block per evitare che fallimenti
+                    # successivi (write profiles.jsonl, update recon_runs)
+                    # mascherino come "fallito" un profilo che è stato salvato in DB.
+                    n_ok += 1
+                    audit.log_event("PROFILE_OK", url=url, platform=plat)
                 except Exception as e:
                     log.warning("upsert asset/contact fail: %s", e)
                     audit.log_event("ASSET_MATERIALIZE_FAIL", url=url, error=str(e))
+                    n_fail += 1
 
-                with profiles_path.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(obj, ensure_ascii=False) + "\n")
-                n_ok += 1
-                audit.log_event("PROFILE_OK", url=url, platform=plat)
+                try:
+                    with profiles_path.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                except Exception as e:
+                    log.warning("profiles.jsonl write fail: %s", e)
 
                 # update recon_runs.target_count
                 with db.connect() as con:

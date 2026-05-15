@@ -79,7 +79,7 @@ class TaskIn(BaseModel):
     recon_mode: Literal["url_driven", "exploration", "follower_scrape"] | None = None
     recon_social_account_id: int | None = None
     recon_hypothesis: str | None = None
-    recon_max_targets_per_day: int = Field(default=50, ge=1, le=500)
+    recon_max_targets_per_day: int = Field(default=50, ge=1, le=5000)
     recon_score_threshold: int = Field(default=6, ge=0, le=10)
     # Solo per recon_social: nomi/URL da risolvere contro la friend list
     # (FB) o following list (IG/TikTok) dell'account loggato. Zero ambiguità
@@ -105,6 +105,13 @@ class TaskIn(BaseModel):
     # selezione manuale vince (i filtri non vengono applicati).
     outreach_filter_source_task_id: int | None = None
     outreach_filter_source_follower_of: str | None = None
+    # Lista di {key, value} per multi-tag AND filter sui contatti destinatari.
+    # Es: [{key:"interests_inferred", value:"fitness"}, {key:"location", value:"Catania"}]
+    # → outreach contatta SOLO chi ha ENTRAMBI i tag. Vale per outreach,
+    # outreach_social, outreach_whatsapp. Si combina in AND con i filtri
+    # singoli (source_task_id, source_follower_of). target_contact_ids
+    # esplicito continua a vincere.
+    outreach_filter_tags: list[dict] = Field(default_factory=list)
 
     @field_validator("rating", mode="before")
     @classmethod

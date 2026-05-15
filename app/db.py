@@ -629,6 +629,15 @@ def init_db() -> None:
             con.execute(
                 "ALTER TABLE tasks ADD COLUMN outreach_filter_source_follower_of TEXT"
             )
+        if "outreach_filter_tags" not in tcols:
+            # JSON array di {key, value} per filtri multipli su asset_tags dei
+            # contatti destinatari. AND fra le clausole. Es.
+            # [{"key":"interests_inferred","value":"fitness"},
+            #  {"key":"location","value":"Catania"}]
+            # → outreach contatta SOLO chi ha entrambi i tag (audience segment).
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN outreach_filter_tags TEXT"
+            )
 
         # Tabelle dedicate recon (R3 checkpoint/resume + dedup visited)
         con.execute("""
@@ -938,6 +947,41 @@ def _coerce_speed_profile(value: Any) -> str:
     return s if s in ("safe", "balanced", "aggressive") else "safe"
 
 
+def _serialize_outreach_filter_tags(value: Any) -> str | None:
+    """Accetta list[dict({key, value})] o list[tuple(k,v)] o stringa JSON.
+    Ritorna JSON string o None se vuoto/non valido. Pulisce keys vuote."""
+    if not value:
+        return None
+    items: list[dict] = []
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                value = parsed
+            else:
+                return None
+        except Exception:
+            return None
+    if isinstance(value, list):
+        for it in value:
+            if isinstance(it, dict):
+                k = (it.get("key") or "").strip().lower()
+                v = (it.get("value") or "").strip()
+            elif isinstance(it, (tuple, list)) and len(it) >= 2:
+                k = str(it[0] or "").strip().lower()
+                v = str(it[1] or "").strip()
+            else:
+                continue
+            if k and v:
+                items.append({"key": k, "value": v})
+    if not items:
+        return None
+    return json.dumps(items, ensure_ascii=False)
+
+
 def _serialize_input_asset_filter(value: Any) -> str | None:
     """Accetta dict (es. {'asset_type': 'palestra'}) o stringa JSON.
     Ritorna stringa JSON o None se vuoto/non valido."""
@@ -978,6 +1022,16 @@ def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
             d["input_asset_filter"] = None
     else:
         d["input_asset_filter"] = None
+    # outreach_filter_tags: deserializza JSON → list[{key, value}]
+    raw_oft = d.get("outreach_filter_tags")
+    if raw_oft:
+        try:
+            parsed_oft = json.loads(raw_oft) if isinstance(raw_oft, str) else raw_oft
+            d["outreach_filter_tags"] = parsed_oft if isinstance(parsed_oft, list) else []
+        except Exception:
+            d["outreach_filter_tags"] = []
+    else:
+        d["outreach_filter_tags"] = []
     raw_ids = _load_list(d.get("target_contact_ids"))
     coerced_ids: list[int] = []
     for v in raw_ids:
@@ -1053,8 +1107,9 @@ def create_task(data: dict[str, Any]) -> int:
                                   speed_profile,
                                   outreach_filter_source_task_id,
                                   outreach_filter_source_follower_of,
+                                  outreach_filter_tags,
                                   created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"],
@@ -1119,6 +1174,7 @@ def create_task(data: dict[str, Any]) -> int:
                 _coerce_speed_profile(data.get("speed_profile")),
                 int(data["outreach_filter_source_task_id"]) if data.get("outreach_filter_source_task_id") else None,
                 (data.get("outreach_filter_source_follower_of") or "").strip() or None,
+                _serialize_outreach_filter_tags(data.get("outreach_filter_tags")),
                 ts,
                 ts,
             ),
@@ -1159,6 +1215,7 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 speed_profile = ?,
                 outreach_filter_source_task_id = ?,
                 outreach_filter_source_follower_of = ?,
+                outreach_filter_tags = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -1225,6 +1282,7 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 _coerce_speed_profile(data.get("speed_profile")),
                 int(data["outreach_filter_source_task_id"]) if data.get("outreach_filter_source_task_id") else None,
                 (data.get("outreach_filter_source_follower_of") or "").strip() or None,
+                _serialize_outreach_filter_tags(data.get("outreach_filter_tags")),
                 now_iso(),
                 task_id,
             ),
@@ -1739,6 +1797,67 @@ def _add_source_follower_of_filter(where_sql: str, args: list, source_follower_o
     return where_sql, args
 
 
+def _add_contact_tag_filters_clause(
+    where_sql: str, args: list,
+    tag_filters: list[tuple[str, str]] | list[dict] | None,
+) -> tuple[str, list]:
+    """Per ogni (key, value) aggiunge una clausola EXISTS sull'asset linkato.
+    AND fra le clausole. Es. interests_inferred=fitness AND location=Catania.
+
+    Accetta sia list di tuple (k,v) sia list di dict {key, value}.
+    """
+    if not tag_filters:
+        return where_sql, args
+    for tf in tag_filters:
+        if isinstance(tf, dict):
+            tk = (tf.get("key") or "").strip().lower()
+            tv = (tf.get("value") or "").strip()
+        elif isinstance(tf, (tuple, list)) and len(tf) >= 2:
+            tk = str(tf[0] or "").strip().lower()
+            tv = str(tf[1] or "").strip()
+        else:
+            continue
+        if not tk or not tv:
+            continue
+        where_sql += (
+            " AND EXISTS (SELECT 1 FROM asset_tags t "
+            " WHERE t.asset_id = contacts.asset_id "
+            "   AND t.tag_key = ? AND t.tag_value = ?)"
+        )
+        args.extend([tk, tv])
+    return where_sql, args
+
+
+def list_distinct_tag_keys_for_contacts() -> list[dict[str, Any]]:
+    """Tag keys disponibili sui contatti (via asset_tags join), con count.
+    Esclude 'source_follower_of' (gestito dal suo filtro dedicato)."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT t.tag_key AS k, COUNT(DISTINCT c.id) AS n "
+            "FROM asset_tags t JOIN contacts c ON c.asset_id = t.asset_id "
+            "WHERE t.tag_key != 'source_follower_of' "
+            "GROUP BY t.tag_key ORDER BY n DESC, t.tag_key"
+        ).fetchall()
+    return [{"key": r["k"], "count": int(r["n"])} for r in rows]
+
+
+def list_distinct_tag_values_for_contacts(tag_key: str, limit: int = 100) -> list[dict[str, Any]]:
+    """Valori distinct per una tag_key, con count di contatti che la hanno.
+    Usato dal dropdown HTMX quando l'utente cambia la tag_key in UI."""
+    tk = (tag_key or "").strip().lower()
+    if not tk:
+        return []
+    with connect() as con:
+        rows = con.execute(
+            "SELECT t.tag_value AS v, COUNT(DISTINCT c.id) AS n "
+            "FROM asset_tags t JOIN contacts c ON c.asset_id = t.asset_id "
+            "WHERE t.tag_key = ? "
+            "GROUP BY t.tag_value ORDER BY n DESC, t.tag_value LIMIT ?",
+            (tk, int(limit)),
+        ).fetchall()
+    return [{"value": r["v"], "count": int(r["n"])} for r in rows]
+
+
 def count_contacts(
     status: str | None = None,
     source_task_id: int | None = None,
@@ -1747,12 +1866,14 @@ def count_contacts(
     channel: str | None = None,
     score_min: int | None = None,
     source_follower_of: str | None = None,
+    contact_tag_filters: list | None = None,
 ) -> int:
     """Conta i contatti che matchano i filtri di list_contacts. Per paginazione UI."""
     where_sql, args = _build_contacts_filters(
         status, source_task_id, source_domain, search, channel, score_min
     )
     where_sql, args = _add_source_follower_of_filter(where_sql, args, source_follower_of)
+    where_sql, args = _add_contact_tag_filters_clause(where_sql, args, contact_tag_filters)
     sql = "SELECT COUNT(*) FROM contacts" + where_sql
     with connect() as con:
         return int(con.execute(sql, args).fetchone()[0])
@@ -1768,11 +1889,13 @@ def list_contacts(
     limit: int = 500,
     offset: int = 0,
     source_follower_of: str | None = None,
+    contact_tag_filters: list | None = None,
 ) -> list[dict[str, Any]]:
     where_sql, args = _build_contacts_filters(
         status, source_task_id, source_domain, search, channel, score_min
     )
     where_sql, args = _add_source_follower_of_filter(where_sql, args, source_follower_of)
+    where_sql, args = _add_contact_tag_filters_clause(where_sql, args, contact_tag_filters)
     sql = "SELECT * FROM contacts" + where_sql + " ORDER BY id DESC LIMIT ? OFFSET ?"
     args.extend([limit, max(0, int(offset))])
     with connect() as con:
@@ -3235,20 +3358,27 @@ def list_contacts_for_whatsapp_outreach(
     exclude_optedout: bool = True,
     exclude_contacted: bool = True,
     limit: int = 1000,
+    contact_tag_filters: list[tuple[str, str]] | list[dict] | None = None,
 ) -> list[dict]:
     """Carica i contatti idonei a outreach_whatsapp.
 
     Filtri di default: status='qualified', whatsapp_consent != 'optedout',
     status != 'contacted', whatsapp IS NOT NULL.
+
+    `contact_tag_filters`: lista di (tag_key, tag_value) o {key, value}.
+    Multipli filtri sono combinati in AND tramite EXISTS join su asset_tags.
     """
     sql = "SELECT * FROM contacts WHERE whatsapp IS NOT NULL AND whatsapp != ''"
+    args: list = []
     if only_qualified:
         sql += " AND status = 'qualified'"
     if exclude_optedout:
         sql += " AND (whatsapp_consent IS NULL OR whatsapp_consent != 'optedout')"
     if exclude_contacted:
         sql += " AND status != 'contacted'"
+    sql, args = _add_contact_tag_filters_clause(sql, args, contact_tag_filters)
     sql += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
     with connect() as con:
-        rows = con.execute(sql, (limit,)).fetchall()
+        rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]

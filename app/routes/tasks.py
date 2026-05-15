@@ -179,6 +179,7 @@ def _form_to_dict(
     speed_profile: str = "safe",
     outreach_filter_source_task_id: str = "",
     outreach_filter_source_follower_of: str = "",
+    outreach_filter_tags: list | None = None,
 ) -> dict:
     return {
         "name": name.strip(),
@@ -252,6 +253,7 @@ def _form_to_dict(
             int(outreach_filter_source_task_id) if str(outreach_filter_source_task_id).strip().isdigit() else None
         ),
         "outreach_filter_source_follower_of": (outreach_filter_source_follower_of or "").strip() or None,
+        "outreach_filter_tags": list(outreach_filter_tags or []),
     }
 
 
@@ -378,6 +380,11 @@ def _form_extra_context() -> dict:
         outreach_source_followers = db.list_distinct_source_follower_of()
     except Exception:
         outreach_source_followers = []
+    # Tag keys disponibili sui contatti (multi-tag filter outreach)
+    try:
+        outreach_tag_keys = db.list_distinct_tag_keys_for_contacts()
+    except Exception:
+        outreach_tag_keys = []
 
     return {
         "extraction_templates": list_templates(),
@@ -392,6 +399,7 @@ def _form_extra_context() -> dict:
         "asset_types_in_use": asset_types_in_use,
         "outreach_source_tasks": outreach_source_tasks,
         "outreach_source_followers": outreach_source_followers,
+        "outreach_tag_keys": outreach_tag_keys,
     }
 
 
@@ -464,6 +472,14 @@ async def create_task(
     target_contact_ids_raw = (
         form.getlist("target_contact_ids") if hasattr(form, "getlist") else []
     )
+    # Parsing outreach_filter_tags da campi indicizzati tag_key__N/tag_value__N
+    # (UI multi-row). Vince ordine di insert.
+    outreach_filter_tags_raw: list[dict] = []
+    for _i_form in range(20):
+        _k = (form.get(f"outreach_filter_tag_key__{_i_form}") or "").strip().lower()
+        _v = (form.get(f"outreach_filter_tag_value__{_i_form}") or "").strip()
+        if _k and _v:
+            outreach_filter_tags_raw.append({"key": _k, "value": _v})
     payload = _form_to_dict(
         name, description, objective, seed_queries, allowed_domains, blocked_domains,
         max_iterations, model, output_format, cron, agent_mode,
@@ -498,6 +514,7 @@ async def create_task(
         speed_profile=speed_profile,
         outreach_filter_source_task_id=outreach_filter_source_task_id,
         outreach_filter_source_follower_of=outreach_filter_source_follower_of,
+        outreach_filter_tags=outreach_filter_tags_raw,
     )
     try:
         validated = TaskIn(**payload)
@@ -593,6 +610,14 @@ async def update_task(
     target_contact_ids_raw = (
         form.getlist("target_contact_ids") if hasattr(form, "getlist") else []
     )
+    # Parsing outreach_filter_tags da campi indicizzati tag_key__N/tag_value__N
+    # (UI multi-row). Vince ordine di insert.
+    outreach_filter_tags_raw: list[dict] = []
+    for _i_form in range(20):
+        _k = (form.get(f"outreach_filter_tag_key__{_i_form}") or "").strip().lower()
+        _v = (form.get(f"outreach_filter_tag_value__{_i_form}") or "").strip()
+        if _k and _v:
+            outreach_filter_tags_raw.append({"key": _k, "value": _v})
     existing = db.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="task non trovato")
@@ -653,6 +678,7 @@ async def update_task(
         speed_profile=speed_profile,
         outreach_filter_source_task_id=outreach_filter_source_task_id,
         outreach_filter_source_follower_of=outreach_filter_source_follower_of,
+        outreach_filter_tags=outreach_filter_tags_raw,
     )
     try:
         validated = TaskIn(**payload)
@@ -686,6 +712,39 @@ async def delete_task(task_id: int):
     db.delete_task(task_id)
     jobs.reload_schedules()
     return RedirectResponse(url="/", status_code=303)
+
+
+@router.post("/tasks/{task_id}/clone")
+async def clone_task(task_id: int):
+    """Crea una copia esatta del task con suffisso '(copy)' e cron=null.
+    Tutti gli altri campi (model, agent_mode, target_contact_ids,
+    output_asset_type, ecc.) sono preservati. Redirect alla pagina edit
+    del nuovo task per permettere modifica immediata.
+
+    Pattern d'uso: 1 task base "Donald_Scrap_Template" → clona N volte →
+    per ognuno cambi target_contact_ids + cron sfalsato in giorni diversi.
+    Permette scaling per agente target senza ricompilare il form.
+    """
+    src = db.get_task(task_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="task non trovato")
+    # Strip campi non clonabili / auto-generati
+    data = {k: v for k, v in src.items() if k not in ("id", "created_at", "updated_at")}
+    # Forza nome distinto + niente cron (l'utente lo riconfigura, evita auto-run di duplicati)
+    data["name"] = (src.get("name") or "task") + " (copy)"
+    data["cron"] = None
+    # Status_tag default: tuning (è un task fresco da configurare)
+    if data.get("status_tag") == "working":
+        data["status_tag"] = "tuning"
+    try:
+        new_id = db.create_task(data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"clone fallito: {e}")
+    jobs.reload_schedules()
+    return RedirectResponse(
+        url=f"/tasks/{new_id}/edit?flash=Clonato+da+%23{task_id}",
+        status_code=303,
+    )
 
 
 @router.post("/tasks/{task_id}/toggle-disabled")

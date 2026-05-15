@@ -1,17 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Assets — AgentScraper{% endblock %}
+{% block main_class %}wide{% endblock %}
 {% block content %}
 <section>
-  <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
+  <div class="page-header">
     <div>
-      <h2 style="margin-bottom:0.3rem">📦 Assets</h2>
-      <p class="muted" style="margin:0">Tutto il materiale estratto dai task (annunci, prodotti, profili, eventi, articoli, ...). Filtra per tipo o tag.</p>
+      <h2>📦 Assets</h2>
+      <p class="page-subtitle">Tutto il materiale estratto dai task (annunci, prodotti, profili, eventi, articoli, ...). Filtra per tipo o tag.</p>
     </div>
-    <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
-      <a href="/assets/new" style="padding:0.6rem 1rem;background:#2e7d32;color:white;text-decoration:none;border-radius:4px;font-weight:500;white-space:nowrap">
+    <div class="page-actions">
+      <a href="/assets/new" class="btn-link-action" style="background:#2e7d32;color:#fff;border-color:#2e7d32;font-weight:500">
         ➕ Nuovo asset
       </a>
-      <a href="/import" style="padding:0.6rem 1rem;background:#1565c0;color:white;text-decoration:none;border-radius:4px;font-weight:500;white-space:nowrap">
+      <a href="/import" class="btn-link-action" style="background:#1565c0;color:#fff;border-color:#1565c0;font-weight:500">
         📥 Import CSV
       </a>
     </div>
@@ -21,38 +22,47 @@
   <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
   {% endif %}
   {% if request.query_params.get('imported') %}
-  <div class="flash-ok" style="background:#e8f5e9;border:1px solid #4caf50;padding:0.6rem 0.8rem;border-radius:4px;margin:0.8rem 0">
-    ✅ Import completato: <strong>{{ request.query_params.get('imported') }}</strong> record processati.
-  </div>
+  <div class="flash-ok">✅ Import completato: <strong>{{ request.query_params.get('imported') }}</strong> record processati.</div>
   {% endif %}
 
-  <form method="get" action="/assets" class="assets-filter">
-    <div class="row">
-      <label>Tipo
-        <select name="asset_type">
-          <option value="">— tutti ({{ types_in_use | sum(attribute='count') }})</option>
-          {% for t in types_in_use %}
-          <option value="{{ t.asset_type }}" {% if t.asset_type == filter_type %}selected{% endif %}>
-            {{ t.asset_type }} ({{ t.count }})
-          </option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Stato
-        <select name="status">
-          <option value="">— tutti</option>
-          {% for s in ["new", "qualified", "rejected", "archived"] %}
-          <option value="{{ s }}" {% if s == filter_status %}selected{% endif %}>{{ s }}</option>
-          {% endfor %}
-        </select>
-      </label>
+  <div class="stats-bar">
+    <span class="stats-pill"><strong>{{ total }}</strong> asset {% if filter_type or filter_status or filter_tags_str %}filtrati{% else %}totali{% endif %}</span>
+    {% if filter_type %}<span class="stats-pill stats-pill-active">tipo: <strong>{{ filter_type }}</strong> <a class="pill-close" href="/assets?status={{ filter_status }}&tags={{ filter_tags_str }}" title="rimuovi">×</a></span>{% endif %}
+    {% if filter_status %}<span class="stats-pill stats-pill-active">stato: <strong>{{ filter_status }}</strong> <a class="pill-close" href="/assets?asset_type={{ filter_type }}&tags={{ filter_tags_str }}" title="rimuovi">×</a></span>{% endif %}
+  </div>
+
+  <details class="filter-panel" {% if filter_type or filter_status or filter_tags_str %}open{% endif %}>
+    <summary>🔎 Filtra asset</summary>
+    <form method="get" action="/assets">
+      <div class="filter-grid">
+        <label>Tipo asset
+          <select name="asset_type">
+            <option value="">— tutti ({{ types_in_use | sum(attribute='count') }})</option>
+            {% for t in types_in_use %}
+            <option value="{{ t.asset_type }}" {% if t.asset_type == filter_type %}selected{% endif %}>
+              {{ t.asset_type }} ({{ t.count }})
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Stato
+          <select name="status">
+            <option value="">— tutti</option>
+            {% for s in ["new", "qualified", "rejected", "archived"] %}
+            <option value="{{ s }}" {% if s == filter_status %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
       <input type="hidden" name="tags" value="{{ filter_tags_str }}">
-      <button type="submit">Filtra</button>
-      {% if filter_type or filter_status or filter_tags_str %}
-        <a href="/assets" class="link-cancel">Reset</a>
-      {% endif %}
-    </div>
-  </form>
+      <div class="filter-actions">
+        <button type="submit" class="btn-primary">Applica filtri</button>
+        {% if filter_type or filter_status or filter_tags_str %}
+          <a href="/assets" class="btn-link">✕ Reset filtri</a>
+        {% endif %}
+      </div>
+    </form>
+  </details>
 
   {% if filter_tags %}
   <div class="active-tags">
@@ -207,7 +217,18 @@
   </div>
 
   {% else %}
-  <p class="muted">Nessun asset corrisponde ai filtri.</p>
+  <div class="empty-state">
+    <span class="empty-icon">📦</span>
+    <div class="empty-title">Nessun asset corrisponde ai filtri</div>
+    <p class="empty-hint">
+      {% if filter_type or filter_status or filter_tags_str %}
+        Prova a rimuovere alcuni filtri, oppure <a href="/assets">resetta tutto</a>.
+      {% else %}
+        Crea il primo asset manualmente con <a href="/assets/new">➕ Nuovo asset</a> o importa un CSV.
+        Gli asset vengono generati anche dai task (bulk_extract, recon, site_explorer).
+      {% endif %}
+    </p>
+  </div>
   {% endif %}
 </section>
 

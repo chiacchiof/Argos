@@ -51,9 +51,9 @@
         <td><code>{{ t.model }}</code></td>
         <td><code>{{ t.cron or "—" }}</code></td>
         <td><small>{{ t.updated_at }}</small></td>
-        <td>
-          <a href="/tasks/{{ t.id }}/edit">modifica</a>
-          <form method="post" action="/tasks/{{ t.id }}/toggle-disabled" style="display:inline; margin-left: 0.4rem;">
+        <td class="row-actions">
+          <a href="/tasks/{{ t.id }}/edit" class="btn-small btn-link-action" title="Modifica configurazione task">✏️ modifica</a>
+          <form method="post" action="/tasks/{{ t.id }}/toggle-disabled" style="display:inline">
             <input type="hidden" name="redirect_to" value="/">
             {% if t.disabled %}
               <button type="submit" class="btn-small" title="Riabilita il task">✓ abilita</button>
