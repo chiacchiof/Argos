@@ -494,17 +494,80 @@ CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflo
 """
 
 
+# ---------------------------------------------------------------------------
+# Colonne multi-tenant (Step C): aggiunte idempotentemente in init_db()
+# ---------------------------------------------------------------------------
+# Tabelle che ricevono `tenant_id BIGINT REFERENCES tenants(id) ON DELETE CASCADE`
+# (nullable per backfill; Step E migrerà i dati legacy a tenant EDG).
+# Le tabelle `site_patterns` e `site_playbooks` restano GLOBALI (knowledge base
+# scraping condivisa cross-tenant — vedi SETUP_CLOUD_DB_TENANT.md).
+_TENANT_AWARE_TABLES = (
+    "tasks", "jobs", "workflows", "workflow_runs", "workflow_edges",
+    "assets", "asset_tags", "contacts", "threads", "messages",
+    "orchestrator_messages", "social_accounts", "social_dm_log",
+    "whatsapp_api_config", "channel_config",
+    "recon_runs", "recon_checkpoints", "recon_visited",
+)
+
+# Tabelle che ricevono `created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL`
+# per audit/per-user permissioning futuro.
+_USER_OWNERSHIP_TABLES = (
+    "tasks", "jobs", "workflows", "assets", "contacts",
+    "social_accounts", "whatsapp_api_config",
+)
+
+
+def _apply_multitenant_columns(conn) -> None:
+    """Idempotente: ADD COLUMN IF NOT EXISTS per tenant_id + created_by_user_id +
+    indici compositi (tenant_id, created_at DESC) o (tenant_id, status)."""
+    # tenant_id su tabelle scoped per tenant
+    for tbl in _TENANT_AWARE_TABLES:
+        conn.execute(
+            f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS tenant_id BIGINT "
+            f"REFERENCES tenants(id) ON DELETE CASCADE"
+        )
+
+    # created_by_user_id (audit / future per-user permissions)
+    for tbl in _USER_OWNERSHIP_TABLES:
+        conn.execute(
+            f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS created_by_user_id BIGINT "
+            f"REFERENCES users(id) ON DELETE SET NULL"
+        )
+
+    # Indici compositi (tenant_id, ...): velocizzano le query filtrate per tenant.
+    tenant_indices = [
+        ("idx_tasks_tenant", "tasks(tenant_id, created_at DESC)"),
+        ("idx_jobs_tenant", "jobs(tenant_id, id DESC)"),
+        ("idx_workflows_tenant", "workflows(tenant_id, created_at DESC)"),
+        ("idx_assets_tenant", "assets(tenant_id, asset_type, status)"),
+        ("idx_contacts_tenant", "contacts(tenant_id, status)"),
+        ("idx_threads_tenant", "threads(tenant_id, status)"),
+        ("idx_messages_tenant", "messages(tenant_id, created_at DESC)"),
+        ("idx_orchestrator_msg_tenant", "orchestrator_messages(tenant_id, id)"),
+        ("idx_social_accounts_tenant", "social_accounts(tenant_id, status)"),
+        ("idx_social_dm_log_tenant", "social_dm_log(tenant_id, sent_at DESC)"),
+        ("idx_whatsapp_api_tenant", "whatsapp_api_config(tenant_id, status)"),
+        ("idx_recon_runs_tenant", "recon_runs(tenant_id, status)"),
+    ]
+    for name, definition in tenant_indices:
+        conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {definition}")
+
+
 def init_db() -> None:
-    """Crea (idempotente) tutte le tabelle business + indici su Postgres.
+    """Crea (idempotente) tutte le tabelle business + indici + colonne multi-tenant.
 
     Le tabelle multi-tenant `tenants` e `users` sono create da `app.db_cloud.init_db()`
-    (chiamato dal lifespan di `app.main`).
+    (chiamato dal lifespan di `app.main`) PRIMA di questa funzione, perché le FK
+    `tenant_id` e `created_by_user_id` aggiunte qui le referenziano.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
+        # 1) tabelle business + indici base
         conn.execute(SCHEMA_SQL)
+        # 2) colonne multi-tenant + indici compositi (richiede tenants/users già create)
+        _apply_multitenant_columns(conn)
         conn.commit()
-    log.info("DB business schema applicato (init_db).")
+    log.info("DB business schema applicato (init_db) + colonne multi-tenant.")
 
 
 def _dump_list(value: list[str] | None) -> str | None:
@@ -645,38 +708,77 @@ def _row_to_task(row: dict[str, Any]) -> dict[str, Any]:
 
 
 # ----- Tasks -----
+#
+# Convenzione tenant filtering (Step D Fase 2):
+# - `tenant_id: int | None = None` come kwarg opzionale.
+#   * None → NESSUN filtro (comportamento legacy, usato da super-admin o test).
+#   * int → WHERE tenant_id = %s (isolamento tenant_user).
+# - `get_*` con tenant_id filtra anche su id → previene IDOR (un utente non può
+#   leggere risorse di altri tenant indovinando l'id).
+# - `create_*` accetta tenant_id + created_by_user_id come kwargs e li
+#   inserisce; un super-admin che crea senza specificare lascia tenant_id NULL
+#   (il record sarà invisibile a tutti i tenant_user finché non assegnato).
 
-def list_tasks() -> list[dict[str, Any]]:
+def list_tasks(tenant_id: int | None = None) -> list[dict[str, Any]]:
     with connect() as con:
-        rows = con.execute("SELECT * FROM tasks ORDER BY id DESC").fetchall()
+        if tenant_id is None:
+            rows = con.execute("SELECT * FROM tasks ORDER BY id DESC").fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM tasks WHERE tenant_id = %s ORDER BY id DESC",
+                (tenant_id,),
+            ).fetchall()
     return [_row_to_task(r) for r in rows]
 
 
-def get_task(task_id: int) -> dict[str, Any] | None:
+def get_task(task_id: int, tenant_id: int | None = None) -> dict[str, Any] | None:
     with connect() as con:
-        row = con.execute("SELECT * FROM tasks WHERE id = %s", (task_id,)).fetchone()
+        if tenant_id is None:
+            row = con.execute("SELECT * FROM tasks WHERE id = %s", (task_id,)).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM tasks WHERE id = %s AND tenant_id = %s",
+                (task_id, tenant_id),
+            ).fetchone()
     return _row_to_task(row) if row else None
 
 
-def set_task_disabled(task_id: int, disabled: bool) -> None:
-    """Imposta il flag `disabled` (0/1) per un task."""
+def set_task_disabled(task_id: int, disabled: bool, tenant_id: int | None = None) -> None:
+    """Imposta il flag `disabled` (0/1) per un task. Filtra per tenant se passato."""
     with connect() as con:
-        con.execute(
-            "UPDATE tasks SET disabled = %s WHERE id = %s",
-            (1 if disabled else 0, task_id),
-        )
+        if tenant_id is None:
+            con.execute(
+                "UPDATE tasks SET disabled = %s WHERE id = %s",
+                (1 if disabled else 0, task_id),
+            )
+        else:
+            con.execute(
+                "UPDATE tasks SET disabled = %s WHERE id = %s AND tenant_id = %s",
+                (1 if disabled else 0, task_id, tenant_id),
+            )
 
 
-def set_workflow_disabled(workflow_id: int, disabled: bool) -> None:
-    """Imposta il flag `disabled` (0/1) per un workflow."""
+def set_workflow_disabled(workflow_id: int, disabled: bool, tenant_id: int | None = None) -> None:
+    """Imposta il flag `disabled` (0/1) per un workflow. Filtra per tenant se passato."""
     with connect() as con:
-        con.execute(
-            "UPDATE workflows SET disabled = %s WHERE id = %s",
-            (1 if disabled else 0, workflow_id),
-        )
+        if tenant_id is None:
+            con.execute(
+                "UPDATE workflows SET disabled = %s WHERE id = %s",
+                (1 if disabled else 0, workflow_id),
+            )
+        else:
+            con.execute(
+                "UPDATE workflows SET disabled = %s WHERE id = %s AND tenant_id = %s",
+                (1 if disabled else 0, workflow_id, tenant_id),
+            )
 
 
-def create_task(data: dict[str, Any]) -> int:
+def create_task(
+    data: dict[str, Any],
+    *,
+    tenant_id: int | None = None,
+    created_by_user_id: int | None = None,
+) -> int:
     ts = now_iso()
     with connect() as con:
         cur = con.execute(
@@ -709,8 +811,9 @@ def create_task(data: dict[str, Any]) -> int:
                                   outreach_filter_source_task_id,
                                   outreach_filter_source_follower_of,
                                   outreach_filter_tags,
+                                  tenant_id, created_by_user_id,
                                   created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 data["name"],
@@ -776,6 +879,8 @@ def create_task(data: dict[str, Any]) -> int:
                 int(data["outreach_filter_source_task_id"]) if data.get("outreach_filter_source_task_id") else None,
                 (data.get("outreach_filter_source_follower_of") or "").strip() or None,
                 _serialize_outreach_filter_tags(data.get("outreach_filter_tags")),
+                tenant_id,
+                created_by_user_id,
                 ts,
                 ts,
             ),
@@ -783,7 +888,7 @@ def create_task(data: dict[str, Any]) -> int:
         return int(cur.fetchone()['id'])
 
 
-def update_task(task_id: int, data: dict[str, Any]) -> None:
+def update_task(task_id: int, data: dict[str, Any], tenant_id: int | None = None) -> None:
     with connect() as con:
         con.execute(
             """
@@ -819,6 +924,7 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 outreach_filter_tags = %s,
                 updated_at = %s
             WHERE id = %s
+              AND (%s::bigint IS NULL OR tenant_id = %s)
             """,
             (
                 data["name"],
@@ -886,13 +992,21 @@ def update_task(task_id: int, data: dict[str, Any]) -> None:
                 _serialize_outreach_filter_tags(data.get("outreach_filter_tags")),
                 now_iso(),
                 task_id,
+                tenant_id,
+                tenant_id,
             ),
         )
 
 
-def delete_task(task_id: int) -> None:
+def delete_task(task_id: int, tenant_id: int | None = None) -> None:
     with connect() as con:
-        con.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
+        if tenant_id is None:
+            con.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
+        else:
+            con.execute(
+                "DELETE FROM tasks WHERE id = %s AND tenant_id = %s",
+                (task_id, tenant_id),
+            )
 
 
 # ----- Jobs -----

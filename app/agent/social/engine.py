@@ -239,7 +239,7 @@ class OutreachEngine:
                             try:
                                 snippet = await page.evaluate(
                                     "document.body && document.body.innerText"
-                                    " ? document.body.innerText.slice(0, 400) : ''"
+                                    " %s document.body.innerText.slice(0, 400) : ''"
                                 )
                                 snippet = (snippet or "").replace("\n", " | ").strip()
                                 if snippet:

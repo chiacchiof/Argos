@@ -268,7 +268,7 @@ def _form_extra_context() -> dict:
         assets_meta: dict[int, dict] = {}
         if asset_ids:
             with db.connect() as con:
-                placeholders = ",".join("?" * len(asset_ids))
+                placeholders = ",".join(["%s"] * len(asset_ids))
                 # asset_type per ogni asset_id
                 for r in con.execute(
                     f"SELECT id, asset_type FROM assets WHERE id IN ({placeholders})",

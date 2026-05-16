@@ -45,9 +45,9 @@ def _isolate_test_db(monkeypatch):
     db.reset_pool()
     db_cloud.close_pool()
 
-    # Reapplico schema
-    db.init_db()
+    # Reapplico schema: db_cloud PRIMA (crea tenants/users), poi db (FK)
     db_cloud.init_db()
+    db.init_db()
 
     yield
 

@@ -167,12 +167,12 @@ async def asset_search_htmx(
     )
     args: list = []
     if q:
-        sql += "AND (LOWER(a.title) LIKE ? OR LOWER(a.asset_type) LIKE ? OR LOWER(t.tag_value) LIKE ?) "
+        sql += "AND (LOWER(a.title) LIKE %s OR LOWER(a.asset_type) LIKE %s OR LOWER(t.tag_value) LIKE %s) "
         args += [pat, pat, pat]
     if asset_type:
-        sql += "AND a.asset_type = ? "
+        sql += "AND a.asset_type = %s "
         args.append(asset_type)
-    sql += "ORDER BY a.id DESC LIMIT ?"
+    sql += "ORDER BY a.id DESC LIMIT %s"
     args.append(limit)
     with db.connect() as con:
         rows = con.execute(sql, args).fetchall()
@@ -349,7 +349,7 @@ async def asset_detail(request: Request, asset_id: int):
             rows = con.execute(
                 "SELECT id, display_name, email, telegram_username, whatsapp, "
                 "sitoweb, social_json, status, qualifier_score "
-                "FROM contacts WHERE asset_id = ? ORDER BY id",
+                "FROM contacts WHERE asset_id = %s ORDER BY id",
                 (asset_id,),
             ).fetchall()
             linked_contacts = [dict(r) for r in rows]
@@ -402,7 +402,7 @@ async def asset_edit_form(request: Request, asset_id: int):
     try:
         with db.connect() as con:
             n_linked = con.execute(
-                "SELECT COUNT(*) FROM contacts WHERE asset_id = ?", (asset_id,)
+                "SELECT COUNT(*) FROM contacts WHERE asset_id = %s", (asset_id,)
             ).fetchone()[0]
     except Exception:
         pass
@@ -473,8 +473,8 @@ async def asset_edit_submit(
         try:
             with db.connect() as con:
                 cur = con.execute(
-                    "UPDATE contacts SET display_name = ?, source_url = ?, updated_at = ? "
-                    "WHERE asset_id = ?",
+                    "UPDATE contacts SET display_name = %s, source_url = %s, updated_at = %s "
+                    "WHERE asset_id = %s",
                     (title, source_url or None, db.now_iso(), asset_id),
                 )
                 n_updated = cur.rowcount

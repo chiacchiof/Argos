@@ -270,7 +270,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         if t and not t.get("external_id"):
                             with db.connect() as con:
                                 con.execute(
-                                    "UPDATE threads SET external_id = ? WHERE id = ?",
+                                    "UPDATE threads SET external_id = %s WHERE id = %s",
                                     (msg_id, thread_id),
                                 )
                         db.touch_thread(thread_id)

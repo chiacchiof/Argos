@@ -789,7 +789,7 @@ async def search_friend_via_friendlist(
                             parent_txt = await a.evaluate(
                                 "el => {"
                                 "  let p = el.closest('div[role=\"listitem\"]') || el.closest('div'); "
-                                "  return p ? p.innerText : '';"
+                                "  return p %s p.innerText : '';"
                                 "}"
                             )
                             parent_label = (parent_txt or "").strip().split("\n")[0][:120]

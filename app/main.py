@@ -39,12 +39,10 @@ _PUBLIC_PATH_PREFIXES = ("/static", "/login", "/logout", "/favicon.ico", "/dbcon
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Ordine cruciale: db_cloud PRIMA (crea tenants/users) di db (che aggiunge
+    # FK tenant_id/created_by_user_id alle tabelle business).
+    db_cloud.init_db()
     db.init_db()
-    # Inizializza il backend cloud per tenants/users (no-op se DATABASE_URL non settato).
-    try:
-        db_cloud.init_db()
-    except Exception as exc:
-        log.error("Init cloud DB fallito: %s — continuo in modalità legacy.", exc)
     # Riconcilia job orfani (server riavviato mentre stavano girando)
     jobs.reconcile_orphan_jobs()
     jobs.start_scheduler()

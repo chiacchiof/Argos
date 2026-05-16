@@ -679,7 +679,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         cur = con.execute(
             """INSERT INTO recon_runs (task_id, job_id, social_account_id,
                                        status, started_at, last_active_at)
-               VALUES (?, ?, ?, 'running', ?, ?)""",
+               VALUES (%s, %s, %s, 'running', %s, %s)""",
             (task["id"], job_id, account["id"], db.now_iso(), db.now_iso()),
         )
         recon_run_id = int(cur.lastrowid)
@@ -1027,7 +1027,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         con.execute(
                             """INSERT OR IGNORE INTO recon_visited
                                (run_id, target_url, target_platform, visited_at, classified)
-                               VALUES (?, ?, ?, ?, 0)""",
+                               VALUES (%s, %s, %s, %s, 0)""",
                             (recon_run_id, url, plat, db.now_iso()),
                         )
                 except Exception as e:
@@ -1245,7 +1245,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 # update recon_runs.target_count
                 with db.connect() as con:
                     con.execute(
-                        "UPDATE recon_runs SET target_count = ?, last_active_at = ? WHERE id = ?",
+                        "UPDATE recon_runs SET target_count = %s, last_active_at = %s WHERE id = %s",
                         (n_ok, db.now_iso(), recon_run_id),
                     )
 
@@ -1284,7 +1284,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         audit.close()
         with db.connect() as con:
             con.execute(
-                "UPDATE recon_runs SET status = 'done', finished_at = ?, target_count = ? WHERE id = ?",
+                "UPDATE recon_runs SET status = 'done', finished_at = %s, target_count = %s WHERE id = %s",
                 (db.now_iso(), n_ok, recon_run_id),
             )
 
