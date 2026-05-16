@@ -15,17 +15,43 @@
     <a href="/tasks/new" class="btn-primary">+ Nuovo task</a>
   </div>
 
-  {# Filtro per status_tag — query string ?status_tag=... #}
+  {# Tab orizzontali per tipo task. `type` in querystring; preserva status_tag. #}
+  {% set st = active_status_tag or '' %}
+  {% set at = active_type or 'all' %}
+  {% macro tab_href(type_key) -%}
+    {%- set qs = [] -%}
+    {%- if type_key and type_key != 'all' -%}{%- set _ = qs.append('type=' ~ type_key) -%}{%- endif -%}
+    {%- if st -%}{%- set _ = qs.append('status_tag=' ~ st) -%}{%- endif -%}
+    /{% if qs %}?{{ qs|join('&') }}{% endif %}
+  {%- endmacro %}
+  <nav class="task-type-tabs" aria-label="Tipologia task">
+    {% for key, label in task_type_tabs %}
+      {% set n = counts_by_type.get(key, 0) %}
+      <a href="{{ tab_href(key) }}"
+         class="task-type-tab {% if at == key %}task-type-tab-active{% endif %}"
+         {% if at == key %}aria-current="page"{% endif %}>
+        <span class="task-type-tab-label">{{ label }}</span>
+        <span class="task-type-tab-count">{{ n }}</span>
+      </a>
+    {% endfor %}
+  </nav>
+
+  {# Filtro per status_tag — query string ?status_tag=... ; preserva il tab attivo. #}
+  {% macro chip_href(status_key) -%}
+    {%- set qs = [] -%}
+    {%- if at and at != 'all' -%}{%- set _ = qs.append('type=' ~ at) -%}{%- endif -%}
+    {%- if status_key -%}{%- set _ = qs.append('status_tag=' ~ status_key) -%}{%- endif -%}
+    /{% if qs %}?{{ qs|join('&') }}{% endif %}
+  {%- endmacro %}
   <div class="task-filter">
-    {% set st = active_status_tag or '' %}
-    <span class="filter-label">Filtra:</span>
-    <a href="/" class="chip {% if not st %}chip-active{% endif %}">tutti</a>
-    <a href="/?status_tag=tuning"     class="chip chip-tag tag-tuning     {% if st=='tuning' %}chip-active{% endif %}">🔧 tuning</a>
-    <a href="/?status_tag=working"    class="chip chip-tag tag-working    {% if st=='working' %}chip-active{% endif %}">✅ working</a>
-    <a href="/?status_tag=broken"     class="chip chip-tag tag-broken     {% if st=='broken' %}chip-active{% endif %}">❌ broken</a>
-    <a href="/?status_tag=deprecated" class="chip chip-tag tag-deprecated {% if st=='deprecated' %}chip-active{% endif %}">🚫 deprecated</a>
-    <a href="/?status_tag=reference"  class="chip chip-tag tag-reference  {% if st=='reference' %}chip-active{% endif %}">📌 reference</a>
-    <a href="/?status_tag=_unset"     class="chip {% if st=='_unset' %}chip-active{% endif %}">non valutati</a>
+    <span class="filter-label">Stato:</span>
+    <a href="{{ chip_href('') }}"           class="chip {% if not st %}chip-active{% endif %}">tutti</a>
+    <a href="{{ chip_href('tuning') }}"     class="chip chip-tag tag-tuning     {% if st=='tuning' %}chip-active{% endif %}">🔧 tuning</a>
+    <a href="{{ chip_href('working') }}"    class="chip chip-tag tag-working    {% if st=='working' %}chip-active{% endif %}">✅ working</a>
+    <a href="{{ chip_href('broken') }}"     class="chip chip-tag tag-broken     {% if st=='broken' %}chip-active{% endif %}">❌ broken</a>
+    <a href="{{ chip_href('deprecated') }}" class="chip chip-tag tag-deprecated {% if st=='deprecated' %}chip-active{% endif %}">🚫 deprecated</a>
+    <a href="{{ chip_href('reference') }}"  class="chip chip-tag tag-reference  {% if st=='reference' %}chip-active{% endif %}">📌 reference</a>
+    <a href="{{ chip_href('_unset') }}"     class="chip {% if st=='_unset' %}chip-active{% endif %}">non valutati</a>
   </div>
 
   {% if tasks %}
@@ -69,7 +95,7 @@
   </table>
   {% else %}
   <p class="empty">
-    {% if active_status_tag %}
+    {% if active_status_tag or (active_type and active_type != 'all') %}
       Nessun task con questo filtro. <a href="/">Mostra tutti</a>.
     {% else %}
       Nessun task. <a href="/tasks/new">Creane uno</a>.

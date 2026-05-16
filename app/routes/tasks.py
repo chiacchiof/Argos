@@ -51,14 +51,61 @@ async def api_models_for_provider(provider: str = ""):
     }
 
 
+# Mapping agent_mode -> macro tipo (tab in /tasks). Gli agent_mode non
+# elencati ricadono in 'other' (es. 'react' o futuri custom).
+_TASK_TYPE_BY_MODE: dict[str, str] = {
+    "browser_use":       "scraping",
+    "bulk_extract":      "scraping",
+    "auto_extract":      "scraping",
+    "site_explorer":     "scraping",
+    "recon_social":      "scraping",
+    "qualifier":         "qualifier",
+    "outreach":          "outreach",
+    "outreach_social":   "outreach",
+    "outreach_whatsapp": "outreach",
+    "responder":         "responder",
+}
+
+# Tab definiti nella UI (ordine + label + icona). 'all' e' speciale (mostra tutto).
+TASK_TYPE_TABS: list[tuple[str, str]] = [
+    ("all",       "Tutti"),
+    ("scraping",  "🕸️ Scraping / Recon"),
+    ("qualifier", "✅ Qualifier"),
+    ("outreach",  "📤 Outreach"),
+    ("responder", "💬 Responder"),
+    ("other",     "🤖 Altri"),
+]
+
+
+def _task_type_of(agent_mode: str | None) -> str:
+    return _TASK_TYPE_BY_MODE.get((agent_mode or "").strip(), "other")
+
+
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, status_tag: str = ""):
-    tasks = db.list_tasks()
+async def index(request: Request, status_tag: str = "", type: str = ""):
+    all_tasks = db.list_tasks()
+    # Conteggi per tab (sempre calcolati su all_tasks, prima di filtrare per tab,
+    # ma DOPO l'eventuale filtro status_tag — cosi' i numeri sui tab riflettono
+    # cio' che vedrebbe l'utente cliccandoli con lo status_tag attivo).
     if status_tag:
         if status_tag == "_unset":
-            tasks = [t for t in tasks if not t.get("status_tag")]
+            base = [t for t in all_tasks if not t.get("status_tag")]
         else:
-            tasks = [t for t in tasks if (t.get("status_tag") or "") == status_tag]
+            base = [t for t in all_tasks if (t.get("status_tag") or "") == status_tag]
+    else:
+        base = all_tasks
+
+    counts_by_type: dict[str, int] = {"all": len(base)}
+    for t in base:
+        k = _task_type_of(t.get("agent_mode"))
+        counts_by_type[k] = counts_by_type.get(k, 0) + 1
+
+    active_type = (type or "").strip() or "all"
+    if active_type != "all":
+        tasks = [t for t in base if _task_type_of(t.get("agent_mode")) == active_type]
+    else:
+        tasks = base
+
     from ..dashboard import compute_task_health
     health_by_task = {t["id"]: compute_task_health(t["id"]) for t in tasks}
     return templates.TemplateResponse(
@@ -68,6 +115,9 @@ async def index(request: Request, status_tag: str = ""):
             "tasks": tasks,
             "health_by_task": health_by_task,
             "active_status_tag": status_tag,
+            "active_type": active_type,
+            "task_type_tabs": TASK_TYPE_TABS,
+            "counts_by_type": counts_by_type,
         },
     )
 
