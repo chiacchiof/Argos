@@ -17,6 +17,8 @@ Il tutto orchestrabile come **DAG di attività** (workflow) che si triggerano in
 
 L'app gira interamente sul tuo computer — la web UI è su `http://127.0.0.1:8000`. Solo il traffico verso gli LLM (Ollama in locale o API esterne) e i fetch web/SMTP/IMAP/Telegram esce dalla tua macchina.
 
+> 🔐 **Modalità multi-tenant** (uso condiviso, DB Postgres in cloud o LAN): se `DATABASE_URL` è impostata, l'app passa in modalità autenticata con super-admin e tenant separati. La configurazione di sistema (creazione tenant/utenti, scelta della stringa di connessione DB) è descritta in [§21](#21-configurazione-di-sistema-super-admin-tenant-e-stringa-di-connessione-db).
+
 ---
 
 ## 2. I concetti chiave
@@ -2623,3 +2625,233 @@ Validato su job#147 (durata >4h, 300+ profili): **0 detection signals**, fail ra
 ---
 
 Cap. 17-20 documentano lo stato post-2026-05-15. Per fix bug emersi in run successivi vedere git log + memory `project_bugs_recon_social.md` se presente.
+
+---
+
+## 21. Configurazione di sistema (super-admin, tenant e stringa di connessione DB)
+
+Questa sezione è per **chi installa l'app**, non per l'utente finale. Spiega come:
+
+1. **Scegliere la modalità di esecuzione** (single-user locale vs multi-tenant con DB condiviso).
+2. **Bootstrapparsi come super-admin** al primo avvio.
+3. **Creare tenant e utenti** dalla UI `/admin`.
+4. **Impostare la stringa di connessione al DB** (locale dev o cloud Neon/Azure) dalla UI `/dbconfig`, senza editare `.env`.
+
+> Riferimento tecnico esteso: [SETUP_CLOUD_DB_TENANT.md](SETUP_CLOUD_DB_TENANT.md). Questa sezione è la versione operativa "passo-passo".
+
+### 21.1 Le due modalità di esecuzione
+
+L'app si comporta in modo diverso a seconda della variabile `DATABASE_URL` letta al boot (da `.env` o dall'override `/dbconfig`):
+
+| `DATABASE_URL` | Modalità | Cosa succede |
+|---|---|---|
+| **vuota / assente** | **Legacy single-user** | SQLite su `data/agentscraper.db`. Nessun login, nessun tenant. Comportamento storico descritto nei §1–20. |
+| **valorizzata** (`postgresql://…`) | **Multi-tenant** | DB Postgres condiviso. Login obbligatorio. Super-admin via `BOOTSTRAP_SUPER_ADMIN_*`. Pagine `/admin` (tenant/utenti) e `/dbconfig` (DSN) attive. |
+
+La modalità si decide solo al boot — per cambiare modalità: ferma l'app, modifica `.env` (o `/dbconfig`), rilancia.
+
+### 21.2 I due ruoli di amministrazione (NON confonderli)
+
+L'app espone **due pannelli amministrativi separati**, ciascuno con le proprie credenziali. Sono volutamente disgiunti perché governano cose diverse:
+
+| Pannello | Chi è | Credenziali iniziali | Cosa configura |
+|---|---|---|---|
+| [`/admin`](http://127.0.0.1:8000/admin) | **`edgAdmin`** (super-admin applicativo) | `edgAdmin` / `Entra123!` | I **tenant** (organizzazioni) e i **loro utenti** dentro il DB attivo |
+| [`/dbconfig`](http://127.0.0.1:8000/dbconfig) | **`DBadmin`** (admin infrastruttura) | `DBadmin` / `Entra123!` | **A quale database** punta l'app (DSN Postgres locale/cloud) |
+
+In pratica: `DBadmin` decide *dove* vivono i dati, `edgAdmin` decide *chi* può vederli/modificarli.
+
+> ⚠️ **Cambia le password al primo accesso reale**. Le credenziali sopra sono di bootstrap per il pilot interno. Per `edgAdmin` si fa da `/admin/users/<id>/reset-password`. Per `DBadmin` serve modificare l'hash bcrypt hardcoded in [app/routes/dbconfig.py](app/routes/dbconfig.py) e rideployare (limite v1, vedi §21.7).
+
+### 21.3 Variabili d'ambiente necessarie (`.env`)
+
+Crea/edita il file [.env](.env) nella root del progetto. Esempio completo per modalità multi-tenant:
+
+```ini
+# === DB condiviso ===
+# Se vuoto → modalità SQLite legacy (single-user). Se valorizzata → multi-tenant.
+# Può essere vuota e impostata via /dbconfig (vedi §21.6).
+DATABASE_URL=postgresql://neondb_owner:<PASSWORD>@ep-delicate-leaf-alnrwlji.c-3.eu-central-1.aws.neon.tech/neondb?sslmode=require
+
+# === Cookie di sessione (firma) ===
+# 32 byte random urlsafe. Identico fra tutti i PC del tenant (consigliato).
+SESSION_SECRET_KEY=<generato una volta con: python -c "import secrets; print(secrets.token_urlsafe(32))">
+
+# === Cifratura override DSN (/dbconfig) ===
+# Serve per cifrare data/db_config.enc quando salvi una DSN da /dbconfig.
+# Se manca, /dbconfig rifiuta il salvataggio.
+AGENTSCRAPER_SECRET=<altra stringa random, anche generata con secrets.token_urlsafe(32)>
+
+# === Bootstrap super-admin (solo primo boot) ===
+# Se l'utente NON esiste già nel DB, viene creato al boot. Se esiste, queste righe sono ignorate.
+BOOTSTRAP_SUPER_ADMIN_EMAIL=edgAdmin
+BOOTSTRAP_SUPER_ADMIN_PASSWORD=Entra123!
+```
+
+**Comandi rapidi PowerShell per generare i secret**:
+
+```powershell
+python -c "import secrets; print('SESSION_SECRET_KEY=' + secrets.token_urlsafe(32))"
+python -c "import secrets; print('AGENTSCRAPER_SECRET=' + secrets.token_urlsafe(32))"
+```
+
+> 💡 **`BOOTSTRAP_SUPER_ADMIN_EMAIL` accetta anche stringhe senza `@`** (il campo `users.email` è `CITEXT`, non c'è validazione formato). `edgAdmin` come username funziona.
+
+### 21.4 Primo avvio (bootstrap super-admin)
+
+1. Compila `.env` con almeno `SESSION_SECRET_KEY` + `BOOTSTRAP_SUPER_ADMIN_*`. La `DATABASE_URL` può essere già nel `.env` oppure venire settata dopo via `/dbconfig` (vedi §21.6).
+2. Avvia l'app:
+   ```powershell
+   agentscraper
+   ```
+3. Al boot:
+   - `init_db()` crea le tabelle `tenants` e `users` (idempotente).
+   - Se non esiste un utente con `email = BOOTSTRAP_SUPER_ADMIN_EMAIL`, ne viene creato uno con `role='super_admin'` e password presa da `BOOTSTRAP_SUPER_ADMIN_PASSWORD`.
+   - Se l'utente esiste già, le due env-var vengono ignorate (non sovrascrivono la password).
+4. Apri [http://127.0.0.1:8000/login](http://127.0.0.1:8000/login):
+   - Campo "Email o username": `edgAdmin`
+   - Campo Password: `Entra123!`
+5. Una volta loggato vedi la **pill "Admin"** nell'header (solo super-admin) e puoi accedere a [`/admin`](http://127.0.0.1:8000/admin).
+
+### 21.5 Pagina `/admin` — creare tenant e utenti
+
+Tutta la sezione è gated da `Depends(require_super_admin)` — i `tenant_user` non la vedono.
+
+#### Creare un tenant
+
+1. `/admin/tenants` → vedi la tabella dei tenant esistenti.
+2. Form in cima: **Nome** (es. `Acme S.r.l.`), **Slug** (auto-derivato se lasciato vuoto, es. `acme-srl`).
+3. Click **Crea**. Il tenant nasce `is_active=true`.
+
+Azioni successive:
+- **Toggle attivo/disattivo**: utenti del tenant disattivato non possono più loggarsi (sessioni esistenti decadono al successivo round-trip).
+- **Elimina**: cascade su tutti gli utenti del tenant (FK `ON DELETE CASCADE`). I dati business (task/asset/ecc.) saranno gestiti dalle Fasi 3-4 della migrazione (ad oggi sono ancora solo su SQLite — vedi [SETUP_CLOUD_DB_TENANT.md](SETUP_CLOUD_DB_TENANT.md)).
+
+#### Creare un utente di un tenant
+
+1. `/admin/users` → form di creazione utente.
+2. **Ruolo**: scegli `tenant_user` (utente normale) o `super_admin` (un altro amministratore globale).
+3. **Tenant**: obbligatorio se ruolo=`tenant_user`, disabilitato e ignorato se ruolo=`super_admin` (i super-admin non appartengono a nessun tenant, è enforced da `CHECK` DB).
+4. **Email/login**: identificativo univoco (case-insensitive grazie a `CITEXT`). Può essere un'email vera o uno username arbitrario.
+5. **Password**: scelta dall'admin. Visibile in chiaro al momento della creazione, poi solo hash bcrypt nel DB.
+6. Click **Crea**.
+
+Azioni successive sulla riga utente:
+- **Toggle attivo**: blocca/sblocca il login.
+- **Reset password**: assegna una nuova password (super-admin può resettare anche la propria).
+- **Elimina**: non puoi eliminare te stesso. Cascade non si applica (gli asset business non hanno ancora FK su `users` in v1).
+
+> 📌 **In v1 non c'è edit del nominativo/email**: per "rinominare" un utente, elimina e ricrea.
+
+### 21.6 Pagina `/dbconfig` — impostare la stringa di connessione DB
+
+Serve quando vuoi cambiare il DB **a cui punta l'app** senza toccare `.env` (es. switch dev↔prod, o cambio di provider cloud).
+
+#### Quando usarla
+
+- **Sviluppo**: hai un Postgres locale (Docker o installer Windows) per testare schema/migrazioni → punti l'app lì.
+- **Pilot/Produzione**: punti l'app a un Postgres cloud (Neon, Azure Flexible Server, Supabase, ecc.).
+- **Switch on-demand**: passare dev → prod e viceversa cliccando, senza modificare file di config.
+
+#### Prerequisiti
+
+- `AGENTSCRAPER_SECRET` impostata in `.env` (serve per cifrare il file di override). Se manca, `/dbconfig/save` rifiuta il salvataggio con errore esplicito.
+- Conoscere la connection string Postgres del DB target.
+
+#### Procedura passo-passo
+
+1. Vai a [http://127.0.0.1:8000/dbconfig](http://127.0.0.1:8000/dbconfig) (l'URL **non** è linkato dalla nav principale — devi digitarlo o salvarlo nei preferiti).
+2. Login: **`DBadmin` / `Entra123!`**.
+3. Compila il form:
+   - **Connection string**: deve iniziare con `postgresql://` o `postgres://`. Esempi:
+     ```
+     # Postgres locale Docker (dev)
+     postgresql://postgres:postgres@localhost:5432/agentscraper_dev
+
+     # Neon (pilot cloud)
+     postgresql://neondb_owner:<PASSWORD>@ep-delicate-leaf-alnrwlji.c-3.eu-central-1.aws.neon.tech/neondb?sslmode=require
+
+     # Azure Database for PostgreSQL Flexible Server (produzione)
+     postgresql://agentscraper_user:<PASSWORD>@agentscraper-prod.postgres.database.azure.com:5432/agentscraper?sslmode=require
+     ```
+   - **Etichetta** (opzionale): testo libero per ricordarti cos'è (`"Locale dev"`, `"Neon prod"`, `"Azure prod"`).
+4. Click **Salva DSN** → la stringa viene cifrata con Fernet (chiave derivata da `AGENTSCRAPER_SECRET`) e scritta in `data/db_config.enc`.
+5. **Riavvia l'app** (`Ctrl+C` su uvicorn / chiudi `agentscraper.exe`, poi rilancia `agentscraper`).
+6. Al boot, [app/_runtime_db_override.py](app/_runtime_db_override.py) viene letto **prima** di `Settings()` e sovrascrive `os.environ["DATABASE_URL"]`. L'app punta al nuovo DB.
+
+#### Tornare al `.env`
+
+- Pagina `/dbconfig` → bottone **Rimuovi override** → cancella `data/db_config.enc`.
+- Riavvia l'app → torna a leggere `DATABASE_URL` dal `.env`. Se anche `.env` non ce l'ha → fallback su SQLite single-user.
+
+#### Sicurezza in chiaro
+
+- La cifratura protegge la DSN da occhi indiscreti su backup/log/file-sharing. **Non** protegge da un utente con accesso fisico al PC che può cancellare `data/db_config.enc` (così l'app torna al `.env`).
+- `DBadmin` e `edgAdmin` sono ruoli **separati**: chi conosce le credenziali super-admin non sa automaticamente quelle DBadmin, e viceversa. Voluto.
+- Le route `/dbconfig/save` e `/dbconfig/clear` rifiutano richieste senza sessione `DBadmin` (redirect a `/dbconfig` senza fare nulla).
+
+### 21.7 Setup Postgres locale per sviluppo (Docker)
+
+Per testare la modalità multi-tenant senza dover toccare il cloud, conviene avere un Postgres locale identico a Neon (Postgres 16).
+
+`docker-compose.dev.yml` minimale (nella root del repo):
+
+```yaml
+services:
+  postgres-dev:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agentscraper_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres-dev:/var/lib/postgresql/data
+```
+
+Avvio:
+
+```powershell
+docker compose -f docker-compose.dev.yml up -d
+```
+
+Connection string da inserire in `/dbconfig`:
+
+```
+postgresql://postgres:postgres@localhost:5432/agentscraper_dev
+```
+
+**Senza Docker**: installer ufficiale da [postgresql.org/download/windows](https://www.postgresql.org/download/windows/). Crea DB `agentscraper_dev` e usa la stessa DSN aggiornando user/password se diversi.
+
+### 21.8 Esempio end-to-end "da zero in 10 minuti"
+
+Scenario: vuoi mettere su un pilot con DB Neon condiviso fra 2 colleghi.
+
+1. **(Una volta sola, da chi amministra)** Crea il progetto Neon, copia la connection string `postgresql://…neon.tech/…?sslmode=require`.
+2. **(Una volta sola)** Genera `SESSION_SECRET_KEY` e `AGENTSCRAPER_SECRET` con i comandi PowerShell di §21.3 e condividili (in modo sicuro) con i colleghi.
+3. **(Su ogni PC)** Edita `.env`:
+   ```ini
+   DATABASE_URL=postgresql://neondb_owner:<PASSWORD>@ep-delicate-leaf-alnrwlji.c-3.eu-central-1.aws.neon.tech/neondb?sslmode=require
+   SESSION_SECRET_KEY=<stesso valore su tutti i PC>
+   AGENTSCRAPER_SECRET=<stesso valore o per-PC, tua scelta>
+   BOOTSTRAP_SUPER_ADMIN_EMAIL=edgAdmin
+   BOOTSTRAP_SUPER_ADMIN_PASSWORD=Entra123!
+   ```
+4. **(Su un PC, il primo che parte)** `agentscraper` → `init_db()` crea lo schema + il super-admin `edgAdmin`. Altri PC che partono dopo trovano lo schema già pronto e l'utente già esistente (le `BOOTSTRAP_*` vengono ignorate).
+5. **(Browser su quello stesso PC)** Login a `/login` come `edgAdmin / Entra123!`.
+6. `/admin/tenants` → crea il tenant `Default`.
+7. `/admin/users` → crea `alice@acme.com` e `bob@acme.com` come `tenant_user` del tenant `Default`. Comunica a ognuno la propria password.
+8. **(Su PC di Alice/Bob)** Login con le proprie credenziali → da ora ognuno vede solo i task/asset del tenant `Default` (l'isolamento per-tabella sarà completo dopo le Fasi 3-4 — vedi [SETUP_CLOUD_DB_TENANT.md](SETUP_CLOUD_DB_TENANT.md) per lo stato attuale).
+9. **(Solo se serve switchare DB)** Da `/dbconfig` con `DBadmin/Entra123!` → cambia la DSN al volo (es. punta a un Postgres locale per fare un test di schema), riavvia, lavora, poi rimuovi l'override per tornare a Neon.
+
+### 21.9 Out-of-scope v1 (cose che NON puoi fare ancora)
+
+- Cambiare le credenziali `DBadmin` da UI (serve modificare l'hash bcrypt in [app/routes/dbconfig.py](app/routes/dbconfig.py)).
+- Reset password via email per utenti dimenticati (lo fa il super-admin manualmente da `/admin/users/<id>/reset-password`).
+- 2FA per super-admin.
+- Audit log persistente delle azioni admin.
+- Edit dell'email/username di un utente esistente (workaround: elimina + ricrea).
+- Hot-reload del pool DB senza riavvio dopo cambio DSN da `/dbconfig` (lo switch richiede restart).
+- Test "ping" della DSN prima di salvarla in `/dbconfig` (se sbagliata, scoperto solo al riavvio).
+- Per-user filtering intra-tenant (ad oggi tutti gli utenti dello stesso tenant vedono tutto del tenant — Fase futura).
