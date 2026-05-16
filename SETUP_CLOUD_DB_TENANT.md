@@ -254,6 +254,90 @@ Pagina raggiungibile da una pill "Admin" nell'header, visibile **solo** se `curr
 - 2FA per super-admin.
 - Gestione fine-grained intra-tenant (chi può creare task, chi può fare outreach, ecc.) — Fase futura.
 
+## Schema migrations (Alembic)
+
+Per gestire modifiche di schema dopo la Fase 2 (rename, drop, change type, data migrations) usiamo Alembic. Setup completo + baseline revision già committati:
+
+- `alembic.ini` — config principale (URL placeholder; il vero DSN è letto da env.py).
+- `alembic/env.py` — risoluzione DSN:
+  1. Se `os.environ["DATABASE_URL"]` è settata esplicitamente in shell → usa quella (override esplicito per applicare su DB diverso dal default dell'app).
+  2. Altrimenti importa `app.config` (= load_dotenv + apply_override `/dbconfig`) come fa l'app.
+- `alembic/versions/0001_baseline_*.py` — baseline marker, NON crea tabelle (lo schema esistente è gestito da `app.db.init_db()` + `app.db_cloud.init_db()` al boot).
+- Entrambi i DB attivi (locale dev + Neon prod) sono stati `alembic stamp head` a `0001`.
+
+### Workflow tipico per una nuova modifica di schema
+
+**Esempio: aggiungere colonna `priority INTEGER DEFAULT 0` a `tasks`.**
+
+```powershell
+# 1. Genera revision (vuota)
+python -m alembic revision -m "add priority column to tasks"
+# → crea alembic/versions/XXXX_add_priority_column_to_tasks.py
+
+# 2. Edita upgrade()/downgrade() a mano:
+def upgrade():
+    op.add_column("tasks", sa.Column("priority", sa.Integer(), nullable=False, server_default="0"))
+def downgrade():
+    op.drop_column("tasks", "priority")
+
+# 3. Apply su LOCALE (DB attivo per l'app, default da .env)
+python -m alembic upgrade head
+pytest       # verifica niente regressioni
+
+# 4. Quando soddisfatto, apply su Neon (DSN esplicita in env shell)
+$env:DATABASE_URL="postgresql://neondb_owner:<PASS>@<host>.neon.tech/neondb?sslmode=require"
+python -m alembic upgrade head
+$env:DATABASE_URL=""   # cleanup
+
+# 5. Commit della revision + push
+git add alembic/versions/XXXX_*.py
+git commit -m "schema: priority column on tasks"
+```
+
+### Comandi utili
+
+| Comando | Cosa fa |
+|---|---|
+| `alembic current` | Mostra la revisione corrente del DB attivo |
+| `alembic history` | Lista tutte le revisioni del repo |
+| `alembic upgrade head` | Applica tutte le revisioni mancanti |
+| `alembic upgrade +1` | Applica solo la prossima |
+| `alembic downgrade -1` | Rollback di una revisione |
+| `alembic upgrade head --sql` | Genera SQL senza eseguire (review pre-prod) |
+| `alembic stamp head` | Marca DB come "up-to-date" senza eseguire (per DB già allineati a mano) |
+
+### Caso A: modifica ADDITIVE semplice (ADD COLUMN, CREATE INDEX, ecc.)
+
+Alternativa più rapida ad Alembic per modifiche idempotenti: aggiungere `ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...` a `_apply_multitenant_columns()` in `app/db.py`. Si applica automaticamente al boot dell'app, su qualunque DB target. Niente revisione da committare.
+
+**Quando usare init_db idempotente vs Alembic**:
+- `init_db`: ADD COLUMN nullable, CREATE TABLE IF NOT EXISTS, CREATE INDEX IF NOT EXISTS. Cose che non possono rompere niente.
+- Alembic: RENAME, DROP, CHANGE TYPE, NOT NULL constraint nuovo su tabella popolata, data backfill. Cose che richiedono pianificazione + rollback.
+
+### Caso B: data migration (riempire/normalizzare dati)
+
+Alembic supporta script Python custom nelle revision. Esempio:
+
+```python
+def upgrade():
+    op.add_column("contacts", sa.Column("phone_country", sa.String(2)))
+    # Backfill: estrai country code da `whatsapp` per i record esistenti
+    op.execute("""
+        UPDATE contacts SET phone_country = SUBSTRING(whatsapp FROM '^\\+(\\d{2})')
+        WHERE whatsapp ~ '^\\+\\d{2}'
+    """)
+    op.alter_column("contacts", "phone_country", nullable=False, server_default="IT")
+```
+
+### Note importanti
+
+- **`target_metadata = None`** in `env.py`: usiamo migrations manuali (op.add_column, op.create_table). Non possiamo usare `--autogenerate` perché l'app non ha SQLAlchemy ORM models (usiamo psycopg raw). Pazienza: scrivere a mano le revision è più sicuro comunque.
+- **NullPool**: alembic apre una connessione per operazione, non riusa il pool dell'app. Su Neon (PgBouncer) evita conflitti.
+- **Driver psycopg3**: alembic/env.py riscrive `postgresql://` → `postgresql+psycopg://` per usare il driver psycopg3 (già installato).
+- **Auto-upgrade al boot**: NON attivato. Se vuoi, in `app/main.py` lifespan dopo `init_db` puoi aggiungere `command.upgrade(alembic_cfg, "head")`. Pro: deploy automatici. Contro: se una migration fallisce, l'app non parte.
+
+---
+
 ## Pagina /dbconfig — switch DSN runtime (dev ↔ prod)
 
 Per permettere a chi sviluppa di puntare l'app a un Postgres locale (dev) o al Postgres cloud (prod) **senza editare `.env`**, esiste una pagina isolata `/dbconfig` con credenziali dedicate.
