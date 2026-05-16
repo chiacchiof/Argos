@@ -145,9 +145,18 @@ async def _run_in_proactor_thread(
     Serve perché uvicorn imposta WindowsSelectorEventLoopPolicy che NON supporta
     asyncio.create_subprocess_exec — usato da Playwright/browser-use per avviare
     Chromium. Su Linux/macOS la coroutine gira nel loop chiamante.
+
+    Multi-tenant: il ContextVar `_current_tenant_id_var` (e `_current_user_id_var`)
+    è **thread-local**. Le `threading.Thread` NON propagano i ContextVar
+    automaticamente, quindi catturiamo i valori nel thread chiamante (dove
+    `_run_job` ha già settato il context dal task) e li ri-iniettiamo nel
+    nuovo thread come prima cosa. Senza questo, le scritture `db.*` del
+    runner agentico finirebbero con `tenant_id=NULL` e gli asset/contacts
+    creati sarebbero invisibili al tenant proprietario del task.
     """
     if sys.platform != "win32":
-        # POSIX: la cancellazione si propaga naturalmente nel loop chiamante
+        # POSIX: la cancellazione si propaga naturalmente nel loop chiamante.
+        # asyncio.create_task copia il context corrente, quindi tenant/user OK.
         loop = asyncio.get_running_loop()
         task = asyncio.create_task(coro_factory())
         _active_jobs[job_id] = (loop, task)
@@ -156,11 +165,19 @@ async def _run_in_proactor_thread(
         finally:
             _active_jobs.pop(job_id, None)
 
+    # Cattura tenant_id + user_id del context corrente per propagarli al thread.
+    saved_tenant_id = db.current_tenant_id()
+    saved_user_id = db.current_user_id()
+
     result: list[Any] = []
     exc_holder: list[BaseException] = []
     started = threading.Event()
 
     def runner() -> None:
+        # Setta i ContextVar manualmente (questo thread parte con context vuoto).
+        db.set_current_tenant(saved_tenant_id)
+        db.set_current_user(saved_user_id)
+
         new_loop = asyncio.ProactorEventLoop()  # type: ignore[attr-defined]
         asyncio.set_event_loop(new_loop)
         task = new_loop.create_task(coro_factory())
@@ -203,7 +220,7 @@ def _after_job_done(job_id: int, task_id: int, workflow_run_id: int | None = Non
             run = None
             with db.connect() as con:
                 row = con.execute(
-                    "SELECT workflow_id FROM workflow_runs WHERE id = ?",
+                    "SELECT workflow_id FROM workflow_runs WHERE id = %s",
                     (workflow_run_id,),
                 ).fetchone()
                 if row:
@@ -240,7 +257,7 @@ def _after_job_done(job_id: int, task_id: int, workflow_run_id: int | None = Non
                     if candidate.exists():
                         with db.connect() as con:
                             con.execute(
-                                "UPDATE tasks SET input_artifact_path = ? WHERE id = ?",
+                                "UPDATE tasks SET input_artifact_path = %s WHERE id = %s",
                                 (str(candidate), downstream_tid),
                             )
                         log.info("DAG: passato artifact %s a task #%s", candidate, downstream_tid)
@@ -265,10 +282,24 @@ def _after_job_done(job_id: int, task_id: int, workflow_run_id: int | None = Non
 
 
 async def _run_job(job_id: int, task_id: int) -> None:
-    task = db.get_task(task_id)
+    # Carico il task SENZA filtro tenant: il job runner è privileged
+    # (chiamato da APScheduler cron o da workflow downstream, dove il
+    # context HTTP può non essere settato). `tenant_id=None` esplicito
+    # bypassa il filtro del ContextVar.
+    task = db.get_task(task_id, tenant_id=None)
     if not task:
         db.update_job(job_id, status="error", error="Task non trovato", finished_at=db.now_iso())
         return
+
+    # Setto il ContextVar tenant_id + user_id per la durata di questo job runner.
+    # Serve a:
+    # - cron schedulati: APScheduler chiama senza context HTTP → senza questo,
+    #   le `db.*` chiamate dal runner agentico salverebbero con tenant_id=NULL
+    # - job downstream nei workflow: _after_job_done crea task fuori dal context HTTP
+    # - propagazione al thread Playwright via _run_in_proactor_thread (vedi sopra)
+    tenant_token = db.set_current_tenant(task.get("tenant_id"))
+    user_token = db.set_current_user(task.get("created_by_user_id"))
+
     mode = task.get("agent_mode") or "react"
     try:
         if mode == "browser_use":
@@ -323,8 +354,14 @@ async def _run_job(job_id: int, task_id: int) -> None:
         db.append_job_log(job_id, f"ERRORE ({type(e).__name__}): {detail}")
         db.update_job(job_id, status="error", error=detail, finished_at=db.now_iso())
     finally:
+        # Reset ContextVar tenant/user (settati a inizio funzione)
+        try:
+            db.reset_current_user(user_token)
+            db.reset_current_tenant(tenant_token)
+        except Exception:
+            pass
         _running_tasks.pop(job_id, None)
-        cur = db.get_job(job_id)
+        cur = db.get_job(job_id, tenant_id=None)
         # Trigger downstream se:
         # - status = done (caso normale), OPPURE
         # - status = cancelled AND job_id e' nel set _trigger_downstream_on_cancel
@@ -373,7 +410,7 @@ def _maybe_finalize_workflow_run(workflow_run_id: int) -> None:
         new_status = "done"
     with db.connect() as con:
         row = con.execute(
-            "SELECT status FROM workflow_runs WHERE id = ?",
+            "SELECT status FROM workflow_runs WHERE id = %s",
             (workflow_run_id,),
         ).fetchone()
     if not row or (row["status"] or "") in finished:

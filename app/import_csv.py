@@ -408,14 +408,14 @@ def execute_import(
                     row_exist = None
                     if canon:
                         row_exist = con.execute(
-                            "SELECT id FROM assets WHERE source_url_canonical = ? "
-                            "AND asset_type = ? LIMIT 1",
+                            "SELECT id FROM assets WHERE source_url_canonical = %s "
+                            "AND asset_type = %s LIMIT 1",
                             (canon, asset_type),
                         ).fetchone()
                     if not row_exist and src_url:
                         row_exist = con.execute(
-                            "SELECT id FROM assets WHERE source_url = ? "
-                            "AND asset_type = ? LIMIT 1",
+                            "SELECT id FROM assets WHERE source_url = %s "
+                            "AND asset_type = %s LIMIT 1",
                             (src_url, asset_type),
                         ).fetchone()
                 plan.action = "update" if row_exist else "insert"

@@ -271,6 +271,61 @@ def test_alice_cannot_delete_bobs_social_account(social_accounts_setup):
     assert sa is not None
 
 
+def test_job_runner_propagates_tenant_id_in_writes(populated_db):
+    """Simula il comportamento del job runner (`_run_job`): set_current_tenant
+    dal task, poi le scritture db.* eredita automaticamente il tenant via
+    ContextVar — senza dover passare tenant_id esplicito.
+
+    Questo test cattura il bug pre-fix dove i runner agentici (lanciati da
+    APScheduler cron o workflow downstream, fuori dal context HTTP) scrivevano
+    su DB con tenant_id=NULL — gli asset/contacts creati erano invisibili al
+    tenant proprietario del task.
+    """
+    # Simulo l'avvio di un job di Alice (tenant_a): _run_job legge il task e
+    # setta il context. Da quel momento, ogni chiamata db.* dal runner deve
+    # ereditare tenant_id=A.
+    task = db.get_task(populated_db["task_alice"], tenant_id=None)
+    assert task["tenant_id"] == populated_db["tenant_a"]
+
+    tenant_token = db.set_current_tenant(task["tenant_id"])
+    user_token = db.set_current_user(task["created_by_user_id"])
+    try:
+        # Il runner agentico crea asset SENZA passare tenant_id esplicito.
+        # Deve essere automaticamente assegnato al tenant del task.
+        asset_id = db.upsert_asset({
+            "asset_type": "scraped", "title": "Auto from runner",
+            "raw_json": "{}", "source_url": "https://example.com/auto",
+            "source_task_id": task["id"],
+        })
+        # E un contact
+        contact_id = db.upsert_contact({
+            "email": "auto-from-runner@example.com",
+            "source_task_id": task["id"],
+            "display_name": "Auto Runner",
+        })
+    finally:
+        db.reset_current_user(user_token)
+        db.reset_current_tenant(tenant_token)
+
+    # Verifica: asset e contact hanno tenant_id e created_by_user_id corretti
+    with db.connect() as conn:
+        a = conn.execute(
+            "SELECT tenant_id, created_by_user_id FROM assets WHERE id = %s", (asset_id,)
+        ).fetchone()
+        assert a["tenant_id"] == populated_db["tenant_a"]
+        assert a["created_by_user_id"] == populated_db["alice_id"]
+
+        c = conn.execute(
+            "SELECT tenant_id, created_by_user_id FROM contacts WHERE id = %s", (contact_id,)
+        ).fetchone()
+        assert c["tenant_id"] == populated_db["tenant_a"]
+        assert c["created_by_user_id"] == populated_db["alice_id"]
+
+    # Verifica isolamento: Bob non vede l'asset/contact appena creato
+    assert db.get_asset(asset_id, tenant_id=populated_db["tenant_b"]) is None
+    assert db.get_contact(contact_id, tenant_id=populated_db["tenant_b"]) is None
+
+
 def test_whatsapp_api_config_isolation(populated_db):
     """WhatsApp API config: isolato per tenant."""
     a_id = db.insert_whatsapp_api_config(
