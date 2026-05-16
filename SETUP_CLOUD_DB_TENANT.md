@@ -256,6 +256,8 @@ Pagina raggiungibile da una pill "Admin" nell'header, visibile **solo** se `curr
 
 ## Schema migrations (Alembic)
 
+> **Workflow operativo completo**: vedi [`scripts/README.md`](scripts/README.md). Comandi disponibili: `status`, `new`, `migrate`, `promote`.
+
 Per gestire modifiche di schema dopo la Fase 2 (rename, drop, change type, data migrations) usiamo Alembic. Setup completo + baseline revision già committati:
 
 - `alembic.ini` — config principale (URL placeholder; il vero DSN è letto da env.py).
