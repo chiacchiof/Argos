@@ -2035,85 +2035,100 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
 /* ============================================================
    /qualified — tab asset-centric con menu qualifier
    ============================================================ */
-.qualified-section { max-width: 1400px; margin: 0 auto; padding: 1rem; }
-.qualified-header { margin-bottom: 1rem; }
-.qualified-header h2 { margin: 0 0 0.3rem; }
-.qualified-header .muted { color: #57606a; font-size: 0.9rem; }
-
-.qualified-filters {
+/* Layout principale: sidebar qualifier (sticky) a sx + tabella asset a dx.
+   Riusa il pattern di /inbox/contacts: page-header + stats-bar + search-row +
+   filter-panel (collassabile). Le classi UI sono condivise. */
+.qualified-layout {
   display: grid;
   grid-template-columns: 280px 1fr;
-  gap: 1.5rem;
-  margin-bottom: 1.5rem;
-  padding: 1rem;
+  gap: 1.2rem;
+  margin-top: 1rem;
+  align-items: start;
+}
+.qualified-sidebar {
+  position: sticky;
+  top: 1rem;
   background: #f6f8fa;
   border: 1px solid #d0d7de;
   border-radius: 8px;
+  padding: 0.8rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
 }
-.qualifier-menu h3,
-.qualified-secondary-filters h3 {
+.qualified-sidebar h3 {
   margin: 0 0 0.6rem;
-  font-size: 1rem;
+  font-size: 0.95rem;
   color: #24292f;
 }
 .qualifier-list {
   list-style: none;
   padding: 0;
   margin: 0;
-  max-height: 360px;
-  overflow-y: auto;
   border: 1px solid #d0d7de;
-  border-radius: 4px;
+  border-radius: 6px;
   background: #fff;
 }
 .qualifier-list li {
   border-bottom: 1px solid #eaeef2;
 }
 .qualifier-list li:last-child { border-bottom: none; }
+.qualifier-list li.qualifier-li-active {
+  background: #ddf4ff;
+}
 .qualifier-list label {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.45rem 0.6rem;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.55rem 0.7rem;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.88rem;
 }
 .qualifier-list label:hover { background: #f6f8fa; }
-.qualifier-list .qualifier-name { flex: 1; }
+.qualifier-list li.qualifier-li-active label:hover { background: #c8e9ff; }
+.qualifier-list input[type="checkbox"] {
+  float: right;
+  margin-left: 0.4rem;
+}
+.qualifier-list .qualifier-name {
+  font-weight: 500;
+  color: #24292f;
+  line-height: 1.25;
+}
 .qualifier-list .qualifier-counts {
   display: inline-flex;
-  gap: 0.25rem;
+  gap: 0.35rem;
   font-size: 0.75rem;
 }
+.qualifier-list .badge {
+  display: inline-block;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+.qualifier-list .badge-ok  { background: #dafbe1; color: #1a7f37; }
+.qualifier-list .badge-off { background: #ffebe9; color: #cf222e; }
 
-.qualified-secondary-filters {
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
+.qualified-main {
+  min-width: 0;  /* permette al table di shrinkare dentro il grid */
 }
-.qualified-secondary-filters .field-inline {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.9rem;
-  color: #57606a;
+
+/* Sub-pannello tag filters dentro .filter-panel — riuso .extra-tags-grid /
+   .extra-tag-row gia' esistenti, ma li ridichiaro per chiarezza. */
+.filter-subpanel {
+  margin-top: 0.6rem;
+  padding-top: 0.4rem;
+  border-top: 1px dashed #d0d7de;
 }
-.qualified-secondary-filters input,
-.qualified-secondary-filters select {
-  padding: 0.35rem 0.55rem;
-  font-size: 0.9rem;
-  border: 1px solid #d0d7de;
-  border-radius: 4px;
-}
-.extra-tag-filters { margin-top: 0.3rem; }
-.extra-tag-filters summary {
+.filter-subpanel summary {
   cursor: pointer;
   color: #0969da;
   font-size: 0.88rem;
+  padding: 0.3rem 0;
 }
 .extra-tags-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 0.5rem;
   margin-top: 0.5rem;
 }
@@ -2122,39 +2137,38 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   gap: 0.4rem;
 }
 .extra-tag-row input,
-.extra-tag-row select { flex: 1; }
-.filter-actions {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.6rem;
-}
-.filter-actions .btn-primary {
-  padding: 0.45rem 1rem;
-  background: #0969da;
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.filter-actions .btn-secondary {
-  padding: 0.45rem 1rem;
-  background: #fff;
-  color: #24292f;
-  border: 1px solid #d0d7de;
-  border-radius: 4px;
-  text-decoration: none;
+.extra-tag-row select { flex: 1; min-width: 0; }
+
+/* Responsive: su schermi stretti la sidebar diventa full-width sopra la tabella. */
+@media (max-width: 900px) {
+  .qualified-layout {
+    grid-template-columns: 1fr;
+  }
+  .qualified-sidebar {
+    position: static;
+    max-height: none;
+  }
+  .extra-tags-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
-.qualified-summary {
-  padding: 0.6rem 0.9rem;
-  background: #dafbe1;
-  border: 1px solid #aceebb;
-  border-radius: 6px;
-  margin-bottom: 1rem;
-  font-size: 0.92rem;
+/* Preview asset nel modal "Aggiungi qualified" (HTMX). */
+.asset-preview-box {
+  margin: 0.3rem 0 0.7rem 0;
+  padding: 0.5rem 0.7rem;
+  background: #f6f8fa;
+  border: 1px dashed #d0d7de;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  color: #57606a;
 }
-.qualified-summary .qualifier-chip { background: #fff; }
+.asset-preview-ok {
+  color: #1a7f37;
+}
+.error-inline {
+  color: #cf222e;
+}
 
 .qualifier-chip {
   display: inline-block;

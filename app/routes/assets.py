@@ -255,6 +255,101 @@ async def qualified_assets_list(
     )
 
 
+_QUALIFIER_SLUG_RE = __import__("re").compile(r"^[a-z0-9_]+$")
+
+
+@router.post("/qualified/add", response_class=HTMLResponse)
+async def qualified_add(
+    asset_id: str = Form(""),
+    qualifier_slug: str = Form("manual"),
+    decision: str = Form("qualified"),
+    score: str = Form(""),
+):
+    """Marca manualmente un asset esistente come qualified/rejected per un
+    qualifier (slug arbitrario, default 'manual').
+
+    Aggiunge i tag `qualifier_<slug>` e (se score) `qualifier_score_<slug>`
+    su asset_tags; aggiorna `assets.status` (no-downgrade da 'qualified').
+    L'asset DEVE esistere — non si crea da zero. Per creare nuovi asset
+    usa /assets/new o un task scraper.
+    """
+    aid_v = _parse_optional_int(asset_id)
+    if aid_v is None or aid_v <= 0:
+        raise HTTPException(status_code=400, detail="asset_id mancante o invalido")
+    slug = (qualifier_slug or "manual").strip().lower()
+    if not slug:
+        slug = "manual"
+    if not _QUALIFIER_SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"qualifier_slug invalido: '{slug}' — usa solo a-z, 0-9, underscore",
+        )
+    if decision not in ("qualified", "rejected"):
+        raise HTTPException(status_code=400, detail="decision deve essere 'qualified' o 'rejected'")
+    score_v = _parse_optional_int(score)
+    if score_v is not None and not (0 <= score_v <= 10):
+        raise HTTPException(status_code=400, detail="score deve essere tra 0 e 10")
+
+    asset = db.get_asset(aid_v)
+    if not asset:
+        raise HTTPException(status_code=404, detail=f"asset #{aid_v} non trovato (o non accessibile al tenant)")
+
+    # Set tag puntuali — set_asset_tag e' singleton (rimuove eventuali precedenti
+    # per la stessa key, garantisce idempotenza).
+    try:
+        db.set_asset_tag(aid_v, f"qualifier_{slug}", decision)
+        if score_v is not None:
+            db.set_asset_tag(aid_v, f"qualifier_score_{slug}", str(score_v))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"set_asset_tag fallito: {e}")
+
+    # Aggiorna status dell'asset (no-downgrade qualified).
+    try:
+        db.update_asset_qualifier(
+            aid_v,
+            score=score_v or 0,
+            status=decision,
+            notes=f"qualifier manuale '{slug}'" if slug == "manual" else None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"update_asset_qualifier fallito: {e}")
+
+    flash = f"Asset+%23{aid_v}+marcato+{decision}+per+qualifier+'{slug}'"
+    return RedirectResponse(
+        url=f"/qualified?qualifiers={slug}&status={decision}&flash={flash}",
+        status_code=303,
+    )
+
+
+@router.get("/assets/preview_inline", response_class=HTMLResponse)
+async def asset_preview_inline(asset_id: str = ""):
+    """HTMX endpoint: ritorna un <div> con preview minima di un asset dato l'ID.
+    Usato dal form "Aggiungi qualified" per dare feedback all'utente che sta
+    digitando l'asset_id corretto."""
+    aid = _parse_optional_int(asset_id)
+    if aid is None or aid <= 0:
+        return HTMLResponse('<span class="muted small">— inserisci un ID per vedere l\'anteprima —</span>')
+    asset = db.get_asset(aid)
+    if not asset:
+        return HTMLResponse(f'<span class="error-inline">⚠️ Asset #{aid} non trovato (o non accessibile).</span>')
+    # Escape minimo
+    def esc(s: str | None) -> str:
+        if not s:
+            return ""
+        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    title = esc(asset.get("title") or "(senza titolo)")
+    atype = esc(asset.get("asset_type") or "?")
+    status = esc(asset.get("status") or "?")
+    domain = esc(asset.get("source_domain") or "—")
+    return HTMLResponse(
+        f'<div class="asset-preview-ok">'
+        f'<strong>#{aid}</strong> <code>{atype}</code> — '
+        f'<a href="/assets/{aid}" target="_blank">{title}</a> '
+        f'<span class="muted small">({domain} · stato: {status})</span>'
+        f'</div>'
+    )
+
+
 # === Search HTMX + preview JSON (per import in form contact) ===
 # Definiti PRIMA di /assets/{asset_id} per evitare conflitto di routing.
 

@@ -1,93 +1,115 @@
 {% extends "base.html" %}
 {% block title %}Qualified · AgentScraper{% endblock %}
+{% block main_class %}wide{% endblock %}
 {% block content %}
-<section class="qualified-section">
-  <header class="qualified-header">
-    <h2>✅ Asset qualified</h2>
-    <p class="muted">
-      Filtra gli asset per i qualifier che li hanno valutati. Sorgente unica per
-      i task di outreach. Multi-select = intersezione (AND) — l'asset deve avere
-      tutti i qualifier selezionati con stato corrispondente.
-    </p>
-  </header>
+{% set has_advanced_filters = filter_score_min is not none or filter_type or filter_task or (extra_tag_filters and extra_tag_filters|length > 0) %}
+{% set has_any_filter = selected_qualifiers or filter_search or has_advanced_filters or filter_status != 'qualified' %}
+<section>
+  <div class="page-header">
+    <div>
+      <h2>✅ Asset qualified</h2>
+      <p class="page-subtitle">
+        Audience qualificate dai task qualifier. Scegli un qualifier nella sidebar, raffina con i filtri, poi lancia outreach su questo set.
+      </p>
+    </div>
+    <div class="page-actions">
+      <button type="button" class="btn-secondary"
+              onclick="document.getElementById('add-qualified-modal').classList.add('open');">
+        ➕ Aggiungi qualified
+      </button>
+      {% if selected_qualifiers %}
+      <a href="/tasks/new?prefill_qualified_filter=1&qualifiers={{ selected_qualifiers|join(',') }}&score_min={{ filter_score_min or '' }}"
+         class="btn-primary" title="Crea task outreach precompilato con questo set">
+        🚀 Avvia outreach
+      </a>
+      {% endif %}
+    </div>
+  </div>
 
-  <form method="get" action="/qualified" class="qualified-filters">
-    <div class="qualifier-menu">
-      <h3>Qualifier eseguiti</h3>
-      {% if qualifier_menu %}
-        <ul class="qualifier-list">
-          {% for q in qualifier_menu %}
-          <li>
-            <label>
-              <input type="checkbox" name="qualifiers" value="{{ q.slug }}"
-                     {% if q.slug in selected_qualifiers %}checked{% endif %}
-                     class="qualifier-checkbox">
-              <span class="qualifier-name">{{ q.friendly_name }}</span>
-              <small class="qualifier-counts">
-                <span class="badge badge-ok">{{ q.count_qualified }}</span>
-                {% if q.count_rejected %}<span class="badge badge-off">{{ q.count_rejected }}</span>{% endif %}
-              </small>
-            </label>
-          </li>
-          {% endfor %}
-        </ul>
-        <p class="muted small">
-          Tip: i numeri verdi = `qualified`, rossi = `rejected`. Multi-select → AND.
-        </p>
-      {% else %}
-        <p class="muted">
-          Nessun qualifier eseguito ancora. Lancia un task con agent_mode <code>qualifier</code>
-          su un set di asset per generarli.
-        </p>
+  {% if request.query_params.get('flash') %}
+  <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
+  {% endif %}
+
+  {# Riepilogo filtri attivi #}
+  <div class="stats-bar">
+    <span class="stats-pill"><strong>{{ total }}</strong> asset {% if has_any_filter %}filtrati{% else %}totali{% endif %}</span>
+    {% if filter_status %}
+      <span class="stats-pill stats-pill-active">stato: <strong>{{ filter_status }}</strong></span>
+    {% endif %}
+    {% if filter_score_min is not none %}
+      <span class="stats-pill stats-pill-active">score ≥ <strong>{{ filter_score_min }}</strong></span>
+    {% endif %}
+    {% if filter_type %}
+      <span class="stats-pill stats-pill-active">tipo: <strong>{{ filter_type }}</strong></span>
+    {% endif %}
+    {% for slug in selected_qualifiers %}
+      {% for q in qualifier_menu if q.slug == slug %}
+        <span class="stats-pill stats-pill-active" title="qualifier slug: {{ slug }}">🎯 <strong>{{ q.friendly_name }}</strong></span>
+      {% endfor %}
+    {% endfor %}
+    {% for tk, tv in (extra_tag_filters or []) %}
+      <span class="stats-pill stats-pill-active" title="filtro tag (riusabile in outreach_filter_tags)">
+        🏷️ <strong>{{ tk }}</strong> = {{ tv }}
+      </span>
+    {% endfor %}
+  </div>
+
+  {# Form unico: search + filtri avanzati + checkbox sidebar (auto-submit on change). #}
+  <form method="get" action="/qualified" id="qualified-form">
+    {# Search bar prominente (sempre visibile, anche quando i filtri sono chiusi) #}
+    <div class="search-row">
+      <input type="search" name="q" value="{{ filter_search }}"
+             placeholder="🔍 Cerca titolo, display_name, email o raw_json…"
+             class="search-input">
+      <button type="submit" class="btn-primary">Cerca</button>
+      {% if has_any_filter %}
+      <a href="/qualified" class="btn-link">✕ Reset tutto</a>
       {% endif %}
     </div>
 
-    <div class="qualified-secondary-filters">
-      <h3>Filtri</h3>
+    {# Filtri avanzati: collapsed di default, aperto se uno è attivo. #}
+    <details class="filter-panel" {% if has_advanced_filters %}open{% endif %}>
+      <summary>🔧 Filtri avanzati {% if has_advanced_filters %}<span class="muted">({{ (extra_tag_filters|length) + (1 if filter_score_min is not none else 0) + (1 if filter_type else 0) + (1 if filter_task else 0) }} attivi){% endif %}</span></summary>
+      <div class="filter-grid">
+        <label>Stato qualifier
+          <select name="status" onchange="this.form.submit()">
+            <option value="qualified" {% if filter_status == 'qualified' %}selected{% endif %}>✅ qualified</option>
+            <option value="rejected"  {% if filter_status == 'rejected' %}selected{% endif %}>❌ rejected</option>
+            <option value="both"      {% if filter_status == 'both' %}selected{% endif %}>entrambi</option>
+          </select>
+        </label>
 
-      <label class="field-inline">
-        Stato:
-        <select name="status">
-          <option value="qualified" {% if filter_status == "qualified" %}selected{% endif %}>qualified</option>
-          <option value="rejected" {% if filter_status == "rejected" %}selected{% endif %}>rejected</option>
-          <option value="both" {% if filter_status == "both" %}selected{% endif %}>entrambi</option>
-        </select>
-      </label>
+        <label>Score minimo
+          <select name="score_min" onchange="this.form.submit()">
+            <option value="">qualsiasi</option>
+            {% for s in [5, 6, 7, 8, 9, 10] %}
+              <option value="{{ s }}" {% if filter_score_min == s %}selected{% endif %}>≥ {{ s }}</option>
+            {% endfor %}
+          </select>
+        </label>
 
-      <label class="field-inline">
-        Score min:
-        <input type="number" name="score_min" min="0" max="10" step="1"
-               value="{{ filter_score_min if filter_score_min is not none else '' }}"
-               placeholder="(qualsiasi)" style="width: 6em">
-        <small class="muted">applicato a tutti i qualifier selezionati</small>
-      </label>
+        <label>Asset type
+          <select name="asset_type" onchange="this.form.submit()">
+            <option value="">qualsiasi</option>
+            {% for t in types_in_use %}
+              <option value="{{ t.asset_type }}" {% if t.asset_type == filter_type %}selected{% endif %}>
+                {{ t.asset_type }} ({{ t.count }})
+              </option>
+            {% endfor %}
+          </select>
+        </label>
 
-      <label class="field-inline">
-        Asset type:
-        <select name="asset_type">
-          <option value="">(qualsiasi)</option>
-          {% for t in types_in_use %}
-          <option value="{{ t.asset_type }}" {% if t.asset_type == filter_type %}selected{% endif %}>
-            {{ t.asset_type }} ({{ t.count }})
-          </option>
-          {% endfor %}
-        </select>
-      </label>
+        <label>Source task ID
+          <input type="number" name="source_task_id" value="{{ filter_task or '' }}"
+                 placeholder="(qualsiasi)" min="0">
+        </label>
+      </div>
 
-      <label class="field-inline">
-        Source task:
-        <input type="number" name="source_task_id" value="{{ filter_task or '' }}"
-               placeholder="(qualsiasi)" style="width: 6em">
-      </label>
-
-      <label class="field-inline" style="flex: 1; min-width: 200px">
-        Cerca:
-        <input type="text" name="q" value="{{ filter_search }}"
-               placeholder="titolo o raw_json contiene…">
-      </label>
-
-      <details class="extra-tag-filters">
-        <summary>Filtri tag extra (AND)</summary>
+      <details class="filter-subpanel" {% if extra_tag_filters and extra_tag_filters|length > 0 %}open{% endif %}>
+        <summary>🏷️ Filtri tag attributi (AND multipli)</summary>
+        <p class="muted small" style="margin: 0.3rem 0">
+          Per filtrare dentro un qualifier su attributi (es. <code>city=Catania</code>, <code>interests_inferred=fitness</code>).
+        </p>
         <div class="extra-tags-grid">
           {% for i in range(3) %}
             {% set k = extra_tag_filters[i][0] if extra_tag_filters|length > i else '' %}
@@ -103,151 +125,234 @@
             </div>
           {% endfor %}
         </div>
+        <button type="submit" class="btn-secondary btn-small" style="margin-top: 0.5rem">Applica filtri tag</button>
       </details>
+    </details>
 
-      <div class="filter-actions">
-        <button type="submit" class="btn-primary">Applica filtri</button>
-        <a href="/qualified" class="btn-secondary">Reset</a>
-      </div>
+    {# Layout principale: sidebar qualifier (sticky) + tabella asset. #}
+    <div class="qualified-layout">
+      <aside class="qualified-sidebar">
+        <h3>Qualifier eseguiti</h3>
+        {% if qualifier_menu %}
+          <ul class="qualifier-list">
+            {% for q in qualifier_menu %}
+            <li class="{% if q.slug in selected_qualifiers %}qualifier-li-active{% endif %}">
+              <label>
+                <input type="checkbox" name="qualifiers" value="{{ q.slug }}"
+                       {% if q.slug in selected_qualifiers %}checked{% endif %}
+                       onchange="document.getElementById('qualified-form').submit()">
+                <span class="qualifier-name">{{ q.friendly_name }}</span>
+                <span class="qualifier-counts">
+                  <span class="badge badge-ok" title="{{ q.count_qualified }} asset qualified per questo qualifier">
+                    ✅ {{ q.count_qualified }}
+                  </span>
+                  {% if q.count_rejected %}
+                  <span class="badge badge-off" title="{{ q.count_rejected }} asset rejected">
+                    ❌ {{ q.count_rejected }}
+                  </span>
+                  {% endif %}
+                </span>
+              </label>
+            </li>
+            {% endfor %}
+          </ul>
+          {% if selected_qualifiers|length > 1 %}
+          <p class="muted small" style="margin-top: 0.5rem">
+            ℹ️ {{ selected_qualifiers|length }} qualifier selezionati = intersezione (AND).
+          </p>
+          {% endif %}
+        {% else %}
+          <p class="muted small">
+            Nessun qualifier eseguito ancora. Lancia un task con agent_mode <code>qualifier</code>
+            per generarli.
+          </p>
+        {% endif %}
+      </aside>
+
+      <main class="qualified-main">
+        {% if assets %}
+        <table class="data assets-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Tipo</th>
+              <th>Titolo</th>
+              <th>Dominio</th>
+              <th>Qualifier(s)</th>
+              <th>Altri tag</th>
+              <th>Origine</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in assets %}
+            <tr>
+              <td>{{ a.id }}</td>
+              <td><code>{{ a.asset_type }}</code></td>
+              <td><a href="/assets/{{ a.id }}">{{ a.title or "(senza titolo)" }}</a></td>
+              <td>
+                {% if a.source_url %}
+                <a href="{{ a.source_url }}" target="_blank" rel="noopener">{{ a.source_domain or "—" }}</a>
+                {% else %}{{ a.source_domain or "—" }}{% endif %}
+              </td>
+              <td class="tags-cell">
+                {% for k, vs in a.tags.items() %}
+                  {% if k.startswith("qualifier_score_") %}
+                    {% set slug = k[16:] %}
+                    {% for v in vs %}
+                      <span class="qualifier-score-badge" title="score qualifier {{ slug }}">{{ slug }}: <strong>{{ v }}</strong></span>
+                    {% endfor %}
+                  {% elif k.startswith("qualifier_") %}
+                    {% set slug = k[10:] %}
+                    {% for v in vs %}
+                      <span class="qualifier-chip qualifier-{{ v }}" title="qualifier {{ slug }} = {{ v }}">{{ slug }}: {{ v }}</span>
+                    {% endfor %}
+                  {% endif %}
+                {% endfor %}
+              </td>
+              <td class="tags-cell">
+                {% for k, vs in a.tags.items() %}
+                  {% if not k.startswith("qualifier_") %}
+                    {% for v in vs %}
+                      <span class="tag-chip-mini">{{ k }}:{{ v }}</span>
+                    {% endfor %}
+                  {% endif %}
+                {% endfor %}
+              </td>
+              <td>
+                {% if a.source_task_id %}
+                <a href="/tasks/{{ a.source_task_id }}">task #{{ a.source_task_id }}</a>
+                {% endif %}
+              </td>
+              <td style="white-space:nowrap">
+                <a href="/assets/{{ a.id }}" class="btn-small" title="Dettaglio">👁️</a>
+                <a href="/assets/{{ a.id }}/edit" class="btn-small" title="Modifica">✏️</a>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        {# Paginazione #}
+        {% set page_from = offset + 1 %}
+        {% set page_to = offset + assets|length %}
+        <div class="pagination">
+          <p class="muted small">
+            Mostrando <strong>{{ page_from }}–{{ page_to }}</strong> di <strong>{{ total }}</strong>
+            ({{ per_page }} per pagina, pagina {{ page }} di {{ total_pages }})
+          </p>
+          {% if total_pages > 1 %}
+          <nav class="pager">
+            {% set sep = '&' if qs_base else '' %}
+            {% if page > 1 %}
+              <a href="?{{ qs_base }}{{ sep }}page=1">« prima</a>
+              <a href="?{{ qs_base }}{{ sep }}page={{ page - 1 }}">‹ prec</a>
+            {% else %}
+              <span class="pager-disabled">« prima</span>
+              <span class="pager-disabled">‹ prec</span>
+            {% endif %}
+            {% set window_start = [page - 3, 1] | max %}
+            {% set window_end = [page + 3, total_pages] | min %}
+            {% if window_start > 1 %}<span class="pager-ellipsis">…</span>{% endif %}
+            {% for p in range(window_start, window_end + 1) %}
+              {% if p == page %}
+                <strong class="pager-current">{{ p }}</strong>
+              {% else %}
+                <a href="?{{ qs_base }}{{ sep }}page={{ p }}">{{ p }}</a>
+              {% endif %}
+            {% endfor %}
+            {% if window_end < total_pages %}<span class="pager-ellipsis">…</span>{% endif %}
+            {% if page < total_pages %}
+              <a href="?{{ qs_base }}{{ sep }}page={{ page + 1 }}">succ ›</a>
+              <a href="?{{ qs_base }}{{ sep }}page={{ total_pages }}">ultima »</a>
+            {% else %}
+              <span class="pager-disabled">succ ›</span>
+              <span class="pager-disabled">ultima »</span>
+            {% endif %}
+          </nav>
+          {% endif %}
+        </div>
+
+        {% else %}
+        <div class="empty-state">
+          <span class="empty-icon">✅</span>
+          <div class="empty-title">Nessun asset matcha i filtri</div>
+          <p class="empty-hint">
+            {% if selected_qualifiers %}
+              Prova a rimuovere qualifier dalla sidebar, ad abbassare lo score min, o a cambiare lo stato in <code>both</code>.
+            {% else %}
+              Seleziona almeno un qualifier dalla sidebar a sinistra per filtrare.
+            {% endif %}
+          </p>
+        </div>
+        {% endif %}
+      </main>
     </div>
   </form>
-
-  {# Riepilogo selezione corrente #}
-  {% if selected_qualifiers %}
-  <div class="qualified-summary">
-    <strong>{{ total }}</strong> asset matchano:
-    <span class="status-chip status-{{ filter_status }}">{{ filter_status }}</span>
-    {% if filter_score_min is not none %}+ score ≥ {{ filter_score_min }}{% endif %}
-    in:
-    {% for slug in selected_qualifiers %}
-      {% for q in qualifier_menu if q.slug == slug %}
-        <span class="qualifier-chip">{{ q.friendly_name }}</span>
-      {% endfor %}
-    {% endfor %}
-    <a href="/tasks/new?prefill_qualified_filter=1&qualifiers={{ selected_qualifiers|join(',') }}&score_min={{ filter_score_min or '' }}"
-       class="btn-primary btn-small" style="margin-left: 1em">
-      🚀 Avvia outreach con questo set
-    </a>
-  </div>
-  {% endif %}
-
-  {% if assets %}
-  <table class="data assets-table">
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Tipo</th>
-        <th>Titolo</th>
-        <th>Dominio</th>
-        <th>Qualifier(s)</th>
-        <th>Altri tag</th>
-        <th>Stato scrape</th>
-        <th>Origine</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for a in assets %}
-      <tr>
-        <td>{{ a.id }}</td>
-        <td><code>{{ a.asset_type }}</code></td>
-        <td><a href="/assets/{{ a.id }}">{{ a.title or "(senza titolo)" }}</a></td>
-        <td>
-          {% if a.source_url %}
-          <a href="{{ a.source_url }}" target="_blank" rel="noopener">{{ a.source_domain or "—" }}</a>
-          {% else %}{{ a.source_domain or "—" }}{% endif %}
-        </td>
-        <td class="tags-cell">
-          {% for k, vs in a.tags.items() %}
-            {% if k.startswith("qualifier_score_") %}
-              {% set slug = k[16:] %}
-              {% for v in vs %}
-                <span class="qualifier-score-badge" title="score qualifier {{ slug }}">{{ slug }}: <strong>{{ v }}</strong></span>
-              {% endfor %}
-            {% elif k.startswith("qualifier_") %}
-              {% set slug = k[10:] %}
-              {% for v in vs %}
-                <span class="qualifier-chip qualifier-{{ v }}" title="qualifier {{ slug }} = {{ v }}">{{ slug }}: {{ v }}</span>
-              {% endfor %}
-            {% endif %}
-          {% endfor %}
-        </td>
-        <td class="tags-cell">
-          {% for k, vs in a.tags.items() %}
-            {% if not k.startswith("qualifier_") %}
-              {% for v in vs %}
-                <span class="tag-chip-mini">{{ k }}:{{ v }}</span>
-              {% endfor %}
-            {% endif %}
-          {% endfor %}
-        </td>
-        <td><span class="status status-{{ a.status }}">{{ a.status }}</span></td>
-        <td>
-          {% if a.source_task_id %}
-          <a href="/tasks/{{ a.source_task_id }}">task #{{ a.source_task_id }}</a>
-          {% endif %}
-        </td>
-        <td style="white-space:nowrap">
-          <a href="/assets/{{ a.id }}" class="btn-small" title="Dettaglio">👁️</a>
-          <a href="/assets/{{ a.id }}/edit" class="btn-small" title="Modifica">✏️</a>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  {# Paginazione (stesso pattern di assets_list) #}
-  {% set page_from = offset + 1 %}
-  {% set page_to = offset + assets|length %}
-  <div class="pagination">
-    <p class="muted small">
-      Mostrando <strong>{{ page_from }}–{{ page_to }}</strong> di <strong>{{ total }}</strong>
-      ({{ per_page }} per pagina, pagina {{ page }} di {{ total_pages }})
-    </p>
-    {% if total_pages > 1 %}
-    <nav class="pager">
-      {% set sep = '&' if qs_base else '' %}
-      {% if page > 1 %}
-        <a href="?{{ qs_base }}{{ sep }}page=1">« prima</a>
-        <a href="?{{ qs_base }}{{ sep }}page={{ page - 1 }}">‹ prec</a>
-      {% else %}
-        <span class="pager-disabled">« prima</span>
-        <span class="pager-disabled">‹ prec</span>
-      {% endif %}
-      {% set window_start = [page - 3, 1] | max %}
-      {% set window_end = [page + 3, total_pages] | min %}
-      {% if window_start > 1 %}<span class="pager-ellipsis">…</span>{% endif %}
-      {% for p in range(window_start, window_end + 1) %}
-        {% if p == page %}
-          <strong class="pager-current">{{ p }}</strong>
-        {% else %}
-          <a href="?{{ qs_base }}{{ sep }}page={{ p }}">{{ p }}</a>
-        {% endif %}
-      {% endfor %}
-      {% if window_end < total_pages %}<span class="pager-ellipsis">…</span>{% endif %}
-      {% if page < total_pages %}
-        <a href="?{{ qs_base }}{{ sep }}page={{ page + 1 }}">succ ›</a>
-        <a href="?{{ qs_base }}{{ sep }}page={{ total_pages }}">ultima »</a>
-      {% else %}
-        <span class="pager-disabled">succ ›</span>
-        <span class="pager-disabled">ultima »</span>
-      {% endif %}
-    </nav>
-    {% endif %}
-  </div>
-
-  {% else %}
-  <div class="empty-state">
-    <span class="empty-icon">✅</span>
-    <div class="empty-title">Nessun asset matcha i filtri</div>
-    <p class="empty-hint">
-      {% if selected_qualifiers %}
-        Prova a rimuovere qualifier dalla selezione, ad abbassare lo score min, o cambiare lo stato in <code>both</code>.
-      {% else %}
-        Seleziona almeno un qualifier dal menu a sinistra per filtrare.
-      {% endif %}
-    </p>
-  </div>
-  {% endif %}
 </section>
+
+{# Modal: aggiungi qualified manualmente a un asset esistente. #}
+<div id="add-qualified-modal" class="modal-backdrop"
+     onclick="if(event.target===this) this.classList.remove('open');">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>➕ Marca asset come qualified</h3>
+      <button type="button" class="btn-link"
+              onclick="document.getElementById('add-qualified-modal').classList.remove('open');">✕</button>
+    </div>
+
+    <p class="muted small" style="margin-top:0">
+      Aggiunge i tag <code>qualifier_&lt;slug&gt;</code> (+ opzionale <code>qualifier_score_&lt;slug&gt;</code>)
+      a un asset <strong>già esistente</strong>. L'asset deve essere creato prima (via task scraper o
+      <a href="/assets/new" target="_blank">+ Nuovo asset</a>). Per qualifier non generati da un task lascia lo slug a <code>manual</code>.
+    </p>
+
+    <form method="post" action="/qualified/add" class="add-contact-form">
+      <label>
+        Asset ID <span style="color:#cf222e">*</span>
+        <input type="number" name="asset_id" required min="1" placeholder="es. 1234"
+               autocomplete="off"
+               hx-get="/assets/preview_inline" hx-trigger="input changed delay:300ms"
+               hx-target="#asset-preview" hx-swap="innerHTML">
+        <small class="muted">Lo trovi su <a href="/assets" target="_blank">/assets</a> cliccando una riga, o nell'URL <code>/assets/{id}</code>.</small>
+      </label>
+      <div id="asset-preview" class="asset-preview-box">— inserisci un ID per vedere l'anteprima —</div>
+
+      <label>
+        Qualifier slug <span style="color:#cf222e">*</span>
+        <input type="text" name="qualifier_slug" value="manual" required
+               pattern="[a-z0-9_]+" placeholder="manual"
+               title="Solo lettere minuscole, numeri e underscore (es. manual, palestra, vip)">
+        <small class="muted">
+          Identificatore del criterio. Default <code>manual</code>. Se proviene da un task qualifier,
+          usa il suo slug (es. <code>qualifica_appassionati_palestra</code>).
+        </small>
+      </label>
+
+      <div style="display:flex; gap:1.5rem; margin: 0.4rem 0 0.8rem">
+        <label style="display:inline-flex; align-items:center; gap:0.4rem; margin:0; width:auto">
+          <input type="radio" name="decision" value="qualified" checked style="width:auto;margin:0">
+          ✅ qualified
+        </label>
+        <label style="display:inline-flex; align-items:center; gap:0.4rem; margin:0; width:auto">
+          <input type="radio" name="decision" value="rejected" style="width:auto;margin:0">
+          ❌ rejected
+        </label>
+      </div>
+
+      <label>
+        Score (opzionale, 0-10)
+        <input type="number" name="score" min="0" max="10" step="1" placeholder="(nessuno)">
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-link"
+                onclick="document.getElementById('add-qualified-modal').classList.remove('open');">
+          Annulla
+        </button>
+        <button type="submit" class="btn-primary">Marca asset</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}
