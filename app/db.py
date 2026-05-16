@@ -456,7 +456,8 @@ CREATE TABLE IF NOT EXISTS contacts (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS threads (
   id BIGSERIAL PRIMARY KEY,
-  contact_id   BIGINT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  contact_id   BIGINT REFERENCES contacts(id) ON DELETE CASCADE,
+  asset_id     BIGINT REFERENCES assets(id) ON DELETE CASCADE,
   channel      TEXT NOT NULL,
   external_id  TEXT,
   subject      TEXT,
@@ -546,6 +547,7 @@ CREATE TABLE IF NOT EXISTS social_dm_log (
   account_id BIGINT REFERENCES social_accounts(id) ON DELETE CASCADE,
   job_id BIGINT REFERENCES jobs(id) ON DELETE SET NULL,
   target_contact_id BIGINT REFERENCES contacts(id) ON DELETE SET NULL,
+  target_asset_id BIGINT REFERENCES assets(id) ON DELETE SET NULL,
   target_platform TEXT NOT NULL,
   target_username TEXT NOT NULL,
   message TEXT NOT NULL,
@@ -620,6 +622,8 @@ CREATE INDEX IF NOT EXISTS idx_site_playbooks_domain ON site_playbooks(registrab
 CREATE INDEX IF NOT EXISTS idx_social_accounts_platform_status ON social_accounts(platform, status);
 CREATE INDEX IF NOT EXISTS idx_social_dm_log_account ON social_dm_log(account_id, sent_at);
 CREATE INDEX IF NOT EXISTS idx_social_dm_log_target ON social_dm_log(target_contact_id);
+CREATE INDEX IF NOT EXISTS idx_social_dm_log_target_asset ON social_dm_log(target_asset_id);
+CREATE INDEX IF NOT EXISTS idx_threads_asset ON threads(asset_id);
 CREATE INDEX IF NOT EXISTS idx_threads_contact ON threads(contact_id);
 CREATE INDEX IF NOT EXISTS idx_threads_external ON threads(channel, external_id);
 CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
