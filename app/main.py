@@ -39,6 +39,8 @@ _PUBLIC_PATH_PREFIXES = ("/static", "/login", "/logout", "/favicon.ico", "/dbcon
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Log riepilogativo del DB target attivo (LOCALE vs REMOTO + origine).
+    log.info(db.describe_active_dsn())
     # Ordine cruciale: db_cloud PRIMA (crea tenants/users) di db (che aggiunge
     # FK tenant_id/created_by_user_id alle tabelle business).
     db_cloud.init_db()

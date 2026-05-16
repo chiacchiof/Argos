@@ -128,6 +128,46 @@ def _resolve_dsn() -> str:
     return dsn
 
 
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
+
+
+def describe_active_dsn() -> str:
+    """Una riga riepilogativa del DB target attivo, sicura da loggare (password
+    mascherata). Include la categoria LOCALE/REMOTO e l'origine (.env vs /dbconfig).
+
+    Usata da `app.main` nel lifespan per stampare:
+      [DB] attivo: LOCALE -postgresql://postgres:****@localhost:5432/foo (origine: .env)
+    """
+    import re
+    from urllib.parse import urlparse
+
+    from . import _runtime_db_override
+
+    dsn = os.environ.get("DATABASE_URL", "").strip()
+    if not dsn:
+        return "[DB] attivo: NESSUNO -DATABASE_URL non impostata"
+
+    # Maschera password
+    masked = re.sub(r"(postgres(?:ql)?://[^:]+:)([^@]+)(@)", r"\1****\3", dsn)
+
+    # Categoria
+    try:
+        host = (urlparse(dsn).hostname or "").lower()
+    except Exception:
+        host = ""
+    category = "LOCALE" if host in _LOCAL_HOSTS else "REMOTO"
+
+    # Origine
+    override = _runtime_db_override.read_override()
+    if override and override.get("database_url"):
+        label = override.get("active_label") or "(no label)"
+        origin = f"/dbconfig, label='{label}'"
+    else:
+        origin = ".env"
+
+    return f"[DB] attivo: {category} - {masked} (origine: {origin})"
+
+
 def _get_pool():
     global _pool
     if _pool is not None:
@@ -163,7 +203,7 @@ def connect() -> Iterator[Any]:
 
     NOTA: con il context manager del pool, l'uscita pulita committa
     automaticamente se non c'è eccezione; le funzioni legacy chiamavano
-    `con.commit()` esplicito — non serve più ma non fa male.
+    `con.commit()` esplicito -non serve più ma non fa male.
     """
     pool = _get_pool()
     with pool.connection() as conn:
@@ -581,7 +621,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflo
 # Tabelle che ricevono `tenant_id BIGINT REFERENCES tenants(id) ON DELETE CASCADE`
 # (nullable per backfill; Step E migrerà i dati legacy a tenant EDG).
 # Le tabelle `site_patterns` e `site_playbooks` restano GLOBALI (knowledge base
-# scraping condivisa cross-tenant — vedi SETUP_CLOUD_DB_TENANT.md).
+# scraping condivisa cross-tenant -vedi SETUP_CLOUD_DB_TENANT.md).
 _TENANT_AWARE_TABLES = (
     "tasks", "jobs", "workflows", "workflow_runs", "workflow_edges",
     "assets", "asset_tags", "contacts", "threads", "messages",
@@ -2064,7 +2104,7 @@ def delete_contacts_bulk(contact_ids: list[int], tenant_id: Any = _UNSET) -> int
 
 
 # ===========================================================================
-# Assets — modello generale per profili/annunci/prodotti/articoli/eventi/...
+# Assets -modello generale per profili/annunci/prodotti/articoli/eventi/...
 # ===========================================================================
 
 def has_recent_asset(
@@ -2588,7 +2628,7 @@ def list_asset_tag_values(tag_key: str, asset_type: str | None = None, limit: in
 
 
 # ===========================================================================
-# Site patterns — memoria pattern URL "target" per dominio
+# Site patterns -memoria pattern URL "target" per dominio
 # ===========================================================================
 
 def find_site_patterns(
@@ -2738,7 +2778,7 @@ def maybe_promote_pattern(pattern_id: int, min_successes: int = 3, min_ratio: fl
 
 
 # ===========================================================================
-# Site playbooks (Stage 2 — knowledge transfer cross-runner)
+# Site playbooks (Stage 2 -knowledge transfer cross-runner)
 # ===========================================================================
 
 def get_site_playbook(registrable_domain: str, asset_type: str) -> dict[str, Any] | None:
@@ -3369,7 +3409,7 @@ def count_social_dms_today(account_id: int) -> int:
 
 
 # ===========================================================================
-# WhatsApp API config (Motore B — Meta Cloud API)
+# WhatsApp API config (Motore B -Meta Cloud API)
 # ===========================================================================
 
 def insert_whatsapp_api_config(
@@ -3483,7 +3523,7 @@ def count_whatsapp_api_msgs_today(api_config_id: int) -> int:
 
 
 # ===========================================================================
-# Contacts — helpers WhatsApp (consent + inbound tracking)
+# Contacts -helpers WhatsApp (consent + inbound tracking)
 # ===========================================================================
 
 def update_contact_whatsapp_consent(contact_id: int, consent: str) -> None:
@@ -3498,7 +3538,7 @@ def update_contact_whatsapp_consent(contact_id: int, consent: str) -> None:
 
 
 def touch_contact_whatsapp_inbound(contact_id: int) -> None:
-    """Segna che il contatto ha appena scritto al business number — abilita la
+    """Segna che il contatto ha appena scritto al business number -abilita la
     24h-window per messaggi free-form via Motore B.
     """
     ts = now_iso()
