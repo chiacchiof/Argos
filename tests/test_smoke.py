@@ -204,9 +204,9 @@ def test_workflow_dag_create_and_cycle(monkeypatch, tmp_path):
         db.create_edge(pid_c, pid_a)
 
 
-def test_ingest_profiles_to_contacts(monkeypatch, tmp_path):
-    """Lo scraper ingesta profiles.jsonl in tabella contacts con status='new',
-    preservando lo status di contatti già esistenti (es. 'optedout')."""
+def test_ingest_profiles_to_assets(monkeypatch, tmp_path):
+    """Lo scraper ingesta profiles.jsonl in tabella `assets` (asset_type='contact_ingest').
+    Fase 2D: i destinatari sono asset, non piu' contacts."""
     import json
     from app import config, db, storage
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
@@ -215,37 +215,31 @@ def test_ingest_profiles_to_contacts(monkeypatch, tmp_path):
 
     from app.agent.runner_browseruse import _ingest_to_contacts
 
-    # Pre-esistente: questo email è già optedout, NON deve tornare indietro a 'new'
-    pre_id = db.upsert_contact({"email": "old@example.com", "display_name": "Old"})
-    db.update_contact_status(pre_id, "optedout", "test")
-
     # Crea task + job fittizi per i FK source_task_id / source_job_id
     task_id = db.create_task({"name": "scraper", "objective": "x"})
     job_id = db.create_job(task_id)
 
-    # profiles.jsonl con 4 righe (2 valide, 1 senza contatti, 1 invalida)
+    # profiles.jsonl con 4 righe (3 con canale, 1 senza, 1 invalida)
     jsonl = tmp_path / "profiles.jsonl"
     with jsonl.open("w", encoding="utf-8") as f:
         f.write(json.dumps({"url": "https://a.com/u/1", "display_name": "Alice", "email": "alice@a.com"}) + "\n")
         f.write(json.dumps({"url": "https://b.com/u/2", "display_name": "Bob", "telegram_username": "@bob"}) + "\n")
         f.write(json.dumps({"url": "https://c.com/u/3", "display_name": "NoContact"}) + "\n")  # no email/telegram
-        f.write(json.dumps({"url": "https://d.com/u/4", "email": "old@example.com"}) + "\n")  # già optedout
+        f.write(json.dumps({"url": "https://d.com/u/4", "display_name": "Carlo", "email": "carlo@d.com"}) + "\n")
         f.write("not-json\n")  # invalido
 
     n = _ingest_to_contacts(jsonl, task_id, job_id, lambda s: None)
-    assert n == 3  # 3 ingestiti (Alice, Bob, Old re-touched), 1 skip (NoContact), 1 invalid
+    assert n == 3  # Alice + Bob + Carlo
 
-    contacts = db.list_contacts()
-    emails = {c["email"] for c in contacts if c.get("email")}
+    assets = db.list_assets(asset_type="contact_ingest", limit=100)
+    emails = {a["email"] for a in assets if a.get("email")}
     assert "alice@a.com" in emails
-    assert "old@example.com" in emails
+    assert "carlo@d.com" in emails
 
-    # Verifica preservation status
-    pre = db.get_contact(pre_id)
-    assert pre["status"] == "optedout"  # NON degradato a 'new'
-    # Verifica nuovi record sono 'new'
-    alice = db.find_contact_by_email("alice@a.com")
-    assert alice["status"] == "new"
+    alice = db.find_asset_by_email("alice@a.com")
+    assert alice is not None
+    assert alice["display_name"] == "Alice"
+    assert alice["asset_type"] == "contact_ingest"
 
 
 def test_extract_json_dicts_robust():

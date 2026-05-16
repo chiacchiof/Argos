@@ -534,34 +534,42 @@ async def _poll_telegram_inbound() -> None:
 
 
 def _ingest_inbound(m) -> None:
-    """Inserisce un InboundMessage in DB: trova/crea contact, thread, messaggio."""
-    contact = None
+    """Inserisce un InboundMessage in DB: trova/crea asset shadow, thread, messaggio.
+    Fase 2D: asset diventa il record canonico del destinatario."""
+    asset = None
     if m.channel == "email" and m.sender_address:
-        contact = db.find_contact_by_email(m.sender_address)
-        if not contact:
-            cid = db.upsert_contact({
-                "email": m.sender_address,
+        asset = db.find_asset_by_email(m.sender_address)
+        if not asset:
+            aid = db.upsert_asset({
+                "asset_type": "contact_legacy",
+                "title": m.sender_name or m.sender_address,
                 "display_name": m.sender_name,
-                "status": "replied",  # ci ha scritto, ovvio che è "vivo"
+                "email": m.sender_address,
+                "status": "new",
+                "outreach_status": "replied",
+                "raw_json": "{}",
             })
-            contact = db.get_contact(cid)
+            asset = db.get_asset(aid)
     elif m.channel == "telegram" and m.sender_address:
-        contact = db.find_contact_by_telegram_chat(m.sender_address)
-        if not contact:
-            # nuovo utente Telegram → crea contact
-            cid = db.upsert_contact({
+        asset = db.find_asset_by_telegram_chat(m.sender_address)
+        if not asset:
+            aid = db.upsert_asset({
+                "asset_type": "contact_legacy",
+                "title": m.sender_name or m.sender_telegram_username or str(m.sender_address),
+                "display_name": m.sender_name,
                 "telegram_username": m.sender_telegram_username,
                 "telegram_chat_id": m.sender_address,
-                "display_name": m.sender_name,
-                "status": "replied",
+                "status": "new",
+                "outreach_status": "replied",
+                "raw_json": "{}",
             })
-            db.set_contact_telegram_chat(cid, m.sender_address)
-            contact = db.get_contact(cid)
-    if not contact:
+            db.set_asset_telegram_chat(aid, m.sender_address)
+            asset = db.get_asset(aid)
+    if not asset:
         return
 
     thread_id = db.get_or_create_thread(
-        contact["id"], m.channel,
+        asset_id=asset["id"], channel=m.channel,
         external_id=(m.in_reply_to or m.external_id) if m.channel == "email" else m.sender_address,
         subject=m.subject,
     )
@@ -576,10 +584,10 @@ def _ingest_inbound(m) -> None:
     )
     db.touch_thread(thread_id)
     db.update_thread_status(thread_id, "replied")
-    # mantieni status='optedout' se già impostato
-    cur = db.get_contact(contact["id"])
-    if (cur.get("status") or "") not in ("optedout", "contacted"):
-        db.update_contact_status(contact["id"], "replied")
+    # mantieni outreach_status='optedout'/'contacted' se gia' impostato
+    cur = db.get_asset(asset["id"])
+    if (cur.get("outreach_status") or "") not in ("optedout", "contacted"):
+        db.update_asset_outreach_status(asset["id"], "replied")
     log.info("Ingested inbound %s msg from %s", m.channel, m.sender_address)
 
 

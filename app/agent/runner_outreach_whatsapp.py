@@ -10,7 +10,7 @@ Agent mode: `outreach_whatsapp`. Pipeline:
   4. Invio:
        - Motore A: OutreachEngine + WhatsAppBrowser via Playwright
        - Motore B: WhatsAppAPI HTTP client (Meta Cloud API)
-  5. Log in social_dm_log + update contacts.status='contacted'
+  5. Log in social_dm_log + update assets.outreach_status='contacted'
   6. Report finale
 
 Caveat ToS WhatsApp documentato in UI + GUIDA: il Motore A viola i ToS, rischio
@@ -57,12 +57,12 @@ def _parse_template_variants(task: dict[str, Any]) -> list[str]:
 
 
 def _select_engine(
-    contact: dict[str, Any],
+    target: dict[str, Any],
     preference: str,
     has_engine_a: bool,
     has_engine_b: bool,
 ) -> str | None:
-    """Decide quale engine usare per il singolo contatto.
+    """Decide quale engine usare per il singolo asset destinatario.
 
     Ritorna 'A' / 'B' / None (=skip per mismatch).
 
@@ -74,8 +74,8 @@ def _select_engine(
         consent='opt_in' OR 24h-window attiva → B se disponibile, else A
         default (cold) → A se disponibile, else None
     """
-    consent = (contact.get("whatsapp_consent") or "cold").lower()
-    last_in = contact.get("whatsapp_last_inbound_at")
+    consent = (target.get("whatsapp_consent") or "cold").lower()
+    last_in = target.get("whatsapp_last_inbound_at")
 
     if consent == "optedout":
         return None  # skip
@@ -236,13 +236,14 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         f"B={'OK' if has_engine_b else '—'}  preference={preference}"
     )
 
-    # ---- 3. Carica contatti target ----
+    # ---- 3. Carica asset target ----
     max_dms_per_run = int(task.get("max_dms_per_run") or 30)
 
-    # Se l'utente ha selezionato target espliciti dalla UI (target_contact_ids),
-    # usiamo SOLO quelli. Altrimenti fallback ai qualified con whatsapp.
+    # Se l'utente ha selezionato target espliciti dalla UI (target_asset_ids /
+    # legacy target_contact_ids), usiamo SOLO quelli. Altrimenti fallback agli
+    # asset qualified con whatsapp.
     explicit_ids: list[int] = []
-    raw_ids = task.get("target_contact_ids") or []
+    raw_ids = task.get("target_asset_ids") or task.get("target_contact_ids") or []
     for x in raw_ids:
         try:
             i = int(x)
@@ -253,62 +254,62 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     if explicit_ids:
         jlog(
-            f"Selezione esplicita: {len(explicit_ids)} contatti scelti nel task "
+            f"Selezione esplicita: {len(explicit_ids)} asset scelti nel task "
             "(status filter bypassato per la selezione, ma optedout viene comunque escluso)."
         )
         targets_raw = []
-        for cid in explicit_ids:
-            c = db.get_contact(cid)
-            if not c:
+        for aid in explicit_ids:
+            a = db.get_asset(aid)
+            if not a:
                 continue
-            if not (c.get("whatsapp") or "").strip():
+            if not (a.get("whatsapp") or "").strip():
                 continue
-            if (c.get("whatsapp_consent") or "").lower() == "optedout":
+            if (a.get("whatsapp_consent") or "").lower() == "optedout":
                 continue
-            targets_raw.append(c)
+            targets_raw.append(a)
     else:
         # Multi-tag filter: AND fra (interests_inferred=fitness, location=Catania, ...)
         tag_filters_raw = task.get("outreach_filter_tags") or []
-        contact_tag_filters: list[tuple[str, str]] = []
+        asset_tag_filters: list[tuple[str, str]] = []
         for tf in tag_filters_raw:
             if isinstance(tf, dict):
                 k, v = (tf.get("key") or "").strip(), (tf.get("value") or "").strip()
                 if k and v:
-                    contact_tag_filters.append((k, v))
-        if contact_tag_filters:
-            chips = ", ".join(f"{k}={v}" for k, v in contact_tag_filters)
-            jlog(f"Selezione automatica: contacts qualified con whatsapp + tag-filter [{chips}].")
+                    asset_tag_filters.append((k, v))
+        if asset_tag_filters:
+            chips = ", ".join(f"{k}={v}" for k, v in asset_tag_filters)
+            jlog(f"Selezione automatica: asset qualified con whatsapp + tag-filter [{chips}].")
         else:
-            jlog("Selezione automatica: tutti i contacts qualified con whatsapp.")
-        targets_raw = db.list_contacts_for_whatsapp_outreach(
+            jlog("Selezione automatica: tutti gli asset qualified con whatsapp.")
+        targets_raw = db.list_assets_for_whatsapp_outreach(
             limit=max_dms_per_run * 2,
-            contact_tag_filters=contact_tag_filters or None,
+            asset_tag_filters=asset_tag_filters or None,
         )
 
     if not targets_raw:
-        jlog("⚠️ Nessun contatto da contattare (selezione vuota o filtri esclusi tutti).")
+        jlog("WARN Nessun asset da contattare (selezione vuota o filtri esclusi tutti).")
         db.update_job(job_id, status="done", finished_at=db.now_iso())
         return ""
 
-    # Engine selection per contatto
+    # Engine selection per asset
     targets: list[dict[str, Any]] = []
     n_skip_optout = 0
     n_skip_mismatch = 0
-    for c in targets_raw:
-        eng = _select_engine(c, preference, has_engine_a, has_engine_b)
+    for a in targets_raw:
+        eng = _select_engine(a, preference, has_engine_a, has_engine_b)
         if eng is None:
-            if (c.get("whatsapp_consent") or "").lower() == "optedout":
+            if (a.get("whatsapp_consent") or "").lower() == "optedout":
                 n_skip_optout += 1
             else:
                 n_skip_mismatch += 1
             continue
-        targets.append({"contact": c, "engine": eng})
+        targets.append({"asset": a, "engine": eng})
         if len(targets) >= max_dms_per_run:
             break
 
     if not targets:
         jlog(
-            f"⚠️ Nessun contatto idoneo dopo engine selection "
+            f"WARN Nessun asset idoneo dopo engine selection "
             f"(opt-out: {n_skip_optout}, no-engine-compatibile: {n_skip_mismatch}). Abort."
         )
         db.update_job(job_id, status="done", finished_at=db.now_iso())
@@ -316,7 +317,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     n_a = sum(1 for t in targets if t["engine"] == "A")
     n_b = sum(1 for t in targets if t["engine"] == "B")
-    jlog(f"Target: {len(targets)} contatti → A={n_a}, B={n_b}  (skip opt-out: {n_skip_optout})")
+    jlog(f"Target: {len(targets)} asset -> A={n_a}, B={n_b}  (skip opt-out: {n_skip_optout})")
 
     # ---- 4. Genera messaggi personalizzati via LLM ----
     template_variants = _parse_template_variants(task)
@@ -334,18 +335,18 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     reqs: list[MessageRequest] = []
     for t in targets:
-        c = t["contact"]
+        a = t["asset"]
         raw_data: dict[str, Any] = {}
-        if isinstance(c.get("raw_json"), str):
+        if isinstance(a.get("raw_json"), str):
             try:
-                raw_data = json.loads(c["raw_json"])
+                raw_data = json.loads(a["raw_json"])
             except (json.JSONDecodeError, TypeError):
                 pass
         reqs.append(MessageRequest(
-            target_display_name=c.get("display_name") or c.get("whatsapp") or "",
-            target_username=c.get("whatsapp") or "",
+            target_display_name=a.get("display_name") or a.get("title") or a.get("whatsapp") or "",
+            target_username=a.get("whatsapp") or "",
             target_platform="whatsapp",
-            target_profile_url=c.get("source_url") or "",
+            target_profile_url=a.get("source_url") or "",
             target_raw_data=raw_data,
             intent=intent,
             template_variants=template_variants,
@@ -359,19 +360,19 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         llm_model=llm_model,
     )
 
-    # Map contact → (message, engine)
+    # Map asset → (message, engine)
     plan: list[dict[str, Any]] = []
     errors_seen: list[str] = []
     for (req, msg, err), t in zip(msg_results, targets):
         if msg:
             plan.append({
-                "contact": t["contact"],
+                "asset": t["asset"],
                 "engine": t["engine"],
-                "phone": t["contact"]["whatsapp"],
+                "phone": t["asset"]["whatsapp"],
                 "message": msg,
             })
         elif err:
-            errors_seen.append(f"{t['contact'].get('whatsapp') or t['contact'].get('id')}: {err}")
+            errors_seen.append(f"{t['asset'].get('whatsapp') or t['asset'].get('id')}: {err}")
 
     if not plan:
         jlog("⚠️ Nessun messaggio generato. Errori:")
@@ -397,7 +398,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 db.insert_social_dm_log({
                     "account_id": next(iter(account_id_by_uuid.values()), None),
                     "job_id": job_id,
-                    "target_contact_id": p["contact"]["id"],
+                    "target_asset_id": p["asset"]["id"],
                     "target_platform": "whatsapp",
                     "target_username": p["phone"],
                     "message": p["message"],
@@ -489,9 +490,9 @@ async def _run_engine_a(
         # Format dei target richiesti da OutreachEngine: [(username, message), ...]
         # Per WhatsApp `username` = phone number.
         targets_pairs = [(p["phone"], p["message"]) for p in batch]
-        contact_by_phone = {p["phone"]: p["contact"] for p in batch}
+        asset_by_phone = {p["phone"]: p["asset"] for p in batch}
         message_by_phone = {p["phone"]: p["message"] for p in batch}
-        jlog(f"→ Sessione A: {len(targets_pairs)} DM via WhatsApp Web")
+        jlog(f"-> Sessione A: {len(targets_pairs)} DM via WhatsApp Web")
         warmup_min = random.uniform(0.3, 0.8)  # WA non ha feed; cap 1 min reale lato platform
         results = await engine.run_session(
             platform_name="whatsapp_browser",
@@ -502,13 +503,13 @@ async def _run_engine_a(
         )
         for r in results:
             phone = r.target_username or ""
-            contact = contact_by_phone.get(phone)
+            asset = asset_by_phone.get(phone)
             account_id_db = next(iter(account_id_by_uuid.values()), None)
             try:
                 db.insert_social_dm_log({
                     "account_id": account_id_db,
                     "job_id": job_id,
-                    "target_contact_id": contact["id"] if contact else None,
+                    "target_asset_id": asset["id"] if asset else None,
                     "target_platform": "whatsapp",
                     "target_username": phone,
                     "message": message_by_phone.get(phone, ""),
@@ -520,18 +521,18 @@ async def _run_engine_a(
                     ),
                 })
             except Exception as e:
-                jlog(f"  ⚠️ insert_social_dm_log fail: {e}")
+                jlog(f"  WARN insert_social_dm_log fail: {e}")
             if r.ok:
                 n_ok += 1
-                if contact:
+                if asset:
                     try:
-                        db.update_contact_status(contact["id"], "contacted")
+                        db.update_asset_outreach_status(asset["id"], "contacted")
                     except Exception:
                         pass
             else:
                 n_fail += 1
         if not results:
-            jlog("⚠️ Sessione A vuota (account esauriti o off-hours). Stop loop A.")
+            jlog("WARN Sessione A vuota (account esauriti o off-hours). Stop loop A.")
             break
 
     return n_ok, n_fail
@@ -556,16 +557,16 @@ async def _run_engine_b(
 
     for p in plan:
         await wait_if_paused_or_stop(job_id, jlog)
-        contact = p["contact"]
+        asset = p["asset"]
         phone = p["phone"]
         message = p["message"]
-        last_in = contact.get("whatsapp_last_inbound_at")
+        last_in = asset.get("whatsapp_last_inbound_at")
 
         if dry_run:
             db.insert_social_dm_log({
                 "account_id": None,
                 "job_id": job_id,
-                "target_contact_id": contact["id"],
+                "target_asset_id": asset["id"],
                 "target_platform": "whatsapp",
                 "target_username": phone,
                 "message": message,
@@ -578,7 +579,7 @@ async def _run_engine_b(
             continue
 
         # Decide free-form vs template:
-        # - se contatto dentro 24h-window → free-form (più naturale, no template)
+        # - se asset dentro 24h-window → free-form (più naturale, no template)
         # - altrimenti → template (richiesto da Meta fuori finestra)
         try:
             if can_send_freeform(last_in):
@@ -587,13 +588,13 @@ async def _run_engine_b(
             else:
                 if not api.default_template_name:
                     jlog(
-                        f"  ⚠️ {phone}: fuori 24h-window e nessun default_template. "
+                        f"  WARN {phone}: fuori 24h-window e nessun default_template. "
                         "Configura un template per il Motore B."
                     )
                     db.insert_social_dm_log({
                         "account_id": None,
                         "job_id": job_id,
-                        "target_contact_id": contact["id"],
+                        "target_asset_id": asset["id"],
                         "target_platform": "whatsapp",
                         "target_username": phone,
                         "message": message,
@@ -610,18 +611,18 @@ async def _run_engine_b(
                     phone,
                     api.default_template_name,
                     api.default_template_language,
-                    body_params=[contact.get("display_name") or "amico"],
+                    body_params=[asset.get("display_name") or asset.get("title") or "amico"],
                 )
                 method = "send_template"
         except Exception as e:
-            jlog(f"  ⚠️ Motore B errore per {phone}: {type(e).__name__}: {e}")
+            jlog(f"  WARN Motore B errore per {phone}: {type(e).__name__}: {e}")
             n_fail += 1
             continue
 
         db.insert_social_dm_log({
             "account_id": None,
             "job_id": job_id,
-            "target_contact_id": contact["id"],
+            "target_asset_id": asset["id"],
             "target_platform": "whatsapp",
             "target_username": phone,
             "message": message if method == "send_text" else f"[template:{api.default_template_name}]",
@@ -633,7 +634,7 @@ async def _run_engine_b(
         if result.ok:
             n_ok += 1
             try:
-                db.update_contact_status(contact["id"], "contacted")
+                db.update_asset_outreach_status(asset["id"], "contacted")
             except Exception:
                 pass
         else:

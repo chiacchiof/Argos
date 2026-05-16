@@ -97,18 +97,19 @@ def _extract_username_from_url(url: str, platform: str) -> str | None:
 def _load_targets_for_platform(
     task: dict[str, Any], platform: str, *, limit: int
 ) -> list[dict[str, Any]]:
-    """Carica contatti target per la piattaforma.
+    """Carica asset target per la piattaforma.
 
     Strategia:
-      - Se `task.target_contact_ids` non vuoto → usa SOLO quegli ID
-        (bypassa il filtro per status: l'utente li ha scelti esplicitamente).
-      - Altrimenti → tutti i contatti in status `target_status_in` (default
-        `qualified`) con `social[platform]` popolato.
+      - Se `task.target_asset_ids` (o legacy `target_contact_ids`) non vuoto →
+        usa SOLO quegli ID (bypassa il filtro per status: l'utente li ha
+        scelti esplicitamente).
+      - Altrimenti → tutti gli asset qualified (status='qualified') con
+        `social_json[platform]` popolato.
 
     In entrambi i casi si tiene un social URL per la platform e si scartano
     quelli su host bloccati.
     """
-    explicit_ids = task.get("target_contact_ids") or []
+    explicit_ids = task.get("target_asset_ids") or task.get("target_contact_ids") or []
     if isinstance(explicit_ids, str):
         try:
             explicit_ids = json.loads(explicit_ids) or []
@@ -118,9 +119,8 @@ def _load_targets_for_platform(
 
     if explicit_ids:
         # Selezione manuale vince: ignora i filtri del task
-        candidates = db.get_contacts_by_ids(explicit_ids)
+        candidates = db.get_assets_by_ids(explicit_ids)
     else:
-        target_status = task.get("target_status_in") or "qualified"
         # Applica i filtri di task (source_task_id, source_follower_of, tags) se valorizzati
         f_tid_raw = task.get("outreach_filter_source_task_id")
         f_tid = int(f_tid_raw) if str(f_tid_raw or "").strip().isdigit() else None
@@ -135,17 +135,25 @@ def _load_targets_for_platform(
             (t.get("key"), t.get("value")) for t in f_tags_raw
             if isinstance(t, dict) and t.get("key") and t.get("value")
         ]
-        candidates = db.list_contacts(
-            status=target_status,
-            source_task_id=f_tid,
-            source_follower_of=f_fof,
-            contact_tag_filters=f_tags or None,
-            limit=limit * 5,
-        )
+        if f_fof:
+            f_tags.append(("source_follower_of", f_fof))
+        # list_assets_with_social_platform tiene fuori optedout, qui aggiungiamo
+        # filtro qualified + tag/source_task_id via post-filter in Python (rapido
+        # perche' candidates e' limitato).
+        raw = db.list_assets_with_social_platform(platform=platform, limit=limit * 10)
+        candidates = []
+        for a in raw:
+            if a.get("status") != "qualified":
+                continue
+            if f_tid is not None and a.get("source_task_id") != f_tid:
+                continue
+            if (a.get("outreach_status") or "") == "contacted":
+                continue
+            candidates.append(a)
 
     out: list[dict[str, Any]] = []
-    for c in candidates:
-        soc_raw = c.get("social_json")
+    for a in candidates:
+        soc_raw = a.get("social_json")
         if not soc_raw:
             continue
         try:
@@ -162,7 +170,7 @@ def _load_targets_for_platform(
                 continue
             username = _extract_username_from_url(url, platform)
             if username:
-                out.append({"contact": c, "username": username, "social_url": url})
+                out.append({"asset": a, "username": username, "social_url": url})
                 break
         if len(out) >= limit:
             break
@@ -241,26 +249,26 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     # ---- 3. Target ----
     max_dms_per_run = int(task.get("max_dms_per_run") or 30)
-    explicit_ids = task.get("target_contact_ids") or []
+    explicit_ids = task.get("target_asset_ids") or task.get("target_contact_ids") or []
     if explicit_ids:
         jlog(
-            f"Selezione esplicita: {len(explicit_ids)} contatti scelti nel task "
+            f"Selezione esplicita: {len(explicit_ids)} asset scelti nel task "
             f"(status filter bypassato)"
         )
     else:
-        jlog("Selezione automatica: tutti i contacts qualified con URL per la platform")
+        jlog("Selezione automatica: tutti gli asset qualified con URL per la platform")
     targets = _load_targets_for_platform(task, platform, limit=max_dms_per_run)
     if not targets:
         if explicit_ids:
             jlog(
-                f"⚠️ Nessuno dei {len(explicit_ids)} contatti selezionati ha un URL "
+                f"WARN Nessuno dei {len(explicit_ids)} asset selezionati ha un URL "
                 f"{platform} valido / non bloccato. Niente da fare."
             )
         else:
-            jlog(f"⚠️ Nessun target con {platform} URL fra contacts qualified. Niente da fare.")
+            jlog(f"WARN Nessun target con {platform} URL fra asset qualified. Niente da fare.")
         db.update_job(job_id, status="done", finished_at=db.now_iso())
         return ""
-    jlog(f"Target {platform}: {len(targets)} contatti")
+    jlog(f"Target {platform}: {len(targets)} asset")
 
     # ---- 4. Genera messaggi personalizzati ----
     template_variants = _parse_message_template_variants(task)
@@ -287,17 +295,17 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     reqs: list[MessageRequest] = []
     for t in targets:
-        c = t["contact"]
+        a = t["asset"]
         raw_data: dict[str, Any] = {}
-        if isinstance(c.get("raw_json"), str):
+        if isinstance(a.get("raw_json"), str):
             try:
-                raw_data = json.loads(c["raw_json"])
+                raw_data = json.loads(a["raw_json"])
             except (json.JSONDecodeError, TypeError):
                 pass
-        elif isinstance(c.get("raw_json"), dict):
-            raw_data = c["raw_json"]
+        elif isinstance(a.get("raw_json"), dict):
+            raw_data = a["raw_json"]
         reqs.append(MessageRequest(
-            target_display_name=c.get("display_name") or t["username"],
+            target_display_name=a.get("display_name") or a.get("title") or t["username"],
             target_username=t["username"],
             target_platform=platform,
             target_profile_url=t["social_url"],
@@ -314,12 +322,12 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     )
 
     pairs: list[tuple[str, str]] = []
-    contact_id_by_username: dict[str, int] = {}
+    asset_id_by_username: dict[str, int] = {}
     errors_seen: list[str] = []
     for (req, msg, err), t in zip(msg_results, targets):
         if msg:
             pairs.append((t["username"], msg))
-            contact_id_by_username[t["username"]] = t["contact"]["id"]
+            asset_id_by_username[t["username"]] = t["asset"]["id"]
         elif err:
             errors_seen.append(f"{t['username']}: {err}")
     jlog(f"Generati {len(pairs)}/{len(targets)} messaggi")
@@ -362,17 +370,11 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     n_ok = 0
     n_fail = 0
     for r in all_results:
-        contact_id = contact_id_by_username.get(r.target_username)
-        # Mapping account: per ora usiamo il primo account valido come "sender"
-        # (l'engine sceglie internamente; il SocialAccount usato non e' exposto
-        # nel risultato — TODO miglioramento: esporlo)
+        asset_id = asset_id_by_username.get(r.target_username)
         account_id_db = next(iter(account_id_by_uuid.values()), None)
         if account_id_db is None:
             continue
         try:
-            # Recover original message text from pairs (loop above)
-            # Nota: l'engine non ritorna il message_text → lo cerchiamo nella
-            # mappatura targets generata sopra. Best-effort.
             msg_text = next(
                 (m for u, m in [(u, m) for u, m in [(p[0], p[1]) for p in []]] if u == r.target_username),
                 "",
@@ -380,7 +382,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             db.insert_social_dm_log({
                 "account_id": account_id_db,
                 "job_id": job_id,
-                "target_contact_id": contact_id,
+                "target_asset_id": asset_id,
                 "target_platform": platform,
                 "target_username": r.target_username or "",
                 "message": msg_text or "(message_text non disponibile)",
@@ -389,14 +391,14 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 "health_post": r.health.value if hasattr(r.health, "value") else str(r.health),
             })
         except Exception as e:
-            jlog(f"  ⚠️ insert_social_dm_log fail: {e}")
+            jlog(f"  WARN insert_social_dm_log fail: {e}")
         if r.ok:
             n_ok += 1
-            if contact_id:
+            if asset_id:
                 try:
-                    db.update_contact_status(contact_id, "contacted")
+                    db.update_asset_outreach_status(asset_id, "contacted")
                 except Exception as e:
-                    jlog(f"  ⚠️ update_contact_status({contact_id}) fail: {e}")
+                    jlog(f"  WARN update_asset_outreach_status({asset_id}) fail: {e}")
         else:
             n_fail += 1
 

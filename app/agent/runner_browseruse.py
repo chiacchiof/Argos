@@ -794,34 +794,35 @@ def _ingest_to_contacts(
                     except Exception:
                         source_domain = None
 
-                db.upsert_contact({
+                display = (
+                    obj.get("display_name")
+                    or obj.get("username")
+                    or obj.get("nickname")
+                )
+                db.upsert_asset({
+                    "asset_type": "contact_ingest",
                     "source_task_id": task_id,
                     "source_job_id": job_id,
                     "source_url": source_url,
                     "source_domain": source_domain,
-                    "display_name": (
-                        obj.get("display_name")
-                        or obj.get("username")
-                        or obj.get("nickname")
-                    ),
+                    "title": display or (email or tg) or "(browseruse ingest)",
+                    "display_name": display,
                     "email": email,
                     "telegram_username": tg,
                     "raw_json": raw,
-                    # status NON viene mai degradato dall'upsert: per nuovi record
-                    # parte da 'new', per esistenti viene preservato.
                 })
                 n_ingested += 1
     except Exception as e:
-        jlog(f"  ⚠️ errore durante ingest in DB: {type(e).__name__}: {e}")
+        jlog(f"  WARN errore durante ingest in DB: {type(e).__name__}: {e}")
         return n_ingested
 
     if n_ingested:
         jlog(
-            f"  💾 ingest DB: {n_ingested} contatti su tabella `contacts` "
-            f"(status='new' per i nuovi, preservato per già esistenti)"
+            f"  ingest DB: {n_ingested} asset su tabella `assets` "
+            "(asset_type='contact_ingest')"
         )
     if n_skipped_no_contact:
-        jlog(f"  ⏭️ {n_skipped_no_contact} righe scartate (no email/telegram)")
+        jlog(f"  {n_skipped_no_contact} righe scartate (no email/telegram)")
     if n_skipped_invalid:
         jlog(f"  ⏭️ {n_skipped_invalid} righe scartate (JSON invalido)")
     return n_ingested

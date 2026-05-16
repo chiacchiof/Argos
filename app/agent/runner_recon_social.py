@@ -623,17 +623,17 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         seed_friends = [u.strip() for u in seed_friends.splitlines() if u.strip()]
     seed_friends = [u for u in seed_friends if u]
 
-    # follower_scrape può popolare i target anche dai contatti selezionati
-    # (sezione "📇 Target IG da contatti DB" nella UI): salta l'abort se
-    # ci sono `target_contact_ids` valorizzati.
-    _tcids_for_recon = task.get("target_contact_ids") or []
+    # follower_scrape può popolare i target anche dagli asset selezionati
+    # (sezione "Target IG da DB" nella UI): salta l'abort se
+    # ci sono `target_asset_ids` (o legacy target_contact_ids) valorizzati.
+    _taids_for_recon = task.get("target_asset_ids") or task.get("target_contact_ids") or []
     if (
         not seed_generic
         and not seed_friends
-        and not (recon_mode == "follower_scrape" and _tcids_for_recon)
+        and not (recon_mode == "follower_scrape" and _taids_for_recon)
     ):
         msg = ("Nessun target. Per follower_scrape: scrivi un handle nel seed "
-               "OPPURE spunta dei contatti IG nella sezione 'Target IG da contatti DB'. "
+               "OPPURE spunta degli asset IG nella sezione 'Target IG da DB'. "
                "Per url_driven: scrivi URL/nomi nel seed.")
         jlog(f"❌ {msg}")
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
@@ -784,34 +784,33 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
                 return ""
 
-            # Pesca anche dai contatti selezionati: estrai handle/URL IG dal
-            # social_json del contatto e aggiungili al seed di target.
-            extra_from_contacts: list[str] = []
-            # Dedup target_contact_ids preservando ordine (il form può inviare
-            # duplicati se due sezioni del template hanno entrambe `name="target_contact_ids"`)
-            target_cids_raw = task.get("target_contact_ids") or []
-            seen_cids: set[int] = set()
-            target_cids: list[int] = []
-            for x in target_cids_raw:
+            # Pesca anche dagli asset selezionati: estrai handle/URL IG dal
+            # social_json dell'asset e aggiungili al seed di target.
+            extra_from_assets: list[str] = []
+            # Dedup target_asset_ids (o legacy target_contact_ids) preservando ordine.
+            target_aids_raw = task.get("target_asset_ids") or task.get("target_contact_ids") or []
+            seen_aids: set[int] = set()
+            target_aids: list[int] = []
+            for x in target_aids_raw:
                 try:
                     xi = int(x)
                 except (TypeError, ValueError):
                     continue
-                if xi not in seen_cids:
-                    seen_cids.add(xi)
-                    target_cids.append(xi)
-            if len(target_cids) < len(target_cids_raw):
-                jlog(f"  ℹ️ dedup target_contact_ids: {len(target_cids_raw)} → {len(target_cids)} unici")
-            if target_cids:
-                jlog(f"📇 Recupero handle IG da {len(target_cids)} contatti selezionati...")
-                for cid in target_cids:
+                if xi not in seen_aids:
+                    seen_aids.add(xi)
+                    target_aids.append(xi)
+            if len(target_aids) < len(target_aids_raw):
+                jlog(f"  dedup target_asset_ids: {len(target_aids_raw)} -> {len(target_aids)} unici")
+            if target_aids:
+                jlog(f"Recupero handle IG da {len(target_aids)} asset selezionati...")
+                for aid in target_aids:
                     try:
-                        c = db.get_contact(int(cid))
+                        a = db.get_asset(int(aid))
                     except Exception:
                         continue
-                    if not c:
+                    if not a:
                         continue
-                    sj = c.get("social_json") or ""
+                    sj = a.get("social_json") or ""
                     try:
                         import json as _json
                         arr = _json.loads(sj) if sj else []
@@ -829,17 +828,17 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         or ""
                     ).strip()
                     if handle_or_url:
-                        extra_from_contacts.append(handle_or_url)
-                        jlog(f"  + contact#{cid} {c.get('display_name')!r} → {handle_or_url}")
-                jlog(f"  ✅ {len(extra_from_contacts)} handle IG aggiunti dai contatti")
+                        extra_from_assets.append(handle_or_url)
+                        jlog(f"  + asset#{aid} {a.get('display_name') or a.get('title')!r} -> {handle_or_url}")
+                jlog(f"  {len(extra_from_assets)} handle IG aggiunti dagli asset")
 
-            # Combina seed testuale + contatti
+            # Combina seed testuale + asset
             combined_targets = list(seed) + [
-                ("generic", h, None) for h in extra_from_contacts
+                ("generic", h, None) for h in extra_from_assets
             ]
             if not combined_targets:
                 msg = ("recon_mode='follower_scrape': nessun target. Inserisci nomi/URL "
-                       "nel Seed o spunta dei contatti IG nella sezione 'Target IG da contatti DB'.")
+                       "nel Seed o spunta degli asset IG nella sezione 'Target IG da DB'.")
                 jlog(f"❌ {msg}")
                 db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
                 return ""
@@ -1204,24 +1203,21 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         },
                         tags=asset_tags,
                     )
-                    # Crea/aggiorna contact linkato all'asset, con social_json
-                    # per il profilo IG/FB/TT. Display name = il nome estratto.
+                    # Popola direttamente i campi outreach sull'asset
+                    # (Fase 2D: niente piu' tabella contacts).
                     social_entry = {"platform": plat, "url": url}
                     if obj.get("username"):
                         social_entry["handle"] = str(obj["username"])[:60]
                     elif obj.get("username_or_id"):
                         social_entry["handle"] = str(obj["username_or_id"])[:60]
-                    db.upsert_contact({
-                        "asset_id": asset_id,
-                        "source_task_id": task["id"],
-                        "source_job_id": job_id,
-                        "source_url": url,
-                        "source_domain": obj.get("source_domain"),
-                        "display_name": str(title)[:200],
-                        "social": [social_entry],
-                        "raw_json": json.dumps(obj, ensure_ascii=False),
-                        "status": "new",
-                    })
+                    try:
+                        db.update_asset(
+                            asset_id,
+                            display_name=str(title)[:200],
+                            social_json=json.dumps([social_entry], ensure_ascii=False),
+                        )
+                    except Exception as e:
+                        log.warning("update asset channels fail: %s", e)
                     audit.log_event(
                         "ASSET_MATERIALIZED", url=url, asset_id=asset_id,
                         asset_type=output_atype, n_tags=sum(len(v) for v in asset_tags.values()),
@@ -1233,7 +1229,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     n_ok += 1
                     audit.log_event("PROFILE_OK", url=url, platform=plat)
                 except Exception as e:
-                    log.warning("upsert asset/contact fail: %s", e)
+                    log.warning("upsert asset fail: %s", e)
                     audit.log_event("ASSET_MATERIALIZE_FAIL", url=url, error=str(e))
                     n_fail += 1
 

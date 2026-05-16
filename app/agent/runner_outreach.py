@@ -1,16 +1,16 @@
-"""Runner outreach: legge contatti dal profiles.jsonl upstream (o dalla
-tabella contacts) e invia messaggi su email + telegram.
+"""Runner outreach: legge asset dal profiles.jsonl upstream (o dalla
+tabella `assets`) e invia messaggi su email + telegram.
 
 Step:
-1. Risolve la sorgente dei contatti:
-   - se task.input_artifact_path è impostato → ingest profiles.jsonl in `contacts`
-   - altrimenti usa contacts già in DB con source_task_id == task.id
-   - oppure contacts da un task upstream (prima riga numerica in seed_queries)
-2. Per ogni contatto non `optedout`/`contacted`/`replied`:
+1. Risolve la sorgente degli asset:
+   - se task.input_artifact_path è impostato → ingest profiles.jsonl in `assets`
+   - altrimenti usa asset già in DB con source_task_id == task.id
+   - oppure asset da un task upstream (prima riga numerica in seed_queries)
+2. Per ogni asset non optedout/contacted/replied (su `outreach_status`):
    - instanzia message_subject + message_template con placeholder
    - per ogni canale abilitato in task.message_channels, invia
    - rispetta rate_limit_per_minute
-3. Aggiorna contact.status = 'contacted'
+3. Aggiorna asset.outreach_status = 'contacted'
 4. Scrive outreach_log.jsonl nella run dir + summary
 """
 from __future__ import annotations
@@ -51,7 +51,8 @@ def _ingest_artifact(
     artifact_path: str,
     jlog,
 ) -> int:
-    """Legge profiles.jsonl e materializza contatti. Ritorna numero ingestiti."""
+    """Legge profiles.jsonl e materializza asset (asset_type='contact_ingest').
+    Ritorna numero asset ingestiti."""
     p = Path(artifact_path)
     if not p.exists():
         jlog(f"Artifact non trovato: {p}")
@@ -75,44 +76,50 @@ def _ingest_artifact(
             if not email and not tg_user:
                 skipped += 1
                 continue
-            db.upsert_contact({
+            url = obj.get("url") or obj.get("source_url")
+            display = obj.get("display_name") or obj.get("username") or obj.get("nickname")
+            db.upsert_asset({
+                "asset_type": "contact_ingest",
                 "source_task_id": task_id,
                 "source_job_id": job_id,
-                "source_url": obj.get("url") or obj.get("source_url"),
-                "source_domain": obj.get("source_domain") or _domain_of(obj.get("url")),
-                "display_name": obj.get("display_name") or obj.get("username") or obj.get("nickname"),
+                "source_url": url,
+                "source_domain": obj.get("source_domain") or _domain_of(url),
+                "title": display or (email or tg_user) or "(ingest)",
+                "display_name": display,
                 "email": email,
                 "telegram_username": tg_user,
                 "raw_json": line,
+                "status": "qualified",
+                "outreach_status": "pending",
             })
             n += 1
     if skipped:
-        jlog(f"Ingest: {n} contatti, {skipped} righe scartate (no email/telegram o JSON invalido)")
+        jlog(f"Ingest: {n} asset, {skipped} righe scartate (no email/telegram o JSON invalido)")
     else:
-        jlog(f"Ingest: {n} contatti dal profiles.jsonl")
+        jlog(f"Ingest: {n} asset dal profiles.jsonl")
     return n
 
 
 _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
 
 
-def _instantiate(template: str, contact: dict[str, Any]) -> str:
+def _instantiate(template: str, asset: dict[str, Any]) -> str:
     """Sostituisce {display_name}, {source_url}, {source_domain}, {email}, ecc."""
     if not template:
         return ""
     safe_data = {
-        "display_name": contact.get("display_name") or "",
-        "source_url": contact.get("source_url") or "",
-        "source_domain": contact.get("source_domain") or "",
-        "email": contact.get("email") or "",
-        "telegram_username": contact.get("telegram_username") or "",
+        "display_name": asset.get("display_name") or asset.get("title") or "",
+        "source_url": asset.get("source_url") or "",
+        "source_domain": asset.get("source_domain") or "",
+        "email": asset.get("email") or "",
+        "telegram_username": asset.get("telegram_username") or "",
     }
     def repl(m):
         return str(safe_data.get(m.group(1), m.group(0)))
     return _PLACEHOLDER_RE.sub(repl, template)
 
 
-def _resolve_source_task_for_contacts(task: dict[str, Any]) -> int | None:
+def _resolve_source_task_for_assets(task: dict[str, Any]) -> int | None:
     """Se l'utente ha messo come prima riga di seed_queries un numero, è il task upstream."""
     seeds = task.get("seed_queries") or []
     for s in seeds:
@@ -162,10 +169,10 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     if artifact:
         _ingest_artifact(task["id"], job_id, artifact, jlog)
 
-    # 4. seleziona contatti target.
-    # Priorità delle sorgenti dei contatti candidati:
+    # 4. seleziona asset target.
+    # Priorità delle sorgenti degli asset candidati:
     #   1. `outreach_filter_source_task_id` (filtro esplicito dal form) — vince su upstream
-    #   2. `outreach_filter_source_follower_of` (asset_tag, JOIN) — applicato AND con 1
+    #   2. `outreach_filter_source_follower_of` -tradotto in asset_tag filter
     #   3. fallback upstream da workflow_edges o source_task_id=current
     filter_tid_raw = task.get("outreach_filter_source_task_id")
     filter_tid = int(filter_tid_raw) if str(filter_tid_raw or "").strip().isdigit() else None
@@ -181,39 +188,48 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         (t.get("key"), t.get("value")) for t in filter_tags_raw
         if isinstance(t, dict) and t.get("key") and t.get("value")
     ]
+    # follower_of viene espresso come tag filter su asset_tags
+    if filter_fof:
+        filter_tags.append(("source_follower_of", filter_fof))
     if filter_tid or filter_fof or filter_tags:
         jlog(
-            f"📤 Filtri destinatari: source_task_id={filter_tid}, "
+            f"Filtri destinatari: source_task_id={filter_tid}, "
             f"source_follower_of={filter_fof!r}, tags={filter_tags}"
         )
 
-    upstream_tid = filter_tid if filter_tid is not None else _resolve_source_task_for_contacts(task)
-    target_status_eligible = ("qualified", "new")
+    upstream_tid = filter_tid if filter_tid is not None else _resolve_source_task_for_assets(task)
     candidates: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
-    for st in target_status_eligible:
-        for c in db.list_contacts(
-            status=st,
-            source_task_id=upstream_tid,
-            source_follower_of=filter_fof,
-            contact_tag_filters=filter_tags or None,
-        ):
-            if c["id"] in seen_ids:
-                continue
-            seen_ids.add(c["id"])
-            candidates.append(c)
-    # Quando non c'è upstream esplicito né filtro, considera contatti ingestiti col job corrente
+    # Asset qualified, non optedout, non contacted, che abbiano almeno email o telegram_username.
+    for a in db.list_assets_for_email_outreach(
+        source_task_id=upstream_tid,
+        asset_tag_filters=filter_tags or None,
+        only_qualified=True,
+        exclude_optedout=True,
+        exclude_contacted=True,
+        limit=10000,
+    ):
+        if a["id"] in seen_ids:
+            continue
+        seen_ids.add(a["id"])
+        candidates.append(a)
+    # Quando non c'è upstream esplicito né filtro, considera asset ingestiti col job corrente
     if not upstream_tid and not filter_fof and not filter_tags and not candidates:
-        for st in target_status_eligible:
-            for c in db.list_contacts(status=st, source_task_id=task["id"]):
-                if c["id"] in seen_ids:
-                    continue
-                seen_ids.add(c["id"])
-                candidates.append(c)
+        for a in db.list_assets_for_email_outreach(
+            source_task_id=task["id"],
+            only_qualified=False,  # asset appena ingestiti possono essere 'new'
+            exclude_optedout=True,
+            exclude_contacted=True,
+            limit=10000,
+        ):
+            if a["id"] in seen_ids:
+                continue
+            seen_ids.add(a["id"])
+            candidates.append(a)
 
     jlog(f"Candidati outreach: {len(candidates)}")
     if not candidates:
-        jlog("Nessun contatto da contattare. Verifica input_artifact_path o task upstream.")
+        jlog("Nessun asset da contattare. Verifica input_artifact_path o task upstream.")
 
     # 5. setup rate limit
     email_cfg = db.get_channel_config("email") or {}
@@ -235,31 +251,32 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     stopped = False
 
     with log_path.open("w", encoding="utf-8") as logf:
-        for i, contact in enumerate(candidates, 1):
+        for i, asset in enumerate(candidates, 1):
             sig = db.get_control_signal(job_id)
             if sig == "stop":
                 jlog("STOP richiesto, interrompo outreach.")
                 stopped = True
                 break
 
-            if contact.get("status") in ("optedout", "contacted", "replied"):
+            if asset.get("outreach_status") in ("optedout", "contacted", "replied"):
                 n_skipped += 1
                 continue
 
-            subject = _instantiate(subject_tpl, contact)
-            body = _instantiate(body_tpl, contact)
+            subject = _instantiate(subject_tpl, asset)
+            body = _instantiate(body_tpl, asset)
 
             sent_any = False
             for channel in active_channels:
                 try:
                     if channel == "email":
-                        if not ch_email.is_valid_email(contact.get("email")):
+                        if not ch_email.is_valid_email(asset.get("email")):
                             continue
                         thread_id = db.get_or_create_thread(
-                            contact["id"], "email", subject=subject, task_id=task["id"]
+                            asset_id=asset["id"], channel="email",
+                            subject=subject, task_id=task["id"],
                         )
                         msg_id = await ch_email.send_email(
-                            contact["email"], subject, body
+                            asset["email"], subject, body
                         )
                         db.insert_message(
                             thread_id, "out", body, llm_generated=False,
@@ -276,22 +293,22 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         db.touch_thread(thread_id)
                         sent_any = True
                         logf.write(json.dumps({
-                            "ts": db.now_iso(), "contact_id": contact["id"],
-                            "channel": "email", "to": contact["email"],
+                            "ts": db.now_iso(), "asset_id": asset["id"],
+                            "channel": "email", "to": asset["email"],
                             "external_id": msg_id, "status": "sent",
                         }) + "\n")
-                        jlog(f"  ✉️ → {contact['email']} (msg-id {msg_id[:30]})")
+                        jlog(f"  email -> {asset['email']} (msg-id {msg_id[:30]})")
                     elif channel == "telegram":
-                        chat_id = contact.get("telegram_chat_id")
+                        chat_id = asset.get("telegram_chat_id")
                         if not chat_id:
                             jlog(
-                                f"  ⏭️ skip telegram per {contact.get('telegram_username') or contact['id']}: "
-                                "il contatto non ha ancora scritto al bot (chat_id mancante)"
+                                f"  skip telegram per {asset.get('telegram_username') or asset['id']}: "
+                                "l'asset non ha ancora scritto al bot (chat_id mancante)"
                             )
                             continue
                         thread_id = db.get_or_create_thread(
-                            contact["id"], "telegram", external_id=str(chat_id),
-                            task_id=task["id"]
+                            asset_id=asset["id"], channel="telegram",
+                            external_id=str(chat_id), task_id=task["id"],
                         )
                         msg_id = await ch_telegram.send_message(chat_id, body)
                         db.insert_message(
@@ -301,22 +318,22 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         db.touch_thread(thread_id)
                         sent_any = True
                         logf.write(json.dumps({
-                            "ts": db.now_iso(), "contact_id": contact["id"],
+                            "ts": db.now_iso(), "asset_id": asset["id"],
                             "channel": "telegram", "to": chat_id,
                             "external_id": msg_id, "status": "sent",
                         }) + "\n")
-                        jlog(f"  💬 → chat {chat_id} (msg {msg_id})")
+                        jlog(f"  telegram -> chat {chat_id} (msg {msg_id})")
                 except Exception as e:
                     n_failed += 1
                     err = f"{type(e).__name__}: {e}"
-                    jlog(f"  ⚠️ {channel} → {contact.get('email') or contact.get('telegram_chat_id')}: {err}")
+                    jlog(f"  WARN {channel} -> {asset.get('email') or asset.get('telegram_chat_id')}: {err}")
                     logf.write(json.dumps({
-                        "ts": db.now_iso(), "contact_id": contact["id"],
+                        "ts": db.now_iso(), "asset_id": asset["id"],
                         "channel": channel, "status": "failed", "error": err,
                     }) + "\n")
 
             if sent_any:
-                db.update_contact_status(contact["id"], "contacted")
+                db.update_asset_outreach_status(asset["id"], "contacted")
                 n_sent += 1
             else:
                 n_skipped += 1

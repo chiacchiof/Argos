@@ -2197,6 +2197,22 @@ def upsert_asset(
     source_task_id = data.get("source_task_id")
     source_job_id = data.get("source_job_id")
     notes = data.get("notes")
+    status_in = data.get("status")
+    # Campi outreach (Fase 2A+2D)
+    display_name = data.get("display_name")
+    email = data.get("email")
+    telegram_username = data.get("telegram_username")
+    telegram_chat_id = data.get("telegram_chat_id")
+    whatsapp = data.get("whatsapp")
+    whatsapp_consent = data.get("whatsapp_consent")
+    whatsapp_last_inbound_at = data.get("whatsapp_last_inbound_at")
+    social_json = data.get("social_json")
+    if social_json is None and data.get("social") is not None:
+        # Tollera l'alias 'social' con lista/dict -> serializzo a JSON
+        sj = data.get("social")
+        social_json = sj if isinstance(sj, str) else json.dumps(sj, ensure_ascii=False)
+    sitoweb = data.get("sitoweb")
+    outreach_status = data.get("outreach_status")
     ts = now_iso()
 
     with connect() as con:
@@ -2216,6 +2232,8 @@ def upsert_asset(
             existing = int(row["id"]) if row else None
 
         if existing:
+            # Update con COALESCE per non sovrascrivere valori esistenti
+            # (idempotenza dell'upsert).
             con.execute(
                 """
                 UPDATE assets SET
@@ -2226,6 +2244,16 @@ def upsert_asset(
                   title                = COALESCE(%s, title),
                   raw_json             = %s,
                   notes                = COALESCE(%s, notes),
+                  display_name         = COALESCE(%s, display_name),
+                  email                = COALESCE(%s, email),
+                  telegram_username    = COALESCE(%s, telegram_username),
+                  telegram_chat_id     = COALESCE(%s, telegram_chat_id),
+                  whatsapp             = COALESCE(%s, whatsapp),
+                  whatsapp_consent     = COALESCE(%s, whatsapp_consent),
+                  whatsapp_last_inbound_at = COALESCE(%s, whatsapp_last_inbound_at),
+                  social_json          = COALESCE(%s, social_json),
+                  sitoweb              = COALESCE(%s, sitoweb),
+                  outreach_status      = COALESCE(%s, outreach_status),
                   updated_at           = %s
                 WHERE id = %s
                 """,
@@ -2237,6 +2265,16 @@ def upsert_asset(
                     title,
                     raw_json,
                     notes,
+                    display_name,
+                    email,
+                    telegram_username,
+                    telegram_chat_id,
+                    whatsapp,
+                    whatsapp_consent,
+                    whatsapp_last_inbound_at,
+                    social_json,
+                    sitoweb,
+                    outreach_status,
                     ts,
                     existing,
                 ),
@@ -2248,8 +2286,13 @@ def upsert_asset(
                 INSERT INTO assets (
                   asset_type, source_task_id, source_job_id, source_url, source_url_canonical,
                   source_domain, title, raw_json, status, qualifier_score, notes,
+                  display_name, email, telegram_username, telegram_chat_id,
+                  whatsapp, whatsapp_consent, whatsapp_last_inbound_at,
+                  social_json, sitoweb, outreach_status,
                   tenant_id, created_by_user_id, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'new', NULL, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, %s,
+                          %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                          %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -2261,7 +2304,18 @@ def upsert_asset(
                     source_domain,
                     title,
                     raw_json,
+                    status_in or "new",
                     notes,
+                    display_name,
+                    email,
+                    telegram_username,
+                    telegram_chat_id,
+                    whatsapp,
+                    whatsapp_consent,
+                    whatsapp_last_inbound_at,
+                    social_json,
+                    sitoweb,
+                    outreach_status,
                     tenant_id,
                     created_by_user_id,
                     ts,
@@ -3518,16 +3572,26 @@ def truncate_site_memory() -> dict[str, int]:
 # ===========================================================================
 
 def get_or_create_thread(
-    contact_id: int,
-    channel: str,
+    contact_id: int | None = None,
+    channel: str = "",
     external_id: str | None = None,
     subject: str | None = None,
     task_id: int | None = None,
     *,
+    asset_id: int | None = None,
     tenant_id: Any = _UNSET,
 ) -> int:
+    """Crea (o ritrova) un thread di conversazione. Asset-centric.
+
+    Almeno uno fra `asset_id` e `contact_id` deve essere valorizzato. Durante
+    la transizione Fase 2D entrambi i campi vengono scritti su `threads` se
+    risolvibili (asset_id derivato da contacts.asset_id se serve).
+    """
+    if asset_id is None and contact_id is None:
+        raise ValueError("get_or_create_thread richiede asset_id o contact_id")
     tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
+        # 1) Match per external_id (idempotenza inbound)
         if external_id:
             row = con.execute(
                 "SELECT id FROM threads WHERE channel = %s AND external_id = %s LIMIT 1",
@@ -3535,21 +3599,39 @@ def get_or_create_thread(
             ).fetchone()
             if row:
                 return int(row["id"])
-        # cerca un thread aperto sullo stesso contatto/canale come fallback
-        row = con.execute(
-            "SELECT id FROM threads WHERE contact_id = %s AND channel = %s AND status='open' "
-            "ORDER BY id DESC LIMIT 1",
-            (contact_id, channel),
-        ).fetchone()
+        # 2) Fallback su thread aperto stesso destinatario/canale.
+        #    Preferenza asset_id se disponibile.
+        if asset_id is not None:
+            row = con.execute(
+                "SELECT id FROM threads WHERE asset_id = %s AND channel = %s AND status='open' "
+                "ORDER BY id DESC LIMIT 1",
+                (asset_id, channel),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT id FROM threads WHERE contact_id = %s AND channel = %s AND status='open' "
+                "ORDER BY id DESC LIMIT 1",
+                (contact_id, channel),
+            ).fetchone()
         if row:
             return int(row["id"])
+        # 3) Backfill mancanti: se ho solo contact_id, deduco asset_id da contacts
+        if asset_id is None and contact_id is not None:
+            r = con.execute(
+                "SELECT asset_id FROM contacts WHERE id = %s", (contact_id,)
+            ).fetchone()
+            if r and r["asset_id"]:
+                asset_id = int(r["asset_id"])
+        # NOT NULL su channel (rimasto NOT NULL nello schema)
+        if not channel:
+            raise ValueError("channel obbligatorio")
         cur = con.execute(
             """
-            INSERT INTO threads (contact_id, channel, external_id, subject, status,
+            INSERT INTO threads (contact_id, asset_id, channel, external_id, subject, status,
                                  task_id, tenant_id, created_at)
-            VALUES (%s, %s, %s, %s, 'open', %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, 'open', %s, %s, %s) RETURNING id
             """,
-            (contact_id, channel, external_id, subject, task_id, tenant_id, now_iso()),
+            (contact_id, asset_id, channel, external_id, subject, task_id, tenant_id, now_iso()),
         )
         return int(cur.fetchone()['id'])
 
@@ -3920,21 +4002,23 @@ def delete_social_account(account_id: int, tenant_id: Any = _UNSET) -> None:
 
 
 def insert_social_dm_log(data: dict, *, tenant_id: Any = _UNSET) -> int:
-    """Log di un singolo DM inviato."""
+    """Log di un singolo DM inviato. Accetta sia `target_asset_id` (preferito)
+    che `target_contact_id` legacy; entrambi vengono scritti se forniti."""
     tenant_id = _resolve_tenant(tenant_id)
     account_id = data.get("account_id")
     with connect() as con:
         cur = con.execute(
             """INSERT INTO social_dm_log
-            (account_id, job_id, target_contact_id, target_platform,
+            (account_id, job_id, target_contact_id, target_asset_id, target_platform,
              target_username, message, sent_at, ok, reason, health_post,
              engine, api_config_id, tenant_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id""",
             (
                 int(account_id) if account_id is not None else None,
                 data.get("job_id"),
                 data.get("target_contact_id"),
+                data.get("target_asset_id"),
                 data["target_platform"],
                 data["target_username"],
                 data["message"],

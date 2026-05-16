@@ -122,21 +122,33 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         if not thread:
             n_skipped += 1
             continue
-        contact = db.get_contact(thread["contact_id"])
-        if not contact:
+        # Risolvi destinatario: preferisci asset_id (Fase 2D); fallback su
+        # contact->asset_id durante la transizione.
+        asset = None
+        if thread.get("asset_id"):
+            asset = db.get_asset(thread["asset_id"])
+        if asset is None and thread.get("contact_id"):
+            with db.connect() as con:
+                row = con.execute(
+                    "SELECT asset_id FROM contacts WHERE id = %s",
+                    (thread["contact_id"],),
+                ).fetchone()
+            if row and row.get("asset_id"):
+                asset = db.get_asset(row["asset_id"])
+        if not asset:
             n_skipped += 1
             continue
 
-        # se contact già optedout, skip
-        if (contact.get("status") or "") == "optedout":
-            jlog(f"  ⏭️ contact #{contact['id']} optedout: skip")
+        # se asset gia' optedout, skip
+        if (asset.get("outreach_status") or "") == "optedout":
+            jlog(f"  asset #{asset['id']} optedout: skip")
             n_skipped += 1
             continue
 
         # opt-out detection
         if _is_opt_out(inbound["body"]):
-            jlog(f"  🚫 opt-out detected da contact #{contact['id']} (msg #{inbound['id']}): NON rispondo")
-            db.update_contact_status(contact["id"], "optedout", notes="Auto-detected opt-out keyword")
+            jlog(f"  opt-out detected da asset #{asset['id']} (msg #{inbound['id']}): NON rispondo")
+            db.update_asset_outreach_status(asset["id"], "optedout", notes="Auto-detected opt-out keyword")
             db.update_thread_status(thread_id, "optedout")
             # marca message come processato (status='received' diventa 'received_processed' implicito
             # tramite presenza di un 'out' successivo... qui non ne mandiamo, quindi inseriamo un msg
@@ -175,12 +187,12 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     subject = f"Re: {subject}"
                 in_reply_to = inbound.get("external_id") or thread.get("external_id")
                 msg_id = await ch_email.send_email(
-                    contact["email"], subject, reply, in_reply_to=in_reply_to,
+                    asset["email"], subject, reply, in_reply_to=in_reply_to,
                 )
                 db.insert_message(thread_id, "out", reply, llm_generated=True,
                                   external_id=msg_id, status="sent", sent_at=db.now_iso())
             elif thread["channel"] == "telegram":
-                chat_id = contact.get("telegram_chat_id") or thread.get("external_id")
+                chat_id = asset.get("telegram_chat_id") or thread.get("external_id")
                 if not chat_id:
                     raise RuntimeError("chat_id mancante")
                 msg_id = await ch_telegram.send_message(chat_id, reply)

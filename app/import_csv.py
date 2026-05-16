@@ -337,24 +337,30 @@ def plan_row(
         else:
             return ImportPlanRow(row_index=0, action="skip", reason="missing_source_url")
 
-    # Costruisci contact_data finale (se almeno un campo contact o social valorizzato)
+    # Mergea contact_data + social nel record asset (Fase 2D: niente piu'
+    # tabella contacts).
     if socials:
-        contact_data["social"] = _build_social_json(socials)
+        # social diventa colonna `social_json` su assets
+        asset_data["social_json"] = json.dumps(
+            _build_social_json(socials), ensure_ascii=False
+        )
     if contact_data:
-        contact_data.setdefault("display_name", title)
-        contact_data.setdefault("source_url", source_url)
-        contact_data.setdefault("status", "new")
-    else:
-        contact_data_out: dict[str, Any] | None = None  # type: ignore[assignment]
-    contact_data_out = contact_data if contact_data else None
+        for k, v in contact_data.items():
+            # Non sovrascrivere campi asset gia' mappati esplicitamente.
+            if k == "status":
+                # mantieni asset_data.status se gia' settato
+                asset_data.setdefault("status", v)
+            else:
+                asset_data.setdefault(k, v)
+        asset_data.setdefault("display_name", title)
+        asset_data.setdefault("outreach_status", "pending")
 
-    # action: insert/update verrà determinato in execute_import a contatto col DB.
     return ImportPlanRow(
         row_index=0,
-        action="insert",  # placeholder, sostituito in execute_import
+        action="insert",
         asset_data=asset_data,
         asset_tags=asset_tags,
-        contact_data=contact_data_out,
+        contact_data=None,
     )
 
 
@@ -424,12 +430,9 @@ def execute_import(
                 else:
                     stats.updated += 1
             else:
-                # Esegui upsert vero
-                asset_id = db.upsert_asset(plan.asset_data, tags=plan.asset_tags)
+                # Esegui upsert vero (asset-only dopo Fase 2D)
+                db.upsert_asset(plan.asset_data, tags=plan.asset_tags)
                 plan.action = "insert"  # upsert_asset non distingue, lo classifichiamo dopo
-                if plan.contact_data:
-                    plan.contact_data["asset_id"] = asset_id
-                    db.upsert_contact(plan.contact_data)
                 stats.inserted += 1  # approssimato; chi vuole dettaglio usa dry-run
 
             if len(stats.sample_rows) < sample_size:

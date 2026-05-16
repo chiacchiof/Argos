@@ -216,15 +216,14 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             n_failed += 1
             return
 
-        # Aggiorna asset (sorgente primaria). Anche se asset_id e' presente,
-        # se l'asset e' qualified E ha almeno un canale di contatto reale,
-        # materializzalo ANCHE nella tabella `contacts` per renderlo utilizzabile
-        # dai task outreach (che leggono da contacts, non da assets).
+        # Aggiorna asset (sorgente primaria). Se l'asset e' qualified E ha
+        # almeno un canale di contatto reale, popola direttamente i campi
+        # outreach sull'asset (Fase 2D: niente piu' tabella contacts).
         if asset_id is not None:
             try:
                 db.update_asset_qualifier(asset_id, score, decision, notes=reason[:300])
             except Exception as e:
-                jlog(f"  ⚠️ update asset {asset_id} failed: {e}")
+                jlog(f"  WARN update asset {asset_id} failed: {e}")
 
             # Multi-qualifier tags (2026-05-16): salva decision + score per QUESTO
             # specifico qualifier task in `asset_tags`. Permette rigirare un
@@ -235,12 +234,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 db.set_asset_tag(asset_id, f"qualifier_{q_slug}", decision)
                 db.set_asset_tag(asset_id, f"qualifier_score_{q_slug}", str(score))
             except Exception as e:
-                jlog(f"  ⚠️ set qualifier tag {asset_id} failed: {e}")
-            # Materializza in contacts se qualified + almeno un canale di contatto.
-            # Espanso rispetto alla versione precedente: ora considera anche
-            # whatsapp, sitoweb, social[] come canali validi (anche se outreach
-            # automatico via questi e' in roadmap, vedi backlog). Il dedup
-            # avviene su email -> telegram -> source_url (vedi db.upsert_contact).
+                jlog(f"  WARN set qualifier tag {asset_id} failed: {e}")
+            # Popola i campi outreach sull'asset (Fase 2D, sostituisce upsert_contact).
             if decision == "qualified":
                 email = obj.get("email") or None
                 tg_user = obj.get("telegram") or obj.get("telegram_username") or None
@@ -249,39 +244,46 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 whatsapp = obj.get("whatsapp") or None
                 sitoweb = obj.get("sitoweb") or obj.get("site") or obj.get("website") or None
                 social = obj.get("social") or None
-                # Materializza se almeno UNO dei canali e' presente. Niente canali
-                # = solo asset, niente contact.
-                has_any_channel = bool(email or tg_user or whatsapp or sitoweb or social)
-                if has_any_channel:
+                display_name = (
+                    obj.get("display_name") or obj.get("username") or obj.get("nickname")
+                )
+                channels: dict[str, Any] = {}
+                if email:
+                    channels["email"] = email
+                if tg_user:
+                    channels["telegram_username"] = tg_user
+                if whatsapp:
+                    channels["whatsapp"] = whatsapp
+                if sitoweb:
+                    channels["sitoweb"] = sitoweb
+                if social:
+                    channels["social_json"] = (
+                        social if isinstance(social, str)
+                        else json.dumps(social, ensure_ascii=False)
+                    )
+                if display_name:
+                    channels["display_name"] = display_name
+                if channels:
                     try:
-                        cid = db.upsert_contact({
-                            "source_task_id": task["id"],
-                            "source_job_id": job_id,
-                            "source_url": obj.get("url") or obj.get("source_url"),
-                            "source_domain": obj.get("source_domain") or _domain_of(obj.get("url")),
-                            "display_name": (
-                                obj.get("display_name") or obj.get("username") or obj.get("nickname")
-                            ),
-                            "email": email,
-                            "telegram_username": tg_user,
-                            "whatsapp": whatsapp,
-                            "sitoweb": sitoweb,
-                            "social": social,
-                            "raw_json": raw_str,
-                        })
-                        db.update_contact_qualifier(cid, score, decision)
+                        db.update_asset(asset_id, **channels)
                     except Exception as e:
-                        jlog(f"  ⚠️ materialize contact failed: {e}")
+                        jlog(f"  WARN update asset channels {asset_id} failed: {e}")
         else:
+            # Fallback: nessun asset upstream — crea uno shadow asset dal blob.
             email = obj.get("email") or None
             tg_user = obj.get("telegram") or obj.get("telegram_username") or None
             if isinstance(tg_user, str):
                 tg_user = tg_user.lstrip("@") or None
-            cid = db.upsert_contact({
+            new_aid = db.upsert_asset({
+                "asset_type": "contact_legacy",
                 "source_task_id": task["id"],
                 "source_job_id": job_id,
                 "source_url": obj.get("url") or obj.get("source_url"),
                 "source_domain": obj.get("source_domain") or _domain_of(obj.get("url")),
+                "title": (
+                    obj.get("display_name") or obj.get("username") or obj.get("nickname")
+                    or email or tg_user or "(qualifier shadow)"
+                ),
                 "display_name": (
                     obj.get("display_name") or obj.get("username") or obj.get("nickname")
                 ),
@@ -289,7 +291,12 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 "telegram_username": tg_user,
                 "raw_json": raw_str,
             })
-            db.update_contact_qualifier(cid, score, decision)
+            try:
+                db.update_asset_qualifier(new_aid, score, decision, notes=reason[:300])
+                db.set_asset_tag(new_aid, f"qualifier_{q_slug}", decision)
+                db.set_asset_tag(new_aid, f"qualifier_score_{q_slug}", str(score))
+            except Exception as e:
+                jlog(f"  WARN shadow asset qualifier tags failed: {e}")
 
         line_out = json.dumps(
             {
