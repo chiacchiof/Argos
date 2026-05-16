@@ -381,10 +381,11 @@ async def asset_search_htmx(
     q: str = "",
     asset_type: str = "",
     limit: int = 10,
+    callback: str = "",
 ):
     """Search HTMX: ritorna lista di asset matching `q` su title / asset_type /
-    tag value. Usata dal modal 'Aggiungi contatto' per importare info da un
-    asset esistente.
+    tag value. Usata dal modal 'Aggiungi contatto' (callback=importFromAsset,
+    default) e dal modal /qualified add (callback=selectAssetForQualifier).
     """
     q = (q or "").strip()
     asset_type = (asset_type or "").strip().lower()
@@ -410,10 +411,15 @@ async def asset_search_htmx(
     with db.connect() as con:
         rows = con.execute(sql, args).fetchall()
     items = [dict(r) for r in rows]
+    cb = (callback or "").strip()
+    # Whitelist callback name per evitare XSS via querystring (il template
+    # interpola il nome dentro un onclick="").
+    if cb not in ("importFromAsset", "selectAssetForQualifier"):
+        cb = "importFromAsset"
     return templates.TemplateResponse(
         request,
         "_asset_search_results.html",
-        {"items": items, "q": q},
+        {"items": items, "q": q, "callback": cb},
     )
 
 

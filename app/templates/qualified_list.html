@@ -291,6 +291,23 @@
   </form>
 </section>
 
+{# JS helper per il modal qualified: chiamato dai risultati di /assets/search. #}
+<script>
+function selectAssetForQualifier(assetId) {
+  const idInput = document.querySelector('#add-qualified-modal [name="asset_id"]');
+  if (idInput) {
+    idInput.value = assetId;
+    // Triggera HTMX preview (hx-trigger="input changed")
+    idInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  // Pulisci search box e risultati
+  const sq = document.getElementById('qualifier-asset-search-q');
+  if (sq) sq.value = '';
+  const sr = document.getElementById('qualifier-asset-search-results');
+  if (sr) sr.innerHTML = '';
+}
+</script>
+
 {# Modal: aggiungi qualified manualmente a un asset esistente. #}
 <div id="add-qualified-modal" class="modal-backdrop"
      onclick="if(event.target===this) this.classList.remove('open');">
@@ -308,13 +325,32 @@
     </p>
 
     <form method="post" action="/qualified/add" class="add-contact-form">
+
+      {# === Ricerca asset (stesso pattern di /inbox/contacts) === #}
+      <details class="optional-block" open
+               style="background:#f0f7ff;border:1px solid #b3d4f5;border-radius:4px;padding:0.4rem 0.6rem;margin-bottom:0.6rem">
+        <summary><strong>🔎 Cerca asset</strong> <span class="hint">(per nome / asset_type / valore tag)</span></summary>
+        <label style="margin:0.3rem 0;display:block">
+          <input type="search" id="qualifier-asset-search-q"
+                 placeholder="Min 2 caratteri (es. 'palestra', 'Catania', 'evolution')"
+                 hx-get="/assets/search?callback=selectAssetForQualifier"
+                 hx-trigger="keyup changed delay:300ms, search"
+                 hx-target="#qualifier-asset-search-results"
+                 hx-swap="innerHTML"
+                 name="_search"
+                 style="width:100%"
+                 autocomplete="off">
+        </label>
+        <div id="qualifier-asset-search-results"></div>
+      </details>
+
       <label>
         Asset ID <span style="color:#cf222e">*</span>
         <input type="number" name="asset_id" required min="1" placeholder="es. 1234"
                autocomplete="off"
                hx-get="/assets/preview_inline" hx-trigger="input changed delay:300ms"
                hx-target="#asset-preview" hx-swap="innerHTML">
-        <small class="muted">Lo trovi su <a href="/assets" target="_blank">/assets</a> cliccando una riga, o nell'URL <code>/assets/{id}</code>.</small>
+        <small class="muted">Selezionalo via search sopra ↑ oppure digita l'ID (lo trovi su <a href="/assets" target="_blank">/assets</a>).</small>
       </label>
       <div id="asset-preview" class="asset-preview-box">— inserisci un ID per vedere l'anteprima —</div>
 
