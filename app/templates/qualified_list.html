@@ -109,18 +109,31 @@
         <summary>🏷️ Filtri tag attributi (AND multipli)</summary>
         <p class="muted small" style="margin: 0.3rem 0">
           Per filtrare dentro un qualifier su attributi (es. <code>city=Catania</code>, <code>interests_inferred=fitness</code>).
+          I tag <code>qualifier_*</code> sono esclusi (usa la sidebar a sinistra per quelli).
         </p>
         <div class="extra-tags-grid">
           {% for i in range(3) %}
-            {% set k = extra_tag_filters[i][0] if extra_tag_filters|length > i else '' %}
-            {% set v = extra_tag_filters[i][1] if extra_tag_filters|length > i else '' %}
+            {% set ek = extra_tag_filters[i][0] if extra_tag_filters|length > i else '' %}
+            {% set ev = extra_tag_filters[i][1] if extra_tag_filters|length > i else '' %}
             <div class="extra-tag-row">
-              <input type="text" name="tag_key__{{ i }}" placeholder="tag_key"
-                     value="{{ k }}"
-                     hx-get="/assets/tag_values" hx-trigger="change"
-                     hx-target="#tag-value-{{ i }}">
-              <select name="tag_value__{{ i }}" id="tag-value-{{ i }}">
-                {% if v %}<option value="{{ v }}" selected>{{ v }}</option>{% else %}<option value="">— value —</option>{% endif %}
+              <select name="tag_key__{{ i }}"
+                      hx-get="/assets/tag_values?scope=assets"
+                      hx-trigger="change"
+                      hx-target="#qualified-tag-value-{{ i }}"
+                      hx-include="this"
+                      hx-vals='{"key": ""}'
+                      onchange="this.setAttribute('hx-vals', JSON.stringify({key: this.value, scope: 'assets'}));">
+                <option value="">— nessuno —</option>
+                {% for tk in (available_tag_keys or []) %}
+                  <option value="{{ tk.key }}" {% if tk.key == ek %}selected{% endif %}>{{ tk.key }} ({{ tk.count }})</option>
+                {% endfor %}
+              </select>
+              <select name="tag_value__{{ i }}" id="qualified-tag-value-{{ i }}">
+                {% if ek and ev %}
+                  <option value="{{ ev }}" selected>{{ ev }}</option>
+                {% else %}
+                  <option value="">— prima scegli una key —</option>
+                {% endif %}
               </select>
             </div>
           {% endfor %}

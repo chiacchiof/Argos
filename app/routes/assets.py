@@ -217,6 +217,7 @@ async def qualified_assets_list(
 
     qualifier_menu = db.list_distinct_qualifier_slugs()
     types_in_use = db.list_asset_types_in_use()
+    available_tag_keys = db.list_distinct_tag_keys_for_assets(exclude_qualifier_tags=True)
 
     qs_parts: list[str] = []
     if qualifiers: qs_parts.append(f"qualifiers={qualifiers}")
@@ -245,6 +246,7 @@ async def qualified_assets_list(
             "filter_search": search or "",
             "extra_tag_filters": extra_tag_filters,
             "types_in_use": types_in_use,
+            "available_tag_keys": available_tag_keys,
             "page": page_v,
             "per_page": per_page_v,
             "total": total,
@@ -354,16 +356,23 @@ async def asset_preview_inline(asset_id: str = ""):
 # Definiti PRIMA di /assets/{asset_id} per evitare conflitto di routing.
 
 @router.get("/assets/tag_values", response_class=HTMLResponse)
-async def asset_tag_values_htmx(request: Request, key: str = ""):
+async def asset_tag_values_htmx(request: Request, key: str = "", scope: str = "contacts"):
     """HTMX endpoint: ritorna <option> per il dropdown tag_value dato un
-    tag_key. Usato dal form task per popolare dinamicamente i value disponibili
-    quando l'utente sceglie una key (filtro outreach multi-tag).
+    tag_key. Usato sia dal form task (filtro outreach multi-tag) sia dai
+    filtri tag in /inbox/contacts e /qualified.
+
+    scope=contacts (default, backward-compat): count = N contatti per value
+    scope=assets:                              count = N asset per value
     """
     key = (key or "").strip().lower()
     if not key:
         return HTMLResponse('<option value="">— prima scegli una key —</option>')
+    use_assets = (scope or "").strip().lower() == "assets"
     try:
-        values = db.list_distinct_tag_values_for_contacts(key, limit=100)
+        if use_assets:
+            values = db.list_distinct_tag_values_for_assets(key, limit=100)
+        else:
+            values = db.list_distinct_tag_values_for_contacts(key, limit=100)
     except Exception:
         values = []
     parts = ['<option value="">— seleziona —</option>']

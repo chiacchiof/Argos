@@ -1813,6 +1813,37 @@ def list_distinct_tag_keys_for_contacts() -> list[dict[str, Any]]:
     return [{"key": r["k"], "count": int(r["n"])} for r in rows]
 
 
+def list_distinct_tag_keys_for_assets(exclude_qualifier_tags: bool = True) -> list[dict[str, Any]]:
+    """Tag keys disponibili su asset_tags (count = N asset distinti per key).
+    Per default esclude i tag `qualifier_*` e `qualifier_score_*` (sono gestiti
+    dalla sidebar qualifier di /qualified, non come filtri tag generici)."""
+    sql = (
+        "SELECT t.tag_key AS k, COUNT(DISTINCT t.asset_id) AS n "
+        "FROM asset_tags t WHERE 1=1 "
+    )
+    if exclude_qualifier_tags:
+        sql += "AND t.tag_key NOT LIKE 'qualifier\\_%' ESCAPE '\\' "
+    sql += "GROUP BY t.tag_key ORDER BY n DESC, t.tag_key"
+    with connect() as con:
+        rows = con.execute(sql).fetchall()
+    return [{"key": r["k"], "count": int(r["n"])} for r in rows]
+
+
+def list_distinct_tag_values_for_assets(tag_key: str, limit: int = 100) -> list[dict[str, Any]]:
+    """Valori distinct per una tag_key, con count di asset che la hanno."""
+    tk = (tag_key or "").strip().lower()
+    if not tk:
+        return []
+    with connect() as con:
+        rows = con.execute(
+            "SELECT t.tag_value AS v, COUNT(DISTINCT t.asset_id) AS n "
+            "FROM asset_tags t WHERE t.tag_key = %s "
+            "GROUP BY t.tag_value ORDER BY n DESC, t.tag_value LIMIT %s",
+            (tk, int(limit)),
+        ).fetchall()
+    return [{"value": r["v"], "count": int(r["n"])} for r in rows]
+
+
 def list_distinct_tag_values_for_contacts(tag_key: str, limit: int = 100) -> list[dict[str, Any]]:
     """Valori distinct per una tag_key, con count di contatti che la hanno.
     Usato dal dropdown HTMX quando l'utente cambia la tag_key in UI."""
