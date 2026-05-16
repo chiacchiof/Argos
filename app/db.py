@@ -2628,6 +2628,269 @@ def list_asset_tag_values(tag_key: str, asset_type: str | None = None, limit: in
 
 
 # ===========================================================================
+# Qualifier view helpers (Fase 1 /qualified tab)
+# ===========================================================================
+# Mostrare asset filtrati per qualifier (vista derivata da asset_tags).
+# I tag rilevanti hanno la forma:
+#   tag_key = 'qualifier_<slug>'        tag_value = 'qualified' | 'rejected'
+#   tag_key = 'qualifier_score_<slug>'  tag_value = '0'..'10'  (cast SQL → int)
+# Lo slug è derivato dal nome del task qualifier (runner_qualifier._qualifier_slug).
+
+def list_distinct_qualifier_slugs(tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    """Ritorna gli slug dei qualifier eseguiti, con friendly name + count.
+
+    Per ogni `tag_key` del tipo `qualifier_<slug>` (esclusi i `qualifier_score_<slug>`):
+    - `slug`: lo slug "tecnico" (es. `qualifica_appassionati_palestra`)
+    - `friendly_name`: il task.name corrispondente (best-effort: cerchiamo un
+      task il cui `_qualifier_slug` matcha questo slug). Se non trovato → derivato
+      dallo slug stesso (es. "Qualifica Appassionati Palestra").
+    - `count_qualified`, `count_rejected`: conteggio asset taggati per ciascuno
+      status, filtrato per il tenant corrente.
+
+    Ordinato per count_qualified DESC.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+
+    sql = (
+        "SELECT t.tag_key, t.tag_value, COUNT(DISTINCT a.id) AS n "
+        "FROM asset_tags t JOIN assets a ON a.id = t.asset_id "
+        "WHERE t.tag_key LIKE 'qualifier_%%' "
+        "  AND t.tag_key NOT LIKE 'qualifier_score_%%' "
+    )
+    args: list[Any] = []
+    if tenant_id is not None:
+        sql += " AND a.tenant_id = %s"
+        args.append(tenant_id)
+    sql += " GROUP BY t.tag_key, t.tag_value"
+
+    counts: dict[str, dict[str, int]] = {}
+    with connect() as con:
+        for r in con.execute(sql, args).fetchall():
+            slug = r["tag_key"][len("qualifier_"):]
+            val = r["tag_value"]
+            counts.setdefault(slug, {"qualified": 0, "rejected": 0})
+            if val in ("qualified", "rejected"):
+                counts[slug][val] = int(r["n"])
+
+        # Friendly name: prova a recuperare il task.name di un task qualifier
+        # il cui slug derivato matcha. Heuristica: confronta lo slug calcolato
+        # da `_qualifier_slug` se importabile, altrimenti fallback su normalizzazione
+        # snake_case di task.name LIKE pattern.
+        # Per evitare import circolari + complicazioni, faccio query semplice:
+        # task.name normalizzata == slug del tag.
+        # Fallback: titlecase dello slug.
+        friendly: dict[str, str] = {}
+        slugs = list(counts.keys())
+        if slugs:
+            # Recupero tutti i task qualifier-like (agent_mode='qualifier')
+            tasks_rows = con.execute(
+                "SELECT id, name FROM tasks WHERE agent_mode = 'qualifier'"
+                + (" AND tenant_id = %s" if tenant_id is not None else ""),
+                ([tenant_id] if tenant_id is not None else []),
+            ).fetchall()
+        else:
+            tasks_rows = []
+
+    # Replica leggera di _qualifier_slug (runner_qualifier.py):
+    # snake_case di task.name, max 40 char.
+    import re as _re
+    def _slug_of(name: str) -> str:
+        s = _re.sub(r"[^a-z0-9]+", "_", (name or "").strip().lower()).strip("_")
+        return s[:40]
+
+    for t in tasks_rows:
+        s = _slug_of(t["name"])
+        if s and s not in friendly:
+            friendly[s] = t["name"]
+
+    out: list[dict[str, Any]] = []
+    for slug, c in counts.items():
+        out.append({
+            "slug": slug,
+            "friendly_name": friendly.get(slug, slug.replace("_", " ").title()),
+            "count_qualified": c.get("qualified", 0),
+            "count_rejected": c.get("rejected", 0),
+        })
+    out.sort(key=lambda x: (-x["count_qualified"], x["slug"]))
+    return out
+
+
+def _qualified_assets_where_clause(
+    qualifier_slugs: list[str],
+    status_filter: str,
+    score_min: int | None,
+    asset_type: str | None,
+    source_task_id: int | None,
+    search: str | None,
+    extra_tag_filters: list[tuple[str, str]] | None,
+    tenant_id: int | None,
+) -> tuple[str, list[Any]]:
+    """Costruisce WHERE+args condivisi da list_qualified_assets / count_qualified_assets."""
+    where = " WHERE 1=1"
+    args: list[Any] = []
+
+    # Multi-qualifier AND: ogni slug deve avere il tag con status richiesto
+    for slug in qualifier_slugs:
+        where += (
+            " AND EXISTS (SELECT 1 FROM asset_tags qt WHERE qt.asset_id = a.id "
+            " AND qt.tag_key = %s AND qt.tag_value = %s)"
+        )
+        args.extend([f"qualifier_{slug}", status_filter])
+        if score_min is not None:
+            where += (
+                " AND EXISTS (SELECT 1 FROM asset_tags qs WHERE qs.asset_id = a.id "
+                " AND qs.tag_key = %s "
+                " AND qs.tag_value ~ '^[0-9]+$' "
+                " AND CAST(qs.tag_value AS INTEGER) >= %s)"
+            )
+            args.extend([f"qualifier_score_{slug}", int(score_min)])
+
+    if asset_type:
+        where += " AND a.asset_type = %s"
+        args.append(asset_type)
+    if source_task_id is not None:
+        where += " AND a.source_task_id = %s"
+        args.append(source_task_id)
+    if search:
+        like = f"%{search.strip()}%"
+        where += " AND (LOWER(COALESCE(a.title,'')) LIKE LOWER(%s) OR LOWER(COALESCE(a.raw_json,'')) LIKE LOWER(%s))"
+        args.extend([like, like])
+    if extra_tag_filters:
+        for i, (k, v) in enumerate(extra_tag_filters):
+            where += (
+                f" AND EXISTS (SELECT 1 FROM asset_tags et{i} WHERE et{i}.asset_id = a.id "
+                f" AND et{i}.tag_key = %s AND et{i}.tag_value = %s)"
+            )
+            args.extend([k.lower(), v])
+    if tenant_id is not None:
+        where += " AND a.tenant_id = %s"
+        args.append(tenant_id)
+    return where, args
+
+
+def list_qualified_assets(
+    qualifier_slugs: list[str] | None = None,
+    status_filter: str = "qualified",
+    score_min: int | None = None,
+    asset_type: str | None = None,
+    source_task_id: int | None = None,
+    search: str | None = None,
+    extra_tag_filters: list[tuple[str, str]] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Lista asset filtrati per qualifier (AND multipli) + score min + filtri extra.
+
+    `qualifier_slugs`: lista di slug `qualifier_<slug>` (senza prefisso 'qualifier_').
+      Se vuota o None → no filtro qualifier (mostra tutti gli asset).
+    `status_filter`: 'qualified' (default), 'rejected', o 'both' per OR.
+    `score_min`: applicato a TUTTI i qualifier selezionati (semantica AND).
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    slugs = [s for s in (qualifier_slugs or []) if s]
+    if status_filter not in ("qualified", "rejected", "both"):
+        status_filter = "qualified"
+
+    # Se 'both', genero 2 chiamate separate (qualified + rejected) e UNION
+    if slugs and status_filter == "both":
+        rows_q = list_qualified_assets(
+            slugs, "qualified", score_min, asset_type, source_task_id, search,
+            extra_tag_filters, limit, offset, tenant_id=tenant_id,
+        )
+        rows_r = list_qualified_assets(
+            slugs, "rejected", score_min, asset_type, source_task_id, search,
+            extra_tag_filters, limit, offset, tenant_id=tenant_id,
+        )
+        # merge + dedup per id, limit
+        seen: set[int] = set()
+        merged: list[dict[str, Any]] = []
+        for r in rows_q + rows_r:
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                merged.append(r)
+        return merged[:limit]
+
+    where, args = _qualified_assets_where_clause(
+        slugs, status_filter, score_min, asset_type, source_task_id, search,
+        extra_tag_filters, tenant_id,
+    )
+    sql = (
+        "SELECT a.* FROM assets a"
+        + where
+        + " ORDER BY a.id DESC LIMIT %s OFFSET %s"
+    )
+    args.extend([limit, max(0, int(offset))])
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+        results = [dict(r) for r in rows]
+        if results:
+            ids = [r["id"] for r in results]
+            placeholders = ",".join(["%s"] * len(ids))
+            tag_rows = con.execute(
+                f"SELECT asset_id, tag_key, tag_value FROM asset_tags "
+                f"WHERE asset_id IN ({placeholders}) ORDER BY tag_key",
+                ids,
+            ).fetchall()
+        else:
+            tag_rows = []
+    by_id: dict[int, dict[str, list[str]]] = {}
+    for t in tag_rows:
+        d = by_id.setdefault(int(t["asset_id"]), {})
+        d.setdefault(t["tag_key"], []).append(t["tag_value"])
+    for a in results:
+        a["tags"] = by_id.get(int(a["id"]), {})
+    return results
+
+
+def count_qualified_assets(
+    qualifier_slugs: list[str] | None = None,
+    status_filter: str = "qualified",
+    score_min: int | None = None,
+    asset_type: str | None = None,
+    source_task_id: int | None = None,
+    search: str | None = None,
+    extra_tag_filters: list[tuple[str, str]] | None = None,
+    tenant_id: Any = _UNSET,
+) -> int:
+    """Count con gli stessi filtri di list_qualified_assets. Per paginazione."""
+    tenant_id = _resolve_tenant(tenant_id)
+    slugs = [s for s in (qualifier_slugs or []) if s]
+    if status_filter not in ("qualified", "rejected", "both"):
+        status_filter = "qualified"
+    if slugs and status_filter == "both":
+        # Approssimazione: per il count basta unire qualified + rejected
+        # cardinalità è "distinct asset". Usiamo UNION via subquery.
+        where_q, args_q = _qualified_assets_where_clause(
+            slugs, "qualified", score_min, asset_type, source_task_id, search,
+            extra_tag_filters, tenant_id,
+        )
+        where_r, args_r = _qualified_assets_where_clause(
+            slugs, "rejected", score_min, asset_type, source_task_id, search,
+            extra_tag_filters, tenant_id,
+        )
+        sql = (
+            f"SELECT COUNT(*) FROM ("
+            f"  SELECT a.id FROM assets a {where_q} "
+            f"  UNION "
+            f"  SELECT a.id FROM assets a {where_r}"
+            f") sub"
+        )
+        with connect() as con:
+            row = con.execute(sql, args_q + args_r).fetchone()
+            return int(row["count"] if isinstance(row, dict) else row[0])
+
+    where, args = _qualified_assets_where_clause(
+        slugs, status_filter, score_min, asset_type, source_task_id, search,
+        extra_tag_filters, tenant_id,
+    )
+    sql = "SELECT COUNT(*) FROM assets a" + where
+    with connect() as con:
+        row = con.execute(sql, args).fetchone()
+        return int(row["count"] if isinstance(row, dict) else row[0])
+
+
+# ===========================================================================
 # Site patterns -memoria pattern URL "target" per dominio
 # ===========================================================================
 

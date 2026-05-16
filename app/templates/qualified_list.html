@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% block title %}Qualified · AgentScraper{% endblock %}
+{% block content %}
+<section class="qualified-section">
+  <header class="qualified-header">
+    <h2>✅ Asset qualified</h2>
+    <p class="muted">
+      Filtra gli asset per i qualifier che li hanno valutati. Sorgente unica per
+      i task di outreach. Multi-select = intersezione (AND) — l'asset deve avere
+      tutti i qualifier selezionati con stato corrispondente.
+    </p>
+  </header>
+
+  <form method="get" action="/qualified" class="qualified-filters">
+    <div class="qualifier-menu">
+      <h3>Qualifier eseguiti</h3>
+      {% if qualifier_menu %}
+        <ul class="qualifier-list">
+          {% for q in qualifier_menu %}
+          <li>
+            <label>
+              <input type="checkbox" name="qualifiers" value="{{ q.slug }}"
+                     {% if q.slug in selected_qualifiers %}checked{% endif %}
+                     class="qualifier-checkbox">
+              <span class="qualifier-name">{{ q.friendly_name }}</span>
+              <small class="qualifier-counts">
+                <span class="badge badge-ok">{{ q.count_qualified }}</span>
+                {% if q.count_rejected %}<span class="badge badge-off">{{ q.count_rejected }}</span>{% endif %}
+              </small>
+            </label>
+          </li>
+          {% endfor %}
+        </ul>
+        <p class="muted small">
+          Tip: i numeri verdi = `qualified`, rossi = `rejected`. Multi-select → AND.
+        </p>
+      {% else %}
+        <p class="muted">
+          Nessun qualifier eseguito ancora. Lancia un task con agent_mode <code>qualifier</code>
+          su un set di asset per generarli.
+        </p>
+      {% endif %}
+    </div>
+
+    <div class="qualified-secondary-filters">
+      <h3>Filtri</h3>
+
+      <label class="field-inline">
+        Stato:
+        <select name="status">
+          <option value="qualified" {% if filter_status == "qualified" %}selected{% endif %}>qualified</option>
+          <option value="rejected" {% if filter_status == "rejected" %}selected{% endif %}>rejected</option>
+          <option value="both" {% if filter_status == "both" %}selected{% endif %}>entrambi</option>
+        </select>
+      </label>
+
+      <label class="field-inline">
+        Score min:
+        <input type="number" name="score_min" min="0" max="10" step="1"
+               value="{{ filter_score_min if filter_score_min is not none else '' }}"
+               placeholder="(qualsiasi)" style="width: 6em">
+        <small class="muted">applicato a tutti i qualifier selezionati</small>
+      </label>
+
+      <label class="field-inline">
+        Asset type:
+        <select name="asset_type">
+          <option value="">(qualsiasi)</option>
+          {% for t in types_in_use %}
+          <option value="{{ t.asset_type }}" {% if t.asset_type == filter_type %}selected{% endif %}>
+            {{ t.asset_type }} ({{ t.count }})
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label class="field-inline">
+        Source task:
+        <input type="number" name="source_task_id" value="{{ filter_task or '' }}"
+               placeholder="(qualsiasi)" style="width: 6em">
+      </label>
+
+      <label class="field-inline" style="flex: 1; min-width: 200px">
+        Cerca:
+        <input type="text" name="q" value="{{ filter_search }}"
+               placeholder="titolo o raw_json contiene…">
+      </label>
+
+      <details class="extra-tag-filters">
+        <summary>Filtri tag extra (AND)</summary>
+        <div class="extra-tags-grid">
+          {% for i in range(3) %}
+            {% set k = extra_tag_filters[i][0] if extra_tag_filters|length > i else '' %}
+            {% set v = extra_tag_filters[i][1] if extra_tag_filters|length > i else '' %}
+            <div class="extra-tag-row">
+              <input type="text" name="tag_key__{{ i }}" placeholder="tag_key"
+                     value="{{ k }}"
+                     hx-get="/assets/tag_values" hx-trigger="change"
+                     hx-target="#tag-value-{{ i }}">
+              <select name="tag_value__{{ i }}" id="tag-value-{{ i }}">
+                {% if v %}<option value="{{ v }}" selected>{{ v }}</option>{% else %}<option value="">— value —</option>{% endif %}
+              </select>
+            </div>
+          {% endfor %}
+        </div>
+      </details>
+
+      <div class="filter-actions">
+        <button type="submit" class="btn-primary">Applica filtri</button>
+        <a href="/qualified" class="btn-secondary">Reset</a>
+      </div>
+    </div>
+  </form>
+
+  {# Riepilogo selezione corrente #}
+  {% if selected_qualifiers %}
+  <div class="qualified-summary">
+    <strong>{{ total }}</strong> asset matchano:
+    <span class="status-chip status-{{ filter_status }}">{{ filter_status }}</span>
+    {% if filter_score_min is not none %}+ score ≥ {{ filter_score_min }}{% endif %}
+    in:
+    {% for slug in selected_qualifiers %}
+      {% for q in qualifier_menu if q.slug == slug %}
+        <span class="qualifier-chip">{{ q.friendly_name }}</span>
+      {% endfor %}
+    {% endfor %}
+    <a href="/tasks/new?prefill_qualified_filter=1&qualifiers={{ selected_qualifiers|join(',') }}&score_min={{ filter_score_min or '' }}"
+       class="btn-primary btn-small" style="margin-left: 1em">
+      🚀 Avvia outreach con questo set
+    </a>
+  </div>
+  {% endif %}
+
+  {% if assets %}
+  <table class="data assets-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Tipo</th>
+        <th>Titolo</th>
+        <th>Dominio</th>
+        <th>Qualifier(s)</th>
+        <th>Altri tag</th>
+        <th>Stato scrape</th>
+        <th>Origine</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in assets %}
+      <tr>
+        <td>{{ a.id }}</td>
+        <td><code>{{ a.asset_type }}</code></td>
+        <td><a href="/assets/{{ a.id }}">{{ a.title or "(senza titolo)" }}</a></td>
+        <td>
+          {% if a.source_url %}
+          <a href="{{ a.source_url }}" target="_blank" rel="noopener">{{ a.source_domain or "—" }}</a>
+          {% else %}{{ a.source_domain or "—" }}{% endif %}
+        </td>
+        <td class="tags-cell">
+          {% for k, vs in a.tags.items() %}
+            {% if k.startswith("qualifier_score_") %}
+              {% set slug = k[16:] %}
+              {% for v in vs %}
+                <span class="qualifier-score-badge" title="score qualifier {{ slug }}">{{ slug }}: <strong>{{ v }}</strong></span>
+              {% endfor %}
+            {% elif k.startswith("qualifier_") %}
+              {% set slug = k[10:] %}
+              {% for v in vs %}
+                <span class="qualifier-chip qualifier-{{ v }}" title="qualifier {{ slug }} = {{ v }}">{{ slug }}: {{ v }}</span>
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+        </td>
+        <td class="tags-cell">
+          {% for k, vs in a.tags.items() %}
+            {% if not k.startswith("qualifier_") %}
+              {% for v in vs %}
+                <span class="tag-chip-mini">{{ k }}:{{ v }}</span>
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+        </td>
+        <td><span class="status status-{{ a.status }}">{{ a.status }}</span></td>
+        <td>
+          {% if a.source_task_id %}
+          <a href="/tasks/{{ a.source_task_id }}">task #{{ a.source_task_id }}</a>
+          {% endif %}
+        </td>
+        <td style="white-space:nowrap">
+          <a href="/assets/{{ a.id }}" class="btn-small" title="Dettaglio">👁️</a>
+          <a href="/assets/{{ a.id }}/edit" class="btn-small" title="Modifica">✏️</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# Paginazione (stesso pattern di assets_list) #}
+  {% set page_from = offset + 1 %}
+  {% set page_to = offset + assets|length %}
+  <div class="pagination">
+    <p class="muted small">
+      Mostrando <strong>{{ page_from }}–{{ page_to }}</strong> di <strong>{{ total }}</strong>
+      ({{ per_page }} per pagina, pagina {{ page }} di {{ total_pages }})
+    </p>
+    {% if total_pages > 1 %}
+    <nav class="pager">
+      {% set sep = '&' if qs_base else '' %}
+      {% if page > 1 %}
+        <a href="?{{ qs_base }}{{ sep }}page=1">« prima</a>
+        <a href="?{{ qs_base }}{{ sep }}page={{ page - 1 }}">‹ prec</a>
+      {% else %}
+        <span class="pager-disabled">« prima</span>
+        <span class="pager-disabled">‹ prec</span>
+      {% endif %}
+      {% set window_start = [page - 3, 1] | max %}
+      {% set window_end = [page + 3, total_pages] | min %}
+      {% if window_start > 1 %}<span class="pager-ellipsis">…</span>{% endif %}
+      {% for p in range(window_start, window_end + 1) %}
+        {% if p == page %}
+          <strong class="pager-current">{{ p }}</strong>
+        {% else %}
+          <a href="?{{ qs_base }}{{ sep }}page={{ p }}">{{ p }}</a>
+        {% endif %}
+      {% endfor %}
+      {% if window_end < total_pages %}<span class="pager-ellipsis">…</span>{% endif %}
+      {% if page < total_pages %}
+        <a href="?{{ qs_base }}{{ sep }}page={{ page + 1 }}">succ ›</a>
+        <a href="?{{ qs_base }}{{ sep }}page={{ total_pages }}">ultima »</a>
+      {% else %}
+        <span class="pager-disabled">succ ›</span>
+        <span class="pager-disabled">ultima »</span>
+      {% endif %}
+    </nav>
+    {% endif %}
+  </div>
+
+  {% else %}
+  <div class="empty-state">
+    <span class="empty-icon">✅</span>
+    <div class="empty-title">Nessun asset matcha i filtri</div>
+    <p class="empty-hint">
+      {% if selected_qualifiers %}
+        Prova a rimuovere qualifier dalla selezione, ad abbassare lo score min, o cambiare lo stato in <code>both</code>.
+      {% else %}
+        Seleziona almeno un qualifier dal menu a sinistra per filtrare.
+      {% endif %}
+    </p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
