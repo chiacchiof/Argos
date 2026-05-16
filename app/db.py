@@ -21,6 +21,7 @@ questa Fase 2 step A+B. Verranno aggiunti nello Step C dopo lo swap del driver.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -34,6 +35,86 @@ from .config import DATA_DIR
 log = logging.getLogger(__name__)
 
 _pool = None  # type: ignore[var-annotated]
+
+
+# ---------------------------------------------------------------------------
+# Tenant context (Step D)
+# ---------------------------------------------------------------------------
+# Le funzioni `db.*` tenant-aware (es. list_tasks, create_task) usano
+# `_UNSET` come default del parametro `tenant_id`. Se chi chiama NON
+# passa esplicitamente tenant_id, la funzione legge dal ContextVar
+# `_current_tenant_id_var` settato dal middleware HTTP (app.main).
+#
+# Tre stati possibili per `tenant_id`:
+#   - `_UNSET`  → leggi dal ContextVar (default per chiamate da route)
+#   - `None`    → NO filtro (super-admin, test, runner senza tenant)
+#   - `int`     → WHERE tenant_id = %s (isolamento per tenant_user)
+
+
+class _UnsetSentinel:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "<UNSET>"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_UNSET: Any = _UnsetSentinel()
+
+
+_current_tenant_id_var: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "agentscraper_current_tenant_id", default=None
+)
+
+_current_user_id_var: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "agentscraper_current_user_id", default=None
+)
+
+
+def set_current_tenant(tenant_id: int | None) -> contextvars.Token:
+    """Imposta il tenant_id del contesto corrente. Usato dal middleware HTTP
+    di app.main (auth_middleware) e dai runner di job all'avvio dell'esecuzione."""
+    return _current_tenant_id_var.set(tenant_id)
+
+
+def reset_current_tenant(token: contextvars.Token) -> None:
+    _current_tenant_id_var.reset(token)
+
+
+def set_current_user(user_id: int | None) -> contextvars.Token:
+    """Imposta lo user_id del contesto corrente (per `created_by_user_id`)."""
+    return _current_user_id_var.set(user_id)
+
+
+def reset_current_user(token: contextvars.Token) -> None:
+    _current_user_id_var.reset(token)
+
+
+def current_tenant_id() -> int | None:
+    return _current_tenant_id_var.get()
+
+
+def current_user_id() -> int | None:
+    return _current_user_id_var.get()
+
+
+def _resolve_tenant(passed: Any) -> int | None:
+    if isinstance(passed, _UnsetSentinel):
+        return _current_tenant_id_var.get()
+    return passed
+
+
+def _resolve_user(passed: Any) -> int | None:
+    if isinstance(passed, _UnsetSentinel):
+        return _current_user_id_var.get()
+    return passed
 
 
 def _resolve_dsn() -> str:
@@ -710,7 +791,7 @@ def _row_to_task(row: dict[str, Any]) -> dict[str, Any]:
 # ----- Tasks -----
 #
 # Convenzione tenant filtering (Step D Fase 2):
-# - `tenant_id: int | None = None` come kwarg opzionale.
+# - `tenant_id: Any = _UNSET` come kwarg opzionale.
 #   * None → NESSUN filtro (comportamento legacy, usato da super-admin o test).
 #   * int → WHERE tenant_id = %s (isolamento tenant_user).
 # - `get_*` con tenant_id filtra anche su id → previene IDOR (un utente non può
@@ -719,7 +800,8 @@ def _row_to_task(row: dict[str, Any]) -> dict[str, Any]:
 #   inserisce; un super-admin che crea senza specificare lascia tenant_id NULL
 #   (il record sarà invisibile a tutti i tenant_user finché non assegnato).
 
-def list_tasks(tenant_id: int | None = None) -> list[dict[str, Any]]:
+def list_tasks(tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         if tenant_id is None:
             rows = con.execute("SELECT * FROM tasks ORDER BY id DESC").fetchall()
@@ -731,7 +813,8 @@ def list_tasks(tenant_id: int | None = None) -> list[dict[str, Any]]:
     return [_row_to_task(r) for r in rows]
 
 
-def get_task(task_id: int, tenant_id: int | None = None) -> dict[str, Any] | None:
+def get_task(task_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         if tenant_id is None:
             row = con.execute("SELECT * FROM tasks WHERE id = %s", (task_id,)).fetchone()
@@ -743,8 +826,9 @@ def get_task(task_id: int, tenant_id: int | None = None) -> dict[str, Any] | Non
     return _row_to_task(row) if row else None
 
 
-def set_task_disabled(task_id: int, disabled: bool, tenant_id: int | None = None) -> None:
+def set_task_disabled(task_id: int, disabled: bool, tenant_id: Any = _UNSET) -> None:
     """Imposta il flag `disabled` (0/1) per un task. Filtra per tenant se passato."""
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         if tenant_id is None:
             con.execute(
@@ -758,8 +842,9 @@ def set_task_disabled(task_id: int, disabled: bool, tenant_id: int | None = None
             )
 
 
-def set_workflow_disabled(workflow_id: int, disabled: bool, tenant_id: int | None = None) -> None:
+def set_workflow_disabled(workflow_id: int, disabled: bool, tenant_id: Any = _UNSET) -> None:
     """Imposta il flag `disabled` (0/1) per un workflow. Filtra per tenant se passato."""
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         if tenant_id is None:
             con.execute(
@@ -776,9 +861,11 @@ def set_workflow_disabled(workflow_id: int, disabled: bool, tenant_id: int | Non
 def create_task(
     data: dict[str, Any],
     *,
-    tenant_id: int | None = None,
-    created_by_user_id: int | None = None,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = _UNSET,
 ) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
     ts = now_iso()
     with connect() as con:
         cur = con.execute(
@@ -888,7 +975,8 @@ def create_task(
         return int(cur.fetchone()['id'])
 
 
-def update_task(task_id: int, data: dict[str, Any], tenant_id: int | None = None) -> None:
+def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         con.execute(
             """
@@ -998,7 +1086,8 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: int | None = None
         )
 
 
-def delete_task(task_id: int, tenant_id: int | None = None) -> None:
+def delete_task(task_id: int, tenant_id: Any = _UNSET) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         if tenant_id is None:
             con.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
@@ -1015,37 +1104,68 @@ def create_job(
     task_id: int,
     triggered_by_job_id: int | None = None,
     workflow_run_id: int | None = None,
+    *,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = _UNSET,
 ) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
     with connect() as con:
         cur = con.execute(
-            "INSERT INTO jobs (task_id, status, log, triggered_by_job_id, workflow_run_id) "
-            "VALUES (%s, 'queued', '', %s, %s) RETURNING id",
-            (task_id, triggered_by_job_id, workflow_run_id),
+            "INSERT INTO jobs (task_id, status, log, triggered_by_job_id, workflow_run_id, "
+            "tenant_id, created_by_user_id) "
+            "VALUES (%s, 'queued', '', %s, %s, %s, %s) RETURNING id",
+            (task_id, triggered_by_job_id, workflow_run_id, tenant_id, created_by_user_id),
         )
         return int(cur.fetchone()['id'])
 
 
-def get_job(job_id: int) -> dict[str, Any] | None:
+def get_job(job_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        row = con.execute("SELECT * FROM jobs WHERE id = %s", (job_id,)).fetchone()
+        if tenant_id is None:
+            row = con.execute("SELECT * FROM jobs WHERE id = %s", (job_id,)).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM jobs WHERE id = %s AND tenant_id = %s",
+                (job_id, tenant_id),
+            ).fetchone()
     return dict(row) if row else None
 
 
-def list_jobs(task_id: int) -> list[dict[str, Any]]:
+def list_jobs(task_id: int, tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        rows = con.execute(
-            "SELECT * FROM jobs WHERE task_id = %s ORDER BY id DESC LIMIT 100",
-            (task_id,),
-        ).fetchall()
+        if tenant_id is None:
+            rows = con.execute(
+                "SELECT * FROM jobs WHERE task_id = %s ORDER BY id DESC LIMIT 100",
+                (task_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM jobs WHERE task_id = %s AND tenant_id = %s "
+                "ORDER BY id DESC LIMIT 100",
+                (task_id, tenant_id),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
-def list_jobs_for_workflow_run(workflow_run_id: int) -> list[dict[str, Any]]:
+def list_jobs_for_workflow_run(
+    workflow_run_id: int, tenant_id: Any = _UNSET
+) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        rows = con.execute(
-            "SELECT * FROM jobs WHERE workflow_run_id = %s ORDER BY id ASC",
-            (workflow_run_id,),
-        ).fetchall()
+        if tenant_id is None:
+            rows = con.execute(
+                "SELECT * FROM jobs WHERE workflow_run_id = %s ORDER BY id ASC",
+                (workflow_run_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM jobs WHERE workflow_run_id = %s AND tenant_id = %s "
+                "ORDER BY id ASC",
+                (workflow_run_id, tenant_id),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -1068,12 +1188,20 @@ def append_job_log(job_id: int, line: str) -> None:
         )
 
 
-def latest_job(task_id: int) -> dict[str, Any] | None:
+def latest_job(task_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        row = con.execute(
-            "SELECT * FROM jobs WHERE task_id = %s ORDER BY id DESC LIMIT 1",
-            (task_id,),
-        ).fetchone()
+        if tenant_id is None:
+            row = con.execute(
+                "SELECT * FROM jobs WHERE task_id = %s ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM jobs WHERE task_id = %s AND tenant_id = %s "
+                "ORDER BY id DESC LIMIT 1",
+                (task_id, tenant_id),
+            ).fetchone()
     return dict(row) if row else None
 
 
@@ -1094,49 +1222,93 @@ def get_control_signal(job_id: int) -> str | None:
 # Workflows (entità di prima classe)
 # ===========================================================================
 
-def list_workflows() -> list[dict[str, Any]]:
+def list_workflows(tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        rows = con.execute("SELECT * FROM workflows ORDER BY id DESC").fetchall()
+        if tenant_id is None:
+            rows = con.execute("SELECT * FROM workflows ORDER BY id DESC").fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM workflows WHERE tenant_id = %s ORDER BY id DESC",
+                (tenant_id,),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_workflow(workflow_id: int) -> dict[str, Any] | None:
+def get_workflow(workflow_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        row = con.execute("SELECT * FROM workflows WHERE id = %s", (workflow_id,)).fetchone()
+        if tenant_id is None:
+            row = con.execute(
+                "SELECT * FROM workflows WHERE id = %s", (workflow_id,)
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM workflows WHERE id = %s AND tenant_id = %s",
+                (workflow_id, tenant_id),
+            ).fetchone()
     return dict(row) if row else None
 
 
-def create_workflow(name: str, description: str | None = None) -> int:
+def create_workflow(
+    name: str,
+    description: str | None = None,
+    *,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = _UNSET,
+) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
     ts = now_iso()
     with connect() as con:
         cur = con.execute(
-            "INSERT INTO workflows (name, description, created_at, updated_at) VALUES (%s, %s, %s, %s) RETURNING id",
-            (name, description, ts, ts),
+            "INSERT INTO workflows (name, description, tenant_id, created_by_user_id, "
+            "created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (name, description, tenant_id, created_by_user_id, ts, ts),
         )
         return int(cur.fetchone()['id'])
 
 
-def update_workflow(workflow_id: int, name: str, description: str | None) -> None:
+def update_workflow(
+    workflow_id: int, name: str, description: str | None, tenant_id: Any = _UNSET
+) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        con.execute(
-            "UPDATE workflows SET name = %s, description = %s, updated_at = %s WHERE id = %s",
-            (name, description, now_iso(), workflow_id),
-        )
+        if tenant_id is None:
+            con.execute(
+                "UPDATE workflows SET name = %s, description = %s, updated_at = %s "
+                "WHERE id = %s",
+                (name, description, now_iso(), workflow_id),
+            )
+        else:
+            con.execute(
+                "UPDATE workflows SET name = %s, description = %s, updated_at = %s "
+                "WHERE id = %s AND tenant_id = %s",
+                (name, description, now_iso(), workflow_id, tenant_id),
+            )
 
 
-def delete_workflow(workflow_id: int) -> None:
+def delete_workflow(workflow_id: int, tenant_id: Any = _UNSET) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        con.execute("DELETE FROM workflows WHERE id = %s", (workflow_id,))
+        if tenant_id is None:
+            con.execute("DELETE FROM workflows WHERE id = %s", (workflow_id,))
+        else:
+            con.execute(
+                "DELETE FROM workflows WHERE id = %s AND tenant_id = %s",
+                (workflow_id, tenant_id),
+            )
 
 
 # ----- Workflow runs (executions of a workflow) -----
 
-def create_workflow_run(workflow_id: int) -> int:
+def create_workflow_run(workflow_id: int, *, tenant_id: Any = _UNSET) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         cur = con.execute(
-            "INSERT INTO workflow_runs (workflow_id, status, started_at) "
-            "VALUES (%s, 'running', %s) RETURNING id",
-            (workflow_id, now_iso()),
+            "INSERT INTO workflow_runs (workflow_id, status, started_at, tenant_id) "
+            "VALUES (%s, 'running', %s, %s) RETURNING id",
+            (workflow_id, now_iso(), tenant_id),
         )
         return int(cur.fetchone()['id'])
 
@@ -1155,12 +1327,23 @@ def update_workflow_run_status(run_id: int, status: str) -> None:
             )
 
 
-def list_workflow_runs(workflow_id: int, limit: int = 50) -> list[dict[str, Any]]:
+def list_workflow_runs(
+    workflow_id: int, limit: int = 50, tenant_id: Any = _UNSET
+) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        rows = con.execute(
-            "SELECT * FROM workflow_runs WHERE workflow_id = %s ORDER BY id DESC LIMIT %s",
-            (workflow_id, limit),
-        ).fetchall()
+        if tenant_id is None:
+            rows = con.execute(
+                "SELECT * FROM workflow_runs WHERE workflow_id = %s "
+                "ORDER BY id DESC LIMIT %s",
+                (workflow_id, limit),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM workflow_runs WHERE workflow_id = %s AND tenant_id = %s "
+                "ORDER BY id DESC LIMIT %s",
+                (workflow_id, tenant_id, limit),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 

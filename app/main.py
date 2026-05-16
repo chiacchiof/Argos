@@ -66,9 +66,12 @@ app = FastAPI(title="AgentScraper", lifespan=lifespan)
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Inietta `request.state.current_user` e, se cloud DB è attivo, enforza il login.
+    """Inietta `request.state.current_user` + tenant_id nel ContextVar.
 
-    In modalità legacy (no DATABASE_URL) lascia passare tutto senza auth.
+    - In modalità legacy (no DATABASE_URL) lascia passare tutto.
+    - Per super-admin (tenant_id=None) il ContextVar resta a None → no filter.
+    - Per tenant_user il ContextVar contiene il loro tenant_id → tutte le
+      funzioni `db.*` filtrano automaticamente senza modifiche alle route.
     """
     request.state.current_user = None
 
@@ -82,17 +85,31 @@ async def auth_middleware(request: Request, call_next):
     request.state.current_user = user
 
     if is_public:
-        return await call_next(request)
+        tenant_token = db.set_current_tenant(user.tenant_id if user else None)
+        user_token = db.set_current_user(user.id if user else None)
+        try:
+            return await call_next(request)
+        finally:
+            db.reset_current_user(user_token)
+            db.reset_current_tenant(tenant_token)
 
     if user is None:
-        # Anonimo su path protetta -> redirect a login (o HX-Redirect per HTMX).
         if request.headers.get("HX-Request") == "true":
             resp = Response(status_code=401)
             resp.headers["HX-Redirect"] = f"/login?next={path}"
             return resp
         return RedirectResponse(url=f"/login?next={path}", status_code=302)
 
-    return await call_next(request)
+    # Setta i ContextVar tenant_id + user_id per la durata della request.
+    # tenant_user → tenant_id int (filter); super_admin → tenant_id None (no filter).
+    # user_id sempre l'id dell'utente loggato (per `created_by_user_id` auto).
+    tenant_token = db.set_current_tenant(user.tenant_id)
+    user_token = db.set_current_user(user.id)
+    try:
+        return await call_next(request)
+    finally:
+        db.reset_current_user(user_token)
+        db.reset_current_tenant(tenant_token)
 
 
 # SessionMiddleware è necessario per il cookie di login. Se SESSION_SECRET_KEY è
