@@ -264,17 +264,39 @@ async def inbox_contacts_add(
     return RedirectResponse(url=f"/inbox/contacts?flash={flash}", status_code=303)
 
 
+def _resolve_thread_asset(thread: dict) -> dict | None:
+    """Risolve l'asset destinatario del thread. Preferisce thread.asset_id;
+    fallback su contacts.asset_id durante la transizione Fase 2D."""
+    if thread.get("asset_id"):
+        a = db.get_asset(int(thread["asset_id"]))
+        if a:
+            return a
+    if thread.get("contact_id"):
+        with db.connect() as con:
+            row = con.execute(
+                "SELECT asset_id FROM contacts WHERE id = %s",
+                (thread["contact_id"],),
+            ).fetchone()
+        if row and row.get("asset_id"):
+            return db.get_asset(int(row["asset_id"]))
+    return None
+
+
 @router.get("/inbox/{thread_id}", response_class=HTMLResponse)
 async def inbox_thread(request: Request, thread_id: int):
     thread = db.get_thread(thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="thread non trovato")
-    contact = db.get_contact(thread["contact_id"])
+    asset = _resolve_thread_asset(thread)
     messages = db.list_messages(thread_id)
+    # `contact` resta nella key context per retrocompat con il template attuale;
+    # il template sara' migrato nelle prossime release. In pratica il template
+    # usa solo display_name/email/telegram_username/whatsapp/source_url che
+    # l'asset espone con gli stessi nomi.
     return templates.TemplateResponse(
         request,
         "inbox_thread.html",
-        {"thread": thread, "contact": contact, "messages": messages},
+        {"thread": thread, "contact": asset, "asset": asset, "messages": messages},
     )
 
 
@@ -290,22 +312,22 @@ async def inbox_thread_reply(
     body = body.strip()
     if not body:
         return RedirectResponse(url=f"/inbox/{thread_id}", status_code=303)
-    contact = db.get_contact(thread["contact_id"])
-    if not contact:
-        raise HTTPException(status_code=404, detail="contatto non trovato")
+    asset = _resolve_thread_asset(thread)
+    if not asset:
+        raise HTTPException(status_code=404, detail="destinatario non trovato")
 
     try:
         if thread["channel"] == "email":
             subject = thread.get("subject") or "(senza oggetto)"
             in_reply_to = thread.get("external_id")
             msg_id = await ch_email.send_email(
-                contact["email"], f"Re: {subject}" if not subject.lower().startswith("re:") else subject,
+                asset["email"], f"Re: {subject}" if not subject.lower().startswith("re:") else subject,
                 body, in_reply_to=in_reply_to,
             )
             db.insert_message(thread_id, "out", body, llm_generated=False,
                               external_id=msg_id, status="sent", sent_at=db.now_iso())
         elif thread["channel"] == "telegram":
-            chat_id = contact.get("telegram_chat_id") or thread.get("external_id")
+            chat_id = asset.get("telegram_chat_id") or thread.get("external_id")
             if not chat_id:
                 raise RuntimeError("chat_id non disponibile")
             msg_id = await ch_telegram.send_message(chat_id, body)
@@ -313,7 +335,7 @@ async def inbox_thread_reply(
                               external_id=msg_id, status="sent", sent_at=db.now_iso())
         db.touch_thread(thread_id)
         db.update_thread_status(thread_id, "replied")
-        db.update_contact_status(contact["id"], "contacted")
+        db.update_asset_outreach_status(asset["id"], "contacted")
     except Exception as e:
         db.insert_message(thread_id, "out", body, llm_generated=False,
                           status="failed", error=str(e))
