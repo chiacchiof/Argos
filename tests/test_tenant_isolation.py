@@ -209,3 +209,91 @@ def test_end_to_end_super_admin_sees_everything(populated_db, tmp_path, monkeypa
         assert "Task Alice" in r.text
         assert "Task Bob" in r.text
         assert "Task Super" in r.text
+
+
+# ---------------------------------------------------------------------------
+# Social accounts + WhatsApp API config (Step D₄)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def social_accounts_setup(populated_db):
+    """Crea 1 social account per tenant_a e 1 per tenant_b."""
+    a_id = db.create_social_account(
+        {
+            "uuid": "uuid-alice", "platform": "instagram", "username": "alice_ig",
+            "encrypted_password": b"\x01\x02\x03",
+        },
+        tenant_id=populated_db["tenant_a"],
+        created_by_user_id=populated_db["alice_id"],
+    )
+    b_id = db.create_social_account(
+        {
+            "uuid": "uuid-bob", "platform": "tiktok", "username": "bob_tt",
+            "encrypted_password": b"\x04\x05\x06",
+        },
+        tenant_id=populated_db["tenant_b"],
+        created_by_user_id=populated_db["bob_id"],
+    )
+    return {**populated_db, "sa_alice": a_id, "sa_bob": b_id}
+
+
+def test_alice_lists_only_her_social_accounts(social_accounts_setup):
+    sa = db.list_social_accounts(tenant_id=social_accounts_setup["tenant_a"])
+    assert len(sa) == 1
+    assert sa[0]["username"] == "alice_ig"
+
+
+def test_bob_lists_only_his_social_accounts(social_accounts_setup):
+    sa = db.list_social_accounts(tenant_id=social_accounts_setup["tenant_b"])
+    assert len(sa) == 1
+    assert sa[0]["username"] == "bob_tt"
+
+
+def test_super_admin_lists_all_social_accounts(social_accounts_setup):
+    sa = db.list_social_accounts(tenant_id=None)
+    assert len(sa) == 2
+
+
+def test_alice_cannot_get_bobs_social_account(social_accounts_setup):
+    sa = db.get_social_account(
+        social_accounts_setup["sa_bob"], tenant_id=social_accounts_setup["tenant_a"]
+    )
+    assert sa is None
+
+
+def test_alice_cannot_delete_bobs_social_account(social_accounts_setup):
+    db.delete_social_account(
+        social_accounts_setup["sa_bob"], tenant_id=social_accounts_setup["tenant_a"]
+    )
+    sa = db.get_social_account(
+        social_accounts_setup["sa_bob"], tenant_id=social_accounts_setup["tenant_b"]
+    )
+    assert sa is not None
+
+
+def test_whatsapp_api_config_isolation(populated_db):
+    """WhatsApp API config: isolato per tenant."""
+    a_id = db.insert_whatsapp_api_config(
+        {
+            "label": "WA Alice", "phone_number_id": "111",
+            "business_account_id": "222", "encrypted_access_token": b"\x10",
+        },
+        tenant_id=populated_db["tenant_a"],
+        created_by_user_id=populated_db["alice_id"],
+    )
+    b_id = db.insert_whatsapp_api_config(
+        {
+            "label": "WA Bob", "phone_number_id": "333",
+            "business_account_id": "444", "encrypted_access_token": b"\x20",
+        },
+        tenant_id=populated_db["tenant_b"],
+        created_by_user_id=populated_db["bob_id"],
+    )
+    # Alice vede solo la sua
+    cfg_a = db.list_whatsapp_api_config(tenant_id=populated_db["tenant_a"])
+    assert {c["label"] for c in cfg_a} == {"WA Alice"}
+    # Bob vede solo la sua
+    cfg_b = db.list_whatsapp_api_config(tenant_id=populated_db["tenant_b"])
+    assert {c["label"] for c in cfg_b} == {"WA Bob"}
+    # Anti-IDOR
+    assert db.get_whatsapp_api_config(b_id, tenant_id=populated_db["tenant_a"]) is None

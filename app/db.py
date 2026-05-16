@@ -2791,8 +2791,8 @@ def upsert_site_playbook(
         cur = con.execute(
             """INSERT INTO site_playbooks (
                 registrable_domain, asset_type, playbook, source_runner, source_job_id,
-                transferable, status, hits, successes, failures, created_at, updated_at) RETURNING id
-               VALUES (%s, %s, %s, %s, %s, %s, 'active', 0, 0, 0, %s, %s)""",
+                transferable, status, hits, successes, failures, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, 'active', 0, 0, 0, %s, %s) RETURNING id""",
             (
                 domain_l, asset_type, playbook, source_runner, source_job_id,
                 1 if transferable else 0, ts, ts,
@@ -2911,7 +2911,10 @@ def get_or_create_thread(
     external_id: str | None = None,
     subject: str | None = None,
     task_id: int | None = None,
+    *,
+    tenant_id: Any = _UNSET,
 ) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         if external_id:
             row = con.execute(
@@ -2931,17 +2934,26 @@ def get_or_create_thread(
         cur = con.execute(
             """
             INSERT INTO threads (contact_id, channel, external_id, subject, status,
-                                 task_id, created_at)
-            VALUES (%s, %s, %s, %s, 'open', %s, %s) RETURNING id
+                                 task_id, tenant_id, created_at)
+            VALUES (%s, %s, %s, %s, 'open', %s, %s, %s) RETURNING id
             """,
-            (contact_id, channel, external_id, subject, task_id, now_iso()),
+            (contact_id, channel, external_id, subject, task_id, tenant_id, now_iso()),
         )
         return int(cur.fetchone()['id'])
 
 
-def get_thread(thread_id: int) -> dict[str, Any] | None:
+def get_thread(thread_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        row = con.execute("SELECT * FROM threads WHERE id = %s", (thread_id,)).fetchone()
+        if tenant_id is None:
+            row = con.execute(
+                "SELECT * FROM threads WHERE id = %s", (thread_id,)
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM threads WHERE id = %s AND tenant_id = %s",
+                (thread_id, tenant_id),
+            ).fetchone()
     return dict(row) if row else None
 
 
@@ -2950,7 +2962,9 @@ def list_threads(
     status: str | None = None,
     task_id: int | None = None,
     limit: int = 200,
+    tenant_id: Any = _UNSET,
 ) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     sql = """
         SELECT t.*, c.email, c.telegram_username, c.display_name, c.status as contact_status
         FROM threads t LEFT JOIN contacts c ON c.id = t.contact_id
@@ -2966,6 +2980,9 @@ def list_threads(
     if task_id is not None:
         sql += " AND t.task_id = %s"
         args.append(task_id)
+    if tenant_id is not None:
+        sql += " AND t.tenant_id = %s"
+        args.append(tenant_id)
     sql += " ORDER BY COALESCE(t.last_msg_at, t.created_at) DESC LIMIT %s"
     args.append(limit)
     with connect() as con:
@@ -3000,13 +3017,16 @@ def insert_message(
     status: str = "pending",
     error: str | None = None,
     sent_at: str | None = None,
+    *,
+    tenant_id: Any = _UNSET,
 ) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         cur = con.execute(
             """
             INSERT INTO messages (thread_id, direction, body, llm_generated, external_id,
-                                  status, error, sent_at, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                                  status, error, sent_at, tenant_id, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 thread_id,
@@ -3017,6 +3037,7 @@ def insert_message(
                 status,
                 error,
                 sent_at,
+                tenant_id,
                 now_iso(),
             ),
         )
@@ -3032,17 +3053,25 @@ def update_message(message_id: int, **fields: Any) -> None:
         con.execute(f"UPDATE messages SET {cols} WHERE id = %s", values)
 
 
-def list_messages(thread_id: int) -> list[dict[str, Any]]:
+def list_messages(thread_id: int, tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        rows = con.execute(
-            "SELECT * FROM messages WHERE thread_id = %s ORDER BY id",
-            (thread_id,),
-        ).fetchall()
+        if tenant_id is None:
+            rows = con.execute(
+                "SELECT * FROM messages WHERE thread_id = %s ORDER BY id",
+                (thread_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM messages WHERE thread_id = %s AND tenant_id = %s ORDER BY id",
+                (thread_id, tenant_id),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
-def find_unprocessed_inbound() -> list[dict[str, Any]]:
+def find_unprocessed_inbound(tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
     """Messaggi inbound senza una reply outbound successiva nello stesso thread."""
+    tenant_id = _resolve_tenant(tenant_id)
     sql = """
         SELECT m.*, t.contact_id, t.channel, t.subject, t.task_id
         FROM messages m
@@ -3053,10 +3082,14 @@ def find_unprocessed_inbound() -> list[dict[str, Any]]:
             WHERE m2.thread_id = m.thread_id
               AND m2.direction = 'out' AND m2.id > m.id
           )
-        ORDER BY m.created_at
     """
+    args: list = []
+    if tenant_id is not None:
+        sql += " AND m.tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY m.created_at"
     with connect() as con:
-        rows = con.execute(sql).fetchall()
+        rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -3175,20 +3208,28 @@ def clear_orchestrator_messages(tenant_id: Any = _UNSET) -> None:
 # Social accounts + DM log (outreach social runner)
 # ===========================================================================
 
-def create_social_account(data: dict) -> int:
-    """Insert social_account.  deve essere bytes Fernet.
+def create_social_account(
+    data: dict,
+    *,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = _UNSET,
+) -> int:
+    """Insert social_account. encrypted_password deve essere bytes Fernet.
 
     Required keys: uuid, platform, username, encrypted_password.
     Optional: proxy_label, daily_dm_cap, status, notes.
     """
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
     ts = now_iso()
     with connect() as con:
         cur = con.execute(
             """INSERT INTO social_accounts
             (uuid, platform, username, encrypted_password, proxy_label,
              daily_dm_cap, status, warmup_started_at, warmup_days_target,
-             notes, created_at, updated_at) RETURNING id
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+             notes, tenant_id, created_by_user_id, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id""",
             (
                 data["uuid"], data["platform"], data["username"],
                 data["encrypted_password"], data.get("proxy_label"),
@@ -3197,60 +3238,87 @@ def create_social_account(data: dict) -> int:
                 data.get("warmup_started_at"),
                 int(data.get("warmup_days_target", 30)),
                 data.get("notes"),
+                tenant_id, created_by_user_id,
                 ts, ts,
             ),
         )
         return int(cur.fetchone()['id'])
 
 
-def list_social_accounts(platform: str | None = None, status: str | None = None) -> list[dict]:
+def list_social_accounts(
+    platform: str | None = None, status: str | None = None, tenant_id: Any = _UNSET
+) -> list[dict]:
+    tenant_id = _resolve_tenant(tenant_id)
     sql = "SELECT * FROM social_accounts WHERE 1=1"
     args: list = []
     if platform:
         sql += " AND platform = %s"; args.append(platform)
     if status:
         sql += " AND status = %s"; args.append(status)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"; args.append(tenant_id)
     sql += " ORDER BY id DESC"
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_social_account(account_id: int) -> dict | None:
+def get_social_account(account_id: int, tenant_id: Any = _UNSET) -> dict | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        r = con.execute("SELECT * FROM social_accounts WHERE id = %s", (account_id,)).fetchone()
+        if tenant_id is None:
+            r = con.execute(
+                "SELECT * FROM social_accounts WHERE id = %s", (account_id,)
+            ).fetchone()
+        else:
+            r = con.execute(
+                "SELECT * FROM social_accounts WHERE id = %s AND tenant_id = %s",
+                (account_id, tenant_id),
+            ).fetchone()
     return dict(r) if r else None
 
 
-def update_social_account(account_id: int, **fields) -> None:
+def update_social_account(account_id: int, *, tenant_id: Any = _UNSET, **fields) -> None:
     if not fields: return
+    tenant_id = _resolve_tenant(tenant_id)
     sets = [f"{k} = %s" for k in fields]
-    sql = f"UPDATE social_accounts SET {', '.join(sets)}, updated_at = %s WHERE id = %s"
+    if tenant_id is None:
+        sql = f"UPDATE social_accounts SET {', '.join(sets)}, updated_at = %s WHERE id = %s"
+        params = (*fields.values(), now_iso(), account_id)
+    else:
+        sql = (
+            f"UPDATE social_accounts SET {', '.join(sets)}, updated_at = %s "
+            f"WHERE id = %s AND tenant_id = %s"
+        )
+        params = (*fields.values(), now_iso(), account_id, tenant_id)
     with connect() as con:
-        con.execute(sql, (*fields.values(), now_iso(), account_id))
+        con.execute(sql, params)
 
 
-def delete_social_account(account_id: int) -> None:
+def delete_social_account(account_id: int, tenant_id: Any = _UNSET) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        con.execute("DELETE FROM social_accounts WHERE id = %s", (account_id,))
+        if tenant_id is None:
+            con.execute("DELETE FROM social_accounts WHERE id = %s", (account_id,))
+        else:
+            con.execute(
+                "DELETE FROM social_accounts WHERE id = %s AND tenant_id = %s",
+                (account_id, tenant_id),
+            )
 
 
-def insert_social_dm_log(data: dict) -> int:
-    """Log di un singolo DM inviato.
-
-    Per IG/TikTok/Facebook e WhatsApp browser (Motore A): popolare `account_id`,
-    lasciare `api_config_id` e `engine` (eventualmente 'A_browser') a None/scelta.
-    Per WhatsApp API (Motore B): popolare `api_config_id` + `engine='B_api'`,
-    lasciare `account_id=None`.
-    """
+def insert_social_dm_log(data: dict, *, tenant_id: Any = _UNSET) -> int:
+    """Log di un singolo DM inviato."""
+    tenant_id = _resolve_tenant(tenant_id)
     account_id = data.get("account_id")
     with connect() as con:
         cur = con.execute(
             """INSERT INTO social_dm_log
             (account_id, job_id, target_contact_id, target_platform,
              target_username, message, sent_at, ok, reason, health_post,
-             engine, api_config_id) RETURNING id
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+             engine, api_config_id, tenant_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id""",
             (
                 int(account_id) if account_id is not None else None,
                 data.get("job_id"),
@@ -3264,16 +3332,22 @@ def insert_social_dm_log(data: dict) -> int:
                 data.get("health_post"),
                 data.get("engine"),
                 data.get("api_config_id"),
+                tenant_id,
             ),
         )
         return int(cur.fetchone()['id'])
 
 
-def list_social_dm_log(account_id: int | None = None, limit: int = 100) -> list[dict]:
-    sql = "SELECT * FROM social_dm_log"
+def list_social_dm_log(
+    account_id: int | None = None, limit: int = 100, tenant_id: Any = _UNSET
+) -> list[dict]:
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM social_dm_log WHERE 1=1"
     args: list = []
     if account_id is not None:
-        sql += " WHERE account_id = %s"; args.append(account_id)
+        sql += " AND account_id = %s"; args.append(account_id)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"; args.append(tenant_id)
     sql += " ORDER BY id DESC LIMIT %s"; args.append(limit)
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
@@ -3289,28 +3363,31 @@ def count_social_dms_today(account_id: int) -> int:
             "SELECT COUNT(*) FROM social_dm_log WHERE account_id = %s AND ok = 1 AND sent_at >= %s",
             (account_id, cutoff),
         ).fetchone()
-    return int(r[0]) if r else 0
+    if not r:
+        return 0
+    return int(r["count"] if isinstance(r, dict) else r[0])
 
 
 # ===========================================================================
 # WhatsApp API config (Motore B — Meta Cloud API)
 # ===========================================================================
 
-def insert_whatsapp_api_config(data: dict) -> int:
-    """Crea una nuova configurazione Meta Cloud API.
-
-    Required: label, phone_number_id, business_account_id, encrypted_access_token (bytes).
-    Optional: app_id, default_template_name, default_template_language ('it' default),
-              status ('active' default), daily_msg_cap (250 default), notes.
-    """
+def insert_whatsapp_api_config(
+    data: dict, *, tenant_id: Any = _UNSET, created_by_user_id: Any = _UNSET
+) -> int:
+    """Crea una nuova configurazione Meta Cloud API."""
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
     ts = now_iso()
     with connect() as con:
         cur = con.execute(
             """INSERT INTO whatsapp_api_config
             (label, phone_number_id, business_account_id, app_id,
              encrypted_access_token, default_template_name, default_template_language,
-             status, daily_msg_cap, notes, created_at, updated_at) RETURNING id
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+             status, daily_msg_cap, notes,
+             tenant_id, created_by_user_id, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id""",
             (
                 data["label"],
                 data["phone_number_id"],
@@ -3322,43 +3399,70 @@ def insert_whatsapp_api_config(data: dict) -> int:
                 data.get("status", "active"),
                 int(data.get("daily_msg_cap", 250)),
                 data.get("notes"),
+                tenant_id, created_by_user_id,
                 ts, ts,
             ),
         )
         return int(cur.fetchone()['id'])
 
 
-def list_whatsapp_api_config(status: str | None = None) -> list[dict]:
-    sql = "SELECT * FROM whatsapp_api_config"
+def list_whatsapp_api_config(status: str | None = None, tenant_id: Any = _UNSET) -> list[dict]:
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM whatsapp_api_config WHERE 1=1"
     args: list = []
     if status:
-        sql += " WHERE status = %s"; args.append(status)
+        sql += " AND status = %s"; args.append(status)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"; args.append(tenant_id)
     sql += " ORDER BY id DESC"
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_whatsapp_api_config(config_id: int) -> dict | None:
+def get_whatsapp_api_config(config_id: int, tenant_id: Any = _UNSET) -> dict | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        r = con.execute(
-            "SELECT * FROM whatsapp_api_config WHERE id = %s", (config_id,)
-        ).fetchone()
+        if tenant_id is None:
+            r = con.execute(
+                "SELECT * FROM whatsapp_api_config WHERE id = %s", (config_id,)
+            ).fetchone()
+        else:
+            r = con.execute(
+                "SELECT * FROM whatsapp_api_config WHERE id = %s AND tenant_id = %s",
+                (config_id, tenant_id),
+            ).fetchone()
     return dict(r) if r else None
 
 
-def update_whatsapp_api_config(config_id: int, **fields) -> None:
+def update_whatsapp_api_config(config_id: int, *, tenant_id: Any = _UNSET, **fields) -> None:
     if not fields:
         return
+    tenant_id = _resolve_tenant(tenant_id)
     sets = [f"{k} = %s" for k in fields]
-    sql = f"UPDATE whatsapp_api_config SET {', '.join(sets)}, updated_at = %s WHERE id = %s"
+    if tenant_id is None:
+        sql = f"UPDATE whatsapp_api_config SET {', '.join(sets)}, updated_at = %s WHERE id = %s"
+        params = (*fields.values(), now_iso(), config_id)
+    else:
+        sql = (
+            f"UPDATE whatsapp_api_config SET {', '.join(sets)}, updated_at = %s "
+            f"WHERE id = %s AND tenant_id = %s"
+        )
+        params = (*fields.values(), now_iso(), config_id, tenant_id)
     with connect() as con:
-        con.execute(sql, (*fields.values(), now_iso(), config_id))
+        con.execute(sql, params)
 
 
-def delete_whatsapp_api_config(config_id: int) -> None:
+def delete_whatsapp_api_config(config_id: int, tenant_id: Any = _UNSET) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        con.execute("DELETE FROM whatsapp_api_config WHERE id = %s", (config_id,))
+        if tenant_id is None:
+            con.execute("DELETE FROM whatsapp_api_config WHERE id = %s", (config_id,))
+        else:
+            con.execute(
+                "DELETE FROM whatsapp_api_config WHERE id = %s AND tenant_id = %s",
+                (config_id, tenant_id),
+            )
 
 
 def count_whatsapp_api_msgs_today(api_config_id: int) -> int:
@@ -3373,7 +3477,9 @@ def count_whatsapp_api_msgs_today(api_config_id: int) -> int:
             "WHERE api_config_id = %s AND engine = 'B_api' AND ok = 1 AND sent_at >= %s",
             (api_config_id, cutoff),
         ).fetchone()
-    return int(r[0]) if r else 0
+    if not r:
+        return 0
+    return int(r["count"] if isinstance(r, dict) else r[0])
 
 
 # ===========================================================================
