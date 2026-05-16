@@ -136,17 +136,32 @@ def _parse_extra_tag_filters(request: Request) -> list[tuple[str, str]]:
     return out
 
 
+def _parse_optional_int(value: str | None) -> int | None:
+    """Parsa querystring → int o None. Tollera stringa vuota (i form HTML
+    inviano `?param=` anche quando il campo è lasciato vuoto, che FastAPI
+    non sa castare automaticamente a `int | None`)."""
+    if value is None:
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
 @router.get("/qualified", response_class=HTMLResponse)
 async def qualified_assets_list(
     request: Request,
     qualifiers: str = "",  # comma-separated slug list
     status: str = "qualified",  # qualified | rejected | both
-    score_min: int | None = None,
-    asset_type: str | None = None,
-    source_task_id: int | None = None,
+    score_min: str = "",
+    asset_type: str = "",
+    source_task_id: str = "",
     q: str = "",
-    page: int = 1,
-    per_page: int = _QUALIFIED_PAGE_SIZE,
+    page: str = "1",
+    per_page: str = "",
 ):
     """Tab Qualified: asset-centric con multi-select qualifier + filtri.
 
@@ -157,59 +172,63 @@ async def qualified_assets_list(
         asset_type, source_task_id, q (search title/raw_json)
         tag_key__0 / tag_value__0    (fino a 5 slot extra-tag, AND)
         page, per_page               (paginazione)
+
+    Tutti i numerici accettano stringa vuota (form HTML invia `?param=`).
     """
     qualifier_slugs = [s.strip() for s in (qualifiers or "").split(",") if s.strip()]
     if status not in ("qualified", "rejected", "both"):
         status = "qualified"
-    asset_type = (asset_type or "").strip() or None
+    asset_type_v: str | None = (asset_type or "").strip() or None
+    source_task_id_v = _parse_optional_int(source_task_id)
+    score_min_v = _parse_optional_int(score_min)
     search = (q or "").strip() or None
     extra_tag_filters = _parse_extra_tag_filters(request)
-    per_page = max(10, min(int(per_page or _QUALIFIED_PAGE_SIZE), 500))
-    page = max(1, int(page or 1))
-    offset = (page - 1) * per_page
+    per_page_v = _parse_optional_int(per_page) or _QUALIFIED_PAGE_SIZE
+    per_page_v = max(10, min(per_page_v, 500))
+    page_v = _parse_optional_int(page) or 1
+    page_v = max(1, page_v)
+    offset = (page_v - 1) * per_page_v
 
     total = db.count_qualified_assets(
         qualifier_slugs=qualifier_slugs,
         status_filter=status,
-        score_min=score_min,
-        asset_type=asset_type,
-        source_task_id=source_task_id,
+        score_min=score_min_v,
+        asset_type=asset_type_v,
+        source_task_id=source_task_id_v,
         search=search,
         extra_tag_filters=extra_tag_filters or None,
     )
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    if page > total_pages:
-        page = total_pages
-        offset = (page - 1) * per_page
+    total_pages = max(1, (total + per_page_v - 1) // per_page_v)
+    if page_v > total_pages:
+        page_v = total_pages
+        offset = (page_v - 1) * per_page_v
 
     assets = db.list_qualified_assets(
         qualifier_slugs=qualifier_slugs,
         status_filter=status,
-        score_min=score_min,
-        asset_type=asset_type,
-        source_task_id=source_task_id,
+        score_min=score_min_v,
+        asset_type=asset_type_v,
+        source_task_id=source_task_id_v,
         search=search,
         extra_tag_filters=extra_tag_filters or None,
-        limit=per_page,
+        limit=per_page_v,
         offset=offset,
     )
 
-    # Menu qualifier (sempre da tutto il tenant, non filtrati per selezione corrente)
     qualifier_menu = db.list_distinct_qualifier_slugs()
     types_in_use = db.list_asset_types_in_use()
 
-    # Querystring base per i link di paginazione (esclude page=)
     qs_parts: list[str] = []
     if qualifiers: qs_parts.append(f"qualifiers={qualifiers}")
     if status != "qualified": qs_parts.append(f"status={status}")
-    if score_min is not None: qs_parts.append(f"score_min={score_min}")
-    if asset_type: qs_parts.append(f"asset_type={asset_type}")
-    if source_task_id is not None: qs_parts.append(f"source_task_id={source_task_id}")
+    if score_min_v is not None: qs_parts.append(f"score_min={score_min_v}")
+    if asset_type_v: qs_parts.append(f"asset_type={asset_type_v}")
+    if source_task_id_v is not None: qs_parts.append(f"source_task_id={source_task_id_v}")
     if search: qs_parts.append(f"q={search}")
     for i, (k, v) in enumerate(extra_tag_filters):
         qs_parts.append(f"tag_key__{i}={k}")
         qs_parts.append(f"tag_value__{i}={v}")
-    if per_page != _QUALIFIED_PAGE_SIZE: qs_parts.append(f"per_page={per_page}")
+    if per_page_v != _QUALIFIED_PAGE_SIZE: qs_parts.append(f"per_page={per_page_v}")
     qs_base = "&".join(qs_parts)
 
     return templates.TemplateResponse(
@@ -220,15 +239,14 @@ async def qualified_assets_list(
             "qualifier_menu": qualifier_menu,
             "selected_qualifiers": qualifier_slugs,
             "filter_status": status,
-            "filter_score_min": score_min,
-            "filter_type": asset_type or "",
-            "filter_task": source_task_id,
+            "filter_score_min": score_min_v,
+            "filter_type": asset_type_v or "",
+            "filter_task": source_task_id_v,
             "filter_search": search or "",
             "extra_tag_filters": extra_tag_filters,
             "types_in_use": types_in_use,
-            # paginazione
-            "page": page,
-            "per_page": per_page,
+            "page": page_v,
+            "per_page": per_page_v,
             "total": total,
             "total_pages": total_pages,
             "offset": offset,

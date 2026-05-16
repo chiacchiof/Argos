@@ -273,6 +273,29 @@ def test_qualified_endpoint_filter_by_qualifier(qualifier_setup, tmp_path, monke
         assert "Persona 3" not in r.text  # rejected
 
 
+def test_qualified_endpoint_accepts_empty_form_values(qualifier_setup, tmp_path, monkeypatch):
+    """Il form HTML invia `?score_min=&source_task_id=` quando i campi sono vuoti.
+    FastAPI di default 422 sul cast `"" → int`. Verifichiamo che il route handler
+    castigi manualmente questi parametri come "None" trasparente."""
+    from app import config, storage
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
+
+    from app.main import app
+    with TestClient(app) as client:
+        client.post("/login", data={"email": "alice@ta", "password": "pwd", "next": "/"},
+                    follow_redirects=False)
+        # URL identica a quella che produce il form HTML con tutti i campi vuoti
+        r = client.get(
+            "/qualified?qualifiers=qualifica_palestra&status=rejected"
+            "&score_min=&asset_type=&source_task_id=&q="
+            "&tag_key__0=&tag_value__0=&tag_key__1=&tag_value__1="
+            "&tag_key__2=&tag_value__2="
+        )
+        assert r.status_code == 200, f"got {r.status_code}: {r.text[:300]}"
+
+
 def test_qualified_endpoint_isolation(qualifier_setup, tmp_path, monkeypatch):
     """Alice loggata non deve vedere asset di Bob nemmeno dall'endpoint."""
     from app import config, storage
