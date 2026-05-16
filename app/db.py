@@ -2438,8 +2438,15 @@ def update_asset(asset_id: int, **fields: Any) -> None:
     Ignora field vuoti/None (per non azzerare per errore)."""
     if not fields:
         return
-    # Filtra solo campi modificabili in edit manuale
-    ALLOWED = {"asset_type", "source_url", "source_domain", "title", "raw_json", "notes", "status"}
+    # Filtra solo campi modificabili in edit manuale + canali outreach
+    ALLOWED = {
+        "asset_type", "source_url", "source_domain", "title", "raw_json", "notes", "status",
+        # Canali contatto (Fase 2A) -ora extracted da contacts
+        "display_name", "email",
+        "telegram_username", "telegram_chat_id",
+        "whatsapp", "whatsapp_consent", "whatsapp_last_inbound_at",
+        "social_json", "sitoweb", "outreach_status",
+    }
     safe: dict[str, Any] = {}
     for k, v in fields.items():
         if k not in ALLOWED:
@@ -2604,6 +2611,290 @@ def update_asset_qualifier(asset_id: int, score: int, status: str, notes: str | 
             """,
             (status, status, int(score), ts, asset_id),
         )
+
+
+# ===========================================================================
+# Asset outreach API (Fase 2D — asset-centric, sostituisce contact-centric)
+# ===========================================================================
+
+def update_asset_outreach_status(asset_id: int, status: str, notes: str | None = None) -> None:
+    """Aggiorna `assets.outreach_status`. Valori validi: pending/contacted/replied/optedout.
+    Equivalente di update_contact_status ma sul campo dedicato outreach (non sovrascrive
+    `assets.status` che resta scrape/qualifier-status)."""
+    if status not in ("pending", "contacted", "replied", "optedout"):
+        raise ValueError(f"outreach_status invalido: {status!r}")
+    ts = now_iso()
+    with connect() as con:
+        if notes is not None:
+            con.execute(
+                "UPDATE assets SET outreach_status = %s, notes = %s, updated_at = %s WHERE id = %s",
+                (status, notes, ts, asset_id),
+            )
+        else:
+            con.execute(
+                "UPDATE assets SET outreach_status = %s, updated_at = %s WHERE id = %s",
+                (status, ts, asset_id),
+            )
+
+
+def update_asset_whatsapp_consent(asset_id: int, consent: str) -> None:
+    """Aggiorna `assets.whatsapp_consent`. Valori validi: cold|opt_in|optedout."""
+    if consent not in ("cold", "opt_in", "optedout"):
+        raise ValueError(f"whatsapp_consent invalido: {consent!r}")
+    with connect() as con:
+        con.execute(
+            "UPDATE assets SET whatsapp_consent = %s, updated_at = %s WHERE id = %s",
+            (consent, now_iso(), asset_id),
+        )
+
+
+def touch_asset_whatsapp_inbound(asset_id: int) -> None:
+    """Marca che il destinatario ha appena scritto al business number — abilita
+    la 24h-window per messaggi free-form (Motore B WhatsApp)."""
+    ts = now_iso()
+    with connect() as con:
+        con.execute(
+            "UPDATE assets SET whatsapp_last_inbound_at = %s, updated_at = %s WHERE id = %s",
+            (ts, ts, asset_id),
+        )
+
+
+def find_asset_by_email(email: str, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM assets WHERE LOWER(email) = %s"
+    args: list[Any] = [email.strip().lower()]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY id DESC LIMIT 1"
+    with connect() as con:
+        row = con.execute(sql, args).fetchone()
+    return dict(row) if row else None
+
+
+def find_asset_by_telegram_chat(chat_id: str, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM assets WHERE telegram_chat_id = %s"
+    args: list[Any] = [str(chat_id)]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY id DESC LIMIT 1"
+    with connect() as con:
+        row = con.execute(sql, args).fetchone()
+    return dict(row) if row else None
+
+
+def set_asset_telegram_chat(asset_id: int, chat_id: str) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE assets SET telegram_chat_id = %s, updated_at = %s WHERE id = %s",
+            (str(chat_id), now_iso(), asset_id),
+        )
+
+
+def get_assets_by_ids(ids: list[int], tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    """Recupera asset per lista di ID. Filtra per tenant se settato. No filtro su status."""
+    if not ids:
+        return []
+    tenant_id = _resolve_tenant(tenant_id)
+    norm = [int(i) for i in ids if i]
+    if not norm:
+        return []
+    placeholders = ",".join("%s" for _ in norm)
+    sql = f"SELECT * FROM assets WHERE id IN ({placeholders})"
+    args: list[Any] = list(norm)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY id DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_assets_with_social_platform(
+    platform: str, limit: int = 500, tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Asset con `social_json` contenente almeno un entry per `platform`.
+
+    Esclude asset con outreach_status='optedout'. Filtro fatto in Python perché
+    social_json è opaco a SQL (vedi list_contacts_with_social_platform legacy)."""
+    plat = (platform or "").strip().lower()
+    if plat not in ("instagram", "tiktok", "facebook"):
+        return []
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = (
+        "SELECT * FROM assets "
+        "WHERE social_json IS NOT NULL AND social_json != '' "
+        "AND (outreach_status IS NULL OR outreach_status != 'optedout')"
+    )
+    args: list[Any] = []
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY id DESC LIMIT %s"
+    args.append(max(1, int(limit)))
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        soc_raw = d.get("social_json")
+        try:
+            socials = json.loads(soc_raw) if soc_raw else []
+        except (json.JSONDecodeError, TypeError):
+            continue
+        platform_url: str | None = None
+        for s in (socials or []):
+            if not isinstance(s, dict):
+                continue
+            if (s.get("platform") or "").lower() != plat:
+                continue
+            u = (s.get("url") or "").strip()
+            if u:
+                platform_url = u
+                break
+        if platform_url:
+            d["_platform_url"] = platform_url
+            out.append(d)
+    return out
+
+
+def list_assets_with_whatsapp(limit: int = 500, tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    """Asset con campo `whatsapp` popolato (esclusi optedout)."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = (
+        "SELECT * FROM assets "
+        "WHERE whatsapp IS NOT NULL AND whatsapp != '' "
+        "AND (whatsapp_consent IS NULL OR whatsapp_consent != 'optedout') "
+        "AND (outreach_status IS NULL OR outreach_status != 'optedout')"
+    )
+    args: list[Any] = []
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY id DESC LIMIT %s"
+    args.append(max(1, int(limit)))
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _add_asset_tag_filters_clause(
+    sql: str, args: list, tag_filters: list | None
+) -> tuple[str, list]:
+    """EXISTS-based tag filter su asset_tags. Multipli filtri in AND.
+    `tag_filters` accetta list[tuple|dict] con (key, value)."""
+    if not tag_filters:
+        return sql, args
+    for tf in tag_filters:
+        if isinstance(tf, dict):
+            k, v = tf.get("key"), tf.get("value")
+        else:
+            k, v = tf[0], tf[1]
+        if not k or not v:
+            continue
+        sql += (
+            " AND EXISTS (SELECT 1 FROM asset_tags t "
+            "WHERE t.asset_id = assets.id AND t.tag_key = %s AND t.tag_value = %s)"
+        )
+        args.extend([str(k).lower(), str(v)])
+    return sql, args
+
+
+def list_assets_for_email_outreach(
+    status: str | None = None,
+    source_task_id: int | None = None,
+    source_domain: str | None = None,
+    search: str | None = None,
+    score_min: int | None = None,
+    only_qualified: bool = True,
+    exclude_optedout: bool = True,
+    exclude_contacted: bool = True,
+    limit: int = 500,
+    offset: int = 0,
+    asset_tag_filters: list | None = None,
+    tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Asset idonei a outreach_email/telegram. Filtra su `assets.email` o
+    `assets.telegram_username` valorizzati; outreach_status != 'optedout';
+    se only_qualified=True richiede assets.status='qualified'.
+
+    Equivalente moderno di list_contacts(channel=...) ma legge da assets.
+    Per filtrare per canale specifico passa search o asset_tag_filters."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM assets WHERE 1=1"
+    args: list[Any] = []
+    # Almeno un canale email/telegram presente (default per email outreach)
+    sql += (
+        " AND ((email IS NOT NULL AND email != '') "
+        "OR (telegram_username IS NOT NULL AND telegram_username != ''))"
+    )
+    if only_qualified:
+        sql += " AND status = 'qualified'"
+    if exclude_optedout:
+        sql += " AND (outreach_status IS NULL OR outreach_status != 'optedout')"
+    if exclude_contacted:
+        sql += " AND (outreach_status IS NULL OR outreach_status != 'contacted')"
+    if status:
+        sql += " AND outreach_status = %s"
+        args.append(status)
+    if source_task_id is not None:
+        sql += " AND source_task_id = %s"
+        args.append(source_task_id)
+    if source_domain:
+        sql += " AND source_domain = %s"
+        args.append(source_domain)
+    if search:
+        like = f"%{search.lower()}%"
+        sql += " AND (LOWER(title) LIKE %s OR LOWER(display_name) LIKE %s OR LOWER(email) LIKE %s)"
+        args.extend([like, like, like])
+    if score_min is not None:
+        sql += " AND qualifier_score >= %s"
+        args.append(int(score_min))
+    sql, args = _add_asset_tag_filters_clause(sql, args, asset_tag_filters)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY id DESC LIMIT %s OFFSET %s"
+    args.extend([limit, max(0, int(offset))])
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_assets_for_whatsapp_outreach(
+    only_qualified: bool = True,
+    exclude_optedout: bool = True,
+    exclude_contacted: bool = True,
+    limit: int = 1000,
+    asset_tag_filters: list | None = None,
+    tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Asset idonei a outreach_whatsapp. Equivalente moderno di
+    list_contacts_for_whatsapp_outreach."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM assets WHERE whatsapp IS NOT NULL AND whatsapp != ''"
+    args: list[Any] = []
+    if only_qualified:
+        sql += " AND status = 'qualified'"
+    if exclude_optedout:
+        sql += (
+            " AND (whatsapp_consent IS NULL OR whatsapp_consent != 'optedout')"
+            " AND (outreach_status IS NULL OR outreach_status != 'optedout')"
+        )
+    if exclude_contacted:
+        sql += " AND (outreach_status IS NULL OR outreach_status != 'contacted')"
+    sql, args = _add_asset_tag_filters_clause(sql, args, asset_tag_filters)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY id DESC LIMIT %s"
+    args.append(max(1, int(limit)))
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_asset_types_in_use() -> list[dict[str, Any]]:
