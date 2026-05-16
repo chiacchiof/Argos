@@ -159,9 +159,30 @@ git checkout main && git merge feature/task-priority && git push
 
 ## Altri script in questa cartella
 
+- **`install_client.ps1`** — installer PowerShell per primo deploy su PC nuovo (Python check, venv, pip, Playwright, .env scaffolding, prompt DSN). Vedi `CLIENT_INSTALL.md`.
+- **`update_client.ps1`** — updater PowerShell per applicare un nuovo zip release dopo estrazione.
+- **`CLIENT_INSTALL.md`** — guida cliente completa Windows (primo install, banner update, troubleshooting, sezione developer release).
 - **`migrate_legacy_to_edg.py`** — one-shot: legge l'SQLite legacy `data/agentscraper.db` e lo migra su Postgres sotto tenant EDG. Già eseguito durante la Fase 2 del piano (40331 righe migrate, 657 duplicati skippati). Lo lasciamo come riferimento, non va più rieseguito.
 - **`migrate_to_cloud.py`** — scaffolding originale del piano di Fase 5 (più generico). Soppiantato da `migrate_legacy_to_edg.py`; tieni come template per future migrazioni one-shot ad-hoc.
 - **`watchdog_workflow.py`** — non correlato al DB, monitora workflow runs (pre-esistente).
+
+## Banner di aggiornamento in-app (release check GitHub)
+
+Per attivare il banner che avvisa i client quando esce una nuova versione, setta in `.env` (lato dev E lato ogni client):
+
+```ini
+GITHUB_REPO=owner/repo          # es. chifer81/AgentScraper
+# Solo se il repo è privato:
+GITHUB_TOKEN=ghp_xxxxxxx        # PAT classic con scope `repo` o fine-grained `Contents: Read`
+```
+
+Senza queste variabili il banner è disabilitato (zero chiamate HTTP). Quando attivo:
+- L'app al boot fetcha `https://api.github.com/repos/<owner>/<repo>/releases/latest` (timeout 5s, non bloccante).
+- Risultato cached in `data/version_check.json` per 6h.
+- Confronto: `release.tag_name` (rimuove prefisso `v`) vs `app.__version__` da `app/__init__.py`.
+- Se diversi → banner giallo in `base.html` con link a release notes + pagina `/update` con istruzioni.
+
+Per il workflow di rilascio (dev): bump `app/__init__.py` + `pyproject.toml`, tag git, GitHub Release con zip allegato. Dettagli in `CLIENT_INSTALL.md` sezione "Per il developer".
 
 ## Note Postgres / Alembic
 

@@ -271,6 +271,25 @@ Se `DATABASE_URL` non è settato, l'app gira in modalità legacy single-user esa
 
 Per il piano completo (architettura, Fase 2 in poi, deployment Azure futuro) vedi `SETUP_CLOUD_DB_TENANT.md`.
 
+### Schema migrations (Alembic)
+
+Per gestire modifiche allo schema DB nel workflow dev → prod (branch dedicato per cambio, applicazione automatica con safety check), usa lo script `scripts/db.py`. Vedi `scripts/README.md` per il workflow completo e gli esempi end-to-end.
+
+```powershell
+python scripts/db.py status     # mostra alembic_version locale + Neon
+python scripts/db.py new "..."  # crea revision Alembic vuota
+python scripts/db.py migrate    # applica head LOCALE + esegue pytest
+python scripts/db.py promote    # applica head NEON (con safety checks)
+```
+
+### Installazione e aggiornamento client
+
+Per distribuire l'app a colleghi/clienti su PC diversi: zip release da GitHub + script PowerShell. Vedi `scripts/CLIENT_INSTALL.md` per la guida completa.
+
+- **Primo install**: scarica zip release → `.\scripts\install_client.ps1` (9 step interattivi: Python check, venv, pip install, Playwright, .env scaffolding, prompt DSN, test connessione).
+- **Update**: estrai zip nuovo sopra l'esistente → `.\scripts\update_client.ps1`.
+- **Banner di aggiornamento in-app**: opzionale; attivalo settando `GITHUB_REPO=owner/repo` (+ `GITHUB_TOKEN` se repo privato) in `.env`. Senza queste variabili nessuna chiamata HTTP e nessun banner. Quando attivo, l'app al boot fa check GitHub API (`releases/latest`) cache 6h e mostra banner giallo se è disponibile una versione più recente.
+
 ---
 
 ## Roadmap / fuori scope attuale
