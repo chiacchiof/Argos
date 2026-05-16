@@ -2,7 +2,7 @@
 {% block title %}Contatti — AgentScraper{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
-{% set has_filters = filter_q or filter_channel or filter_source_domain or filter_score_min != '' or filter_source_task_id != '' or filter_source_follower_of %}
+{% set has_filters = filter_q or filter_channel or filter_source_domain or filter_score_min != '' or filter_source_task_id != '' or filter_source_follower_of or (contact_tag_filters and contact_tag_filters|length > 0) %}
 <section>
   <div class="page-header">
     <div>
@@ -27,7 +27,27 @@
     {% if filter_source_domain %}<span class="stats-pill stats-pill-active">dominio: <strong>{{ filter_source_domain }}</strong></span>{% endif %}
     {% if filter_score_min != '' %}<span class="stats-pill stats-pill-active">score ≥ <strong>{{ filter_score_min }}</strong></span>{% endif %}
     {% if filter_source_follower_of %}<span class="stats-pill stats-pill-active">follower di <strong>{{ filter_source_follower_of }}</strong></span>{% endif %}
+    {% for tk, tv in (contact_tag_filters or []) %}
+      <span class="stats-pill stats-pill-active" title="Filtro tag (riusabile in outreach_filter_tags)">
+        🏷️ <strong>{{ tk }}</strong> = {{ tv }}
+      </span>
+    {% endfor %}
   </div>
+
+  {% if contact_tag_filters and contact_tag_filters|length > 0 %}
+  {# Snippet pronto per copy-paste in outreach_filter_tags #}
+  <details class="panel-card" style="margin:0.5rem 0;background:#eff6ff;border-color:#bfdbfe">
+    <summary style="cursor:pointer"><strong>📋 Snippet outreach_filter_tags</strong> <span class="muted small">(usa questi tag in un task outreach per contattare esattamente questi {{ total }} contatti)</span></summary>
+    <pre style="background:#fff;padding:0.5rem 0.7rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.85rem;margin:0.5rem 0;white-space:pre-wrap">outreach_filter_tags = [
+{%- for tk, tv in contact_tag_filters %}
+  {"key": "{{ tk }}", "value": "{{ tv }}"}{% if not loop.last %},{% endif %}
+{%- endfor %}
+]</pre>
+    <p class="muted small" style="margin:0.3rem 0 0 0">
+      In <a href="/tasks/new">nuovo task</a> outreach: sezione "📤 Filtra contatti destinatari" → aggiungi le coppie key/value mostrate sopra.
+    </p>
+  </details>
+  {% endif %}
 
   {# Search bar + filtri avanzati #}
   <form method="get" class="contacts-search">
@@ -109,6 +129,48 @@
             {% endfor %}
           </select>
         </label>
+      </div>
+
+      {# Multi-tag filter: stesso pattern di outreach_filter_tags in task_form. #}
+      {# Anteprima audience: i contatti mostrati sono quelli che riceverebbero un outreach con questi tag. #}
+      <div style="margin-top:0.8rem;padding-top:0.6rem;border-top:1px dashed #cbd5e1">
+        <p class="muted small" style="margin:0 0 0.4rem 0">
+          🏷️ <strong>Filtra per tag attributi</strong> (AND multipli) — preview audience per <code>outreach_filter_tags</code>.
+          Es: <code>qualifier_qualifica_appassionati_palestra = qualified</code>
+        </p>
+        <div class="filter-grid">
+          {% for slot in range(1, 4) %}
+            {% set existing = contact_tag_filters[slot-1] if contact_tag_filters and (contact_tag_filters|length) >= slot else None %}
+            {% set ek = existing[0] if existing else '' %}
+            {% set ev = existing[1] if existing else '' %}
+            <label>Tag #{{ slot }} — key
+              <select name="tag_key__{{ slot }}"
+                      hx-get="/assets/tag_values"
+                      hx-trigger="change"
+                      hx-target="#tag_value_slot_{{ slot }}"
+                      hx-include="this"
+                      hx-vals='{"key": ""}'
+                      onchange="this.setAttribute('hx-vals', JSON.stringify({key: this.value}));">
+                <option value="">— nessuno —</option>
+                {% for tk in (available_tag_keys or []) %}
+                  <option value="{{ tk.key }}" {% if tk.key == ek %}selected{% endif %}>{{ tk.key }} ({{ tk.count }})</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Tag #{{ slot }} — value
+              <select name="tag_value__{{ slot }}" id="tag_value_slot_{{ slot }}">
+                {% if ek and ev %}
+                  <option value="{{ ev }}" selected>{{ ev }}</option>
+                {% else %}
+                  <option value="">— prima scegli una key —</option>
+                {% endif %}
+              </select>
+            </label>
+          {% endfor %}
+        </div>
+        <div class="filter-actions">
+          <button type="submit" class="btn-primary">🔍 Applica filtri tag</button>
+        </div>
       </div>
     </form>
   </details>

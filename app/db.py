@@ -2473,6 +2473,31 @@ def remove_asset_tag(asset_id: int, tag_key: str, tag_value: str) -> int:
         return cur.rowcount
 
 
+def set_asset_tag(asset_id: int, tag_key: str, tag_value: str) -> bool:
+    """Set 'singleton' di un tag: rimuove ogni precedente (asset_id, tag_key) e
+    inserisce (asset_id, tag_key, tag_value). Pattern per multi-qualifier:
+    se task#41 tagga 'qualifier_palestra:qualified' e poi rilanci task#41 con
+    risultato diverso 'rejected', vogliamo SOSTITUIRE non accumulare.
+    Ritorna True se inserito."""
+    tag_key = (tag_key or "").strip().lower()
+    tag_value = (tag_value or "").strip()
+    if not tag_key or not tag_value:
+        return False
+    try:
+        with connect() as con:
+            con.execute(
+                "DELETE FROM asset_tags WHERE asset_id=? AND tag_key=?",
+                (asset_id, tag_key),
+            )
+            con.execute(
+                "INSERT INTO asset_tags (asset_id, tag_key, tag_value) VALUES (?, ?, ?)",
+                (asset_id, tag_key, tag_value),
+            )
+            return True
+    except Exception:
+        return False
+
+
 def delete_asset(asset_id: int) -> int:
     with connect() as con:
         cur = con.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
@@ -2495,35 +2520,52 @@ def delete_assets_bulk(asset_ids: list[int]) -> int:
 def update_asset_qualifier(asset_id: int, score: int, status: str, notes: str | None = None) -> None:
     """Aggiorna asset.qualifier_score + status (qualified/rejected) in un colpo.
 
-    CASCATA: propaga `status` e `qualifier_score` ANCHE ai `contacts` collegati
-    via `asset_id`. Cosi' i runner downstream (outreach, ecc.) che leggono dalla
-    tabella contacts trovano subito il nuovo stato. Pattern: status='qualified'
-    sull'asset → status='qualified' sui contacts linkati.
+    **Multi-qualifier safe (2026-05-16)**: se l'asset (o il contact) era già
+    `qualified` da un task qualifier precedente, NON viene downgradato a
+    `rejected` dal task corrente. Logica: "qualified per ALMENO un criterio
+    = qualified globale". Il dettaglio per-task-qualifier viene salvato nei
+    tag `qualifier_<slug>` su `asset_tags` (vedi runner_qualifier).
+
+    Lo `qualifier_score` globale rappresenta lo score del TASK CORRENTE (non
+    aggregato). Per score per-task usare i tag `qualifier_score_<slug>`.
+
+    CASCATA su contacts: stesso pattern (no downgrade qualified).
     """
     ts = now_iso()
     with connect() as con:
+        # Asset: status preserva qualified
         if notes is not None:
             con.execute(
-                "UPDATE assets SET qualifier_score = ?, status = ?, notes = ?, updated_at = ? WHERE id = ?",
-                (int(score), status, notes, ts, asset_id),
+                """UPDATE assets SET
+                     qualifier_score = ?,
+                     status = CASE WHEN status = 'qualified' OR ? = 'qualified' THEN 'qualified' ELSE ? END,
+                     notes = ?,
+                     updated_at = ?
+                   WHERE id = ?""",
+                (int(score), status, status, notes, ts, asset_id),
             )
         else:
             con.execute(
-                "UPDATE assets SET qualifier_score = ?, status = ?, updated_at = ? WHERE id = ?",
-                (int(score), status, ts, asset_id),
+                """UPDATE assets SET
+                     qualifier_score = ?,
+                     status = CASE WHEN status = 'qualified' OR ? = 'qualified' THEN 'qualified' ELSE ? END,
+                     updated_at = ?
+                   WHERE id = ?""",
+                (int(score), status, status, ts, asset_id),
             )
-        # Cascata sui contacts. Update solo se lo status del contact e' ancora 'new'
-        # o uguale a quello dell'asset (preserva 'optedout' e altri stati terminali).
+        # Cascata sui contacts. Update solo se lo status del contact e' ancora 'new',
+        # 'qualified' o 'rejected' (preserva 'optedout' e altri stati terminali).
+        # Logica preserve qualified identica all'asset.
         con.execute(
             """
             UPDATE contacts SET
-              status = ?,
+              status = CASE WHEN status = 'qualified' OR ? = 'qualified' THEN 'qualified' ELSE ? END,
               qualifier_score = ?,
               updated_at = ?
             WHERE asset_id = ?
               AND status IN ('new', 'qualified', 'rejected')
             """,
-            (status, int(score), ts, asset_id),
+            (status, status, int(score), ts, asset_id),
         )
 
 

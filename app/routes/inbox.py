@@ -80,6 +80,15 @@ async def inbox_contacts(
     page = max(1, int(page or 1))
     offset = (page - 1) * per_page
 
+    # Multi-tag filter (parse tag_key__N / tag_value__N da query string, fino a 5 righe).
+    # Stesso pattern del task_form per `outreach_filter_tags` — preview audience.
+    contact_tag_filters: list[tuple[str, str]] = []
+    for i in range(1, 6):
+        k = (request.query_params.get(f"tag_key__{i}") or "").strip().lower()
+        v = (request.query_params.get(f"tag_value__{i}") or "").strip()
+        if k and v:
+            contact_tag_filters.append((k, v))
+
     total = db.count_contacts(
         status=status_clean,
         search=q_clean,
@@ -88,6 +97,7 @@ async def inbox_contacts(
         score_min=score_clean,
         source_task_id=task_id_clean,
         source_follower_of=follower_of_clean,
+        contact_tag_filters=contact_tag_filters or None,
     )
     total_pages = max(1, (total + per_page - 1) // per_page)
     if page > total_pages:
@@ -102,6 +112,7 @@ async def inbox_contacts(
         score_min=score_clean,
         source_task_id=task_id_clean,
         source_follower_of=follower_of_clean,
+        contact_tag_filters=contact_tag_filters or None,
         limit=per_page,
         offset=offset,
     )
@@ -110,18 +121,24 @@ async def inbox_contacts(
     available_domains = db.list_contact_source_domains(limit=50)
     available_source_tasks = db.list_distinct_contact_source_tasks()
     available_follower_of = db.list_distinct_source_follower_of()
+    # Tag keys disponibili per i dropdown multi-tag (escluso `source_follower_of`,
+    # gestito dal suo filtro dedicato sopra).
+    available_tag_keys = db.list_distinct_tag_keys_for_contacts()
 
     # Querystring base (preserva filtri attivi nei link di paginazione)
     from urllib.parse import urlencode
-    qs_dict = {}
-    if status_clean: qs_dict["status"] = status_clean
-    if q_clean: qs_dict["q"] = q_clean
-    if channel_clean: qs_dict["channel"] = channel_clean
-    if domain_clean: qs_dict["source_domain"] = domain_clean
-    if score_clean is not None: qs_dict["score_min"] = score_clean
-    if task_id_clean is not None: qs_dict["source_task_id"] = task_id_clean
-    if follower_of_clean: qs_dict["source_follower_of"] = follower_of_clean
-    if per_page != _CONTACTS_PAGE_SIZE: qs_dict["per_page"] = per_page
+    qs_dict: list[tuple[str, str | int]] = []
+    if status_clean: qs_dict.append(("status", status_clean))
+    if q_clean: qs_dict.append(("q", q_clean))
+    if channel_clean: qs_dict.append(("channel", channel_clean))
+    if domain_clean: qs_dict.append(("source_domain", domain_clean))
+    if score_clean is not None: qs_dict.append(("score_min", score_clean))
+    if task_id_clean is not None: qs_dict.append(("source_task_id", task_id_clean))
+    if follower_of_clean: qs_dict.append(("source_follower_of", follower_of_clean))
+    for i, (k, v) in enumerate(contact_tag_filters, start=1):
+        qs_dict.append((f"tag_key__{i}", k))
+        qs_dict.append((f"tag_value__{i}", v))
+    if per_page != _CONTACTS_PAGE_SIZE: qs_dict.append(("per_page", per_page))
     qs_base = urlencode(qs_dict)
 
     return templates.TemplateResponse(
@@ -136,9 +153,11 @@ async def inbox_contacts(
             "filter_score_min": score_clean if score_clean is not None else "",
             "filter_source_task_id": task_id_clean if task_id_clean is not None else "",
             "filter_source_follower_of": follower_of_clean or "",
+            "contact_tag_filters": contact_tag_filters,
             "available_domains": available_domains,
             "available_source_tasks": available_source_tasks,
             "available_follower_of": available_follower_of,
+            "available_tag_keys": available_tag_keys,
             "page": page,
             "per_page": per_page,
             "total": total,

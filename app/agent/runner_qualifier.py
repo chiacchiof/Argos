@@ -102,6 +102,17 @@ def _domain_of(url: str | None) -> str | None:
         return None
 
 
+def _qualifier_slug(task: dict[str, Any]) -> str:
+    """Slug stabile per identificare il task qualifier nei tag.
+    Es: 'Qualifica Appassionati Palestra' → 'qualifica_appassionati_palestra'.
+    Cap 40 char. Fallback: 'task_<id>'."""
+    name = (task.get("name") or "").strip()
+    if not name:
+        return f"task_{task.get('id', 'unknown')}"
+    slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:40]
+    return slug or f"task_{task.get('id', 'unknown')}"
+
+
 async def run_agent(task: dict[str, Any], job_id: int) -> str:
     def jlog(line: str) -> None:
         db.append_job_log(job_id, line)
@@ -176,6 +187,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     rejected_path = run_dir / "rejected.jsonl"
 
     extra_prompt = (task.get("objective") or "").strip()
+    q_slug = _qualifier_slug(task)
+    jlog(f"Qualifier slug per tag su asset_tags: 'qualifier_{q_slug}' + 'qualifier_score_{q_slug}'")
 
     n_total = 0
     n_qualified = 0
@@ -212,6 +225,17 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 db.update_asset_qualifier(asset_id, score, decision, notes=reason[:300])
             except Exception as e:
                 jlog(f"  ⚠️ update asset {asset_id} failed: {e}")
+
+            # Multi-qualifier tags (2026-05-16): salva decision + score per QUESTO
+            # specifico qualifier task in `asset_tags`. Permette rigirare un
+            # secondo qualifier (es. "amanti del cibo") sullo stesso asset senza
+            # cancellare i risultati del primo (es. "appassionati palestra"). Set
+            # singleton: rerun del SAME task sovrascrive il proprio tag.
+            try:
+                db.set_asset_tag(asset_id, f"qualifier_{q_slug}", decision)
+                db.set_asset_tag(asset_id, f"qualifier_score_{q_slug}", str(score))
+            except Exception as e:
+                jlog(f"  ⚠️ set qualifier tag {asset_id} failed: {e}")
             # Materializza in contacts se qualified + almeno un canale di contatto.
             # Espanso rispetto alla versione precedente: ora considera anche
             # whatsapp, sitoweb, social[] come canali validi (anche se outreach
