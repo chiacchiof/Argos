@@ -110,6 +110,9 @@
         <p class="muted small" style="margin: 0.3rem 0">
           Per filtrare dentro un qualifier su attributi (es. <code>city=Catania</code>, <code>interests_inferred=fitness</code>).
           I tag <code>qualifier_*</code> sono esclusi (usa la sidebar a sinistra per quelli).
+          {% if filter_type %}
+            <br><span style="color:#0969da">ℹ️ Tag ristretti agli asset di tipo <code>{{ filter_type }}</code> (filtro asset type attivo).</span>
+          {% endif %}
         </p>
         <div class="extra-tags-grid">
           {% for i in range(3) %}
@@ -117,12 +120,12 @@
             {% set ev = extra_tag_filters[i][1] if extra_tag_filters|length > i else '' %}
             <div class="extra-tag-row">
               <select name="tag_key__{{ i }}"
-                      hx-get="/assets/tag_values?scope=assets"
+                      hx-get="/assets/tag_values"
                       hx-trigger="change"
                       hx-target="#qualified-tag-value-{{ i }}"
                       hx-include="this"
-                      hx-vals='{"key": ""}'
-                      onchange="this.setAttribute('hx-vals', JSON.stringify({key: this.value, scope: 'assets'}));">
+                      hx-vals='{"key": "", "scope": "assets", "asset_type": "{{ filter_type }}"}'
+                      onchange="this.setAttribute('hx-vals', JSON.stringify({key: this.value, scope: 'assets', asset_type: '{{ filter_type }}'}));">
                 <option value="">— nessuno —</option>
                 {% for tk in (available_tag_keys or []) %}
                   <option value="{{ tk.key }}" {% if tk.key == ek %}selected{% endif %}>{{ tk.key }} ({{ tk.count }})</option>

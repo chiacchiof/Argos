@@ -1813,34 +1813,53 @@ def list_distinct_tag_keys_for_contacts() -> list[dict[str, Any]]:
     return [{"key": r["k"], "count": int(r["n"])} for r in rows]
 
 
-def list_distinct_tag_keys_for_assets(exclude_qualifier_tags: bool = True) -> list[dict[str, Any]]:
+def list_distinct_tag_keys_for_assets(
+    exclude_qualifier_tags: bool = True,
+    asset_type: str | None = None,
+) -> list[dict[str, Any]]:
     """Tag keys disponibili su asset_tags (count = N asset distinti per key).
     Per default esclude i tag `qualifier_*` e `qualifier_score_*` (sono gestiti
-    dalla sidebar qualifier di /qualified, non come filtri tag generici)."""
-    sql = (
-        "SELECT t.tag_key AS k, COUNT(DISTINCT t.asset_id) AS n "
-        "FROM asset_tags t WHERE 1=1 "
-    )
+    dalla sidebar qualifier di /qualified, non come filtri tag generici).
+
+    Se `asset_type` valorizzato, restringe ai tag presenti su asset di quel tipo.
+    """
+    sql = "SELECT t.tag_key AS k, COUNT(DISTINCT t.asset_id) AS n FROM asset_tags t "
+    args: list[Any] = []
+    if asset_type:
+        sql += "JOIN assets a ON a.id = t.asset_id "
+    sql += "WHERE 1=1 "
     if exclude_qualifier_tags:
-        sql += "AND t.tag_key NOT LIKE 'qualifier\\_%' ESCAPE '\\' "
+        sql += "AND t.tag_key NOT LIKE 'qualifier\\_%%' ESCAPE '\\' "
+    if asset_type:
+        sql += "AND a.asset_type = %s "
+        args.append(asset_type)
     sql += "GROUP BY t.tag_key ORDER BY n DESC, t.tag_key"
     with connect() as con:
-        rows = con.execute(sql).fetchall()
+        rows = con.execute(sql, args).fetchall()
     return [{"key": r["k"], "count": int(r["n"])} for r in rows]
 
 
-def list_distinct_tag_values_for_assets(tag_key: str, limit: int = 100) -> list[dict[str, Any]]:
-    """Valori distinct per una tag_key, con count di asset che la hanno."""
+def list_distinct_tag_values_for_assets(
+    tag_key: str, limit: int = 100, asset_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Valori distinct per una tag_key, con count di asset che la hanno.
+    Se `asset_type` valorizzato, restringe agli asset di quel tipo."""
     tk = (tag_key or "").strip().lower()
     if not tk:
         return []
+    sql = "SELECT t.tag_value AS v, COUNT(DISTINCT t.asset_id) AS n FROM asset_tags t "
+    args: list[Any] = []
+    if asset_type:
+        sql += "JOIN assets a ON a.id = t.asset_id "
+    sql += "WHERE t.tag_key = %s "
+    args.append(tk)
+    if asset_type:
+        sql += "AND a.asset_type = %s "
+        args.append(asset_type)
+    sql += "GROUP BY t.tag_value ORDER BY n DESC, t.tag_value LIMIT %s"
+    args.append(int(limit))
     with connect() as con:
-        rows = con.execute(
-            "SELECT t.tag_value AS v, COUNT(DISTINCT t.asset_id) AS n "
-            "FROM asset_tags t WHERE t.tag_key = %s "
-            "GROUP BY t.tag_value ORDER BY n DESC, t.tag_value LIMIT %s",
-            (tk, int(limit)),
-        ).fetchall()
+        rows = con.execute(sql, args).fetchall()
     return [{"value": r["v"], "count": int(r["n"])} for r in rows]
 
 

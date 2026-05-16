@@ -217,7 +217,12 @@ async def qualified_assets_list(
 
     qualifier_menu = db.list_distinct_qualifier_slugs()
     types_in_use = db.list_asset_types_in_use()
-    available_tag_keys = db.list_distinct_tag_keys_for_assets(exclude_qualifier_tags=True)
+    # Tag keys ristretti al tipo selezionato (se attivo) — coerente con UX:
+    # filtro tipo "ig_profile" mostra solo i tag presenti su asset ig_profile.
+    available_tag_keys = db.list_distinct_tag_keys_for_assets(
+        exclude_qualifier_tags=True,
+        asset_type=asset_type_v,
+    )
 
     qs_parts: list[str] = []
     if qualifiers: qs_parts.append(f"qualifiers={qualifiers}")
@@ -356,21 +361,25 @@ async def asset_preview_inline(asset_id: str = ""):
 # Definiti PRIMA di /assets/{asset_id} per evitare conflitto di routing.
 
 @router.get("/assets/tag_values", response_class=HTMLResponse)
-async def asset_tag_values_htmx(request: Request, key: str = "", scope: str = "contacts"):
+async def asset_tag_values_htmx(
+    request: Request, key: str = "", scope: str = "contacts", asset_type: str = "",
+):
     """HTMX endpoint: ritorna <option> per il dropdown tag_value dato un
     tag_key. Usato sia dal form task (filtro outreach multi-tag) sia dai
     filtri tag in /inbox/contacts e /qualified.
 
     scope=contacts (default, backward-compat): count = N contatti per value
     scope=assets:                              count = N asset per value
+    asset_type (solo con scope=assets): restringe ai value presenti su quel tipo.
     """
     key = (key or "").strip().lower()
     if not key:
         return HTMLResponse('<option value="">— prima scegli una key —</option>')
     use_assets = (scope or "").strip().lower() == "assets"
+    at = (asset_type or "").strip() or None
     try:
         if use_assets:
-            values = db.list_distinct_tag_values_for_assets(key, limit=100)
+            values = db.list_distinct_tag_values_for_assets(key, limit=100, asset_type=at)
         else:
             values = db.list_distinct_tag_values_for_contacts(key, limit=100)
     except Exception:
