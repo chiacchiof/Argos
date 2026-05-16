@@ -153,9 +153,6 @@ def client(fake_cloud, monkeypatch, tmp_path):
     from app import config, db, storage
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
 
     from app.main import app

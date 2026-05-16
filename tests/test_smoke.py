@@ -6,108 +6,92 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-def test_boot_and_crud(monkeypatch, tmp_path):
-    # isola DB e RESULTS in tmp_path per non sporcare data/ reale
-    from app import config, db, storage
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
+def test_boot_and_crud(authed_client):
+    client = authed_client
+    # lista vuota
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "AgentScraper" in r.text
 
-    db.init_db()
+    # form nuovo (potrebbe fallire la list_models se Ollama non è up: tolleriamo)
+    r = client.get("/tasks/new")
+    assert r.status_code == 200
+    assert "Nuovo task" in r.text
 
-    with TestClient(app) as client:
-        # lista vuota
-        r = client.get("/")
-        assert r.status_code == 200
-        assert "AgentScraper" in r.text
+    # crea progetto
+    r = client.post(
+        "/tasks",
+        data={
+            "name": "Test",
+            "description": "smoke",
+            "objective": "Trova info di test",
+            "seed_queries": "test query 1\ntest query 2",
+            "allowed_domains": "",
+            "blocked_domains": "",
+            "max_iterations": "5",
+            "model": "qwen3.5:latest",
+            "output_format": "txt",
+            "cron": "",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    loc = r.headers["location"]
+    assert loc.startswith("/tasks/")
+    task_id = int(loc.rsplit("/", 1)[-1])
 
-        # form nuovo (potrebbe fallire la list_models se Ollama non è up: tolleriamo)
-        r = client.get("/tasks/new")
-        assert r.status_code == 200
-        assert "Nuovo task" in r.text
+    # detail
+    r = client.get(f"/tasks/{task_id}")
+    assert r.status_code == 200
+    assert "Test" in r.text
+    assert "Trova info di test" in r.text
 
-        # crea progetto
-        r = client.post(
-            "/tasks",
-            data={
-                "name": "Test",
-                "description": "smoke",
-                "objective": "Trova info di test",
-                "seed_queries": "test query 1\ntest query 2",
-                "allowed_domains": "",
-                "blocked_domains": "",
-                "max_iterations": "5",
-                "model": "qwen3.5:latest",
-                "output_format": "txt",
-                "cron": "",
-            },
-            follow_redirects=False,
-        )
-        assert r.status_code == 303
-        loc = r.headers["location"]
-        assert loc.startswith("/tasks/")
-        task_id = int(loc.rsplit("/", 1)[-1])
+    # update
+    r = client.post(
+        f"/tasks/{task_id}",
+        data={
+            "name": "Test rinominato",
+            "description": "",
+            "objective": "Obiettivo aggiornato",
+            "seed_queries": "",
+            "allowed_domains": "",
+            "blocked_domains": "",
+            "max_iterations": "8",
+            "model": "qwen3.5:latest",
+            "output_format": "md",
+            "cron": "",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
 
-        # detail
-        r = client.get(f"/tasks/{task_id}")
-        assert r.status_code == 200
-        assert "Test" in r.text
-        assert "Trova info di test" in r.text
+    r = client.get(f"/tasks/{task_id}")
+    assert "Test rinominato" in r.text
+    assert "Obiettivo aggiornato" in r.text
 
-        # update
-        r = client.post(
-            f"/tasks/{task_id}",
-            data={
-                "name": "Test rinominato",
-                "description": "",
-                "objective": "Obiettivo aggiornato",
-                "seed_queries": "",
-                "allowed_domains": "",
-                "blocked_domains": "",
-                "max_iterations": "8",
-                "model": "qwen3.5:latest",
-                "output_format": "md",
-                "cron": "",
-            },
-            follow_redirects=False,
-        )
-        assert r.status_code == 303
+    # results vuoti
+    r = client.get(f"/tasks/{task_id}/results")
+    assert r.status_code == 200
 
-        r = client.get(f"/tasks/{task_id}")
-        assert "Test rinominato" in r.text
-        assert "Obiettivo aggiornato" in r.text
+    # delete
+    r = client.post(f"/tasks/{task_id}/delete", follow_redirects=False)
+    assert r.status_code == 303
 
-        # results vuoti
-        r = client.get(f"/tasks/{task_id}/results")
-        assert r.status_code == 200
-
-        # delete
-        r = client.post(f"/tasks/{task_id}/delete", follow_redirects=False)
-        assert r.status_code == 303
-
-        r = client.get(f"/tasks/{task_id}")
-        assert r.status_code == 404
+    r = client.get(f"/tasks/{task_id}")
+    assert r.status_code == 404
 
 
-def test_new_tables_created(monkeypatch, tmp_path):
-    """Verifica che le nuove tabelle operative siano create da init_db()."""
-    from app import config, db, storage
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
-
-    db.init_db()
+def test_new_tables_created():
+    """Verifica che le tabelle operative siano create da init_db() su Postgres."""
+    from app import db
 
     with db.connect() as con:
-        names = {r["name"] for r in con.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()}
+        names = {
+            r["table_name"]
+            for r in con.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
+            ).fetchall()
+        }
     expected = {
         "workflow_edges", "contacts", "threads", "messages",
         "channel_config", "orchestrator_messages",
@@ -115,9 +99,15 @@ def test_new_tables_created(monkeypatch, tmp_path):
     missing = expected - names
     assert not missing, f"tabelle mancanti: {missing}"
 
-    # verifica colonne nuove su projects
+    # verifica colonne nuove su tasks
     with db.connect() as con:
-        cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)").fetchall()}
+        cols = {
+            r["column_name"]
+            for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='tasks'"
+            ).fetchall()
+        }
     new_cols = {
         "input_artifact_path", "message_template", "message_subject",
         "message_channels", "responder_system_prompt",
@@ -162,17 +152,10 @@ def test_new_tables_created(monkeypatch, tmp_path):
     assert db.list_orchestrator_messages() == []
 
 
-def test_jsonl_results_viewer(monkeypatch, tmp_path):
-    from app import config, db, storage
+def test_jsonl_results_viewer(authed_client, tmp_path):
+    from app import db
 
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
-    db.init_db()
-
+    client = authed_client
     task_id = db.create_task({"name": "Viewer", "objective": "x"})
     run_dir = tmp_path / "results" / str(task_id) / "run-1"
     run_dir.mkdir(parents=True)
@@ -181,28 +164,23 @@ def test_jsonl_results_viewer(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    with TestClient(app) as client:
-        r = client.get(f"/tasks/{task_id}/results/run-1")
-        assert r.status_code == 200
-        assert f"/tasks/{task_id}/results-view/run-1/profiles.jsonl" in r.text
-        assert 'target="_blank"' in r.text
+    r = client.get(f"/tasks/{task_id}/results/run-1")
+    assert r.status_code == 200
+    assert f"/tasks/{task_id}/results-view/run-1/profiles.jsonl" in r.text
+    assert 'target="_blank"' in r.text
 
-        r = client.get(f"/tasks/{task_id}/results-view/run-1/profiles.jsonl?limit=2")
-        assert r.status_code == 200
-        assert "Alice" in r.text
-        assert "JSON non valido" in r.text
-        assert "Successive" in r.text
+    r = client.get(f"/tasks/{task_id}/results-view/run-1/profiles.jsonl?limit=2")
+    assert r.status_code == 200
+    assert "Alice" in r.text
+    assert "JSON non valido" in r.text
+    assert "Successive" in r.text
 
 
 def test_workflow_dag_create_and_cycle(monkeypatch, tmp_path):
     from app import config, db, storage
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
-    db.init_db()
 
     pid_a = db.create_task({"name": "A", "objective": "scrape"})
     pid_b = db.create_task({"name": "B", "objective": "qualify"})
@@ -233,11 +211,7 @@ def test_ingest_profiles_to_contacts(monkeypatch, tmp_path):
     from app import config, db, storage
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
-    db.init_db()
 
     from app.agent.runner_browseruse import _ingest_to_contacts
 
@@ -358,52 +332,36 @@ def test_optout_detection():
     assert not _is_opt_out("rispondo subito grazie")
 
 
-def test_validation_error_returns_form(monkeypatch, tmp_path):
-    from app import config, db, storage
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
-    db.init_db()
-
-    with TestClient(app) as client:
-        r = client.post(
-            "/tasks",
-            data={
-                "name": "",  # invalido (min_length=1 in ProjectIn)
-                "description": "",
-                "objective": "x",
-                "seed_queries": "",
-                "allowed_domains": "",
-                "blocked_domains": "",
-                "max_iterations": "5",
-                "model": "qwen3.5:latest",
-                "output_format": "txt",
-                "cron": "",
-            },
-        )
-        assert r.status_code == 400, f"body={r.text[:300]}"
-        assert "Errori di validazione" in r.text
+def test_validation_error_returns_form(authed_client):
+    client = authed_client
+    r = client.post(
+        "/tasks",
+        data={
+            "name": "",  # invalido (min_length=1 in ProjectIn)
+            "description": "",
+            "objective": "x",
+            "seed_queries": "",
+            "allowed_domains": "",
+            "blocked_domains": "",
+            "max_iterations": "5",
+            "model": "qwen3.5:latest",
+            "output_format": "txt",
+            "cron": "",
+        },
+    )
+    assert r.status_code == 400, f"body={r.text[:300]}"
+    assert "Errori di validazione" in r.text
 
 
-def test_orchestrator_plan_and_execute(monkeypatch, tmp_path):
+def test_orchestrator_plan_and_execute(authed_client, monkeypatch, tmp_path):
     """L'orchestrator genera un piano locale e crea task/workflow dopo conferma."""
     import re
     from html import unescape
 
-    from app import config, db, storage
+    from app import db
     from app.routes import orchestrator as orchestrator_route
 
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
-    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
     monkeypatch.setattr(orchestrator_route, "UPLOADS_DIR", tmp_path / "uploads")
-    db.init_db()
 
     async def fake_chat_reply(latest_user_message, *, file_info=None, chat_options=None):
         assert "Allegato" in latest_user_message
@@ -430,83 +388,83 @@ def test_orchestrator_plan_and_execute(monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator_route, "_generate_chat_reply", fake_chat_reply)
     monkeypatch.setattr(orchestrator_route, "_stream_chat_reply", fake_stream_reply)
 
-    with TestClient(app) as client:
-        r = client.post(
-            "/settings/orchestrator",
-            data={
-                "use_llm": "on",
-                "llm_provider": "custom",
-                "planner_model": "planner-test",
-                "llm_base_url": "https://llm.example/v1",
-                "llm_api_key": "secret-test",
-            },
-            follow_redirects=False,
-        )
-        assert r.status_code == 303
-        saved = db.get_channel_config("orchestrator")
-        assert saved["enabled"] == 1
-        assert saved["config"]["llm_provider"] == "custom"
-        assert saved["config"]["llm_api_key"] == "secret-test"
-        assert "chat_web_enabled" not in saved["config"]
-        assert "chat_actions_enabled" not in saved["config"]
+    client = authed_client
+    r = client.post(
+        "/settings/orchestrator",
+        data={
+            "use_llm": "on",
+            "llm_provider": "custom",
+            "planner_model": "planner-test",
+            "llm_base_url": "https://llm.example/v1",
+            "llm_api_key": "secret-test",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    saved = db.get_channel_config("orchestrator")
+    assert saved["enabled"] == 1
+    assert saved["config"]["llm_provider"] == "custom"
+    assert saved["config"]["llm_api_key"] == "secret-test"
+    assert "chat_web_enabled" not in saved["config"]
+    assert "chat_actions_enabled" not in saved["config"]
 
-        r = client.get("/orchestrator")
-        assert r.status_code == 200
-        assert "Orchestrator" in r.text
-        assert "planner-test" in r.text
-        assert 'name="chat_web_enabled"' in r.text
-        assert 'name="chat_actions_enabled"' in r.text
+    r = client.get("/orchestrator")
+    assert r.status_code == 200
+    assert "Orchestrator" in r.text
+    assert "planner-test" in r.text
+    assert 'name="chat_web_enabled"' in r.text
+    assert 'name="chat_actions_enabled"' in r.text
 
-        r = client.post(
-            "/orchestrator/chat",
-            data={
-                "message": "Leggi questo file.",
-                "chat_web_enabled": "on",
-            },
-            files={"attachment": ("brief.md", b"contenuto allegato", "text/markdown")},
-            follow_redirects=False,
-        )
-        assert r.status_code == 303
-        chat = db.list_orchestrator_messages()
-        assert chat[-2]["role"] == "user"
-        assert "brief.md" in chat[-2]["body"]
-        assert chat[-2]["metadata"]["attachment"]["filename"] == "brief.md"
-        assert chat[-1]["body"] == "Ho letto il file allegato."
+    r = client.post(
+        "/orchestrator/chat",
+        data={
+            "message": "Leggi questo file.",
+            "chat_web_enabled": "on",
+        },
+        files={"attachment": ("brief.md", b"contenuto allegato", "text/markdown")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    chat = db.list_orchestrator_messages()
+    assert chat[-2]["role"] == "user"
+    assert "brief.md" in chat[-2]["body"]
+    assert chat[-2]["metadata"]["attachment"]["filename"] == "brief.md"
+    assert chat[-1]["body"] == "Ho letto il file allegato."
 
-        r = client.post(
-            "/orchestrator/chat/stream",
-            data={"message": "Risposta breve"},
-        )
-        assert r.status_code == 200
-        assert '"type": "token"' in r.text
-        assert "Certo, " in r.text
-        assert db.list_orchestrator_messages()[-1]["metadata"]["fake_stream"] is True
+    r = client.post(
+        "/orchestrator/chat/stream",
+        data={"message": "Risposta breve"},
+    )
+    assert r.status_code == 200
+    assert '"type": "token"' in r.text
+    assert "Certo, " in r.text
+    assert db.list_orchestrator_messages()[-1]["metadata"]["fake_stream"] is True
 
-        r = client.post(
-            "/orchestrator/plan",
-            data={
-                "brief": "estrai contatti da https://example.com e qualificali",
-                "autonomy_level": "builder",
-                "llm_provider": "ollama",
-                "planner_model": "qwen3.5:latest",
-            },
-        )
-        assert r.status_code == 200
-        assert "Task proposti" in r.text
-        assert "Estrazione dati" in r.text
-        assert "Qualifica contatti" in r.text
+    r = client.post(
+        "/orchestrator/plan",
+        data={
+            "brief": "estrai contatti da https://example.com e qualificali",
+            "autonomy_level": "builder",
+            "llm_provider": "ollama",
+            "planner_model": "qwen3.5:latest",
+        },
+    )
+    assert r.status_code == 200
+    assert "Task proposti" in r.text
+    assert "Estrazione dati" in r.text
+    assert "Qualifica contatti" in r.text
 
-        m = re.search(r'name="plan_b64" value="([^"]+)"', r.text)
-        assert m, r.text[:500]
-        plan_b64 = unescape(m.group(1))
+    m = re.search(r'name="plan_b64" value="([^"]+)"', r.text)
+    assert m, r.text[:500]
+    plan_b64 = unescape(m.group(1))
 
-        r = client.post(
-            "/orchestrator/execute",
-            data={"plan_b64": plan_b64},
-            follow_redirects=False,
-        )
-        assert r.status_code == 303
-        assert r.headers["location"].startswith("/workflows/")
+    r = client.post(
+        "/orchestrator/execute",
+        data={"plan_b64": plan_b64},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/workflows/")
 
     assert len(db.list_tasks()) == 2
     assert len(db.list_workflows()) == 1
