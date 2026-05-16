@@ -1475,13 +1475,15 @@ def find_workflow_roots(workflow_id: int) -> list[int]:
 # Contacts
 # ===========================================================================
 
-def upsert_contact(data: dict[str, Any]) -> int:
-    """Insert o update by (email, telegram_username) per evitare duplicati. Ritorna id.
-
-    Accetta sia 'source_task_id' (nuovo) sia 'source_project_id' (legacy alias).
-    Supporta anche canali secondari (whatsapp, sitoweb, social_json) — quando
-    presenti senza email/telegram, dedup avviene per `source_url`.
-    """
+def upsert_contact(
+    data: dict[str, Any],
+    *,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = _UNSET,
+) -> int:
+    """Insert o update by (email, telegram_username) per evitare duplicati."""
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
     import json as _json
     ts = now_iso()
     email = (data.get("email") or "").strip().lower() or None
@@ -1565,8 +1567,11 @@ def upsert_contact(data: dict[str, Any]) -> int:
             (source_task_id, source_job_id, source_url, source_domain,
              display_name, email, telegram_username, telegram_chat_id,
              whatsapp, sitoweb, social_json,
-             raw_json, status, qualifier_score, notes, asset_id, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+             raw_json, status, qualifier_score, notes, asset_id,
+             tenant_id, created_by_user_id,
+             created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
             """,
             (
                 source_task,
@@ -1585,6 +1590,8 @@ def upsert_contact(data: dict[str, Any]) -> int:
                 data.get("qualifier_score"),
                 data.get("notes"),
                 asset_id,
+                tenant_id,
+                created_by_user_id,
                 ts,
                 ts,
             ),
@@ -1592,9 +1599,18 @@ def upsert_contact(data: dict[str, Any]) -> int:
         return int(cur.fetchone()['id'])
 
 
-def get_contact(contact_id: int) -> dict[str, Any] | None:
+def get_contact(contact_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        row = con.execute("SELECT * FROM contacts WHERE id = %s", (contact_id,)).fetchone()
+        if tenant_id is None:
+            row = con.execute(
+                "SELECT * FROM contacts WHERE id = %s", (contact_id,)
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM contacts WHERE id = %s AND tenant_id = %s",
+                (contact_id, tenant_id),
+            ).fetchone()
     return dict(row) if row else None
 
 
@@ -1765,13 +1781,18 @@ def count_contacts(
     score_min: int | None = None,
     source_follower_of: str | None = None,
     contact_tag_filters: list | None = None,
+    tenant_id: Any = _UNSET,
 ) -> int:
     """Conta i contatti che matchano i filtri di list_contacts. Per paginazione UI."""
+    tenant_id = _resolve_tenant(tenant_id)
     where_sql, args = _build_contacts_filters(
         status, source_task_id, source_domain, search, channel, score_min
     )
     where_sql, args = _add_source_follower_of_filter(where_sql, args, source_follower_of)
     where_sql, args = _add_contact_tag_filters_clause(where_sql, args, contact_tag_filters)
+    if tenant_id is not None:
+        where_sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     sql = "SELECT COUNT(*) FROM contacts" + where_sql
     with connect() as con:
         return int(con.execute(sql, args).fetchone()[0])
@@ -1788,12 +1809,17 @@ def list_contacts(
     offset: int = 0,
     source_follower_of: str | None = None,
     contact_tag_filters: list | None = None,
+    tenant_id: Any = _UNSET,
 ) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     where_sql, args = _build_contacts_filters(
         status, source_task_id, source_domain, search, channel, score_min
     )
     where_sql, args = _add_source_follower_of_filter(where_sql, args, source_follower_of)
     where_sql, args = _add_contact_tag_filters_clause(where_sql, args, contact_tag_filters)
+    if tenant_id is not None:
+        where_sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     sql = "SELECT * FROM contacts" + where_sql + " ORDER BY id DESC LIMIT %s OFFSET %s"
     args.extend([limit, max(0, int(offset))])
     with connect() as con:
@@ -2004,20 +2030,34 @@ def set_contact_telegram_chat(contact_id: int, chat_id: str) -> None:
         )
 
 
-def delete_contact(contact_id: int) -> int:
+def delete_contact(contact_id: int, tenant_id: Any = _UNSET) -> int:
     """Cancella un contatto. Threads e messages cascade-deletono per FK ON DELETE CASCADE."""
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        cur = con.execute("DELETE FROM contacts WHERE id = %s", (contact_id,))
+        if tenant_id is None:
+            cur = con.execute("DELETE FROM contacts WHERE id = %s", (contact_id,))
+        else:
+            cur = con.execute(
+                "DELETE FROM contacts WHERE id = %s AND tenant_id = %s",
+                (contact_id, tenant_id),
+            )
         return cur.rowcount
 
 
-def delete_contacts_bulk(contact_ids: list[int]) -> int:
+def delete_contacts_bulk(contact_ids: list[int], tenant_id: Any = _UNSET) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
     ids = [int(i) for i in contact_ids if i]
     if not ids:
         return 0
     placeholders = ",".join("%s" for _ in ids)
     with connect() as con:
-        cur = con.execute(f"DELETE FROM contacts WHERE id IN ({placeholders})", ids)
+        if tenant_id is None:
+            cur = con.execute(f"DELETE FROM contacts WHERE id IN ({placeholders})", ids)
+        else:
+            cur = con.execute(
+                f"DELETE FROM contacts WHERE id IN ({placeholders}) AND tenant_id = %s",
+                ids + [tenant_id],
+            )
         return cur.rowcount
 
 
@@ -2074,12 +2114,17 @@ def has_recent_asset(
 def upsert_asset(
     data: dict[str, Any],
     tags: dict[str, list[str]] | None = None,
+    *,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = _UNSET,
 ) -> int:
     """Inserisce o aggiorna un asset.
     Chiave di dedup: source_url_canonical (cross-lingua/paginazione) + asset_type.
     Fallback: source_url letterale se canonical non calcolabile.
     Ritorna asset_id. I tag sostituiscono quelli precedenti.
     """
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
     from .agent.url_canonical import canonical_url as _canon
     asset_type = (data.get("asset_type") or "").strip() or "generic"
     source_url = (data.get("source_url") or "").strip() or None
@@ -2143,8 +2188,9 @@ def upsert_asset(
                 INSERT INTO assets (
                   asset_type, source_task_id, source_job_id, source_url, source_url_canonical,
                   source_domain, title, raw_json, status, qualifier_score, notes,
-                  created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'new', NULL, %s, %s, %s) RETURNING id
+                  tenant_id, created_by_user_id, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'new', NULL, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     asset_type,
@@ -2156,6 +2202,8 @@ def upsert_asset(
                     title,
                     raw_json,
                     notes,
+                    tenant_id,
+                    created_by_user_id,
                     ts,
                     ts,
                 ),
@@ -2183,16 +2231,24 @@ def upsert_asset(
                         continue
                     seen.add(pair)
                     con.execute(
-                        "INSERT OR IGNORE INTO asset_tags (asset_id, tag_key, tag_value) VALUES (%s, %s, %s)",
+                        "INSERT INTO asset_tags (asset_id, tag_key, tag_value) "
+                        "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                         (asset_id, tk, tv),
                     )
 
     return asset_id
 
 
-def get_asset(asset_id: int) -> dict[str, Any] | None:
+def get_asset(asset_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        row = con.execute("SELECT * FROM assets WHERE id = %s", (asset_id,)).fetchone()
+        if tenant_id is None:
+            row = con.execute("SELECT * FROM assets WHERE id = %s", (asset_id,)).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM assets WHERE id = %s AND tenant_id = %s",
+                (asset_id, tenant_id),
+            ).fetchone()
         if not row:
             return None
         asset = dict(row)
@@ -2212,9 +2268,10 @@ def count_assets(
     status: str | None = None,
     source_task_id: int | None = None,
     tag_filters: list[tuple[str, str]] | None = None,
+    tenant_id: Any = _UNSET,
 ) -> int:
-    """Conta gli asset matchando gli stessi filtri di `list_assets`. Usato dalla
-    paginazione UI per calcolare il numero di pagine."""
+    """Conta gli asset matchando gli stessi filtri di `list_assets`."""
+    tenant_id = _resolve_tenant(tenant_id)
     sql = "SELECT COUNT(DISTINCT a.id) FROM assets a"
     args: list[Any] = []
     if tag_filters:
@@ -2235,6 +2292,9 @@ def count_assets(
     if source_task_id is not None:
         sql += " AND a.source_task_id = %s"
         args.append(source_task_id)
+    if tenant_id is not None:
+        sql += " AND a.tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
         return int(con.execute(sql, args).fetchone()[0])
 
@@ -2246,11 +2306,12 @@ def list_assets(
     tag_filters: list[tuple[str, str]] | None = None,
     limit: int = 200,
     offset: int = 0,
+    tenant_id: Any = _UNSET,
 ) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     sql = "SELECT a.* FROM assets a"
     args: list[Any] = []
     if tag_filters:
-        # Ogni filtro (k, v) richiede una JOIN distinta
         for i, (k, v) in enumerate(tag_filters):
             alias = f"t{i}"
             sql += (
@@ -2268,6 +2329,9 @@ def list_assets(
     if source_task_id is not None:
         sql += " AND a.source_task_id = %s"
         args.append(source_task_id)
+    if tenant_id is not None:
+        sql += " AND a.tenant_id = %s"
+        args.append(tenant_id)
     sql += " ORDER BY a.id DESC LIMIT %s OFFSET %s"
     args.append(limit)
     args.append(max(0, int(offset)))
@@ -2348,7 +2412,8 @@ def add_asset_tag(asset_id: int, tag_key: str, tag_value: str) -> bool:
     try:
         with connect() as con:
             con.execute(
-                "INSERT OR IGNORE INTO asset_tags (asset_id, tag_key, tag_value) VALUES (%s, %s, %s)",
+                "INSERT INTO asset_tags (asset_id, tag_key, tag_value) "
+                "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                 (asset_id, tag_key, tag_value),
             )
             # rowcount per detect duplicato
@@ -2388,7 +2453,8 @@ def set_asset_tag(asset_id: int, tag_key: str, tag_value: str) -> bool:
                 (asset_id, tag_key),
             )
             con.execute(
-                "INSERT INTO asset_tags (asset_id, tag_key, tag_value) VALUES (%s, %s, %s)",
+                "INSERT INTO asset_tags (asset_id, tag_key, tag_value) "
+                "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                 (asset_id, tag_key, tag_value),
             )
             return True
@@ -2396,22 +2462,34 @@ def set_asset_tag(asset_id: int, tag_key: str, tag_value: str) -> bool:
         return False
 
 
-def delete_asset(asset_id: int) -> int:
+def delete_asset(asset_id: int, tenant_id: Any = _UNSET) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        cur = con.execute("DELETE FROM assets WHERE id = %s", (asset_id,))
+        if tenant_id is None:
+            cur = con.execute("DELETE FROM assets WHERE id = %s", (asset_id,))
+        else:
+            cur = con.execute(
+                "DELETE FROM assets WHERE id = %s AND tenant_id = %s",
+                (asset_id, tenant_id),
+            )
         return cur.rowcount
 
 
-def delete_assets_bulk(asset_ids: list[int]) -> int:
-    """Cancella in massa gli asset indicati. Le `asset_tags` cascade-deletono per FK.
-    Ritorna il numero di righe rimosse.
-    """
+def delete_assets_bulk(asset_ids: list[int], tenant_id: Any = _UNSET) -> int:
+    """Cancella in massa gli asset indicati. Le `asset_tags` cascade-deletono per FK."""
+    tenant_id = _resolve_tenant(tenant_id)
     ids = [int(i) for i in asset_ids if i]
     if not ids:
         return 0
     placeholders = ",".join("%s" for _ in ids)
     with connect() as con:
-        cur = con.execute(f"DELETE FROM assets WHERE id IN ({placeholders})", ids)
+        if tenant_id is None:
+            cur = con.execute(f"DELETE FROM assets WHERE id IN ({placeholders})", ids)
+        else:
+            cur = con.execute(
+                f"DELETE FROM assets WHERE id IN ({placeholders}) AND tenant_id = %s",
+                ids + [tenant_id],
+            )
         return cur.rowcount
 
 
@@ -2983,11 +3061,18 @@ def find_unprocessed_inbound() -> list[dict[str, Any]]:
 # Channel config (singleton per channel)
 # ===========================================================================
 
-def get_channel_config(channel: str) -> dict[str, Any] | None:
+def get_channel_config(channel: str, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        row = con.execute(
-            "SELECT * FROM channel_config WHERE channel = %s", (channel,)
-        ).fetchone()
+        if tenant_id is None:
+            row = con.execute(
+                "SELECT * FROM channel_config WHERE channel = %s", (channel,)
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM channel_config WHERE channel = %s AND tenant_id = %s",
+                (channel, tenant_id),
+            ).fetchone()
     if not row:
         return None
     d = dict(row)
@@ -2998,19 +3083,26 @@ def get_channel_config(channel: str) -> dict[str, Any] | None:
     return d
 
 
-def save_channel_config(channel: str, config: dict[str, Any], enabled: bool) -> None:
+def save_channel_config(
+    channel: str, config: dict[str, Any], enabled: bool, tenant_id: Any = _UNSET
+) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
     payload = json.dumps(config)
     with connect() as con:
+        # NOTA: channel è PRIMARY KEY → per scoping multi-tenant servirebbe una
+        # PK composta (channel, tenant_id). Per ora il channel_config è semi-globale
+        # con tenant_id come metadato. Refactor PK in step successivo se serve.
         con.execute(
             """
-            INSERT INTO channel_config (channel, config_json, enabled, updated_at)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO channel_config (channel, config_json, enabled, tenant_id, updated_at)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT(channel) DO UPDATE SET
               config_json = excluded.config_json,
               enabled     = excluded.enabled,
+              tenant_id   = excluded.tenant_id,
               updated_at  = excluded.updated_at
             """,
-            (channel, payload, 1 if enabled else 0, now_iso()),
+            (channel, payload, 1 if enabled else 0, tenant_id, now_iso()),
         )
 
 
@@ -3022,29 +3114,38 @@ def add_orchestrator_message(
     role: str,
     body: str,
     metadata: dict[str, Any] | None = None,
+    *,
+    tenant_id: Any = _UNSET,
 ) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
     payload = json.dumps(metadata or {})
     with connect() as con:
         cur = con.execute(
             """
-            INSERT INTO orchestrator_messages (role, body, metadata_json, created_at)
-            VALUES (%s, %s, %s, %s) RETURNING id
+            INSERT INTO orchestrator_messages (role, body, metadata_json, tenant_id, created_at)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id
             """,
-            (role, body, payload, now_iso()),
+            (role, body, payload, tenant_id, now_iso()),
         )
         return int(cur.fetchone()['id'])
 
 
-def list_orchestrator_messages(limit: int = 100) -> list[dict[str, Any]]:
+def list_orchestrator_messages(
+    limit: int = 100, tenant_id: Any = _UNSET
+) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        rows = con.execute(
-            """
-            SELECT * FROM orchestrator_messages
-            ORDER BY id DESC
-            LIMIT %s
-            """,
-            (limit,),
-        ).fetchall()
+        if tenant_id is None:
+            rows = con.execute(
+                "SELECT * FROM orchestrator_messages ORDER BY id DESC LIMIT %s",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM orchestrator_messages WHERE tenant_id = %s "
+                "ORDER BY id DESC LIMIT %s",
+                (tenant_id, limit),
+            ).fetchall()
     out: list[dict[str, Any]] = []
     for r in reversed(rows):
         d = dict(r)
@@ -3056,9 +3157,15 @@ def list_orchestrator_messages(limit: int = 100) -> list[dict[str, Any]]:
     return out
 
 
-def clear_orchestrator_messages() -> None:
+def clear_orchestrator_messages(tenant_id: Any = _UNSET) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        con.execute("DELETE FROM orchestrator_messages")
+        if tenant_id is None:
+            con.execute("DELETE FROM orchestrator_messages")
+        else:
+            con.execute(
+                "DELETE FROM orchestrator_messages WHERE tenant_id = %s", (tenant_id,)
+            )
 
 
 # ===========================================================================

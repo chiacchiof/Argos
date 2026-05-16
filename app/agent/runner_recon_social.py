@@ -1025,9 +1025,10 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 try:
                     with db.connect() as con:
                         con.execute(
-                            """INSERT OR IGNORE INTO recon_visited
+                            """INSERT INTO recon_visited
                                (run_id, target_url, target_platform, visited_at, classified)
-                               VALUES (%s, %s, %s, %s, 0)""",
+                               VALUES (%s, %s, %s, %s, 0)
+                               ON CONFLICT (run_id, target_url) DO NOTHING""",
                             (recon_run_id, url, plat, db.now_iso()),
                         )
                 except Exception as e:
