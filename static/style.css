@@ -1965,6 +1965,24 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
 .admin-flash-info { background: #ddf4ff; color: #0969da; border: 1px solid #b6e3ff; }
 
 /* ============================================================
+   Update banner (release_check)
+   ============================================================ */
+.update-banner {
+  padding: 0.6rem 1rem;
+  background: linear-gradient(90deg, #fff8c5 0%, #fae17d 100%);
+  color: #4d3800;
+  border-bottom: 1px solid #d4a72c;
+  font-size: 0.92rem;
+  text-align: center;
+}
+.update-banner a {
+  color: #0550ae;
+  text-decoration: none;
+  font-weight: 500;
+}
+.update-banner a:hover { text-decoration: underline; }
+
+/* ============================================================
    /dbconfig — pagina standalone (no header/nav dell'app)
    ============================================================ */
 .dbconfig-body {

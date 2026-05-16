@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Aggiornamento · AgentScraper{% endblock %}
+{% block content %}
+<section class="admin-section">
+  <h2>Aggiornamento AgentScraper</h2>
+
+  <div class="admin-card-block">
+    <h3>Versioni</h3>
+    <dl class="dbconfig-dl">
+      <dt>Installata su questo PC</dt>
+      <dd><code>{{ current }}</code></dd>
+      {% if github_repo_configured %}
+        {% if release %}
+        <dt>Pubblicata su GitHub (latest)</dt>
+        <dd>
+          <code>{{ release.tag_name }}</code>
+          &middot; <a href="{{ release.html_url }}" target="_blank" rel="noopener">vedi su GitHub</a>
+        </dd>
+        {% else %}
+        <dt>Pubblicata su GitHub</dt>
+        <dd><em>nessuna release trovata (o errore di connessione).</em></dd>
+        {% endif %}
+      {% else %}
+        <dt>Check release</dt>
+        <dd><em>disabilitato. Setta <code>GITHUB_REPO=owner/repo</code> in <code>.env</code> per attivare il banner di update.</em></dd>
+      {% endif %}
+    </dl>
+  </div>
+
+  {% if update_info %}
+  <div class="admin-card-block" style="border-color: #d4a72c; background: #fff8c5;">
+    <h3>🔔 Nuova versione disponibile: {{ update_info.latest }}</h3>
+    {% if release and release.body %}
+    <h4>Note di rilascio</h4>
+    <pre style="white-space: pre-wrap; background: #fff; padding: 1rem; border-radius: 4px; border: 1px solid #eaeef2;">{{ release.body }}</pre>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="admin-card-block">
+    <h3>Come aggiornare</h3>
+    <ol>
+      <li>Scarica l'ultimo zip dalla pagina delle release: <a href="{% if release %}{{ release.html_url }}{% else %}#{% endif %}" target="_blank" rel="noopener">GitHub Releases</a>.</li>
+      <li>Estrai il contenuto sopra la cartella attuale di AgentScraper (sovrascrivi i file).
+        <br><small>I file <code>.env</code> e tutta la cartella <code>data/</code> NON vengono toccati.</small></li>
+      <li>Apri PowerShell nella cartella del progetto ed esegui:
+        <pre style="background: #f6f8fa; padding: 0.7rem; border-radius: 4px;">.\scripts\update_client.ps1</pre>
+        Lo script aggiornerà le dipendenze Python, riapplicherà i browser di Playwright se ce ne sono di nuovi, e ti dirà quando è pronto.</li>
+      <li>Ferma <code>agentscraper</code> (Ctrl+C nella console dove gira) e rilancia <code>agentscraper</code>.</li>
+      <li>Rientra nell'app — la pill di versione in alto a destra deve mostrare la nuova.</li>
+    </ol>
+  </div>
+
+  <div class="admin-card-block">
+    <h3>Backup di sicurezza (consigliato)</h3>
+    <p><small>Prima di aggiornare, fai una copia della cartella <code>data/</code> in un'altra location (contiene <code>db_config.enc</code> e altri file locali). I dati business sono su Postgres cloud, quindi sono al sicuro anche se sbagli l'update locale.</small></p>
+  </div>
+</section>
+{% endblock %}

@@ -8,6 +8,15 @@
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 </head>
 <body>
+  {% set update_info = request.state.update_info if request and request.state else None %}
+  {% if update_info %}
+  <div class="update-banner">
+    🔔 <strong>Nuova versione {{ update_info.latest }} disponibile</strong>
+    (sei sulla {{ update_info.current }}).
+    <a href="{{ update_info.release_url }}" target="_blank" rel="noopener">Vedi note di rilascio</a>
+    &middot; <a href="/update">Come aggiornare</a>
+  </div>
+  {% endif %}
   <header>
     <h1><a href="/">AgentScraper</a></h1>
     {% set current_user = request.state.current_user if request and request.state else None %}

@@ -26,6 +26,7 @@ from .routes import settings_whatsapp as settings_whatsapp_routes
 from .routes import site_memory as site_memory_routes
 from .routes import social_accounts as social_accounts_routes
 from .routes import tasks as tasks_routes
+from .routes import update as update_routes
 from .routes import workflows as workflows_routes
 
 
@@ -34,13 +35,23 @@ log = logging.getLogger(__name__)
 
 # Path pubbliche (no auth richiesta) anche quando il cloud DB è configurato.
 # `/dbconfig` ha il proprio gate di autenticazione interna (DBadmin), separato dal login utente.
-_PUBLIC_PATH_PREFIXES = ("/static", "/login", "/logout", "/favicon.ico", "/dbconfig")
+_PUBLIC_PATH_PREFIXES = ("/static", "/login", "/logout", "/favicon.ico", "/dbconfig", "/update")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Log riepilogativo del DB target attivo (LOCALE vs REMOTO + origine).
     log.info(db.describe_active_dsn())
+
+    # Versione corrente + check release (non bloccante, fa fetch in background)
+    from . import __version__, release_check
+    log.info(f"[VERSION] AgentScraper v{__version__}")
+    if release_check.is_enabled():
+        import asyncio
+        async def _bg_check():
+            # Fetch in thread separato per non bloccare il boot
+            await asyncio.to_thread(release_check.latest_release, True)
+        asyncio.create_task(_bg_check())
     # Ordine cruciale: db_cloud PRIMA (crea tenants/users) di db (che aggiunge
     # FK tenant_id/created_by_user_id alle tabelle business).
     db_cloud.init_db()
@@ -64,6 +75,25 @@ app = FastAPI(title="AgentScraper", lifespan=lifespan)
 # essere OUTERMOST (eseguito per primo). Quindi:
 #   1. Definiamo auth_middleware via decoratore @app.middleware("http") (innermost).
 #   2. POI aggiungiamo SessionMiddleware (outermost, eseguito per primo).
+
+
+@app.middleware("http")
+async def update_banner_middleware(request: Request, call_next):
+    """Inietta `request.state.update_info` con dict {current,latest,release_url}
+    se è disponibile una release più recente su GitHub. None altrimenti.
+    Cache 6h gestita da app.release_check.
+
+    Il check NON blocca: legge la cache se fresh, fallback su None se cache vuota.
+    Il primo fetch async parte al boot dal lifespan."""
+    request.state.update_info = None
+    try:
+        from . import release_check
+
+        if release_check.is_enabled():
+            request.state.update_info = release_check.update_available()
+    except Exception:
+        pass
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -157,6 +187,7 @@ app.include_router(assets_routes.router)
 app.include_router(import_csv_routes.router)
 app.include_router(site_memory_routes.router)
 app.include_router(social_accounts_routes.router)
+app.include_router(update_routes.router)
 
 
 def run() -> None:
