@@ -360,6 +360,17 @@ CREATE TABLE IF NOT EXISTS assets (
   status               TEXT NOT NULL DEFAULT 'new',
   qualifier_score      INTEGER,
   notes                TEXT,
+  -- Contact channels (aggiunte in Fase 2A — Alembic 1e9265f53339)
+  display_name         TEXT,
+  email                TEXT,
+  telegram_username    TEXT,
+  telegram_chat_id     TEXT,
+  whatsapp             TEXT,
+  whatsapp_consent     TEXT DEFAULT 'cold',
+  whatsapp_last_inbound_at TEXT,
+  social_json          TEXT,
+  sitoweb              TEXT,
+  outreach_status      TEXT DEFAULT 'pending',
   created_at           TEXT NOT NULL,
   updated_at           TEXT NOT NULL
 );
@@ -589,6 +600,9 @@ CREATE INDEX IF NOT EXISTS idx_assets_source ON assets(source_task_id);
 CREATE INDEX IF NOT EXISTS idx_assets_type_status ON assets(asset_type, status);
 CREATE INDEX IF NOT EXISTS idx_assets_url ON assets(source_url);
 CREATE INDEX IF NOT EXISTS idx_assets_url_canonical ON assets(source_url_canonical, asset_type);
+CREATE INDEX IF NOT EXISTS idx_assets_email ON assets(email);
+CREATE INDEX IF NOT EXISTS idx_assets_telegram_chat ON assets(telegram_chat_id);
+CREATE INDEX IF NOT EXISTS idx_assets_outreach_status ON assets(outreach_status);
 CREATE INDEX IF NOT EXISTS idx_contacts_asset ON contacts(asset_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
 CREATE INDEX IF NOT EXISTS idx_contacts_source ON contacts(source_task_id);
