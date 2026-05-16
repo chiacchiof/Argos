@@ -1973,6 +1973,35 @@ def list_distinct_contact_source_tasks() -> list[dict[str, Any]]:
     ]
 
 
+def list_distinct_asset_source_tasks(only_qualified: bool = False) -> list[dict[str, Any]]:
+    """Task che hanno generato asset (distinct source_task_id), con count.
+    Variante asset-centric di list_distinct_contact_source_tasks.
+
+    Se `only_qualified=True`, conta solo asset qualified per tutti i task
+    (utile per popolare il filtro 'Task generatore' nel tab /qualified).
+    """
+    sql = (
+        "SELECT a.source_task_id AS tid, t.name AS tname, t.agent_mode AS amode, "
+        "       COUNT(*) AS n "
+        "FROM assets a LEFT JOIN tasks t ON t.id = a.source_task_id "
+        "WHERE a.source_task_id IS NOT NULL "
+    )
+    if only_qualified:
+        sql += "AND a.status = 'qualified' "
+    sql += "GROUP BY a.source_task_id, t.name, t.agent_mode ORDER BY n DESC"
+    with connect() as con:
+        rows = con.execute(sql).fetchall()
+    return [
+        {
+            "task_id": r["tid"],
+            "name": r["tname"] or f"task #{r['tid']}",
+            "agent_mode": r["amode"] or "?",
+            "count": int(r["n"]),
+        }
+        for r in rows
+    ]
+
+
 def list_contacts_with_social_platform(
     platform: str, limit: int = 500
 ) -> list[dict[str, Any]]:

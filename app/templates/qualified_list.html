@@ -68,9 +68,64 @@
     </div>
 
     {# Filtri avanzati: collapsed di default, aperto se uno è attivo. #}
-    <details class="filter-panel" {% if has_advanced_filters %}open{% endif %}>
-      <summary>🔧 Filtri avanzati {% if has_advanced_filters %}<span class="muted">({{ (extra_tag_filters|length) + (1 if filter_score_min is not none else 0) + (1 if filter_type else 0) + (1 if filter_task else 0) }} attivi){% endif %}</span></summary>
+    {% set adv_count = (extra_tag_filters|length) + (1 if filter_score_min is not none else 0) + (1 if filter_type else 0) + (1 if filter_task else 0) + (selected_qualifiers|length) %}
+    <details class="filter-panel" {% if has_advanced_filters or selected_qualifiers %}open{% endif %}>
+      <summary>🔧 Filtri avanzati {% if adv_count %}<span class="muted">({{ adv_count }} attivi)</span>{% endif %}</summary>
+
+      {# Multi-select Qualifier eseguiti (dropdown searchable con checkbox).
+         I selezionati appaiono come pillole nella stats-bar in alto. #}
       <div class="filter-grid">
+        <label class="multi-select-field">
+          Qualifier eseguiti
+          <div class="multi-select-dropdown" data-msdd>
+            <button type="button" class="multi-select-trigger" onclick="msddToggle(this)">
+              <span class="multi-select-label">
+                {% if selected_qualifiers %}
+                  <strong>{{ selected_qualifiers|length }}</strong> selezionati
+                {% else %}
+                  — scegli uno o più —
+                {% endif %}
+              </span>
+              <span class="multi-select-caret">▼</span>
+            </button>
+            <div class="multi-select-panel">
+              <input type="search" class="multi-select-search"
+                     placeholder="🔎 Cerca qualifier…"
+                     oninput="msddFilter(this)"
+                     autocomplete="off">
+              {% if qualifier_menu %}
+              <ul class="multi-select-options">
+                {% for q in qualifier_menu %}
+                <li class="multi-select-option" data-search="{{ q.friendly_name|lower }} {{ q.slug }}">
+                  <label>
+                    <input type="checkbox" name="qualifiers" value="{{ q.slug }}"
+                           {% if q.slug in selected_qualifiers %}checked{% endif %}
+                           onchange="document.getElementById('qualified-form').submit()">
+                    <span class="ms-name">{{ q.friendly_name }}</span>
+                    <span class="ms-counts">
+                      <span class="badge badge-ok" title="qualified">✅ {{ q.count_qualified }}</span>
+                      {% if q.count_rejected %}
+                      <span class="badge badge-off" title="rejected">❌ {{ q.count_rejected }}</span>
+                      {% endif %}
+                    </span>
+                  </label>
+                </li>
+                {% endfor %}
+              </ul>
+              {% if selected_qualifiers|length > 1 %}
+              <p class="muted small" style="margin: 0.4rem 0.6rem; padding-top: 0.4rem; border-top: 1px solid #eaeef2">
+                ℹ️ {{ selected_qualifiers|length }} qualifier selezionati = intersezione (AND).
+              </p>
+              {% endif %}
+              {% else %}
+              <p class="muted small" style="padding: 0.6rem">
+                Nessun qualifier eseguito ancora. Lancia un task <code>qualifier</code>.
+              </p>
+              {% endif %}
+            </div>
+          </div>
+        </label>
+
         <label>Stato qualifier
           <select name="status" onchange="this.form.submit()">
             <option value="qualified" {% if filter_status == 'qualified' %}selected{% endif %}>✅ qualified</option>
@@ -99,9 +154,15 @@
           </select>
         </label>
 
-        <label>Source task ID
-          <input type="number" name="source_task_id" value="{{ filter_task or '' }}"
-                 placeholder="(qualsiasi)" min="0">
+        <label>Task generatore
+          <select name="source_task_id" onchange="this.form.submit()">
+            <option value="">— tutti —</option>
+            {% for t in (available_source_tasks or []) %}
+              <option value="{{ t.task_id }}" {% if filter_task == t.task_id %}selected{% endif %}>
+                #{{ t.task_id }} {{ t.name|truncate(35, true, '…') }} · {{ t.agent_mode }} ({{ t.count }})
+              </option>
+            {% endfor %}
+          </select>
         </label>
       </div>
 
@@ -109,7 +170,7 @@
         <summary>🏷️ Filtri tag attributi (AND multipli)</summary>
         <p class="muted small" style="margin: 0.3rem 0">
           Per filtrare dentro un qualifier su attributi (es. <code>city=Catania</code>, <code>interests_inferred=fitness</code>).
-          I tag <code>qualifier_*</code> sono esclusi (usa la sidebar a sinistra per quelli).
+          I tag <code>qualifier_*</code> sono esclusi (usa il menu "Qualifier eseguiti" sopra per quelli).
           {% if filter_type %}
             <br><span style="color:#0969da">ℹ️ Tag ristretti agli asset di tipo <code>{{ filter_type }}</code> (filtro asset type attivo).</span>
           {% endif %}
@@ -145,47 +206,8 @@
       </details>
     </details>
 
-    {# Layout principale: sidebar qualifier (sticky) + tabella asset. #}
-    <div class="qualified-layout">
-      <aside class="qualified-sidebar">
-        <h3>Qualifier eseguiti</h3>
-        {% if qualifier_menu %}
-          <ul class="qualifier-list">
-            {% for q in qualifier_menu %}
-            <li class="{% if q.slug in selected_qualifiers %}qualifier-li-active{% endif %}">
-              <label>
-                <input type="checkbox" name="qualifiers" value="{{ q.slug }}"
-                       {% if q.slug in selected_qualifiers %}checked{% endif %}
-                       onchange="document.getElementById('qualified-form').submit()">
-                <span class="qualifier-name">{{ q.friendly_name }}</span>
-                <span class="qualifier-counts">
-                  <span class="badge badge-ok" title="{{ q.count_qualified }} asset qualified per questo qualifier">
-                    ✅ {{ q.count_qualified }}
-                  </span>
-                  {% if q.count_rejected %}
-                  <span class="badge badge-off" title="{{ q.count_rejected }} asset rejected">
-                    ❌ {{ q.count_rejected }}
-                  </span>
-                  {% endif %}
-                </span>
-              </label>
-            </li>
-            {% endfor %}
-          </ul>
-          {% if selected_qualifiers|length > 1 %}
-          <p class="muted small" style="margin-top: 0.5rem">
-            ℹ️ {{ selected_qualifiers|length }} qualifier selezionati = intersezione (AND).
-          </p>
-          {% endif %}
-        {% else %}
-          <p class="muted small">
-            Nessun qualifier eseguito ancora. Lancia un task con agent_mode <code>qualifier</code>
-            per generarli.
-          </p>
-        {% endif %}
-      </aside>
-
-      <main class="qualified-main">
+    {# Lista asset principale (full-width, no piu' sidebar). #}
+    <div class="qualified-main-wrap">
         {% if assets %}
         <table class="data assets-table">
           <thead>
@@ -295,17 +317,45 @@
           <div class="empty-title">Nessun asset matcha i filtri</div>
           <p class="empty-hint">
             {% if selected_qualifiers %}
-              Prova a rimuovere qualifier dalla sidebar, ad abbassare lo score min, o a cambiare lo stato in <code>both</code>.
+              Prova a rimuovere qualifier dal menu, ad abbassare lo score min, o a cambiare lo stato in <code>both</code>.
             {% else %}
-              Seleziona almeno un qualifier dalla sidebar a sinistra per filtrare.
+              Apri "🔧 Filtri avanzati" e seleziona almeno un qualifier dal menu.
             {% endif %}
           </p>
         </div>
         {% endif %}
-      </main>
     </div>
   </form>
 </section>
+
+{# JS: multi-select dropdown searchable per il menu Qualifier eseguiti. #}
+<script>
+function msddToggle(btn) {
+  const panel = btn.nextElementSibling;
+  const wasOpen = panel.classList.contains('open');
+  // chiudi tutti gli altri panel
+  document.querySelectorAll('.multi-select-panel.open').forEach(p => p.classList.remove('open'));
+  if (!wasOpen) {
+    panel.classList.add('open');
+    const search = panel.querySelector('.multi-select-search');
+    if (search) search.focus();
+  }
+}
+function msddFilter(input) {
+  const filter = input.value.toLowerCase().trim();
+  const options = input.closest('.multi-select-panel').querySelectorAll('.multi-select-option');
+  options.forEach(opt => {
+    const text = opt.getAttribute('data-search') || opt.textContent.toLowerCase();
+    opt.style.display = (!filter || text.includes(filter)) ? '' : 'none';
+  });
+}
+// Chiudi dropdown al click fuori
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.multi-select-dropdown')) {
+    document.querySelectorAll('.multi-select-panel.open').forEach(p => p.classList.remove('open'));
+  }
+});
+</script>
 
 {# JS helper per il modal qualified: chiamato dai risultati di /assets/search. #}
 <script>

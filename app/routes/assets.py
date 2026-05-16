@@ -217,6 +217,7 @@ async def qualified_assets_list(
 
     qualifier_menu = db.list_distinct_qualifier_slugs()
     types_in_use = db.list_asset_types_in_use()
+    available_source_tasks = db.list_distinct_asset_source_tasks(only_qualified=True)
     # Tag keys ristretti al tipo selezionato (se attivo) — coerente con UX:
     # filtro tipo "ig_profile" mostra solo i tag presenti su asset ig_profile.
     available_tag_keys = db.list_distinct_tag_keys_for_assets(
@@ -252,6 +253,7 @@ async def qualified_assets_list(
             "extra_tag_filters": extra_tag_filters,
             "types_in_use": types_in_use,
             "available_tag_keys": available_tag_keys,
+            "available_source_tasks": available_source_tasks,
             "page": page_v,
             "per_page": per_page_v,
             "total": total,
