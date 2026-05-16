@@ -1795,7 +1795,8 @@ def count_contacts(
         args.append(tenant_id)
     sql = "SELECT COUNT(*) FROM contacts" + where_sql
     with connect() as con:
-        return int(con.execute(sql, args).fetchone()[0])
+        row = con.execute(sql, args).fetchone()
+        return int(row["count"] if isinstance(row, dict) else row[0])
 
 
 def list_contacts(
@@ -1844,13 +1845,14 @@ def list_distinct_source_follower_of() -> list[dict[str, Any]]:
 def list_distinct_contact_source_tasks() -> list[dict[str, Any]]:
     """Ritorna i task che hanno generato contacts (distinct source_task_id),
     con count. Joina con tasks per arricchire col nome."""
+    # Postgres richiede TUTTE le colonne non aggregate in GROUP BY (a differenza di SQLite).
     with connect() as con:
         rows = con.execute(
             "SELECT c.source_task_id AS tid, t.name AS tname, t.agent_mode AS amode, "
             "       COUNT(*) AS n "
             "FROM contacts c LEFT JOIN tasks t ON t.id = c.source_task_id "
             "WHERE c.source_task_id IS NOT NULL "
-            "GROUP BY c.source_task_id ORDER BY n DESC"
+            "GROUP BY c.source_task_id, t.name, t.agent_mode ORDER BY n DESC"
         ).fetchall()
     return [
         {
@@ -2296,7 +2298,8 @@ def count_assets(
         sql += " AND a.tenant_id = %s"
         args.append(tenant_id)
     with connect() as con:
-        return int(con.execute(sql, args).fetchone()[0])
+        row = con.execute(sql, args).fetchone()
+        return int(row["count"] if isinstance(row, dict) else row[0])
 
 
 def list_assets(

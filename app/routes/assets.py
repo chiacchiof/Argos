@@ -401,9 +401,10 @@ async def asset_edit_form(request: Request, asset_id: int):
     n_linked = 0
     try:
         with db.connect() as con:
-            n_linked = con.execute(
+            row = con.execute(
                 "SELECT COUNT(*) FROM contacts WHERE asset_id = %s", (asset_id,)
-            ).fetchone()[0]
+            ).fetchone()
+            n_linked = int(row["count"] if isinstance(row, dict) else row[0])
     except Exception:
         pass
     return templates.TemplateResponse(
