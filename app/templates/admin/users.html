@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Utenti · Admin{% endblock %}
+{% block content %}
+<section class="admin-section">
+  <nav class="admin-breadcrumb">
+    <a href="/admin">Admin</a> &raquo; Utenti
+  </nav>
+  <h2>Utenti</h2>
+  {% include "admin/_flashes.html" %}
+
+  <div class="admin-card-block">
+    <h3>Crea nuovo utente</h3>
+    <form method="post" action="/admin/users" class="admin-form-inline" id="create-user-form">
+      <label>
+        Email o username
+        <input type="text" name="email" required placeholder="mario@edg.it oppure mario">
+      </label>
+      <label>
+        Password
+        <input type="text" name="password" required placeholder="min 6 caratteri" spellcheck="false">
+      </label>
+      <label>
+        Ruolo
+        <select name="role" id="role-select">
+          <option value="tenant_user" selected>tenant_user</option>
+          <option value="super_admin">super_admin</option>
+        </select>
+      </label>
+      <label id="tenant-field">
+        Azienda
+        <select name="tenant_id">
+          <option value="">— seleziona —</option>
+          {% for t in tenants %}
+          <option value="{{ t.id }}">{{ t.name }} ({{ t.slug }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn-primary">Crea utente</button>
+    </form>
+    <p class="admin-hint"><small>I super-admin non sono collegati ad alcuna azienda; i tenant_user devono averne una.</small></p>
+  </div>
+
+  <div class="admin-card-block">
+    <h3>Utenti esistenti ({{ users|length }})</h3>
+    {% if users %}
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Login</th>
+          <th>Ruolo</th>
+          <th>Azienda</th>
+          <th>Stato</th>
+          <th>Creato</th>
+          <th>Azioni</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr class="{% if not u.is_active %}row-disabled{% endif %}">
+          <td>{{ u.id }}</td>
+          <td>
+            <strong>{{ u.email }}</strong>
+            {% if u.id == current_user.id %}<small class="self-tag">(tu)</small>{% endif %}
+          </td>
+          <td>
+            {% if u.role == 'super_admin' %}
+            <span class="badge badge-warn">super-admin</span>
+            {% else %}
+            <span class="badge">tenant_user</span>
+            {% endif %}
+          </td>
+          <td>{{ u.tenant_name or "—" }}</td>
+          <td>
+            {% if u.is_active %}
+            <span class="badge badge-ok">attivo</span>
+            {% else %}
+            <span class="badge badge-off">disattivato</span>
+            {% endif %}
+          </td>
+          <td><small>{{ u.created_at.strftime("%Y-%m-%d %H:%M") if u.created_at else "-" }}</small></td>
+          <td class="admin-actions-cell">
+            <details>
+              <summary>password</summary>
+              <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="reset-pwd-form">
+                <input type="text" name="new_password" required placeholder="nuova password" spellcheck="false">
+                <button type="submit" class="btn-link">Reset</button>
+              </form>
+            </details>
+            {% if u.id != current_user.id %}
+            <form method="post" action="/admin/users/{{ u.id }}/toggle" style="display:inline">
+              <button type="submit" class="btn-link">{% if u.is_active %}Disattiva{% else %}Attiva{% endif %}</button>
+            </form>
+            <form method="post" action="/admin/users/{{ u.id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Eliminare definitivamente {{ u.email }}?');">
+              <button type="submit" class="btn-link btn-link-danger">Elimina</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="admin-empty">Nessun utente.</p>
+    {% endif %}
+  </div>
+</section>
+
+<script>
+  // Mostra/nasconde campo Azienda in base al ruolo
+  (function(){
+    var roleSel = document.getElementById('role-select');
+    var tenantField = document.getElementById('tenant-field');
+    function sync() {
+      if (!roleSel || !tenantField) return;
+      var role = roleSel.value;
+      tenantField.style.display = (role === 'super_admin') ? 'none' : '';
+      var tenantSelect = tenantField.querySelector('select');
+      if (tenantSelect) tenantSelect.required = (role === 'tenant_user');
+    }
+    if (roleSel) { roleSel.addEventListener('change', sync); sync(); }
+  })();
+</script>
+{% endblock %}

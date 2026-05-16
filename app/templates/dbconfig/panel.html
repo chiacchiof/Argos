@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DB Config · AgentScraper</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="dbconfig-body">
+  <main class="dbconfig-main">
+    <div class="dbconfig-card dbconfig-card-wide">
+      <header class="dbconfig-header">
+        <h2>🔒 DB Config</h2>
+        <a href="/dbconfig/logout" class="user-logout">esci</a>
+      </header>
+
+      {% if success %}
+      <div class="admin-flash admin-flash-success">{{ success }}</div>
+      {% endif %}
+      {% if error %}
+      <div class="admin-flash admin-flash-error">{{ error }}</div>
+      {% endif %}
+
+      <div class="dbconfig-current">
+        <h3>Stato attuale</h3>
+        <dl class="dbconfig-dl">
+          <dt>DSN in uso (mascherata)</dt>
+          <dd>
+            {% if current_dsn_raw_present %}
+            <code>{{ current_dsn_masked }}</code>
+            {% else %}
+            <em>nessuna — modalità legacy single-user (SQLite locale)</em>
+            {% endif %}
+          </dd>
+          <dt>Override attivo</dt>
+          <dd>
+            {% if override_active %}
+            <span class="badge badge-warn">Sì</span>
+            {% if active_label %}<small>(label: {{ active_label }})</small>{% endif %}
+            {% else %}
+            <span class="badge">No</span> <small>(usa <code>.env::DATABASE_URL</code>)</small>
+            {% endif %}
+          </dd>
+        </dl>
+        <p class="dbconfig-warn">
+          ⚠️ Le modifiche sotto diventano attive solo dopo il <strong>riavvio dell'app</strong>.
+        </p>
+      </div>
+
+      <div class="dbconfig-current">
+        <h3>Imposta nuova connection string</h3>
+        <form method="post" action="/dbconfig/save" class="dbconfig-form">
+          <label>
+            Etichetta (opzionale, solo per memoria)
+            <input type="text" name="active_label" placeholder="es. Locale dev, Neon prod, Azure prod"
+                   value="{{ active_label or '' }}" spellcheck="false">
+          </label>
+          <label>
+            DATABASE_URL
+            <textarea name="database_url" rows="3" required spellcheck="false"
+                      placeholder="postgresql://user:password@host:5432/dbname?sslmode=require"></textarea>
+          </label>
+          <div class="dbconfig-presets">
+            <small>Preset rapidi (cliccando popolano il campo sopra, NON salvano):</small>
+            <button type="button" class="btn-link"
+                    onclick="document.querySelector('textarea[name=database_url]').value='postgresql://postgres:postgres@localhost:5432/agentscraper_dev'; document.querySelector('input[name=active_label]').value='Locale dev';">
+              Locale dev (postgres@localhost)
+            </button>
+          </div>
+          <button type="submit" class="btn-primary">Salva DSN</button>
+        </form>
+      </div>
+
+      {% if override_active %}
+      <div class="dbconfig-current">
+        <h3>Rimuovi override</h3>
+        <p>
+          <small>Cancella il file cifrato. Al prossimo riavvio l'app userà la
+          <code>DATABASE_URL</code> definita in <code>.env</code> (o, se non c'è,
+          tornerà alla modalità legacy SQLite locale).</small>
+        </p>
+        <form method="post" action="/dbconfig/clear"
+              onsubmit="return confirm('Confermi rimozione override? Sarà necessario un riavvio.');">
+          <button type="submit" class="btn-link btn-link-danger">Rimuovi override</button>
+        </form>
+      </div>
+      {% endif %}
+
+      <p class="dbconfig-hint">
+        <small>
+          Comando per riavviare l'app (Windows): chiudi il processo
+          <code>agentscraper.exe</code> e rilancia <code>agentscraper</code>
+          dalla shell, oppure usa Ctrl+C nel terminale.
+        </small>
+      </p>
+    </div>
+  </main>
+</body>
+</html>

@@ -39,6 +39,12 @@ dependencies = [
   # Cifratura credenziali social account (Fernet symmetric encryption) salvate
   # in DB. Chiave master in .env (AGENTSCRAPER_SECRET).
   "cryptography>=43.0",
+  # Multi-tenant cloud DB (vedi SETUP_CLOUD_DB_TENANT.md). Driver Postgres sync
+  # con pool, password hashing per il login (bcrypt direct, no passlib),
+  # firmatura cookie session.
+  "psycopg[binary,pool]>=3.2",
+  "bcrypt>=4.0",
+  "itsdangerous>=2.2",
 ]
 
 [project.optional-dependencies]

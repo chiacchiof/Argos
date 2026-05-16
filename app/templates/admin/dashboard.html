@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Admin · AgentScraper{% endblock %}
+{% block content %}
+<section class="admin-section">
+  <h2>Amministrazione</h2>
+  {% include "admin/_flashes.html" %}
+
+  <p class="admin-intro">
+    Benvenuto <strong>{{ current_user.email }}</strong>. Da qui puoi gestire le aziende (tenant) e gli utenti collegati.
+  </p>
+
+  <div class="admin-cards">
+    <a href="/admin/tenants" class="admin-card">
+      <div class="admin-card-num">{{ tenants_count }}</div>
+      <div class="admin-card-label">Aziende (tenant)</div>
+    </a>
+    <a href="/admin/users" class="admin-card">
+      <div class="admin-card-num">{{ users_count }}</div>
+      <div class="admin-card-label">Utenti totali</div>
+    </a>
+    <div class="admin-card admin-card-static">
+      <div class="admin-card-num">{{ super_admins_count }}</div>
+      <div class="admin-card-label">Super-admin</div>
+    </div>
+  </div>
+
+  <div class="admin-actions">
+    <a href="/admin/tenants" class="btn-primary">Gestisci aziende</a>
+    <a href="/admin/users" class="btn-primary">Gestisci utenti</a>
+  </div>
+
+  <div class="admin-card-block">
+    <h3>Il tuo account</h3>
+    <p class="admin-hint">
+      <small>Cambia la password del tuo super-admin. Consigliato dopo il primo login con la password di bootstrap.</small>
+    </p>
+    <form method="post" action="/admin/users/{{ current_user.id }}/reset-password" class="admin-form-inline">
+      <label>
+        Nuova password
+        <input type="text" name="new_password" required spellcheck="false" placeholder="min 6 caratteri">
+      </label>
+      <button type="submit" class="btn-primary"
+              onclick="return confirm('Confermi il cambio password? Dovrai loggarti di nuovo.');">
+        Cambia password
+      </button>
+    </form>
+  </div>
+</section>
+{% endblock %}

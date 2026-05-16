@@ -1,0 +1,31 @@
+# Postgres locale per sviluppo multi-tenant.
+# Stesso major (16) di Neon prod, così schema e sintassi SQL sono allineati.
+#
+# Avvio:  docker compose -f docker-compose.dev.yml up -d
+# Stop:   docker compose -f docker-compose.dev.yml stop
+# Reset:  docker compose -f docker-compose.dev.yml down -v
+#
+# Connessione: postgresql://postgres:postgres@localhost:5432/agentscraper_dev
+#
+# I dati persistono in data/postgres-dev/ (ignorato da .gitignore via data/).
+
+services:
+  postgres-dev:
+    image: postgres:16-alpine
+    container_name: agentscraper-postgres-dev
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agentscraper_dev
+      # Locale italiana per coerenza con il resto dell'app
+      LANG: C.UTF-8
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agentscraper_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped

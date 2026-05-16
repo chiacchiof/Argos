@@ -1,5 +1,40 @@
 # Piano — Migrazione AgentScraper a multi-tenant (DB cloud + app locale)
 
+## Stato implementazione
+
+> **Aggiornato al 2026-05-16.**
+
+| Fase | Descrizione | Stato |
+|---|---|---|
+| 1 | Scaffold auth + tenants + admin frontend | ✅ COMPLETA |
+| 1b | Pagina `/dbconfig` per switch DSN runtime (dev↔prod) | ✅ COMPLETA |
+| 2 | Refactor `app/db.py` SQLite → Postgres | 🔴 TODO |
+| 3 | `tenant_id` su tabelle business + filtri query | 🔴 TODO |
+| 4 | Refactor route/runner per propagare `tenant_id` | 🔴 TODO |
+| 5 | Script migrazione SQLite locale → cloud (tenant Default) | 🟡 SCAFFOLDING (`scripts/migrate_to_cloud.py`) |
+| 6 | Test isolamento + hardening | 🟡 PARZIALE (54 test, copre Fase 1 + 1b) |
+
+**Cosa funziona ora**:
+- Se `DATABASE_URL` è vuoto → app in modalità legacy single-user come prima.
+- Se `DATABASE_URL` è settato → auth obbligatoria, super-admin via env (`edgAdmin / Entra123!`), `/admin` per CRUD tenants/users.
+- Tabelle business (tasks, jobs, assets, workflows, ecc.) ancora su SQLite locale.
+
+**File implementati in Fase 1**:
+- `app/db_cloud.py` — pool psycopg + schema `tenants`/`users` + CRUD.
+- `app/auth.py` — bcrypt diretto (no passlib), dipendenze FastAPI `get_current_user` / `require_super_admin`.
+- `app/routes/auth.py` — `/login`, `/logout` con protezione open-redirect.
+- `app/routes/admin.py` — `/admin/*` (dashboard, tenants, users) dietro `require_super_admin`.
+- `app/templates/login.html` + `app/templates/admin/*.html`.
+- `app/main.py` — middleware HTTP auth + `SessionMiddleware` (ordine cruciale: auth innermost, session outermost).
+- Test: `tests/test_auth_admin.py` (28 test passano, ha catturato il bug ordine middleware).
+
+**Prossimi step (Fase 2)**:
+1. Decidere se mantenere fallback SQLite o rimuoverlo subito.
+2. Rinominare `app/db.py` → `app/db_sqlite.py` e creare `app/db_pg.py` come gemello Postgres, o riscrivere `app/db.py` polimorfico.
+3. Conversione meccanica `?` → `%s` (~600 call site), `cur.lastrowid` → `RETURNING id`.
+4. Schema PG completo per tutte le tabelle business (vedi sezione "Differenze SQLite→PG da gestire" più sotto).
+5. Test end-to-end con DB Neon reale (richiede la password Neon nel `.env`).
+
 ## Context
 
 Oggi AgentScraper è un'app single-user locale: SQLite single-file (`data/agentscraper.db`), zero auth, FastAPI + Jinja2 + HTMX, scheduler APScheduler in-process, Ollama su `localhost:11434`. L'utente vuole distribuirla ai colleghi: ogni collega installa l'app sul proprio PC, ma tutti scrivono su un **DB Postgres condiviso in cloud** (Supabase/Neon). Servono **tenant** isolati a livello dato, un **super-admin** che crea tenant e utenti, e gli utenti di un tenant vedono/modificano tutti gli asset/task/workflow del proprio tenant (per-user filtering è future work). I file (report, profili browser, sessioni WhatsApp) restano locali al PC che li genera — cloud storage è step incrementale futuro.
@@ -164,6 +199,124 @@ CREATE TABLE users (
 - **Super_admin**: creato al primo boot via `BOOTSTRAP_SUPER_ADMIN_EMAIL/PASSWORD` da `.env`. Se già esiste, skip.
 - **Tenant_user**: creato dal super_admin via `/admin/users` (form HTML che genera password random visibile una sola volta, oppure password scelta dall'admin).
 - **Reset password**: out of scope v1. Per ora super_admin può azzerare/reimpostare la password di un utente tramite la stessa UI admin.
+
+### Credenziali super-admin iniziali (bootstrap)
+
+Per il pilot interno useremo queste credenziali fisse, da cambiare al primo accesso reale:
+
+| Campo | Valore |
+|---|---|
+| Identificativo login | `edgAdmin` |
+| Password iniziale | `Entra123!` |
+
+Nel `.env` di chi farà il primo deploy:
+```ini
+BOOTSTRAP_SUPER_ADMIN_EMAIL=edgAdmin
+BOOTSTRAP_SUPER_ADMIN_PASSWORD=Entra123!
+```
+
+Note tecniche:
+- Il campo `users.email` è `CITEXT` (case-insensitive). Non c'è alcun vincolo a livello DB che imponga il formato email — accetta qualunque stringa univoca. Quindi `edgAdmin` funziona come identificativo di login a tutti gli effetti.
+- Il form di login mostra "Email o username" e usa `<input type="text">` (non `type="email"`), così il browser non blocca la submit di una stringa senza `@`.
+- Dopo il primo login il super-admin DEVE cambiare password dalla sezione admin (in roadmap UI; per ora si fa via `/admin/users/<id>/reset-password`).
+
+## Sezione admin frontend
+
+Pagina raggiungibile da una pill "Admin" nell'header, visibile **solo** se `current_user.is_super_admin`. Tutte le route sono dietro la dependency `require_super_admin`.
+
+### Rotte
+- `GET /admin` — dashboard con counters (n. tenants, n. utenti totali, n. super-admin) e link rapidi.
+- `GET /admin/tenants` — tabella tenant: id, nome, slug, n. utenti, attivo (toggle), data creazione, azioni (modifica/elimina).
+- `POST /admin/tenants` — crea tenant (`name`, `slug` auto-derivato dal nome se non fornito).
+- `POST /admin/tenants/<id>/toggle` — attiva/disattiva tenant.
+- `POST /admin/tenants/<id>/delete` — elimina (con conferma; cascade su users del tenant via FK `ON DELETE CASCADE`).
+- `GET /admin/users` — tabella utenti: id, login, ruolo, tenant, attivo, data, azioni.
+- `POST /admin/users` — crea utente (`email/login`, `password`, `tenant_id` obbligatorio se ruolo=tenant_user, ruolo=tenant_user|super_admin).
+- `POST /admin/users/<id>/toggle` — attiva/disattiva utente.
+- `POST /admin/users/<id>/reset-password` — imposta nuova password (super-admin può resettare la propria e quella di chiunque).
+- `POST /admin/users/<id>/delete` — elimina utente (non si può eliminare se stesso).
+
+### Vincoli UI
+- Quando si crea un utente con ruolo `tenant_user`, la select del tenant è obbligatoria.
+- Quando si crea un utente con ruolo `super_admin`, il campo tenant è disabilitato e ignorato (DB CHECK enforza `tenant_id IS NULL`).
+- Conferma JS minimale sulle delete (`onclick="return confirm(...)"`).
+- Niente edit avanzato in v1: per cambiare il tenant di un utente esistente si elimina e ricrea.
+
+### File implementativi
+- [app/routes/admin.py](app/routes/admin.py) — router prefix `/admin`, tutte le route protette da `Depends(require_super_admin)`.
+- [app/templates/admin/](app/templates/admin/) — `dashboard.html`, `tenants.html`, `users.html` (estendono `base.html`).
+- Pill "Admin" aggiunta in [app/templates/base.html](app/templates/base.html) accanto a quella utente, visibile solo per super-admin.
+
+### Out-of-scope sezione admin v1
+- Edit nominativo/email di utente esistente (si fa elimina+ricrea).
+- Audit log delle azioni admin.
+- Inviti via email (creazione manuale con password fornita dall'admin).
+- 2FA per super-admin.
+- Gestione fine-grained intra-tenant (chi può creare task, chi può fare outreach, ecc.) — Fase futura.
+
+## Pagina /dbconfig — switch DSN runtime (dev ↔ prod)
+
+Per permettere a chi sviluppa di puntare l'app a un Postgres locale (dev) o al Postgres cloud (prod) **senza editare `.env`**, esiste una pagina isolata `/dbconfig` con credenziali dedicate.
+
+### Credenziali
+- **Utente**: `DBadmin`
+- **Password**: `Entra123!`
+
+Sono **offuscate** (hash bcrypt hardcoded in [app/routes/dbconfig.py](app/routes/dbconfig.py)) — la stringa in chiaro non appare nel sorgente né in nessun file dell'app. Per ruotarle serve modificare il codice e rideployare. Volutamente diverse dalle credenziali super-admin `edgAdmin/Entra123!` per separare i due ruoli:
+- **edgAdmin** = chi amministra tenant/utenti dell'app (UI in `/admin`)
+- **DBadmin** = chi configura *a quale database* punta l'app (UI in `/dbconfig`)
+
+### Flusso
+1. Vai a `http://127.0.0.1:8000/dbconfig` (URL non linkato dalla nav principale).
+2. Login con `DBadmin / Entra123!`.
+3. Inserisci una connection string Postgres (validazione: deve iniziare con `postgresql://` o `postgres://`) + un'etichetta opzionale (es. "Locale dev", "Neon prod").
+4. Click **Salva DSN**.
+5. **Riavvia l'app** (chiudi `agentscraper.exe`, rilancia `agentscraper`). La nuova DSN entra in gioco al boot.
+6. Per tornare alla `DATABASE_URL` di `.env`, clicca **Rimuovi override**.
+
+### Persistenza
+- La DSN viene salvata cifrata in `data/db_config.enc` (Fernet con chiave derivata da `AGENTSCRAPER_SECRET`).
+- All'avvio, `app/config.py` chiama `_runtime_db_override.apply_override()` che — se il file esiste e decifra — sovrascrive `os.environ["DATABASE_URL"]` PRIMA che `Settings()` sia istanziata.
+- Se il file viene cancellato o `AGENTSCRAPER_SECRET` manca, l'app fallback a `.env::DATABASE_URL` (o, se anche quella manca, modalità legacy SQLite).
+
+### Sicurezza
+- La cifratura protegge la DSN da occhi indiscreti su backup/log/file-sharing, **non** da un utente con accesso fisico al PC che può cancellare il file.
+- La pagina è in `_PUBLIC_PATH_PREFIXES` del middleware auth (non richiede login utente), ma ha il proprio gate `DBadmin` interno.
+- Le route `/dbconfig/save` e `/dbconfig/clear` rifiutano richieste non autenticate come `DBadmin` (redirect a `/dbconfig` senza fare nulla).
+
+### Setup Postgres locale per dev (con Docker)
+
+Per testare modifiche di schema prima di portarle in prod, conviene avere un Postgres locale identico a Neon (Postgres 16).
+
+**Docker compose minimale** (creare `docker-compose.dev.yml` nella root del repo):
+```yaml
+services:
+  postgres-dev:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agentscraper_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres-dev:/var/lib/postgresql/data
+```
+
+Avvio: `docker compose -f docker-compose.dev.yml up -d`.
+
+Connection string per `/dbconfig` (preset già pronto nella UI):
+```
+postgresql://postgres:postgres@localhost:5432/agentscraper_dev
+```
+
+**Alternativa senza Docker**: installer ufficiale Postgres per Windows da [postgresql.org/download/windows](https://www.postgresql.org/download/windows/). Crea un DB `agentscraper_dev`, usa la stessa connection string sopra (cambia `postgres:postgres` con le tue credenziali admin).
+
+### Out-of-scope /dbconfig v1
+- Rotazione delle credenziali `DBadmin` via UI (richiede modifica codice + redeploy).
+- Test "ping" della DSN prima di salvarla (utile: avviare un `psycopg.connect` di prova).
+- Multi-profile: salvare più DSN nominate e switchare tra esse con un click.
+- Hot-reload del pool a runtime senza restart (vedi Fase 2: serve coordinare con APScheduler e job in corso).
 
 ### Quando servirebbe JWT (out of scope ora)
 Solo se in futuro:

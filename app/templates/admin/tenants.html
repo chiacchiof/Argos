@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Aziende · Admin{% endblock %}
+{% block content %}
+<section class="admin-section">
+  <nav class="admin-breadcrumb">
+    <a href="/admin">Admin</a> &raquo; Aziende
+  </nav>
+  <h2>Aziende (tenant)</h2>
+  {% include "admin/_flashes.html" %}
+
+  <div class="admin-card-block">
+    <h3>Crea nuova azienda</h3>
+    <form method="post" action="/admin/tenants" class="admin-form-inline">
+      <label>
+        Nome
+        <input type="text" name="name" required placeholder="Es. Edg Marketing">
+      </label>
+      <label>
+        Slug <small>(opzionale, auto-derivato)</small>
+        <input type="text" name="slug" placeholder="edg-marketing">
+      </label>
+      <button type="submit" class="btn-primary">Crea</button>
+    </form>
+  </div>
+
+  <div class="admin-card-block">
+    <h3>Aziende esistenti ({{ tenants|length }})</h3>
+    {% if tenants %}
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Nome</th>
+          <th>Slug</th>
+          <th>Utenti</th>
+          <th>Stato</th>
+          <th>Creata</th>
+          <th>Azioni</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tenants %}
+        <tr class="{% if not t.is_active %}row-disabled{% endif %}">
+          <td>{{ t.id }}</td>
+          <td><strong>{{ t.name }}</strong></td>
+          <td><code>{{ t.slug }}</code></td>
+          <td>{{ t.users_count }}</td>
+          <td>
+            {% if t.is_active %}
+            <span class="badge badge-ok">attivo</span>
+            {% else %}
+            <span class="badge badge-off">disattivato</span>
+            {% endif %}
+          </td>
+          <td><small>{{ t.created_at.strftime("%Y-%m-%d %H:%M") if t.created_at else "-" }}</small></td>
+          <td class="admin-actions-cell">
+            <form method="post" action="/admin/tenants/{{ t.id }}/toggle" style="display:inline">
+              <button type="submit" class="btn-link">{% if t.is_active %}Disattiva{% else %}Attiva{% endif %}</button>
+            </form>
+            <form method="post" action="/admin/tenants/{{ t.id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Eliminare il tenant {{ t.name }}? Tutti gli utenti collegati verranno eliminati a cascata.');">
+              <button type="submit" class="btn-link btn-link-danger">Elimina</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="admin-empty">Nessuna azienda ancora creata.</p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

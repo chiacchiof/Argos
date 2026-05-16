@@ -1674,3 +1674,393 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
 .page-actions > a:not(.btn-link-action):not(.btn-link):not(.link-cancel):hover {
   background: var(--accent); color: #fff;
 }
+
+/* ============================================================
+   Auth: user pill in header + login form
+   ============================================================ */
+.user-pill {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #f6f8fa;
+  font-size: 0.85rem;
+  color: #24292f;
+}
+.user-pill .user-role {
+  padding: 0.05rem 0.35rem;
+  background: #ffd33d;
+  color: #24292f;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+.user-pill .user-tenant {
+  padding: 0.05rem 0.4rem;
+  background: #ddf4ff;
+  color: #0969da;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.user-pill .user-logout {
+  color: #cf222e;
+  text-decoration: none;
+  font-weight: 500;
+}
+.user-pill .user-logout:hover { text-decoration: underline; }
+
+.login-main {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 4rem;
+}
+.login-container {
+  width: 100%;
+  max-width: 360px;
+  padding: 2rem;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.login-container h2 {
+  margin-top: 0;
+  margin-bottom: 1.25rem;
+  text-align: center;
+}
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+  color: #57606a;
+}
+.login-form input {
+  padding: 0.5rem 0.6rem;
+  font-size: 0.95rem;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+}
+.login-form input:focus {
+  outline: none;
+  border-color: var(--accent, #0969da);
+  box-shadow: 0 0 0 2px rgba(9,105,218,0.2);
+}
+.login-form button {
+  padding: 0.55rem;
+  background: var(--accent, #0969da);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 0.3rem;
+}
+.login-form button:hover { filter: brightness(0.95); }
+.login-error {
+  padding: 0.55rem 0.75rem;
+  margin-bottom: 0.75rem;
+  background: #ffebe9;
+  color: #cf222e;
+  border: 1px solid #ffabaa;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+/* ============================================================
+   Admin pages
+   ============================================================ */
+.admin-link {
+  margin-left: auto;
+  padding: 0.25rem 0.7rem;
+  background: #fff8c5;
+  border: 1px solid #d4a72c;
+  border-radius: 999px;
+  text-decoration: none;
+  color: #4d3800;
+  font-weight: 500;
+  font-size: 0.85rem;
+}
+.admin-link:hover { background: #fae17d; }
+.admin-link + .user-pill { margin-left: 0.5rem; }
+
+.admin-section { max-width: 1100px; margin: 0 auto; padding: 1rem; }
+.admin-section h2 { margin-top: 0.5rem; }
+.admin-intro { color: #57606a; margin-bottom: 1.5rem; }
+
+.admin-breadcrumb {
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+  color: #57606a;
+}
+.admin-breadcrumb a { color: #0969da; text-decoration: none; }
+.admin-breadcrumb a:hover { text-decoration: underline; }
+
+.admin-cards {
+  display: flex;
+  gap: 1rem;
+  margin: 1.5rem 0;
+  flex-wrap: wrap;
+}
+.admin-card {
+  flex: 1 1 200px;
+  padding: 1.5rem;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  text-decoration: none;
+  color: #24292f;
+  text-align: center;
+  transition: box-shadow 0.15s;
+}
+.admin-card:hover:not(.admin-card-static) {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  border-color: #0969da;
+}
+.admin-card-static { cursor: default; opacity: 0.85; }
+.admin-card-num {
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #0969da;
+}
+.admin-card-label { font-size: 0.9rem; color: #57606a; }
+
+.admin-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.admin-card-block {
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+}
+.admin-card-block h3 { margin-top: 0; margin-bottom: 1rem; }
+
+.admin-form-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+.admin-form-inline label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: #57606a;
+}
+.admin-form-inline input,
+.admin-form-inline select {
+  padding: 0.4rem 0.55rem;
+  font-size: 0.9rem;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  min-width: 180px;
+}
+.admin-form-inline button.btn-primary {
+  padding: 0.5rem 1.1rem;
+  background: #0969da;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.admin-form-inline button.btn-primary:hover { filter: brightness(0.95); }
+.admin-hint { color: #57606a; margin-top: 0.5rem; }
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+.admin-table th, .admin-table td {
+  padding: 0.6rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid #eaeef2;
+  vertical-align: middle;
+}
+.admin-table th {
+  background: #f6f8fa;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #57606a;
+}
+.admin-table tr.row-disabled td {
+  background: #fafbfc;
+  color: #8c959f;
+}
+.admin-actions-cell { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.admin-actions-cell .btn-link {
+  background: none;
+  border: none;
+  color: #0969da;
+  cursor: pointer;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.85rem;
+}
+.admin-actions-cell .btn-link:hover { text-decoration: underline; }
+.admin-actions-cell .btn-link-danger { color: #cf222e; }
+.admin-actions-cell details { display: inline-block; }
+.admin-actions-cell details summary {
+  cursor: pointer;
+  color: #0969da;
+  font-size: 0.85rem;
+  list-style: none;
+}
+.admin-actions-cell details[open] summary { font-weight: 600; }
+.reset-pwd-form {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+.reset-pwd-form input {
+  padding: 0.25rem 0.4rem;
+  font-size: 0.8rem;
+  border: 1px solid #d0d7de;
+  border-radius: 3px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  background: #ddf4ff;
+  color: #0969da;
+  font-weight: 500;
+}
+.badge-ok { background: #dafbe1; color: #1a7f37; }
+.badge-off { background: #ffebe9; color: #cf222e; }
+.badge-warn { background: #fff8c5; color: #7d4e00; }
+.self-tag { color: #57606a; margin-left: 0.3rem; }
+
+.admin-empty { color: #57606a; font-style: italic; }
+
+.admin-flashes { margin-bottom: 1rem; }
+.admin-flash {
+  padding: 0.55rem 0.9rem;
+  margin-bottom: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+.admin-flash-success { background: #dafbe1; color: #1a7f37; border: 1px solid #aceebb; }
+.admin-flash-error { background: #ffebe9; color: #cf222e; border: 1px solid #ffabaa; }
+.admin-flash-info { background: #ddf4ff; color: #0969da; border: 1px solid #b6e3ff; }
+
+/* ============================================================
+   /dbconfig — pagina standalone (no header/nav dell'app)
+   ============================================================ */
+.dbconfig-body {
+  margin: 0;
+  background: #f4f6f9;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.dbconfig-main {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 3rem 1rem;
+}
+.dbconfig-card {
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 10px;
+  padding: 2rem;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+}
+.dbconfig-card-wide { max-width: 720px; }
+.dbconfig-card h2 { margin-top: 0; margin-bottom: 0.4rem; }
+.dbconfig-subtitle {
+  margin-top: 0; margin-bottom: 1.4rem;
+  color: #57606a; font-size: 0.9rem;
+}
+.dbconfig-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 1.2rem;
+}
+.dbconfig-header h2 { margin: 0; }
+
+.dbconfig-current { margin: 1.4rem 0; }
+.dbconfig-current h3 {
+  margin-top: 0;
+  margin-bottom: 0.7rem;
+  font-size: 1rem;
+  color: #24292f;
+}
+.dbconfig-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1rem;
+  margin: 0.5rem 0;
+}
+.dbconfig-dl dt { font-weight: 600; color: #57606a; font-size: 0.85rem; }
+.dbconfig-dl dd { margin: 0; font-size: 0.9rem; }
+.dbconfig-dl code {
+  font-size: 0.82rem;
+  padding: 0.1rem 0.35rem;
+  background: #f6f8fa;
+  border-radius: 3px;
+  word-break: break-all;
+}
+
+.dbconfig-warn {
+  padding: 0.55rem 0.8rem;
+  background: #fff8c5;
+  color: #7d4e00;
+  border: 1px solid #d4a72c;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  margin: 0.6rem 0;
+}
+
+.dbconfig-form { display: flex; flex-direction: column; gap: 0.8rem; }
+.dbconfig-form label {
+  display: flex; flex-direction: column; gap: 0.3rem;
+  font-size: 0.88rem; color: #57606a;
+}
+.dbconfig-form input,
+.dbconfig-form textarea {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #d0d7de; border-radius: 4px;
+  font-size: 0.9rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.dbconfig-form textarea { resize: vertical; }
+.dbconfig-form .btn-primary {
+  align-self: flex-start;
+  padding: 0.5rem 1.2rem;
+  background: #0969da; color: #fff; border: none; border-radius: 4px;
+  font-weight: 600; cursor: pointer;
+}
+.dbconfig-presets {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  margin-top: -0.2rem;
+}
+.dbconfig-presets small { color: #57606a; }
+
+.dbconfig-hint {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #eaeef2;
+  color: #57606a;
+}

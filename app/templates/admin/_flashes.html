@@ -1,0 +1,7 @@
+{% if flashes %}
+<div class="admin-flashes">
+  {% for f in flashes %}
+  <div class="admin-flash admin-flash-{{ f.level }}">{{ f.message }}</div>
+  {% endfor %}
+</div>
+{% endif %}

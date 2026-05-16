@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
-from . import db, jobs
+from . import db, db_cloud, jobs
+from .auth import get_optional_user
 from .config import settings
+from .routes import admin as admin_routes
 from .routes import assets as assets_routes
+from .routes import auth as auth_routes
+from .routes import dbconfig as dbconfig_routes
 from .routes import import_csv as import_csv_routes
 from .routes import inbox as inbox_routes
 from .routes import jobs as jobs_routes
@@ -22,9 +29,22 @@ from .routes import tasks as tasks_routes
 from .routes import workflows as workflows_routes
 
 
+log = logging.getLogger(__name__)
+
+
+# Path pubbliche (no auth richiesta) anche quando il cloud DB è configurato.
+# `/dbconfig` ha il proprio gate di autenticazione interna (DBadmin), separato dal login utente.
+_PUBLIC_PATH_PREFIXES = ("/static", "/login", "/logout", "/favicon.ico", "/dbconfig")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    # Inizializza il backend cloud per tenants/users (no-op se DATABASE_URL non settato).
+    try:
+        db_cloud.init_db()
+    except Exception as exc:
+        log.error("Init cloud DB fallito: %s — continuo in modalità legacy.", exc)
     # Riconcilia job orfani (server riavviato mentre stavano girando)
     jobs.reconcile_orphan_jobs()
     jobs.start_scheduler()
@@ -32,14 +52,82 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         jobs.stop_scheduler()
+        db_cloud.close_pool()
 
 
 app = FastAPI(title="AgentScraper", lifespan=lifespan)
+
+
+# NOTA SULL'ORDINE DEI MIDDLEWARE:
+# Starlette mette in pipeline il middleware aggiunto PER ULTIMO come outermost.
+# Per accedere a `request.session` dentro `auth_middleware`, SessionMiddleware deve
+# essere OUTERMOST (eseguito per primo). Quindi:
+#   1. Definiamo auth_middleware via decoratore @app.middleware("http") (innermost).
+#   2. POI aggiungiamo SessionMiddleware (outermost, eseguito per primo).
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Inietta `request.state.current_user` e, se cloud DB è attivo, enforza il login.
+
+    In modalità legacy (no DATABASE_URL) lascia passare tutto senza auth.
+    """
+    request.state.current_user = None
+
+    if not db_cloud.is_configured():
+        return await call_next(request)
+
+    path = request.url.path
+    is_public = any(path == p or path.startswith(p + "/") for p in _PUBLIC_PATH_PREFIXES)
+
+    user = get_optional_user(request)
+    request.state.current_user = user
+
+    if is_public:
+        return await call_next(request)
+
+    if user is None:
+        # Anonimo su path protetta -> redirect a login (o HX-Redirect per HTMX).
+        if request.headers.get("HX-Request") == "true":
+            resp = Response(status_code=401)
+            resp.headers["HX-Redirect"] = f"/login?next={path}"
+            return resp
+        return RedirectResponse(url=f"/login?next={path}", status_code=302)
+
+    return await call_next(request)
+
+
+# SessionMiddleware è necessario per il cookie di login. Se SESSION_SECRET_KEY è
+# vuoto generiamo una chiave volatile in memoria — i cookie non sopravvivono al
+# restart, ma in modalità legacy (no DATABASE_URL) non ci sono comunque login.
+_session_key = settings.session_secret_key
+if not _session_key:
+    import secrets
+
+    _session_key = secrets.token_urlsafe(32)
+    if db_cloud.is_configured():
+        log.warning(
+            "SESSION_SECRET_KEY non impostata: i login saranno invalidati ad ogni restart. "
+            "Setta una chiave persistente in .env."
+        )
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_session_key,
+    session_cookie="agentscraper_session",
+    same_site="lax",
+    https_only=False,  # In dev su http://127.0.0.1 il cookie deve essere inviato anche senza HTTPS.
+    max_age=60 * 60 * 24 * 7,  # 7 giorni
+)
+
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+app.include_router(auth_routes.router)
+app.include_router(admin_routes.router)
+app.include_router(dbconfig_routes.router)
 app.include_router(tasks_routes.router)
 app.include_router(jobs_routes.router)
 app.include_router(results_routes.router)

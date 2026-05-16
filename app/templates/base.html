@@ -10,6 +10,7 @@
 <body>
   <header>
     <h1><a href="/">AgentScraper</a></h1>
+    {% set current_user = request.state.current_user if request and request.state else None %}
     <nav>
       <a href="/orchestrator">Orchestrator</a>
       <a href="/">Tasks</a>
@@ -18,6 +19,18 @@
       <a href="/inbox">📨 Inbox</a>
       <a href="/site_memory">🧠 Memoria sito</a>
       <a href="/settings">⚙️ Settings</a>
+      {% if current_user %}
+      {% if current_user.is_super_admin %}<a href="/admin" class="admin-link">🛡️ Admin</a>{% endif %}
+      <span class="user-pill">
+        👤 {{ current_user.email }}
+        {% if current_user.is_super_admin %}
+          <small class="user-role">super-admin</small>
+        {% elif current_user.tenant_name %}
+          <small class="user-tenant">🏢 {{ current_user.tenant_name }}</small>
+        {% endif %}
+        <a href="/logout" class="user-logout">esci</a>
+      </span>
+      {% endif %}
     </nav>
   </header>
   <main class="{% block main_class %}{% endblock %}">

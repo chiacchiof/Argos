@@ -239,16 +239,52 @@ Per il loop ReAct serve **tool calling** nativo. Modelli testati su Ollama:
 
 ---
 
+## Multi-tenant (cloud DB + login) — opzionale
+
+L'app supporta una modalità multi-tenant in cui:
+- Il DB Postgres è condiviso in cloud (Neon o Azure), così più colleghi su PC diversi lavorano insieme.
+- Ogni utente fa login con credenziali personali; i dati sono isolati per **tenant** (azienda).
+- Esiste un ruolo **super-admin** che da `/admin` crea aziende e utenti.
+
+### Setup rapido con Neon
+
+1. Crea un progetto su [neon.tech](https://neon.tech) — region `eu-central-1` (Frankfurt), Postgres 16.
+2. Copia la connection string `Direct connection` dal dashboard Neon e mettila nel tuo `.env`:
+
+   ```ini
+   DATABASE_URL=postgresql://neondb_owner:<PASSWORD>@<host>.eu-central-1.aws.neon.tech/neondb?sslmode=require
+
+   # Genera con: python -c "import secrets; print(secrets.token_urlsafe(32))"
+   SESSION_SECRET_KEY=<chiave random 32 byte urlsafe>
+
+   # Credenziali iniziali super-admin (lette UNA volta al primo boot, poi cambia password dalla UI)
+   BOOTSTRAP_SUPER_ADMIN_EMAIL=edgAdmin
+   BOOTSTRAP_SUPER_ADMIN_PASSWORD=Entra123!
+   ```
+
+3. Avvia l'app (`agentscraper`). Al primo boot vengono create le tabelle `tenants` / `users` su Neon e l'utente `edgAdmin`.
+4. Apri `http://127.0.0.1:8000`, fai login con `edgAdmin / Entra123!`.
+5. Vai su **🛡️ Admin** (pill nell'header) → crea aziende e utenti.
+6. **Cambia la password** del super-admin dalla dashboard admin → "Il tuo account".
+
+Se `DATABASE_URL` non è settato, l'app gira in modalità legacy single-user esattamente come prima (nessun login richiesto).
+
+Per il piano completo (architettura, Fase 2 in poi, deployment Azure futuro) vedi `SETUP_CLOUD_DB_TENANT.md`.
+
+---
+
 ## Roadmap / fuori scope attuale
 
 Esplicitamente *non* implementato (rimandato):
 
-- Autenticazione (è single-user locale)
-- Export Excel / DB esterno (predisposto via `output_format`, ma non implementato)
-- Bot Telegram
-- Embeddings/RAG con `nomic-embed-text` sui risultati storici
-- Rate limiting avanzato e robots.txt enforcement (solo User-Agent identificabile)
-- Job queue con worker separato (Celery/RQ) — overkill per single-user
+- Fase 2-6 del multi-tenant: refactor `app/db.py` SQLite→Postgres + `tenant_id` sulle tabelle business + script di migrazione automatica (vedi `SETUP_CLOUD_DB_TENANT.md`).
+- Per-user permissioning intra-tenant (per ora tutti gli utenti di un tenant vedono tutto).
+- Cloud storage per file `data/results/`, `data/uploads/`, `data/whatsapp_sessions/` (restano locali).
+- Export Excel / DB esterno (predisposto via `output_format`, ma non implementato).
+- Bot Telegram.
+- Embeddings/RAG con `nomic-embed-text` sui risultati storici.
+- Rate limiting avanzato e robots.txt enforcement (solo User-Agent identificabile).
+- Job queue con worker separato (Celery/RQ) — overkill per single-user.
 
 ---
 
