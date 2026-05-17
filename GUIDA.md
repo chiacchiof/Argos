@@ -1399,6 +1399,62 @@ Esempi di query URL:
 
 Analogo paginator anche su **`/inbox/contacts`** (stessa logica, 100 per pagina default).
 
+### 9.2.1 `/assets/new` — Creare un asset manualmente (people, aziende, lead one-off)
+
+Per inserire **un singolo asset** senza passare da uno scraping. Tipico use case: vuoi contattare via outreach una persona/azienda che NON proviene da un task di scraping (es. lead da LinkedIn, contatto fornito a voce, prospect dalla tua rubrica).
+
+**Accesso**: click su `➕ Nuovo asset` dalla pagina `/assets`, oppure URL diretto `/assets/new`.
+
+**Campi**:
+- **Tipo asset** (`asset_type`): identificatore lowercase a-z 0-9 `_ -`, max 50 char. Es. `contact`, `lead`, `azienda_target`. Niente vincolo: l'asset_type è una semplice etichetta che poi puoi usare nei filtri `/assets` o `/qualified`.
+- **Stato iniziale**: `new` (default), `qualified`, `rejected`, `archived`. Se vuoi che l'asset sia **immediatamente contattabile** da un outreach, scegli `qualified`.
+- **Titolo / nome** (obbligatorio): es. "Francesco Russo" o "Pizzeria Bella Napoli".
+- **Source URL** (opzionale): URL di provenienza. Usato come **chiave di dedup**: se ri-importi con lo stesso source_url + asset_type, l'asset esistente viene aggiornato.
+- **Note**: testo libero.
+- **Tag attributi** (opzionale): fino a 5 coppie `key=value`. Esempi: `city=Catania`, `interests_inferred=fitness`. Usati dai filtri `/qualified` (sezione "Filtri tag attributi").
+- **Raw JSON** (opzionale): payload custom in formato JSON. **Le chiavi note vengono promosse automaticamente** a colonne dell'asset (vedi sotto).
+
+#### Promozione automatica dei campi raw_json
+
+Le seguenti chiavi nel `raw_json` vengono **estratte e salvate come colonne dedicate** dell'asset, così che i runner outreach le usino direttamente senza dover parsare il JSON:
+
+| Chiave raw_json | Colonna asset popolata | Note |
+|---|---|---|
+| `whatsapp` | `assets.whatsapp` | numero in formato E.164 (es. `+393294257497`) |
+| `email` | `assets.email` | indirizzo email |
+| `telegram` o `telegram_username` | `assets.telegram_username` | senza `@` |
+| `telegram_chat_id` | `assets.telegram_chat_id` | numerico, popolato solo dopo che l'utente ha scritto al bot |
+| `display_name` | `assets.display_name` | nome da mostrare nei messaggi |
+| `sitoweb` o `website` | `assets.sitoweb` | URL sito |
+| `social` o `social_json` | `assets.social_json` | lista `[{"platform": "instagram", "url": "..."}]` |
+
+**Le altre chiavi** del raw_json (es. `role`, `organization`, `phone_alt`, ...) vengono **promosse come tag** se rispettano il formato `[a-z][a-z0-9_-]{0,49}` (chiave) e valore string/numerico fino a 200 char.
+
+#### Esempio: contatto WhatsApp pronto per outreach
+
+Per creare un asset di tipo `contact` per Francesco Russo, CEO di EDG, con WhatsApp:
+
+| Campo | Valore |
+|---|---|
+| Tipo asset | `contact` |
+| Stato | `qualified` (per outreach immediato) |
+| Titolo | `Francesco Russo` |
+| Raw JSON | `{"whatsapp":"+393294257497", "organization":"EDG", "role":"CEO"}` |
+
+Risultato:
+- `assets.whatsapp = "+393294257497"` (promossa a colonna → il runner WhatsApp lo trova)
+- `assets.title = "Francesco Russo"`
+- `asset_tags`: `organization=EDG`, `role=CEO`
+- Status `qualified` → appare in `/qualified` con `qualifier_legacy=qualified` (se vuoi anche il qualifier, vai sulla card `+ Aggiungi qualified`)
+
+Da `/qualified` ora puoi filtrare per `organization=EDG` e includerlo in un outreach WhatsApp.
+
+#### Gotcha JSON: virgolette tipografiche
+
+Se incolli il JSON da Word/Notion/Telegram, le virgolette possono essere `“` `”` (smart-quotes Unicode) invece di `"` ASCII. L'app **normalizza automaticamente** smart-quotes e non-breaking-space prima del parse, ma se l'errore persiste:
+- Riscrivi il JSON a mano nell'editor browser (non incollare).
+- Controlla che non ci siano caratteri invisibili (` ` NBSP). L'errore mostra `posizione N` + contesto attorno: usa quello per individuare il carattere colpevole.
+
 ### 9.3 Memoria pattern per dominio (`site_patterns`)
 
 `bulk_extract` ora memorizza in DB i pattern URL "target" che ha imparato per ogni dominio.

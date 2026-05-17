@@ -589,10 +589,37 @@ async def asset_new_submit(
     import json as _json
     raw_data: dict = {}
     if raw_json.strip():
+        # Tollera input umani da editor/browser che inseriscono caratteri
+        # invisibili: smart-quotes (U+201C/201D/2018/2019 da Word/Notion),
+        # non-breaking space (U+00A0), whitespace edge. Rompono json.loads
+        # con errori criptici tipo "Expecting ',' delimiter" su stringhe
+        # apparentemente valide.
+        normalized = (
+            raw_json.strip()
+            .replace("“", '"').replace("”", '"')
+            .replace("‘", "'").replace("’", "'")
+            .replace(" ", " ")
+        )
         try:
-            raw_data = _json.loads(raw_json)
+            raw_data = _json.loads(normalized)
             if not isinstance(raw_data, dict):
-                raise ValueError("raw_json deve essere un oggetto JSON")
+                raise ValueError("raw_json deve essere un oggetto JSON (dict)")
+        except _json.JSONDecodeError as e:
+            # Aggiungi contesto: ~15 char prima/dopo l'errore
+            pos = e.pos
+            ctx_start = max(0, pos - 15)
+            ctx_end = min(len(normalized), pos + 15)
+            ctx = normalized[ctx_start:ctx_end]
+            ptr = " " * (pos - ctx_start) + "^"
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"raw_json non valido alla posizione {pos}: {e.msg}. "
+                    f"Contesto: ...{ctx}... (carattere sotto: {ptr}). "
+                    f"Suggerimento: assicurati di usare virgolette dritte (\") e niente "
+                    f"caratteri speciali da copia-incolla."
+                ),
+            )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"raw_json non valido: {e}")
 
@@ -610,6 +637,47 @@ async def asset_new_submit(
             continue
         asset_tags.setdefault(key, []).append(val[:200])
 
+    # Per agevolare il pattern "asset = contatto/persona manuale", se raw_json
+    # contiene chiavi note (whatsapp, email, telegram, role, organization, ...)
+    # promuovile a colonne dedicate dell'asset cosi' che siano subito utilizzabili
+    # dai runner outreach senza dover passare per raw_json.
+    promoted_fields: dict = {}
+    if isinstance(raw_data, dict):
+        _COL_MAP = {
+            "whatsapp": "whatsapp",
+            "email": "email",
+            "telegram": "telegram_username",
+            "telegram_username": "telegram_username",
+            "telegram_chat_id": "telegram_chat_id",
+            "display_name": "display_name",
+            "sitoweb": "sitoweb",
+            "website": "sitoweb",
+            "social": "social_json",
+            "social_json": "social_json",
+        }
+        for k_in, col in _COL_MAP.items():
+            v_in = raw_data.get(k_in)
+            if v_in is None:
+                continue
+            if col == "social_json" and not isinstance(v_in, str):
+                import json as _j
+                v_in = _j.dumps(v_in, ensure_ascii=False)
+            promoted_fields[col] = v_in
+        # Tag custom dal raw_json per chiavi non promosse a colonna (es. role,
+        # organization): vanno in asset_tags se non gia' settate altrove.
+        for k_in, v_in in raw_data.items():
+            if k_in in _COL_MAP:
+                continue
+            if not isinstance(v_in, (str, int, float)):
+                continue
+            tk = str(k_in).strip().lower()
+            if not _re.match(r"^[a-z][a-z0-9_-]{0,49}$", tk):
+                continue
+            tv = str(v_in).strip()[:200]
+            if not tv:
+                continue
+            asset_tags.setdefault(tk, []).append(tv)
+
     asset_id = db.upsert_asset(
         {
             "asset_type": asset_type,
@@ -617,6 +685,7 @@ async def asset_new_submit(
             "source_url": source_url or None,
             "notes": notes.strip() or None,
             "raw_json": raw_data,
+            **promoted_fields,
         },
         tags=asset_tags,
     )
