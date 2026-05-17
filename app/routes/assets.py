@@ -192,8 +192,13 @@ async def qualified_assets_list(
     if tag_mode_v not in ("and", "or", "custom"):
         tag_mode_v = "and"
     tag_expr_v = (tag_expr or "").strip()
-    # Validazione precoce: se mode=custom, parse_tag_expr deve passare.
-    # In caso di errore, restituiamo un context con tag_expr_error per il template.
+    # Se mode=custom ma expr e' vuota, l'utente ha selezionato 'custom' nel radio
+    # ma non ha (ancora) scritto l'espressione. Fallback ad AND per evitare 500
+    # da build_where_clause (che richiede expr per mode=custom).
+    if tag_mode_v == "custom" and not tag_expr_v:
+        tag_mode_v = "and"
+    # Validazione precoce: se mode=custom + expr presente, parse_tag_expr deve
+    # passare. In caso di errore, fallback ad AND + propaga error al template.
     tag_expr_error: str | None = None
     if tag_mode_v == "custom" and extra_tag_filters and tag_expr_v:
         from ..agent.tag_expr import parse_tag_expr as _parse_te
@@ -201,7 +206,6 @@ async def qualified_assets_list(
             _parse_te(tag_expr_v, len(extra_tag_filters))
         except ValueError as e:
             tag_expr_error = str(e)
-            # Fallback ad AND per evitare query rotta — l'utente vede l'errore in UI
             tag_mode_v = "and"
             tag_expr_v = ""
     per_page_v = _parse_optional_int(per_page) or _QUALIFIED_PAGE_SIZE

@@ -30,26 +30,54 @@
   <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
   {% endif %}
 
-  {# Riepilogo filtri attivi #}
+  {# Riepilogo filtri attivi.
+     Ogni pill attiva ha una × cliccabile che rimuove il filtro corrispondente
+     dalla querystring (vedi JS qfDropParam* in fondo al template). #}
   <div class="stats-bar">
     <span class="stats-pill"><strong>{{ total }}</strong> asset {% if has_any_filter %}filtrati{% else %}totali{% endif %}</span>
-    {% if filter_status %}
-      <span class="stats-pill stats-pill-active">stato: <strong>{{ filter_status }}</strong></span>
+
+    {# 'status' default = 'qualified' → mostro pill solo se diverso #}
+    {% if filter_status and filter_status != 'qualified' %}
+      <span class="stats-pill stats-pill-active">
+        stato: <strong>{{ filter_status }}</strong>
+        <a href="#" class="pill-close" onclick="qfDropParam(event, 'status')" title="Rimuovi filtro stato">×</a>
+      </span>
     {% endif %}
+
     {% if filter_score_min is not none %}
-      <span class="stats-pill stats-pill-active">score ≥ <strong>{{ filter_score_min }}</strong></span>
+      <span class="stats-pill stats-pill-active">
+        score ≥ <strong>{{ filter_score_min }}</strong>
+        <a href="#" class="pill-close" onclick="qfDropParam(event, 'score_min')" title="Rimuovi filtro score">×</a>
+      </span>
     {% endif %}
+
     {% if filter_type %}
-      <span class="stats-pill stats-pill-active">tipo: <strong>{{ filter_type }}</strong></span>
+      <span class="stats-pill stats-pill-active">
+        tipo: <strong>{{ filter_type }}</strong>
+        <a href="#" class="pill-close" onclick="qfDropParam(event, 'asset_type')" title="Rimuovi filtro tipo">×</a>
+      </span>
     {% endif %}
+
+    {% if filter_task %}
+      <span class="stats-pill stats-pill-active">
+        task: <strong>#{{ filter_task }}</strong>
+        <a href="#" class="pill-close" onclick="qfDropParam(event, 'source_task_id')" title="Rimuovi filtro task generatore">×</a>
+      </span>
+    {% endif %}
+
     {% for slug in selected_qualifiers %}
       {% for q in qualifier_menu if q.slug == slug %}
-        <span class="stats-pill stats-pill-active" title="qualifier slug: {{ slug }}">🎯 <strong>{{ q.friendly_name }}</strong></span>
+        <span class="stats-pill stats-pill-active" title="qualifier slug: {{ slug }}">
+          🎯 <strong>{{ q.friendly_name }}</strong>
+          <a href="#" class="pill-close" onclick="qfDropQualifier(event, '{{ slug }}')" title="Rimuovi questo qualifier">×</a>
+        </span>
       {% endfor %}
     {% endfor %}
+
     {% for tk, tv in (extra_tag_filters or []) %}
       <span class="stats-pill stats-pill-active" title="filtro tag (riusabile in outreach_filter_tags)">
         🏷️ <strong>{{ tk }}</strong> = {{ tv }}
+        <a href="#" class="pill-close" onclick="qfDropTagSlot(event, {{ loop.index0 }})" title="Rimuovi questo filtro tag">×</a>
       </span>
     {% endfor %}
   </div>
@@ -521,6 +549,43 @@ document.addEventListener('keydown', (e) => {
     document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
   }
 });
+
+// --- Pill chiudibili nella stats-bar ---
+// qfDropParam: rimuove una key qualunque dalla querystring (es. score_min,
+// asset_type, source_task_id, status).
+function qfDropParam(ev, name) {
+  ev.preventDefault();
+  const url = new URL(window.location.href);
+  url.searchParams.delete(name);
+  url.searchParams.delete('page');  // reset paginazione
+  window.location = url.toString();
+}
+// qfDropQualifier: rimuove UN qualifier specifico dalla lista 'qualifiers'.
+// La querystring puo' avere `qualifiers=a,b,c` (csv) o `qualifiers=a&qualifiers=b`.
+function qfDropQualifier(ev, slug) {
+  ev.preventDefault();
+  const url = new URL(window.location.href);
+  // Strategia: prendo tutti i valori (multi-value + csv), rimuovo lo slug,
+  // re-encode come csv (formato canonico usato dal route).
+  let allVals = [];
+  url.searchParams.getAll('qualifiers').forEach(v => {
+    v.split(',').forEach(s => { s = s.trim(); if (s) allVals.push(s); });
+  });
+  const kept = allVals.filter(v => v !== slug);
+  url.searchParams.delete('qualifiers');
+  if (kept.length > 0) url.searchParams.set('qualifiers', kept.join(','));
+  url.searchParams.delete('page');
+  window.location = url.toString();
+}
+// qfDropTagSlot: rimuove coppia (tag_key__N, tag_value__N) per indice N.
+function qfDropTagSlot(ev, idx) {
+  ev.preventDefault();
+  const url = new URL(window.location.href);
+  url.searchParams.delete(`tag_key__${idx}`);
+  url.searchParams.delete(`tag_value__${idx}`);
+  url.searchParams.delete('page');
+  window.location = url.toString();
+}
 </script>
 
 {# JS helper per il modal qualified: chiamato dai risultati di /assets/search. #}
