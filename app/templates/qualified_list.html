@@ -72,58 +72,22 @@
     <details class="filter-panel" {% if has_advanced_filters or selected_qualifiers %}open{% endif %}>
       <summary>🔧 Filtri avanzati {% if adv_count %}<span class="muted">({{ adv_count }} attivi)</span>{% endif %}</summary>
 
-      {# Multi-select Qualifier eseguiti (dropdown searchable con checkbox).
-         I selezionati appaiono come pillole nella stats-bar in alto. #}
+      {# 2 bottoni "modale": Qualifier picker + Tag filters builder.
+         I checkbox/input nascosti sono parte del form principale e si
+         vedono visualmente solo dentro le modali. #}
       <div class="filter-grid">
-        <label class="multi-select-field">
+        <label class="modal-trigger-field">
           Qualifier eseguiti
-          <div class="multi-select-dropdown" data-msdd>
-            <button type="button" class="multi-select-trigger" onclick="msddToggle(this)">
-              <span class="multi-select-label">
-                {% if selected_qualifiers %}
-                  <strong>{{ selected_qualifiers|length }}</strong> selezionati
-                {% else %}
-                  — scegli uno o più —
-                {% endif %}
-              </span>
-              <span class="multi-select-caret">▼</span>
-            </button>
-            <div class="multi-select-panel">
-              <input type="search" class="multi-select-search"
-                     placeholder="🔎 Cerca qualifier…"
-                     oninput="msddFilter(this)"
-                     autocomplete="off">
-              {% if qualifier_menu %}
-              <ul class="multi-select-options">
-                {% for q in qualifier_menu %}
-                <li class="multi-select-option" data-search="{{ q.friendly_name|lower }} {{ q.slug }}">
-                  <label>
-                    <input type="checkbox" name="qualifiers" value="{{ q.slug }}"
-                           {% if q.slug in selected_qualifiers %}checked{% endif %}
-                           onchange="document.getElementById('qualified-form').submit()">
-                    <span class="ms-name">{{ q.friendly_name }}</span>
-                    <span class="ms-counts">
-                      <span class="badge badge-ok" title="qualified">✅ {{ q.count_qualified }}</span>
-                      {% if q.count_rejected %}
-                      <span class="badge badge-off" title="rejected">❌ {{ q.count_rejected }}</span>
-                      {% endif %}
-                    </span>
-                  </label>
-                </li>
-                {% endfor %}
-              </ul>
-              {% if selected_qualifiers|length > 1 %}
-              <p class="muted small" style="margin: 0.4rem 0.6rem; padding-top: 0.4rem; border-top: 1px solid #eaeef2">
-                ℹ️ {{ selected_qualifiers|length }} qualifier selezionati = intersezione (AND).
-              </p>
-              {% endif %}
-              {% else %}
-              <p class="muted small" style="padding: 0.6rem">
-                Nessun qualifier eseguito ancora. Lancia un task <code>qualifier</code>.
-              </p>
-              {% endif %}
-            </div>
-          </div>
+          <button type="button" class="modal-trigger-btn"
+                  onclick="document.getElementById('qualifier-picker-modal').classList.add('open');">
+            {% if selected_qualifiers %}
+              <strong>{{ selected_qualifiers|length }}</strong> selezionati
+              <span class="muted small">— click per modificare</span>
+            {% else %}
+              <span class="muted">— scegli uno o più —</span>
+            {% endif %}
+            <span class="modal-trigger-icon">⚙️</span>
+          </button>
         </label>
 
         <label>Stato qualifier
@@ -164,22 +128,161 @@
             {% endfor %}
           </select>
         </label>
+
+        <label class="modal-trigger-field">
+          Filtri tag attributi
+          <button type="button" class="modal-trigger-btn"
+                  onclick="document.getElementById('tag-filters-modal').classList.add('open');">
+            {% if extra_tag_filters and extra_tag_filters|length > 0 %}
+              <strong>{{ extra_tag_filters|length }}</strong> attivi
+              <span class="muted small">({{ tag_mode|upper }})</span>
+            {% else %}
+              <span class="muted">— nessuno —</span>
+            {% endif %}
+            <span class="modal-trigger-icon">⚙️</span>
+          </button>
+        </label>
       </div>
 
-      <details class="filter-subpanel" {% if extra_tag_filters and extra_tag_filters|length > 0 %}open{% endif %}>
-        <summary>🏷️ Filtri tag attributi (AND multipli)</summary>
-        <p class="muted small" style="margin: 0.3rem 0">
-          Per filtrare dentro un qualifier su attributi (es. <code>city=Catania</code>, <code>interests_inferred=fitness</code>).
-          I tag <code>qualifier_*</code> sono esclusi (usa il menu "Qualifier eseguiti" sopra per quelli).
-          {% if filter_type %}
-            <br><span style="color:#0969da">ℹ️ Tag ristretti agli asset di tipo <code>{{ filter_type }}</code> (filtro asset type attivo).</span>
-          {% endif %}
+      {% if tag_expr_error %}
+      <div class="error-inline" style="margin-top:0.5rem; padding:0.4rem 0.6rem; background:#fff5f5; border:1px solid #fca5a5; border-radius:4px">
+        ⚠️ Espressione tag invalida: {{ tag_expr_error }} — fallback ad AND globale.
+      </div>
+      {% endif %}
+    </details>
+
+    {# === Modale 1: Qualifier picker (lista qualifier con descrizione) === #}
+    <div id="qualifier-picker-modal" class="modal-backdrop"
+         onclick="if(event.target===this) this.classList.remove('open');">
+      <div class="modal-content modal-wide">
+        <div class="modal-header">
+          <h3>✅ Qualifier eseguiti</h3>
+          <button type="button" class="btn-link"
+                  onclick="document.getElementById('qualifier-picker-modal').classList.remove('open');">✕</button>
+        </div>
+        <p class="muted small" style="margin-top:0">
+          Scegli uno o più qualifier (multi-select = intersezione AND).
+          {% if selected_qualifiers|length > 1 %}Selezione attuale: <strong>{{ selected_qualifiers|length }}</strong> qualifier.{% endif %}
         </p>
-        <div class="extra-tags-grid">
+
+        {% if qualifier_menu %}
+        <input type="search" class="qualifier-modal-search"
+               placeholder="🔎 Cerca per nome, slug, descrizione…"
+               oninput="qpmFilter(this)"
+               autocomplete="off">
+
+        <ul class="qualifier-cards" id="qualifier-picker-list">
+          {% for q in qualifier_menu %}
+          <li class="qualifier-card {% if q.slug in selected_qualifiers %}qualifier-card-active{% endif %}"
+              data-search="{{ q.friendly_name|lower }} {{ q.slug }} {{ (q.task_objective or '')|lower }}">
+            <label>
+              <input type="checkbox" name="qualifiers" value="{{ q.slug }}"
+                     {% if q.slug in selected_qualifiers %}checked{% endif %}
+                     onchange="document.getElementById('qualified-form').submit()">
+              <div class="qualifier-card-body">
+                <div class="qualifier-card-header">
+                  <strong class="qualifier-card-name">{{ q.friendly_name }}</strong>
+                  <span class="qualifier-card-counts">
+                    <span class="badge badge-ok">✅ {{ q.count_qualified }}</span>
+                    {% if q.count_rejected %}
+                    <span class="badge badge-off">❌ {{ q.count_rejected }}</span>
+                    {% endif %}
+                  </span>
+                </div>
+                <div class="qualifier-card-meta">
+                  <code class="qualifier-card-slug">{{ q.slug }}</code>
+                  {% if q.task_id %}
+                    · <a href="/tasks/{{ q.task_id }}" target="_blank" onclick="event.stopPropagation()">task #{{ q.task_id }}</a>
+                  {% endif %}
+                </div>
+                {% if q.task_objective %}
+                <p class="qualifier-card-objective">{{ q.task_objective }}</p>
+                {% else %}
+                <p class="qualifier-card-objective muted small"><em>(nessuna descrizione — qualifier manuale o task senza objective)</em></p>
+                {% endif %}
+              </div>
+            </label>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="muted">Nessun qualifier eseguito ancora. Lancia un task <code>qualifier</code> per generarli.</p>
+        {% endif %}
+
+        <div class="modal-actions">
+          <button type="button" class="btn-link"
+                  onclick="document.getElementById('qualifier-picker-modal').classList.remove('open');">Chiudi</button>
+        </div>
+      </div>
+    </div>
+
+    {# === Modale 2: Tag filters builder (AND / OR / Custom expression) === #}
+    <div id="tag-filters-modal" class="modal-backdrop"
+         onclick="if(event.target===this) this.classList.remove('open');">
+      <div class="modal-content modal-wide">
+        <div class="modal-header">
+          <h3>🏷️ Filtri tag attributi</h3>
+          <button type="button" class="btn-link"
+                  onclick="document.getElementById('tag-filters-modal').classList.remove('open');">✕</button>
+        </div>
+        <p class="muted small" style="margin-top:0">
+          Filtri sugli attributi degli asset (es. <code>city=Catania</code>, <code>interests_inferred=fitness</code>).
+          I tag <code>qualifier_*</code> sono esclusi (usa il picker qualifier sopra).
+          {% if filter_type %}<br><span style="color:#0969da">ℹ️ Tag ristretti agli asset di tipo <code>{{ filter_type }}</code>.</span>{% endif %}
+        </p>
+
+        <fieldset class="tag-mode-fieldset">
+          <legend>Modalità di combinazione</legend>
+          <label class="radio-inline">
+            <input type="radio" name="tag_mode" value="and"
+                   {% if tag_mode == 'and' %}checked{% endif %}
+                   onchange="tfmModeChanged(this)">
+            <strong>AND</strong> — l'asset deve avere <em>tutti</em> i filtri
+          </label>
+          <label class="radio-inline">
+            <input type="radio" name="tag_mode" value="or"
+                   {% if tag_mode == 'or' %}checked{% endif %}
+                   onchange="tfmModeChanged(this)">
+            <strong>OR</strong> — basta <em>almeno uno</em>
+          </label>
+          <label class="radio-inline">
+            <input type="radio" name="tag_mode" value="custom"
+                   {% if tag_mode == 'custom' %}checked{% endif %}
+                   onchange="tfmModeChanged(this)">
+            <strong>Custom</strong> — costruisci tu (es. <code>(F1 AND F2) OR F3</code>)
+          </label>
+        </fieldset>
+
+        <div id="tag-expr-block" style="{% if tag_mode != 'custom' %}display:none{% endif %}; margin: 0.5rem 0">
+          <label style="display:block">
+            Espressione
+            <input type="text" name="tag_expr" id="tag-expr-input"
+                   value="{{ tag_expr or '' }}"
+                   placeholder="Es: (F1 AND F2) OR F3"
+                   style="width:100%; font-family:monospace">
+          </label>
+          <small class="muted">
+            Token validi: <code>F1</code>..<code>F<i id="tag-expr-max">3</i></code>, <code>AND</code>, <code>OR</code>, parentesi.
+            Click sui chip qui sotto per inserirli rapidamente:
+          </small>
+          <div class="tag-expr-helpers" style="margin-top:0.3rem">
+            {% for i in range(3) %}
+              <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('F{{ i+1 }}')">F{{ i+1 }}</button>
+            {% endfor %}
+            <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('AND')">AND</button>
+            <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('OR')">OR</button>
+            <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('(')">(</button>
+            <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken(')')">)</button>
+          </div>
+        </div>
+
+        <h4 style="margin: 1rem 0 0.3rem">Filtri</h4>
+        <div class="tag-filters-grid">
           {% for i in range(3) %}
             {% set ek = extra_tag_filters[i][0] if extra_tag_filters|length > i else '' %}
             {% set ev = extra_tag_filters[i][1] if extra_tag_filters|length > i else '' %}
-            <div class="extra-tag-row">
+            <div class="tag-filter-row" data-fn="F{{ i+1 }}">
+              <span class="tag-filter-label">F{{ i+1 }}</span>
               <select name="tag_key__{{ i }}"
                       hx-get="/assets/tag_values"
                       hx-trigger="change"
@@ -202,9 +305,16 @@
             </div>
           {% endfor %}
         </div>
-        <button type="submit" class="btn-secondary btn-small" style="margin-top: 0.5rem">Applica filtri tag</button>
-      </details>
-    </details>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-link"
+                  onclick="document.getElementById('tag-filters-modal').classList.remove('open');">
+            Annulla
+          </button>
+          <button type="submit" class="btn-primary">Applica filtri</button>
+        </div>
+      </div>
+    </div>
 
     {# Lista asset principale (full-width, no piu' sidebar). #}
     <div class="qualified-main-wrap">
@@ -328,31 +438,49 @@
   </form>
 </section>
 
-{# JS: multi-select dropdown searchable per il menu Qualifier eseguiti. #}
+{# JS: helper per le due modali (qualifier picker + tag filters builder). #}
 <script>
-function msddToggle(btn) {
-  const panel = btn.nextElementSibling;
-  const wasOpen = panel.classList.contains('open');
-  // chiudi tutti gli altri panel
-  document.querySelectorAll('.multi-select-panel.open').forEach(p => p.classList.remove('open'));
-  if (!wasOpen) {
-    panel.classList.add('open');
-    const search = panel.querySelector('.multi-select-search');
-    if (search) search.focus();
-  }
-}
-function msddFilter(input) {
+// --- Qualifier picker modal: filter dei card per testo (search) ---
+function qpmFilter(input) {
   const filter = input.value.toLowerCase().trim();
-  const options = input.closest('.multi-select-panel').querySelectorAll('.multi-select-option');
-  options.forEach(opt => {
-    const text = opt.getAttribute('data-search') || opt.textContent.toLowerCase();
-    opt.style.display = (!filter || text.includes(filter)) ? '' : 'none';
+  const cards = document.querySelectorAll('#qualifier-picker-list .qualifier-card');
+  cards.forEach(c => {
+    const text = c.getAttribute('data-search') || c.textContent.toLowerCase();
+    c.style.display = (!filter || text.includes(filter)) ? '' : 'none';
   });
 }
-// Chiudi dropdown al click fuori
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('.multi-select-dropdown')) {
-    document.querySelectorAll('.multi-select-panel.open').forEach(p => p.classList.remove('open'));
+
+// --- Tag filters modal: mostra/nasconde input expression sotto radio Custom ---
+function tfmModeChanged(radio) {
+  const block = document.getElementById('tag-expr-block');
+  if (!block) return;
+  block.style.display = (radio.value === 'custom') ? '' : 'none';
+}
+
+// --- Tag filters modal: inserisce un token nell'input expression al cursore ---
+function tfmInsertToken(token) {
+  const inp = document.getElementById('tag-expr-input');
+  if (!inp) return;
+  const start = inp.selectionStart ?? inp.value.length;
+  const end = inp.selectionEnd ?? inp.value.length;
+  const before = inp.value.slice(0, start);
+  const after = inp.value.slice(end);
+  // Aggiungi spazio prima/dopo se serve per leggibilita'
+  const needSpaceBefore = before && !before.endsWith(' ') && !before.endsWith('(');
+  const needSpaceAfter = after && !after.startsWith(' ') && !after.startsWith(')');
+  const sep1 = needSpaceBefore ? ' ' : '';
+  const sep2 = needSpaceAfter ? ' ' : '';
+  inp.value = before + sep1 + token + sep2 + after;
+  inp.focus();
+  // Posiziona il cursore dopo il token inserito
+  const pos = (before + sep1 + token + sep2).length;
+  inp.setSelectionRange(pos, pos);
+}
+
+// Esc chiude le modali
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
   }
 });
 </script>

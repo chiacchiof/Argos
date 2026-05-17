@@ -2035,6 +2035,190 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
 /* ============================================================
    /qualified — tab asset-centric con menu qualifier
    ============================================================ */
+/* Bottoni-trigger per le modali nel filter-panel di /qualified (Qualifier
+   picker, Tag filters builder). Aspetto simile a <select> ma click apre modale. */
+.modal-trigger-field { position: relative; }
+.modal-trigger-btn {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.65rem;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #24292f;
+  text-align: left;
+}
+.modal-trigger-btn:hover {
+  border-color: #0969da;
+  background: #f6f8fa;
+}
+.modal-trigger-btn strong { color: #0969da; }
+.modal-trigger-icon {
+  color: #57606a;
+  font-size: 0.9em;
+  flex: 0 0 auto;
+}
+
+/* Modali wide (per qualifier picker e tag filter builder). */
+.modal-content.modal-wide {
+  max-width: 760px;
+}
+
+/* Qualifier picker modal: cards con descrizione (task.objective). */
+.qualifier-modal-search {
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.92rem;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  margin-bottom: 0.6rem;
+  box-sizing: border-box;
+}
+.qualifier-cards {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+}
+.qualifier-card {
+  border-bottom: 1px solid #eaeef2;
+}
+.qualifier-card:last-child { border-bottom: none; }
+.qualifier-card.qualifier-card-active {
+  background: #ddf4ff;
+}
+.qualifier-card label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  cursor: pointer;
+  margin: 0;
+}
+.qualifier-card label:hover {
+  background: #f6f8fa;
+}
+.qualifier-card.qualifier-card-active label:hover { background: #c8e9ff; }
+.qualifier-card input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0.2rem 0 0 0;
+}
+.qualifier-card-body {
+  flex: 1;
+  min-width: 0;
+}
+.qualifier-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.2rem;
+}
+.qualifier-card-name {
+  flex: 1;
+  color: #24292f;
+  font-size: 0.95rem;
+}
+.qualifier-card-counts {
+  display: inline-flex;
+  gap: 0.3rem;
+  font-size: 0.74rem;
+  flex: 0 0 auto;
+}
+.qualifier-card-counts .badge {
+  display: inline-block;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  font-weight: 500;
+}
+.qualifier-card-counts .badge-ok  { background: #dafbe1; color: #1a7f37; }
+.qualifier-card-counts .badge-off { background: #ffebe9; color: #cf222e; }
+.qualifier-card-meta {
+  font-size: 0.78rem;
+  color: #57606a;
+  margin-bottom: 0.3rem;
+}
+.qualifier-card-slug { color: #6e7781; }
+.qualifier-card-objective {
+  margin: 0.3rem 0 0 0;
+  font-size: 0.85rem;
+  color: #57606a;
+  line-height: 1.35;
+}
+
+/* Tag filters modal: builder AND/OR/Custom. */
+.tag-mode-fieldset {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 0.5rem 0.8rem;
+  margin: 0.4rem 0;
+}
+.tag-mode-fieldset legend {
+  font-size: 0.85rem;
+  color: #57606a;
+  padding: 0 0.3rem;
+}
+.tag-mode-fieldset .radio-inline {
+  display: block;
+  padding: 0.2rem 0;
+  font-size: 0.9rem;
+}
+.tag-mode-fieldset .radio-inline input[type="radio"] {
+  width: auto;
+  margin-right: 0.35rem;
+}
+.tag-filters-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.tag-filter-row {
+  display: grid;
+  grid-template-columns: 30px 1fr 1fr;
+  gap: 0.4rem;
+  align-items: center;
+}
+.tag-filter-label {
+  font-family: monospace;
+  font-weight: 600;
+  color: #0969da;
+  text-align: center;
+}
+.tag-filter-row select {
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.88rem;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+}
+.tag-expr-helpers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.tag-helper-btn {
+  padding: 0.15rem 0.5rem;
+  font-family: monospace;
+  font-size: 0.82rem;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.tag-helper-btn:hover {
+  background: #ddf4ff;
+  border-color: #0969da;
+}
+
 /* Multi-select dropdown searchable (per "Qualifier eseguiti" in /qualified
    e potenzialmente riusabile altrove). Pattern: <button> trigger + <div>
    panel con search + checkbox list. JS in qualified_list.html (msdd*). */
