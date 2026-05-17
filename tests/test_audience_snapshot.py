@@ -349,6 +349,59 @@ def test_pick_gap_minutes_defaults_and_override():
         assert 8.0 <= g <= 30.0
 
 
+def test_full_form_update_preserves_target_asset_ids(audience_setup):
+    """Bug 2026-05-17: salvataggio full form NON deve toccare target_asset_ids.
+    Scenario: utente apre /qualified in tab nuova, aggiunge asset via
+    append_qualified_set (DB aggiornato), torna a tab originale (hidden input
+    stale), modifica altri campi e salva. La lista target_asset_ids deve
+    restare quella nel DB, non quella stale del form."""
+    from app.main import app
+    if not db_cloud.get_user_by_email("testadmin"):
+        db_cloud.create_user(
+            tenant_id=None, email="testadmin",
+            password_hash=hash_password("testpwd"), role="super_admin",
+        )
+
+    aids = audience_setup["asset_ids"]
+    # Task con audience iniziale di 1 asset (simula stato render pagina form)
+    tid = db.create_task({
+        "name": "X", "objective": "o", "agent_mode": "outreach",
+        "target_asset_ids": [aids[0]],
+    })
+
+    client = TestClient(app)
+    with client:
+        client.post("/login", data={"email": "testadmin", "password": "testpwd"})
+
+        # DB intanto si aggiorna fuori dal form (simula picker in nuova tab)
+        db.update_task_target_asset_ids(tid, aids)
+        assert db.get_task(tid)["target_asset_ids"] == aids
+
+        # Utente salva il form dalla tab originale: hidden input STALE = [aids[0]]
+        # (oppure non c'e' piu' affatto). In entrambi i casi, deve PRESERVARE
+        # il valore corrente del DB (aids).
+        r = client.post(
+            f"/tasks/{tid}",
+            data={
+                "name": "X edited",
+                "objective": "o",
+                "agent_mode": "outreach",
+                "max_iterations": 10,
+                "model": "qwen3.5:latest",
+                "output_format": "txt",
+                "llm_provider": "ollama",
+                # invio stale (vecchia lista)
+                "target_asset_ids": str(aids[0]),
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303, r.text[:300]
+        # PRESERVE: DB rimane con 3 asset, non sovrascritto a 1
+        assert db.get_task(tid)["target_asset_ids"] == aids
+        # E il name e' aggiornato (per verificare che il save sia avvenuto)
+        assert db.get_task(tid)["name"] == "X edited"
+
+
 def test_append_qualified_set_unions_dedup(audience_setup):
     """POST /tasks/<id>/append_qualified_set fa UNION dei nuovi ID con esistenti."""
     from app.main import app

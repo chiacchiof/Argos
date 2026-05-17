@@ -1015,13 +1015,6 @@ async def update_task(
     target_contact_ids_raw = (
         form.getlist("target_contact_ids") if hasattr(form, "getlist") else []
     )
-    target_asset_ids_raw: list = (
-        form.getlist("target_asset_ids") if hasattr(form, "getlist") else []
-    )
-    if not target_asset_ids_raw:
-        single = (form.get("target_asset_ids") or "").strip()
-        if single:
-            target_asset_ids_raw = [single]
     # Parsing outreach_filter_tags da campi indicizzati tag_key__N/tag_value__N
     # (UI multi-row). Vince ordine di insert.
     outreach_filter_tags_raw: list[dict] = []
@@ -1034,12 +1027,15 @@ async def update_task(
     if not existing:
         raise HTTPException(status_code=404, detail="task non trovato")
 
-    # Preserve: se il form NON invia target_asset_ids (o invia vuoto), mantieni
-    # quello esistente. Cosi' modifiche ad altri campi non azzerano l'audience.
-    if not target_asset_ids_raw:
-        existing_aids = existing.get("target_asset_ids") or []
-        if existing_aids:
-            target_asset_ids_raw = [str(x) for x in existing_aids]
+    # target_asset_ids: ALWAYS PRESERVE dal DB sul full form update.
+    # Source of truth e' il DB, modificato solo via endpoint dedicati (HTMX
+    # add/remove, append_qualified_set, from_qualified). Senza questo, flussi
+    # multi-tab/HTMX perderebbero gli asset aggiunti: l'hidden input nel form
+    # e' stale rispetto al DB se l'utente ha aggiunto/rimosso asset dopo il
+    # render iniziale della pagina (es. tab originale + picker in nuova tab).
+    target_asset_ids_raw: list = [
+        str(x) for x in (existing.get("target_asset_ids") or [])
+    ]
 
     # PRESERVE-ON-EMPTY per i campi sensibili (password): se il form li manda
     # vuoti significa "non cambiare", non "azzera". I browser non ri-popolano

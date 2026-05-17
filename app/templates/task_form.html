@@ -15,12 +15,15 @@
   {% set p = task or {} %}
   <form method="post" action="{% if is_edit %}/tasks/{{ task.id }}{% else %}/tasks{% endif %}" id="task-form">
 
-    {# Hidden snapshot dell'audience: in edit, il valore corrente viene rispedito
-       cosi' il salvataggio non azzera la lista (popolata via HTMX add/remove).
-       In create, vuoto -> [] -> nessun snapshot. Il backend riusa il validator
-       di TaskIn (parse_contact_ids) che accetta CSV/JSON. #}
-    <input type="hidden" name="target_asset_ids"
-           value="{{ (p.get('target_asset_ids') or []) | tojson }}">
+    {# IMPORTANTE: `target_asset_ids` NON e' editabile via form full update.
+       Source of truth e' il DB, modificato esclusivamente via:
+         - /tasks/<id>/append_asset_id     (HTMX add singolo)
+         - /tasks/<id>/remove_asset_id     (HTMX remove)
+         - /tasks/<id>/append_qualified_set (form POST dal banner /qualified)
+         - /tasks/from_qualified            (creazione)
+       Un hidden input qui sarebbe stale: in flussi multi-tab (l'utente apre
+       /qualified in nuova tab e ritorna alla tab del form) il vecchio valore
+       sovrascriverebbe quello nuovo. Vedi route `task_update`. #}
 
     {# Stepper bar (popolata da JS in base agli step visibili per la modalità) #}
     <nav id="wizard-stepper" class="wizard-stepper" aria-label="Configurazione task per fasi"></nav>
