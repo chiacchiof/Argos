@@ -64,9 +64,13 @@ class TaskIn(BaseModel):
     max_dms_per_run: int = Field(default=30, ge=1, le=200)
     max_dms_per_session: int = Field(default=5, ge=1, le=15)
     headed: int = Field(default=1, ge=0, le=1)
-    # Selezione esplicita di target outreach_social: lista di contact.id.
+    # Selezione esplicita di target outreach_social: lista di contact.id (legacy).
     # Se vuota, il runner usa TUTTI i qualified con social[platform] popolato.
     target_contact_ids: list[int] = Field(default_factory=list)
+    # Audience snapshot (Step 1 piano /qualified->task): lista asset.id estratta
+    # dal picker /qualified o popolata via HTMX search nel task form. Quando non
+    # vuota, vince sui filtri legacy outreach_filter_* in tutti i runner outreach.
+    target_asset_ids: list[int] = Field(default_factory=list)
     # Outreach WhatsApp (agent_mode=outreach_whatsapp)
     whatsapp_engine_preference: Literal["auto", "force_A", "force_B"] = "auto"
     whatsapp_dry_run: int = Field(default=0, ge=0, le=1)
@@ -141,7 +145,7 @@ class TaskIn(BaseModel):
             return [line.strip() for line in v.splitlines() if line.strip()]
         return v or []
 
-    @field_validator("target_contact_ids", mode="before")
+    @field_validator("target_contact_ids", "target_asset_ids", mode="before")
     @classmethod
     def parse_contact_ids(cls, v):
         if v is None:

@@ -122,6 +122,239 @@ async def index(request: Request, status_tag: str = "", type: str = ""):
     )
 
 
+def _build_qualified_filter_kwargs_from_form(form) -> dict:
+    """Estrae i parametri /qualified da un mapping form (POST). Riusa il parser
+    di app.routes.assets._parse_extra_tag_filters_from_mapping per le coppie tag.
+    Tutti i parametri sono opzionali; quelli vuoti vengono normalizzati a None.
+
+    Ritorna kwargs pronti per `db.list_qualified_assets(...)` / `count_qualified_assets`.
+    """
+    from .assets import _parse_extra_tag_filters_from_mapping
+
+    def _opt_int(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        try:
+            return int(s)
+        except (TypeError, ValueError):
+            return None
+
+    qualifiers_csv = (form.get("qualifiers") or "").strip()
+    qualifier_slugs = [s.strip() for s in qualifiers_csv.split(",") if s.strip()]
+    status = (form.get("status") or "qualified").strip().lower()
+    if status not in ("qualified", "rejected", "both"):
+        status = "qualified"
+    tag_mode = (form.get("tag_mode") or "and").strip().lower()
+    if tag_mode not in ("and", "or", "custom"):
+        tag_mode = "and"
+    tag_expr = (form.get("tag_expr") or "").strip()
+    extra_tag_filters = _parse_extra_tag_filters_from_mapping(form)
+
+    # Se mode=custom ma expr vuoto, fallback ad and (stessa logica del GET).
+    if tag_mode == "custom" and not tag_expr:
+        tag_mode = "and"
+
+    return {
+        "qualifier_slugs": qualifier_slugs,
+        "status_filter": status,
+        "score_min": _opt_int(form.get("score_min")),
+        "asset_type": (form.get("asset_type") or "").strip() or None,
+        "source_task_id": _opt_int(form.get("source_task_id")),
+        "search": (form.get("q") or "").strip() or None,
+        "extra_tag_filters": extra_tag_filters or None,
+        "tag_mode": tag_mode,
+        "tag_expr": tag_expr or None,
+    }
+
+
+_MAX_QUALIFIED_SNAPSHOT = 10000
+
+
+def _qualified_audience_summary(kw: dict, count: int) -> str:
+    """Stringa human-readable per `task.notes` quando il task viene creato da
+    /qualified. Mostra i filtri principali + count."""
+    parts: list[str] = []
+    if kw["qualifier_slugs"]:
+        parts.append("qualifier=" + ",".join(kw["qualifier_slugs"]))
+    if kw["status_filter"] and kw["status_filter"] != "qualified":
+        parts.append(f"status={kw['status_filter']}")
+    if kw["score_min"] is not None:
+        parts.append(f"score>={kw['score_min']}")
+    if kw["asset_type"]:
+        parts.append(f"type={kw['asset_type']}")
+    if kw["source_task_id"]:
+        parts.append(f"src_task={kw['source_task_id']}")
+    if kw["extra_tag_filters"]:
+        tag_str = ",".join(f"{k}={v}" for k, v in kw["extra_tag_filters"])
+        glue = kw["tag_mode"].upper() if kw["tag_mode"] != "and" else ""
+        if glue:
+            parts.append(f"tags({glue})={tag_str}")
+        else:
+            parts.append(f"tags={tag_str}")
+    when = db.now_iso()[:10]
+    head = f"Audience da /qualified ({when}): {count} asset"
+    if parts:
+        head += " — " + ", ".join(parts)
+    return head
+
+
+@router.post("/tasks/from_qualified")
+async def task_from_qualified(request: Request):
+    """Crea un task outreach con `target_asset_ids` snapshot dai filtri /qualified.
+
+    Riceve via form POST: tutti i filtri /qualified attivi + `name` + `agent_mode`
+    + opzionale `social_platform`. Estrae fino a `_MAX_QUALIFIED_SNAPSHOT` asset_id
+    e crea un task in stato "draft" (minimo: name, objective placeholder, agent_mode,
+    target_asset_ids). L'utente viene reindirizzato a /tasks/<id>/edit per completare.
+    """
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    agent_mode = (form.get("agent_mode") or "").strip()
+    social_platform = (form.get("social_platform") or "").strip().lower() or None
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Nome task obbligatorio.")
+    if agent_mode not in ("outreach", "outreach_social", "outreach_whatsapp"):
+        raise HTTPException(status_code=400, detail=f"agent_mode non valido: {agent_mode!r}")
+    if agent_mode == "outreach_social":
+        if social_platform not in ("instagram", "tiktok", "facebook"):
+            raise HTTPException(
+                status_code=400,
+                detail="Per agent_mode=outreach_social serve social_platform IG/TT/FB."
+            )
+
+    kw = _build_qualified_filter_kwargs_from_form(form)
+
+    # Estrai snapshot: limit cap soft.
+    rows = db.list_qualified_assets(limit=_MAX_QUALIFIED_SNAPSHOT, offset=0, **kw)
+    asset_ids = [r["id"] for r in rows]
+    if not asset_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="L'audience filtrata e' vuota: torna a /qualified e raffina i filtri.",
+        )
+
+    summary = _qualified_audience_summary(kw, len(asset_ids))
+
+    # Default minimi per il task draft.
+    task_data = {
+        "name": name,
+        "description": summary,
+        "objective": summary,  # objective placeholder, l'utente lo modifica in edit
+        "agent_mode": agent_mode,
+        "social_platform": social_platform,
+        "target_asset_ids": asset_ids,
+        "notes": summary,
+        "model": settings.default_model,
+        "output_format": "md",
+    }
+    task_id = db.create_task(task_data)
+
+    flash = f"Task+%23{task_id}+creato:+{len(asset_ids)}+asset+audience"
+    return RedirectResponse(
+        url=f"/tasks/{task_id}/edit?flash={flash}",
+        status_code=303,
+    )
+
+
+@router.post("/tasks/{task_id}/append_qualified_set")
+async def task_append_qualified_set(request: Request, task_id: int):
+    """Aggiunge UN set qualificato (filtri /qualified) al `target_asset_ids` del
+    task. Union + dedup, conserva ordine (vecchi primi, nuovi in coda)."""
+    form = await request.form()
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+
+    kw = _build_qualified_filter_kwargs_from_form(form)
+    rows = db.list_qualified_assets(limit=_MAX_QUALIFIED_SNAPSHOT, offset=0, **kw)
+    new_ids = [r["id"] for r in rows]
+    if not new_ids:
+        flash = "Nessun+asset+aggiunto+(filtri+vuoti)."
+        return RedirectResponse(
+            url=f"/tasks/{task_id}/edit?flash={flash}",
+            status_code=303,
+        )
+
+    existing: list[int] = list(task.get("target_asset_ids") or [])
+    existing_set = set(existing)
+    added = 0
+    for aid in new_ids:
+        if aid in existing_set:
+            continue
+        existing.append(aid)
+        existing_set.add(aid)
+        added += 1
+    # Update task con la merged list. Riusiamo update_task: ma update_task richiede
+    # data dict completo. Patch minimale via SQL diretto sarebbe meglio.
+    db.update_task_target_asset_ids(task_id, existing)
+
+    flash = f"{added}+asset+aggiunti+(audience+ora+a+{len(existing)})"
+    return RedirectResponse(
+        url=f"/tasks/{task_id}/edit?flash={flash}",
+        status_code=303,
+    )
+
+
+@router.post("/tasks/{task_id}/append_asset_id", response_class=HTMLResponse)
+async def task_append_asset_id(request: Request, task_id: int, asset_id: int):
+    """HTMX: aggiunge un singolo asset_id al `target_asset_ids` del task.
+    Ritorna il partial della tabella snapshot aggiornata."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+    asset = db.get_asset(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="asset non trovato")
+
+    existing: list[int] = list(task.get("target_asset_ids") or [])
+    if asset_id not in existing:
+        existing.append(asset_id)
+        db.update_task_target_asset_ids(task_id, existing)
+
+    audience_assets = db.get_assets_by_ids(existing[:50])
+    audience_assets_by_id = {a["id"]: a for a in audience_assets}
+    sorted_audience = [audience_assets_by_id[aid] for aid in existing[:50] if aid in audience_assets_by_id]
+    return templates.TemplateResponse(
+        request,
+        "_audience_snapshot_table.html",
+        {
+            "task": task,
+            "p": {"target_asset_ids": existing},
+            "audience_assets": sorted_audience,
+        },
+    )
+
+
+@router.post("/tasks/{task_id}/remove_asset_id", response_class=HTMLResponse)
+async def task_remove_asset_id(request: Request, task_id: int, asset_id: int):
+    """HTMX: rimuove un singolo asset_id dal `target_asset_ids`."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+
+    existing: list[int] = list(task.get("target_asset_ids") or [])
+    new_list = [aid for aid in existing if aid != asset_id]
+    if len(new_list) != len(existing):
+        db.update_task_target_asset_ids(task_id, new_list)
+
+    audience_assets = db.get_assets_by_ids(new_list[:50])
+    audience_assets_by_id = {a["id"]: a for a in audience_assets}
+    sorted_audience = [audience_assets_by_id[aid] for aid in new_list[:50] if aid in audience_assets_by_id]
+    return templates.TemplateResponse(
+        request,
+        "_audience_snapshot_table.html",
+        {
+            "task": task,
+            "p": {"target_asset_ids": new_list},
+            "audience_assets": sorted_audience,
+        },
+    )
+
+
 @router.get("/tasks/new", response_class=HTMLResponse)
 async def new_task_form(request: Request):
     try:
@@ -136,6 +369,7 @@ async def new_task_form(request: Request):
             "models": models,
             "default_model": settings.default_model,
             "errors": None,
+            "audience_assets": [],
             **_form_extra_context(),
         },
     )
@@ -150,6 +384,17 @@ async def edit_task_form(request: Request, task_id: int):
         models = await list_models()
     except Exception:
         models = [settings.default_model]
+
+    # Pre-compute audience snapshot (primi 50 asset) per la sezione 6a in
+    # task_form. Necessario per il partial _audience_snapshot_table.
+    audience_assets: list[dict] = []
+    aids = task.get("target_asset_ids") or []
+    if aids:
+        first_50 = aids[:50]
+        raw = db.get_assets_by_ids(first_50)
+        by_id = {a["id"]: a for a in raw}
+        audience_assets = [by_id[aid] for aid in first_50 if aid in by_id]
+
     return templates.TemplateResponse(
         request,
         "task_form.html",
@@ -158,6 +403,7 @@ async def edit_task_form(request: Request, task_id: int):
             "models": models,
             "default_model": settings.default_model,
             "errors": None,
+            "audience_assets": audience_assets,
             **_form_extra_context(),
         },
     )
@@ -212,6 +458,7 @@ def _form_to_dict(
     max_dms_per_session: int = 5,
     headed: str = "",
     target_contact_ids: list[str] | None = None,
+    target_asset_ids: list[str] | None = None,
     # Campi outreach_whatsapp (aggiunti 2026-05-13)
     whatsapp_engine_preference: str = "auto",
     whatsapp_dry_run: str = "",
@@ -280,6 +527,7 @@ def _form_to_dict(
         "max_dms_per_session": int(max_dms_per_session or 5),
         "headed": 1 if (str(headed).strip() in ("1", "on", "true", "yes")) else 0,
         "target_contact_ids": list(target_contact_ids or []),
+        "target_asset_ids": list(target_asset_ids or []),
         # outreach_whatsapp
         "whatsapp_engine_preference": (whatsapp_engine_preference or "auto").strip(),
         "whatsapp_dry_run": 1 if (str(whatsapp_dry_run).strip() in ("1", "on", "true", "yes")) else 0,
@@ -522,6 +770,17 @@ async def create_task(
     target_contact_ids_raw = (
         form.getlist("target_contact_ids") if hasattr(form, "getlist") else []
     )
+    # target_asset_ids: hidden field nel form (JSON CSV string oppure getlist).
+    # Pattern: hidden con value JSON "[1,2,3]" oppure CSV "1,2,3". `parse_contact_ids`
+    # in models.py gestisce entrambi.
+    target_asset_ids_raw: list = (
+        form.getlist("target_asset_ids") if hasattr(form, "getlist") else []
+    )
+    if not target_asset_ids_raw:
+        # fallback: campo singolo nascosto con CSV/JSON
+        single = (form.get("target_asset_ids") or "").strip()
+        if single:
+            target_asset_ids_raw = [single]
     # Parsing outreach_filter_tags da campi indicizzati tag_key__N/tag_value__N
     # (UI multi-row). Vince ordine di insert.
     outreach_filter_tags_raw: list[dict] = []
@@ -549,6 +808,7 @@ async def create_task(
         max_dms_per_session=max_dms_per_session,
         headed=headed,
         target_contact_ids=target_contact_ids_raw,
+        target_asset_ids=target_asset_ids_raw,
         whatsapp_engine_preference=whatsapp_engine_preference,
         whatsapp_dry_run=whatsapp_dry_run,
         whatsapp_account_id=whatsapp_account_id,
@@ -660,6 +920,13 @@ async def update_task(
     target_contact_ids_raw = (
         form.getlist("target_contact_ids") if hasattr(form, "getlist") else []
     )
+    target_asset_ids_raw: list = (
+        form.getlist("target_asset_ids") if hasattr(form, "getlist") else []
+    )
+    if not target_asset_ids_raw:
+        single = (form.get("target_asset_ids") or "").strip()
+        if single:
+            target_asset_ids_raw = [single]
     # Parsing outreach_filter_tags da campi indicizzati tag_key__N/tag_value__N
     # (UI multi-row). Vince ordine di insert.
     outreach_filter_tags_raw: list[dict] = []
@@ -671,6 +938,13 @@ async def update_task(
     existing = db.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="task non trovato")
+
+    # Preserve: se il form NON invia target_asset_ids (o invia vuoto), mantieni
+    # quello esistente. Cosi' modifiche ad altri campi non azzerano l'audience.
+    if not target_asset_ids_raw:
+        existing_aids = existing.get("target_asset_ids") or []
+        if existing_aids:
+            target_asset_ids_raw = [str(x) for x in existing_aids]
 
     # PRESERVE-ON-EMPTY per i campi sensibili (password): se il form li manda
     # vuoti significa "non cambiare", non "azzera". I browser non ri-popolano
@@ -713,6 +987,7 @@ async def update_task(
         max_dms_per_session=max_dms_per_session,
         headed=headed,
         target_contact_ids=target_contact_ids_raw,
+        target_asset_ids=target_asset_ids_raw,
         whatsapp_engine_preference=whatsapp_engine_preference,
         whatsapp_dry_run=whatsapp_dry_run,
         whatsapp_account_id=whatsapp_account_id,

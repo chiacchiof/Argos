@@ -170,54 +170,71 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         _ingest_artifact(task["id"], job_id, artifact, jlog)
 
     # 4. seleziona asset target.
-    # Priorità delle sorgenti degli asset candidati:
-    #   1. `outreach_filter_source_task_id` (filtro esplicito dal form) — vince su upstream
+    # Priorità:
+    #   0. `target_asset_ids` (snapshot esplicito dal task — vince su tutto) o
+    #      `target_contact_ids` (legacy, retrocompat: i runner social/wa lo
+    #      onorano gia' allo stesso modo)
+    #   1. `outreach_filter_source_task_id` (filtro esplicito dal form)
     #   2. `outreach_filter_source_follower_of` -tradotto in asset_tag filter
     #   3. fallback upstream da workflow_edges o source_task_id=current
-    filter_tid_raw = task.get("outreach_filter_source_task_id")
-    filter_tid = int(filter_tid_raw) if str(filter_tid_raw or "").strip().isdigit() else None
-    filter_fof = (task.get("outreach_filter_source_follower_of") or "").strip() or None
-    filter_tags_raw = task.get("outreach_filter_tags") or []
-    if isinstance(filter_tags_raw, str):
+    explicit_ids_raw = task.get("target_asset_ids") or task.get("target_contact_ids") or []
+    explicit_ids: list[int] = []
+    for x in explicit_ids_raw:
         try:
-            import json as _json
-            filter_tags_raw = _json.loads(filter_tags_raw) or []
-        except Exception:
-            filter_tags_raw = []
-    filter_tags = [
-        (t.get("key"), t.get("value")) for t in filter_tags_raw
-        if isinstance(t, dict) and t.get("key") and t.get("value")
-    ]
-    # follower_of viene espresso come tag filter su asset_tags
-    if filter_fof:
-        filter_tags.append(("source_follower_of", filter_fof))
-    if filter_tid or filter_fof or filter_tags:
-        jlog(
-            f"Filtri destinatari: source_task_id={filter_tid}, "
-            f"source_follower_of={filter_fof!r}, tags={filter_tags}"
-        )
+            i = int(x)
+            if i > 0:
+                explicit_ids.append(i)
+        except (TypeError, ValueError):
+            continue
 
-    upstream_tid = filter_tid if filter_tid is not None else _resolve_source_task_for_assets(task)
     candidates: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
-    # Asset qualified, non optedout, non contacted, che abbiano almeno email o telegram_username.
-    for a in db.list_assets_for_email_outreach(
-        source_task_id=upstream_tid,
-        asset_tag_filters=filter_tags or None,
-        only_qualified=True,
-        exclude_optedout=True,
-        exclude_contacted=True,
-        limit=10000,
-    ):
-        if a["id"] in seen_ids:
-            continue
-        seen_ids.add(a["id"])
-        candidates.append(a)
-    # Quando non c'è upstream esplicito né filtro, considera asset ingestiti col job corrente
-    if not upstream_tid and not filter_fof and not filter_tags and not candidates:
+    n_skip_missing = 0  # asset_id esplicito non trovato in DB (eliminato post-snapshot)
+
+    if explicit_ids:
+        jlog(f"📌 Audience snapshot: {len(explicit_ids)} asset_id espliciti (filtri legacy ignorati).")
+        for aid in explicit_ids:
+            if aid in seen_ids:
+                continue
+            a = db.get_asset(aid)
+            if not a:
+                n_skip_missing += 1
+                continue
+            seen_ids.add(aid)
+            candidates.append(a)
+        if n_skip_missing:
+            jlog(f"  ⚠ {n_skip_missing} asset_id non trovati (eliminati post-snapshot)")
+    else:
+        # Branch legacy: filtri dinamici outreach_filter_*
+        filter_tid_raw = task.get("outreach_filter_source_task_id")
+        filter_tid = int(filter_tid_raw) if str(filter_tid_raw or "").strip().isdigit() else None
+        filter_fof = (task.get("outreach_filter_source_follower_of") or "").strip() or None
+        filter_tags_raw = task.get("outreach_filter_tags") or []
+        if isinstance(filter_tags_raw, str):
+            try:
+                import json as _json
+                filter_tags_raw = _json.loads(filter_tags_raw) or []
+            except Exception:
+                filter_tags_raw = []
+        filter_tags = [
+            (t.get("key"), t.get("value")) for t in filter_tags_raw
+            if isinstance(t, dict) and t.get("key") and t.get("value")
+        ]
+        # follower_of viene espresso come tag filter su asset_tags
+        if filter_fof:
+            filter_tags.append(("source_follower_of", filter_fof))
+        if filter_tid or filter_fof or filter_tags:
+            jlog(
+                f"Filtri destinatari: source_task_id={filter_tid}, "
+                f"source_follower_of={filter_fof!r}, tags={filter_tags}"
+            )
+
+        upstream_tid = filter_tid if filter_tid is not None else _resolve_source_task_for_assets(task)
+        # Asset qualified, non optedout, non contacted, che abbiano almeno email o telegram_username.
         for a in db.list_assets_for_email_outreach(
-            source_task_id=task["id"],
-            only_qualified=False,  # asset appena ingestiti possono essere 'new'
+            source_task_id=upstream_tid,
+            asset_tag_filters=filter_tags or None,
+            only_qualified=True,
             exclude_optedout=True,
             exclude_contacted=True,
             limit=10000,
@@ -226,10 +243,23 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 continue
             seen_ids.add(a["id"])
             candidates.append(a)
+        # Quando non c'è upstream esplicito né filtro, considera asset ingestiti col job corrente
+        if not upstream_tid and not filter_fof and not filter_tags and not candidates:
+            for a in db.list_assets_for_email_outreach(
+                source_task_id=task["id"],
+                only_qualified=False,  # asset appena ingestiti possono essere 'new'
+                exclude_optedout=True,
+                exclude_contacted=True,
+                limit=10000,
+            ):
+                if a["id"] in seen_ids:
+                    continue
+                seen_ids.add(a["id"])
+                candidates.append(a)
 
     jlog(f"Candidati outreach: {len(candidates)}")
     if not candidates:
-        jlog("Nessun asset da contattare. Verifica input_artifact_path o task upstream.")
+        jlog("Nessun asset da contattare. Verifica input_artifact_path, snapshot o filtri.")
 
     # 5. setup rate limit
     email_cfg = db.get_channel_config("email") or {}
@@ -247,8 +277,17 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     n_sent = 0
     n_failed = 0
-    n_skipped = 0
+    n_skip_optedout = 0
+    n_skip_already_contacted = 0
+    n_skip_no_email = 0
+    n_skip_no_telegram = 0
     stopped = False
+
+    def _log_skip(logf, asset_id: int, channel: str, reason: str) -> None:
+        logf.write(json.dumps({
+            "ts": db.now_iso(), "asset_id": asset_id,
+            "channel": channel, "status": "skipped", "reason": reason,
+        }) + "\n")
 
     with log_path.open("w", encoding="utf-8") as logf:
         for i, asset in enumerate(candidates, 1):
@@ -258,8 +297,14 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 stopped = True
                 break
 
-            if asset.get("outreach_status") in ("optedout", "contacted", "replied"):
-                n_skipped += 1
+            os_ = asset.get("outreach_status") or ""
+            if os_ == "optedout":
+                n_skip_optedout += 1
+                _log_skip(logf, asset["id"], "asset", "optedout")
+                continue
+            if os_ in ("contacted", "replied"):
+                n_skip_already_contacted += 1
+                _log_skip(logf, asset["id"], "asset", "already_contacted")
                 continue
 
             subject = _instantiate(subject_tpl, asset)
@@ -270,6 +315,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 try:
                     if channel == "email":
                         if not ch_email.is_valid_email(asset.get("email")):
+                            n_skip_no_email += 1
+                            _log_skip(logf, asset["id"], "email", "no_email")
                             continue
                         thread_id = db.get_or_create_thread(
                             asset_id=asset["id"], channel="email",
@@ -301,10 +348,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     elif channel == "telegram":
                         chat_id = asset.get("telegram_chat_id")
                         if not chat_id:
-                            jlog(
-                                f"  skip telegram per {asset.get('telegram_username') or asset['id']}: "
-                                "l'asset non ha ancora scritto al bot (chat_id mancante)"
-                            )
+                            n_skip_no_telegram += 1
+                            _log_skip(logf, asset["id"], "telegram", "no_telegram_chat_id")
                             continue
                         thread_id = db.get_or_create_thread(
                             asset_id=asset["id"], channel="telegram",
@@ -335,31 +380,59 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             if sent_any:
                 db.update_asset_outreach_status(asset["id"], "contacted")
                 n_sent += 1
-            else:
-                n_skipped += 1
 
             # rate limit
             if i < len(candidates):
                 await asyncio.sleep(sleep_between)
 
-    # 7. report
+    n_skipped = n_skip_optedout + n_skip_already_contacted + n_skip_no_email + n_skip_no_telegram
+
+    # 7. report con breakdown skip per canale + stato
     fmt = task.get("output_format") or "md"
     report_ext = "md" if fmt in ("md", "both") else "txt"
     status_text = "INTERROTTO dall'utente" if stopped else "Completato"
-    report = (
-        f"# Outreach run {ts}\n\n"
-        f"- **Task**: {task['name']} (#{task['id']})\n"
-        f"- **Canali**: {', '.join(active_channels)}\n"
-        f"- **Candidati**: {len(candidates)}\n"
-        f"- **Inviati**: {n_sent}\n"
-        f"- **Falliti**: {n_failed}\n"
-        f"- **Skippati**: {n_skipped}\n"
-        f"- **Stato**: {status_text}\n\n"
-        f"Vedi `outreach_log.jsonl` per il dettaglio per messaggio.\n"
-    )
+
+    audience_size = len(explicit_ids) if explicit_ids else len(candidates)
+    skip_lines: list[str] = []
+    if "email" in active_channels and n_skip_no_email:
+        skip_lines.append(f"  - **{n_skip_no_email}** asset senza email valida")
+    if "telegram" in active_channels and n_skip_no_telegram:
+        skip_lines.append(f"  - **{n_skip_no_telegram}** asset senza `telegram_chat_id` (non hanno scritto al bot)")
+    if n_skip_optedout:
+        skip_lines.append(f"  - **{n_skip_optedout}** outreach_status=optedout")
+    if n_skip_already_contacted:
+        skip_lines.append(f"  - **{n_skip_already_contacted}** outreach_status=contacted/replied (run precedente)")
+    if n_skip_missing:
+        skip_lines.append(f"  - **{n_skip_missing}** asset eliminati post-snapshot (id non piu' presenti in DB)")
+
+    report_lines = [
+        f"# Outreach run {ts}",
+        "",
+        f"- **Task**: {task['name']} (#{task['id']})",
+        f"- **Canali**: {', '.join(active_channels)}",
+        f"- **Audience**: {audience_size} asset" + (" (snapshot esplicito)" if explicit_ids else " (filtri dinamici)"),
+        f"- **Inviati**: {n_sent}",
+        f"- **Falliti**: {n_failed}",
+        f"- **Skippati totali**: {n_skipped}",
+    ]
+    if skip_lines:
+        report_lines.append("- **Breakdown skip**:")
+        report_lines.extend(skip_lines)
+    report_lines.extend([
+        f"- **Stato**: {status_text}",
+        "",
+        "Vedi `outreach_log.jsonl` per il dettaglio per messaggio.",
+        "",
+    ])
+    report = "\n".join(report_lines)
+
     report_path = run_dir / f"report.{report_ext}"
     report_path.write_text(report, encoding="utf-8")
-    jlog(f"Outreach concluso: {n_sent} inviati, {n_failed} falliti, {n_skipped} skippati.")
+    jlog(
+        f"Outreach concluso: {n_sent} inviati, {n_failed} falliti, {n_skipped} skippati "
+        f"(no_email={n_skip_no_email}, no_telegram={n_skip_no_telegram}, "
+        f"optedout={n_skip_optedout}, already={n_skip_already_contacted}, missing={n_skip_missing})."
+    )
 
     final_status = "cancelled" if stopped else "done"
     db.update_job(

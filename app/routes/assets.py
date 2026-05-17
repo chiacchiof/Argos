@@ -127,16 +127,23 @@ _QUALIFIED_PAGE_SIZE = 100
 _MAX_EXTRA_TAG_SLOTS = 6
 
 
-def _parse_extra_tag_filters(request: Request) -> list[tuple[str, str]]:
-    """Parsa form fields `tag_key__N` / `tag_value__N` (con N=0..5, F1..F6 in UI)
-    dal querystring. Pattern compatibile con quello già usato in /inbox/contacts."""
+def _parse_extra_tag_filters_from_mapping(mp) -> list[tuple[str, str]]:
+    """Helper interno: estrae `tag_key__N`/`tag_value__N` (N=0..5) da un mapping
+    qualsiasi (Starlette QueryParams o FormData). Pattern usato in /inbox/contacts
+    e /qualified."""
     out: list[tuple[str, str]] = []
     for i in range(_MAX_EXTRA_TAG_SLOTS):
-        k = (request.query_params.get(f"tag_key__{i}") or "").strip().lower()
-        v = (request.query_params.get(f"tag_value__{i}") or "").strip()
+        k = (mp.get(f"tag_key__{i}") or "").strip().lower()
+        v = (mp.get(f"tag_value__{i}") or "").strip()
         if k and v:
             out.append((k, v))
     return out
+
+
+def _parse_extra_tag_filters(request: Request) -> list[tuple[str, str]]:
+    """Parsa tag filters dal querystring (GET). Per form data (POST) usa
+    `_parse_extra_tag_filters_from_mapping(form_data)` da `routes/tasks.py`."""
+    return _parse_extra_tag_filters_from_mapping(request.query_params)
 
 
 def _parse_optional_int(value: str | None) -> int | None:
@@ -167,6 +174,7 @@ async def qualified_assets_list(
     per_page: str = "",
     tag_mode: str = "and",
     tag_expr: str = "",
+    return_to_task: str = "",
 ):
     """Tab Qualified: asset-centric con multi-select qualifier + filtri.
 
@@ -290,6 +298,7 @@ async def qualified_assets_list(
             "tag_mode": tag_mode_v,
             "tag_expr": tag_expr_v,
             "tag_expr_error": tag_expr_error,
+            "return_to_task": _parse_optional_int(return_to_task),
             "page": page_v,
             "per_page": per_page_v,
             "total": total,

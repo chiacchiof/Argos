@@ -1391,6 +1391,50 @@ main.wide { max-width: 1300px; }
   display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
 }
 
+/* Card audience snapshot mostrata in /tasks/<id> (task_detail) per task
+   outreach con `target_asset_ids` valorizzato. */
+.audience-summary-card {
+  margin: 0.8rem 0;
+  padding: 0.6rem 0.9rem;
+  background: #f0f7ff;
+  border: 1px solid #b3d4f5;
+  border-radius: 6px;
+  font-size: 0.93rem;
+}
+.audience-summary-card a { color: #0969da; }
+
+/* Sezione "Audience asset" nel task_form (snapshot list + add search). */
+.audience-section .audience-snapshot-table {
+  font-size: 0.88rem;
+}
+.audience-section .audience-channels {
+  font-size: 1.05rem;
+  letter-spacing: 0.15rem;
+}
+.audience-section .audience-search-add {
+  padding-top: 0.5rem;
+  border-top: 1px dashed #d0d7de;
+}
+.audience-section .audience-bulk-add {
+  padding-top: 0.3rem;
+}
+
+/* Banner "Stai aggiungendo asset al task #N" su /qualified?return_to_task=N */
+.banner-return-to-task {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin: 0.6rem 0 1rem;
+  padding: 0.7rem 1rem;
+  background: #fff7e0;
+  border: 1px solid #f0c674;
+  border-radius: 8px;
+  font-size: 0.92rem;
+  color: #6b4f00;
+}
+.banner-return-to-task a { color: #0969da; }
+
 /* Stats pills (numero totale, filtri attivi, ecc.) */
 .stats-bar {
   display: flex; gap: 0.5rem; flex-wrap: wrap;

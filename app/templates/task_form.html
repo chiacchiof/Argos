@@ -15,6 +15,13 @@
   {% set p = task or {} %}
   <form method="post" action="{% if is_edit %}/tasks/{{ task.id }}{% else %}/tasks{% endif %}" id="task-form">
 
+    {# Hidden snapshot dell'audience: in edit, il valore corrente viene rispedito
+       cosi' il salvataggio non azzera la lista (popolata via HTMX add/remove).
+       In create, vuoto -> [] -> nessun snapshot. Il backend riusa il validator
+       di TaskIn (parse_contact_ids) che accetta CSV/JSON. #}
+    <input type="hidden" name="target_asset_ids"
+           value="{{ (p.get('target_asset_ids') or []) | tojson }}">
+
     {# Stepper bar (popolata da JS in base agli step visibili per la modalità) #}
     <nav id="wizard-stepper" class="wizard-stepper" aria-label="Configurazione task per fasi"></nav>
 
@@ -488,6 +495,83 @@
       syncDisplay();
     })();
     </script>
+
+    {# ============================================================
+       SEZIONE 6a: AUDIENCE ASSET (target_asset_ids snapshot)
+       Lista degli asset selezionati come destinatari del task.
+       Popolabile da /qualified ("Avvia outreach con questo set"),
+       da /qualified?return_to_task=<id> (append), o dalla search HTMX qui sotto.
+       Quando non vuota: vince sui filtri legacy (sezione 6b) nei runner.
+       ============================================================ #}
+    <details class="collapsible-section dyn-section audience-section"
+             data-modes="outreach outreach_social outreach_whatsapp" open>
+      <summary>
+        🎯 Audience asset
+        <span class="hint">
+          ({{ (p.get('target_asset_ids') or [])|length }} selezionati
+          {% if p.get('target_asset_ids') %}— vincono sui filtri sotto{% else %}— se vuota, vengono usati i filtri sotto{% endif %})
+        </span>
+      </summary>
+
+      {# Block 1: lista snapshot (HTMX-aware, replaceable). #}
+      <div id="audience-snapshot-table">
+        {% include "_audience_snapshot_table.html" %}
+      </div>
+
+      {# Block 2: search HTMX per aggiungere singoli asset al snapshot. #}
+      {% if task and task.id %}
+      <div class="audience-search-add" style="margin-top:0.6rem">
+        <label>
+          🔎 Aggiungi singolo asset
+          <input type="search" id="audience-search-input"
+                 placeholder="Min 2 caratteri (titolo, asset_type o valore tag)..."
+                 hx-get="/assets/search?callback=audienceAddAsset"
+                 hx-trigger="keyup changed delay:300ms, search"
+                 hx-target="#audience-search-results"
+                 hx-swap="innerHTML"
+                 name="q"
+                 autocomplete="off"
+                 style="width:100%; max-width:500px">
+        </label>
+        <div id="audience-search-results"></div>
+      </div>
+
+      {# Block 3: link a /qualified come bulk picker. #}
+      <div class="audience-bulk-add" style="margin-top:0.6rem">
+        <a href="/qualified?return_to_task={{ task.id }}"
+           class="btn-secondary btn-small"
+           target="_blank">
+          📥 Aggiungi set da /qualified (apre picker in nuova tab)
+        </a>
+        <span class="hint">torna a questo task per ritrovare l'audience unita.</span>
+      </div>
+
+      {# JS helper per HTMX add asset al task corrente. Definito qui (e non
+         nel partial) per accedere a task.id. Globale, riusato da
+         audience-search-results onclick. #}
+      <script>
+        window.__taskAudienceId = {{ task.id }};
+        function audienceAddAsset(assetId) {
+          const tid = window.__taskAudienceId;
+          fetch(`/tasks/${tid}/append_asset_id?asset_id=${assetId}`, { method: 'POST' })
+            .then(r => r.text())
+            .then(html => {
+              document.getElementById('audience-snapshot-table').innerHTML = html;
+              // pulisci la search
+              const inp = document.getElementById('audience-search-input');
+              if (inp) inp.value = '';
+              const res = document.getElementById('audience-search-results');
+              if (res) res.innerHTML = '';
+            })
+            .catch(e => alert('Errore: ' + e));
+        }
+      </script>
+      {% else %}
+      <p class="muted small" style="margin-top:0.5rem">
+        ℹ️ Salva prima il task per poter aggiungere asset (sia singoli che bulk da /qualified).
+      </p>
+      {% endif %}
+    </details>
 
     {# ============================================================
        SEZIONE 6b: FILTRA CONTATTI DESTINATARI — solo outreach + outreach_social + outreach_whatsapp

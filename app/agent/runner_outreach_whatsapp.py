@@ -441,14 +441,19 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     run_dir = RESULTS_DIR / str(task["id"]) / ts
     run_dir.mkdir(parents=True, exist_ok=True)
     report_path = run_dir / "report.md"
+    # Audience snapshot vs filtri dinamici
+    audience_total = len(explicit_ids) if explicit_ids else len(targets_raw)
     report = (
         f"# Outreach WhatsApp — {task['name']}\n\n"
-        f"- Target: {len(plan)}\n"
-        f"- Motore A (browser): {n_ok_a} ok / {n_fail_a} fail\n"
-        f"- Motore B (API):     {n_ok_b} ok / {n_fail_b} fail\n"
-        f"- Opt-out skipped:    {n_skip_optout}\n"
-        f"- Dry-run:            {dry_run}\n"
-        f"- Engine preference:  {preference}\n"
+        f"- **Audience**: {audience_total} asset" + (" (snapshot esplicito)" if explicit_ids else " (filtri dinamici)") + "\n"
+        f"- **Target idonei (post engine selection)**: {len(targets)}\n"
+        f"- **Inviati**: {n_ok} (Motore A: {n_ok_a} | Motore B: {n_ok_b})\n"
+        f"- **Falliti**: {n_fail} (A: {n_fail_a} | B: {n_fail_b})\n"
+        f"- **Breakdown skip**:\n"
+        f"  - **{n_skip_optout}** opt-out (whatsapp_consent='optedout')\n"
+        f"  - **{n_skip_mismatch}** no-engine-compatibile (es. senza WhatsApp o canale non disponibile)\n"
+        f"- **Dry-run**: {dry_run}\n"
+        f"- **Engine preference**: {preference}\n"
     )
     report_path.write_text(report, encoding="utf-8")
 

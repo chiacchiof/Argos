@@ -65,6 +65,20 @@
     <a href="/tasks/{{ task.id }}/results" class="btn-link-action">📂 Risultati salvati</a>
   </div>
 
+  {# Audience snapshot (task outreach con target_asset_ids valorizzato).
+     Mostra il count + primi 20 IDs + link a edit per modificare. #}
+  {% if task.target_asset_ids %}
+  <div class="audience-summary-card">
+    🎯 <strong>Audience snapshot</strong>:
+    <strong>{{ task.target_asset_ids|length }}</strong> asset selezionati
+    <details style="display:inline-block; margin-left:0.6rem">
+      <summary class="muted small">primi 20 ID</summary>
+      <code style="font-size:0.85rem">{{ task.target_asset_ids[:20] | join(', ') }}{% if task.target_asset_ids|length > 20 %}, …{% endif %}</code>
+    </details>
+    <a href="/tasks/{{ task.id }}/edit" class="btn-small" style="margin-left:0.6rem">✏️ Modifica audience</a>
+  </div>
+  {% endif %}
+
   <h3>Stato esecuzione corrente</h3>
   <div id="job-status">
     {% if latest_dashboard %}

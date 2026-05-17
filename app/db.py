@@ -275,6 +275,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   max_dms_per_session INTEGER NOT NULL DEFAULT 5,
   headed INTEGER NOT NULL DEFAULT 1,
   target_contact_ids TEXT,
+  target_asset_ids TEXT,
   whatsapp_engine_preference TEXT NOT NULL DEFAULT 'auto',
   whatsapp_dry_run INTEGER NOT NULL DEFAULT 0,
   whatsapp_account_id BIGINT,
@@ -691,6 +692,12 @@ def _apply_multitenant_columns(conn) -> None:
     for name, definition in tenant_indices:
         conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {definition}")
 
+    # Audience snapshot per task outreach: lista asset.id come JSON.
+    # Indipendente dal multi-tenant ma idempotente nello stesso pattern.
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS target_asset_ids TEXT"
+    )
+
 
 def init_db() -> None:
     """Crea (idempotente) tutte le tabelle business + indici + colonne multi-tenant.
@@ -843,6 +850,15 @@ def _row_to_task(row: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             continue
     d["target_contact_ids"] = coerced_ids
+    # target_asset_ids: stesso pattern, lista di asset.id (snapshot audience).
+    raw_aids = _load_list(d.get("target_asset_ids"))
+    coerced_aids: list[int] = []
+    for v in raw_aids:
+        try:
+            coerced_aids.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    d["target_asset_ids"] = coerced_aids
     return d
 
 
@@ -944,7 +960,7 @@ def create_task(
                                   rating, notes, status_tag,
                                   social_platform, outreach_intent, message_template_variants,
                                   max_dms_per_run, max_dms_per_session, headed,
-                                  target_contact_ids,
+                                  target_contact_ids, target_asset_ids,
                                   whatsapp_engine_preference, whatsapp_dry_run,
                                   whatsapp_account_id, whatsapp_api_config_id,
                                   recon_mode, recon_social_account_id, recon_hypothesis,
@@ -958,7 +974,7 @@ def create_task(
                                   outreach_filter_tags,
                                   tenant_id, created_by_user_id,
                                   created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 data["name"],
@@ -1008,6 +1024,7 @@ def create_task(
                 int(data.get("max_dms_per_session") or 5),
                 int(data.get("headed") or 0),
                 _dump_list([int(x) for x in (data.get("target_contact_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
+                _dump_list([int(x) for x in (data.get("target_asset_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
                 (data.get("whatsapp_engine_preference") or "auto"),
                 1 if data.get("whatsapp_dry_run") else 0,
                 int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
@@ -1056,7 +1073,7 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 rating = %s, notes = %s, status_tag = %s,
                 social_platform = %s, outreach_intent = %s, message_template_variants = %s,
                 max_dms_per_run = %s, max_dms_per_session = %s, headed = %s,
-                target_contact_ids = %s,
+                target_contact_ids = %s, target_asset_ids = %s,
                 whatsapp_engine_preference = %s, whatsapp_dry_run = %s,
                 whatsapp_account_id = %s, whatsapp_api_config_id = %s,
                 recon_mode = %s, recon_social_account_id = %s, recon_hypothesis = %s,
@@ -1120,6 +1137,7 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 int(data.get("max_dms_per_session") or 5),
                 int(data.get("headed") or 0),
                 _dump_list([int(x) for x in (data.get("target_contact_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
+                _dump_list([int(x) for x in (data.get("target_asset_ids") or []) if str(x).strip().lstrip("-").isdigit()]),
                 (data.get("whatsapp_engine_preference") or "auto"),
                 1 if data.get("whatsapp_dry_run") else 0,
                 int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
@@ -1142,6 +1160,26 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 tenant_id,
             ),
         )
+
+
+def update_task_target_asset_ids(task_id: int, asset_ids: list[int], tenant_id: Any = _UNSET) -> None:
+    """Patch minimale: aggiorna SOLO `target_asset_ids` di un task (audience
+    snapshot). Usato dai handler HTMX add/remove + da `append_qualified_set`."""
+    tenant_id = _resolve_tenant(tenant_id)
+    clean_ids = [int(x) for x in (asset_ids or []) if str(x).strip().lstrip("-").isdigit()]
+    payload = _dump_list(clean_ids)
+    with connect() as con:
+        if tenant_id is None:
+            con.execute(
+                "UPDATE tasks SET target_asset_ids = %s, updated_at = %s WHERE id = %s",
+                (payload, now_iso(), task_id),
+            )
+        else:
+            con.execute(
+                "UPDATE tasks SET target_asset_ids = %s, updated_at = %s "
+                "WHERE id = %s AND tenant_id = %s",
+                (payload, now_iso(), task_id, tenant_id),
+            )
 
 
 def delete_task(task_id: int, tenant_id: Any = _UNSET) -> None:

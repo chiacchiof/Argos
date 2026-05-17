@@ -1,0 +1,46 @@
+{# Partial HTMX: renderizza la tabella snapshot del target_asset_ids.
+   Variables:
+     - task: dict task corrente (per task.id nei delete urls)
+     - p: dict con `target_asset_ids` (lista int)
+     - audience_assets: lista[dict] degli asset (almeno: id, asset_type, title, email, telegram_chat_id, whatsapp, social_json) — limit 50
+#}
+{% set ids = p.target_asset_ids or [] %}
+{% set total_count = ids | length %}
+{% if ids %}
+<table class="data audience-snapshot-table">
+  <thead>
+    <tr>
+      <th>#</th><th>Tipo</th><th>Titolo</th><th>Canali disponibili</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for a in audience_assets %}
+    <tr>
+      <td>{{ a.id }}</td>
+      <td><code>{{ a.asset_type }}</code></td>
+      <td><a href="/assets/{{ a.id }}" target="_blank">{{ a.title or '(senza titolo)' }}</a></td>
+      <td class="audience-channels">
+        {% if a.email %}<span title="email: {{ a.email }}">📧</span>{% endif %}
+        {% if a.telegram_chat_id %}<span title="telegram chat_id: {{ a.telegram_chat_id }}">💬</span>{% endif %}
+        {% if a.whatsapp %}<span title="whatsapp: {{ a.whatsapp }}">📱</span>{% endif %}
+        {% if a.social_json %}<span title="social presente">📷</span>{% endif %}
+      </td>
+      <td>
+        {% if task and task.id %}
+        <button type="button" class="btn-small btn-link"
+                title="Rimuovi questo asset dal task"
+                hx-post="/tasks/{{ task.id }}/remove_asset_id?asset_id={{ a.id }}"
+                hx-target="#audience-snapshot-table"
+                hx-swap="innerHTML">×</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if total_count > 50 %}
+<p class="muted small">…e altri <strong>{{ total_count - 50 }}</strong> asset (mostrati i primi 50)</p>
+{% endif %}
+{% else %}
+<p class="muted">Nessun asset selezionato. Aggiungi qui sotto o da <a href="/qualified">/qualified</a>.</p>
+{% endif %}

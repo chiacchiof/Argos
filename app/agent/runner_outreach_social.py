@@ -409,11 +409,17 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     run_dir = RESULTS_DIR / str(task["id"]) / ts
     run_dir.mkdir(parents=True, exist_ok=True)
     report_path = run_dir / "report.md"
+    audience_label = "snapshot esplicito" if explicit_ids else "filtri dinamici"
+    n_skipped_no_social = max(0, len(candidates) - len(targets))
     report = (
         f"# Riepilogo outreach_social {ts}\n\n"
         f"- **Piattaforma**: {platform}\n"
+        f"- **Audience**: {len(candidates)} asset ({audience_label})\n"
+        f"- **Target con {platform} URL**: {len(targets)}\n"
         f"- **DM inviati**: {n_ok}\n"
         f"- **DM falliti**: {n_fail}\n"
+        f"- **Breakdown skip**:\n"
+        f"  - **{n_skipped_no_social}** asset senza URL {platform} valido (skippati)\n"
         f"- **Account usati**: {len(accounts)}\n"
         f"- **Modello LLM messaggi**: {llm_model}\n"
     )

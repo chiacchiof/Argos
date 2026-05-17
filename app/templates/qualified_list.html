@@ -17,14 +17,44 @@
               onclick="document.getElementById('add-qualified-modal').classList.add('open');">
         ➕ Aggiungi qualified
       </button>
-      {% if selected_qualifiers %}
-      <a href="/tasks/new?prefill_qualified_filter=1&qualifiers={{ selected_qualifiers|join(',') }}&score_min={{ filter_score_min or '' }}"
-         class="btn-primary" title="Crea task outreach precompilato con questo set">
-        🚀 Avvia outreach
-      </a>
+      {% if total > 0 and not return_to_task %}
+      <button type="button" class="btn-primary"
+              onclick="document.getElementById('avvia-outreach-modal').classList.add('open');"
+              title="Crea task outreach con i {{ total }} asset filtrati">
+        🚀 Avvia outreach ({{ total }})
+      </button>
       {% endif %}
     </div>
   </div>
+
+  {# Banner sticky: stai aggiungendo asset a un task esistente. #}
+  {% if return_to_task %}
+  <div class="banner-return-to-task">
+    <div>
+      ℹ️ Stai aggiungendo asset al task
+      <a href="/tasks/{{ return_to_task }}/edit">#{{ return_to_task }}</a>.
+      Componi i filtri come al solito, poi clicca <strong>Aggiungi al task</strong>.
+    </div>
+    <form action="/tasks/{{ return_to_task }}/append_qualified_set" method="post" style="margin:0">
+      {# Replica tutti i filtri attivi come hidden inputs per il POST #}
+      {% if selected_qualifiers %}<input type="hidden" name="qualifiers" value="{{ selected_qualifiers|join(',') }}">{% endif %}
+      {% if filter_status %}<input type="hidden" name="status" value="{{ filter_status }}">{% endif %}
+      {% if filter_score_min is not none %}<input type="hidden" name="score_min" value="{{ filter_score_min }}">{% endif %}
+      {% if filter_type %}<input type="hidden" name="asset_type" value="{{ filter_type }}">{% endif %}
+      {% if filter_task %}<input type="hidden" name="source_task_id" value="{{ filter_task }}">{% endif %}
+      {% if filter_search %}<input type="hidden" name="q" value="{{ filter_search }}">{% endif %}
+      <input type="hidden" name="tag_mode" value="{{ tag_mode }}">
+      {% if tag_expr %}<input type="hidden" name="tag_expr" value="{{ tag_expr }}">{% endif %}
+      {% for tk, tv in (extra_tag_filters or []) %}
+        <input type="hidden" name="tag_key__{{ loop.index0 }}" value="{{ tk }}">
+        <input type="hidden" name="tag_value__{{ loop.index0 }}" value="{{ tv }}">
+      {% endfor %}
+      <button type="submit" class="btn-primary" {% if total == 0 %}disabled{% endif %}>
+        📥 Aggiungi questi {{ total }} asset al task
+      </button>
+    </form>
+  </div>
+  {% endif %}
 
   {% if request.query_params.get('flash') %}
   <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
@@ -692,6 +722,75 @@ function selectAssetForQualifier(assetId) {
           Annulla
         </button>
         <button type="submit" class="btn-primary">Marca asset</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# Modale: Avvia outreach con il set filtrato corrente.
+   Crea un task outreach con `target_asset_ids` = snapshot dei filtri attivi. #}
+<div id="avvia-outreach-modal" class="modal-backdrop"
+     onclick="if(event.target===this) this.classList.remove('open');">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>🚀 Avvia outreach</h3>
+      <button type="button" class="btn-link"
+              onclick="document.getElementById('avvia-outreach-modal').classList.remove('open');">✕</button>
+    </div>
+
+    <p class="muted small" style="margin-top:0">
+      Crea un nuovo task outreach con i <strong>{{ total }} asset</strong> attualmente filtrati.
+      L'audience verra' salvata come snapshot (lista asset.id). Poi completi la
+      configurazione (canali, messaggio, scheduling) dal task form.
+    </p>
+
+    <form method="post" action="/tasks/from_qualified" class="add-contact-form">
+      {# Hidden inputs: replica tutti i filtri attivi #}
+      {% if selected_qualifiers %}<input type="hidden" name="qualifiers" value="{{ selected_qualifiers|join(',') }}">{% endif %}
+      {% if filter_status %}<input type="hidden" name="status" value="{{ filter_status }}">{% endif %}
+      {% if filter_score_min is not none %}<input type="hidden" name="score_min" value="{{ filter_score_min }}">{% endif %}
+      {% if filter_type %}<input type="hidden" name="asset_type" value="{{ filter_type }}">{% endif %}
+      {% if filter_task %}<input type="hidden" name="source_task_id" value="{{ filter_task }}">{% endif %}
+      {% if filter_search %}<input type="hidden" name="q" value="{{ filter_search }}">{% endif %}
+      <input type="hidden" name="tag_mode" value="{{ tag_mode }}">
+      {% if tag_expr %}<input type="hidden" name="tag_expr" value="{{ tag_expr }}">{% endif %}
+      {% for tk, tv in (extra_tag_filters or []) %}
+        <input type="hidden" name="tag_key__{{ loop.index0 }}" value="{{ tk }}">
+        <input type="hidden" name="tag_value__{{ loop.index0 }}" value="{{ tv }}">
+      {% endfor %}
+
+      <label>
+        Nome task <span style="color:#cf222e">*</span>
+        <input type="text" name="name" required maxlength="200"
+               placeholder="Es. Outreach Sportivi Catania - settimana 21"
+               value="Outreach qualified set ({{ total }} asset)">
+      </label>
+
+      <label>
+        Tipo di outreach <span style="color:#cf222e">*</span>
+        <select name="agent_mode" id="avvia-outreach-mode" required
+                onchange="document.getElementById('avvia-outreach-social-row').style.display = (this.value === 'outreach_social') ? '' : 'none';">
+          <option value="outreach">📧 Email / 💬 Telegram</option>
+          <option value="outreach_whatsapp">📱 WhatsApp</option>
+          <option value="outreach_social">📷 Social DM (IG/TT/FB)</option>
+        </select>
+      </label>
+
+      <label id="avvia-outreach-social-row" style="display:none">
+        Piattaforma social
+        <select name="social_platform">
+          <option value="instagram">Instagram</option>
+          <option value="tiktok">TikTok</option>
+          <option value="facebook">Facebook</option>
+        </select>
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-link"
+                onclick="document.getElementById('avvia-outreach-modal').classList.remove('open');">
+          Annulla
+        </button>
+        <button type="submit" class="btn-primary">🚀 Crea task</button>
       </div>
     </form>
   </div>
