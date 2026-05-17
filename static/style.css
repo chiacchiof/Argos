@@ -1489,7 +1489,8 @@ main.wide { max-width: 1300px; }
   padding-top: 0.3rem;
 }
 
-/* Banner "Stai aggiungendo asset al task #N" su /qualified?return_to_task=N */
+/* Banner "Stai aggiungendo asset al task #N" su /qualified?return_to_task=N.
+   Sticky: resta visibile mentre l'utente compone i filtri e scorre la lista. */
 .banner-return-to-task {
   display: flex;
   justify-content: space-between;
@@ -1502,8 +1503,13 @@ main.wide { max-width: 1300px; }
   border-radius: 8px;
   font-size: 0.92rem;
   color: #6b4f00;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
 }
 .banner-return-to-task a { color: #0969da; }
+.banner-return-to-task .btn-primary { white-space: nowrap; }
 
 /* Stats pills (numero totale, filtri attivi, ecc.) */
 .stats-bar {

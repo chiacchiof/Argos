@@ -133,6 +133,9 @@
 
   {# Form unico: search + filtri avanzati + checkbox sidebar (auto-submit on change). #}
   <form method="get" action="/qualified" id="qualified-form">
+    {# Preserva return_to_task attraverso search/filtri (auto-submit GET): senza
+       questo hidden la querystring perde ?return_to_task=N e il banner sparisce. #}
+    {% if return_to_task %}<input type="hidden" name="return_to_task" value="{{ return_to_task }}">{% endif %}
     {# Search bar prominente (sempre visibile, anche quando i filtri sono chiusi) #}
     <div class="search-row">
       <input type="search" name="q" value="{{ filter_search }}"
@@ -140,7 +143,7 @@
              class="search-input">
       <button type="submit" class="btn-primary">Cerca</button>
       {% if has_any_filter %}
-      <a href="/qualified" class="btn-link">✕ Reset tutto</a>
+      <a href="/qualified{% if return_to_task %}?return_to_task={{ return_to_task }}{% endif %}" class="btn-link">✕ Reset tutto</a>
       {% endif %}
     </div>
 
@@ -445,21 +448,21 @@
                    mostrato; badge "+N" se altri canali presenti. #}
                 {% set ns_c = namespace(extras=0, primary=None, primary_icon=None, primary_kind=None) %}
                 {% if a.whatsapp %}
-                  {% set _ = ns_c.__setattr__('primary', a.whatsapp) %}
-                  {% set _ = ns_c.__setattr__('primary_icon', '📱') %}
-                  {% set _ = ns_c.__setattr__('primary_kind', 'whatsapp') %}
+                  {% set ns_c.primary = a.whatsapp %}
+                  {% set ns_c.primary_icon = '📱' %}
+                  {% set ns_c.primary_kind = 'whatsapp' %}
                 {% elif a.telegram_chat_id or a.telegram_username %}
-                  {% set _ = ns_c.__setattr__('primary', a.telegram_username or a.telegram_chat_id) %}
-                  {% set _ = ns_c.__setattr__('primary_icon', '💬') %}
-                  {% set _ = ns_c.__setattr__('primary_kind', 'telegram') %}
+                  {% set ns_c.primary = a.telegram_username or a.telegram_chat_id %}
+                  {% set ns_c.primary_icon = '💬' %}
+                  {% set ns_c.primary_kind = 'telegram' %}
                 {% elif a.email %}
-                  {% set _ = ns_c.__setattr__('primary', a.email) %}
-                  {% set _ = ns_c.__setattr__('primary_icon', '📧') %}
-                  {% set _ = ns_c.__setattr__('primary_kind', 'email') %}
+                  {% set ns_c.primary = a.email %}
+                  {% set ns_c.primary_icon = '📧' %}
+                  {% set ns_c.primary_kind = 'email' %}
                 {% endif %}
-                {% if ns_c.primary_kind != 'whatsapp' and a.whatsapp %}{% set _ = ns_c.__setattr__('extras', ns_c.extras + 1) %}{% endif %}
-                {% if ns_c.primary_kind != 'telegram' and (a.telegram_chat_id or a.telegram_username) %}{% set _ = ns_c.__setattr__('extras', ns_c.extras + 1) %}{% endif %}
-                {% if ns_c.primary_kind != 'email' and a.email %}{% set _ = ns_c.__setattr__('extras', ns_c.extras + 1) %}{% endif %}
+                {% if ns_c.primary_kind != 'whatsapp' and a.whatsapp %}{% set ns_c.extras = ns_c.extras + 1 %}{% endif %}
+                {% if ns_c.primary_kind != 'telegram' and (a.telegram_chat_id or a.telegram_username) %}{% set ns_c.extras = ns_c.extras + 1 %}{% endif %}
+                {% if ns_c.primary_kind != 'email' and a.email %}{% set ns_c.extras = ns_c.extras + 1 %}{% endif %}
                 {% if ns_c.primary %}
                   <span class="contact-pill" title="{{ ns_c.primary_kind }}: {{ ns_c.primary }}">
                     {{ ns_c.primary_icon }} <code>{{ ns_c.primary|truncate(22, true, '…') }}</code>
@@ -492,15 +495,15 @@
                   {% for plat in _order %}
                     {% for s in ns_s.items %}
                       {% if not ns_pref.primary and (s.get('platform') or '')|lower == plat %}
-                        {% set _ = ns_pref.__setattr__('primary', s) %}
+                        {% set ns_pref.primary = s %}
                       {% endif %}
                     {% endfor %}
                   {% endfor %}
                   {# Fallback: se nessuna delle 3 piattaforme preferite, prendi il primo #}
                   {% if not ns_pref.primary and ns_s.items %}
-                    {% set _ = ns_pref.__setattr__('primary', ns_s.items[0]) %}
+                    {% set ns_pref.primary = ns_s.items[0] %}
                   {% endif %}
-                  {% set _ = ns_pref.__setattr__('others', ns_s.items|length - (1 if ns_pref.primary else 0)) %}
+                  {% set ns_pref.others = ns_s.items|length - (1 if ns_pref.primary else 0) %}
                   {% if ns_pref.primary %}
                     {% set p_plat = (ns_pref.primary.get('platform') or '')|lower %}
                     {% set p_url = ns_pref.primary.get('url') or '' %}
