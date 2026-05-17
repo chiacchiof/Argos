@@ -153,6 +153,115 @@ Totale: ~6.5h se fatti tutti insieme.
 
 ---
 
+### B-016 · Asset deduplication cross-task + UI merge conflitti (per-tenant)
+
+**Cosa**: oggi più task di scraping che scoprono lo stesso soggetto reale (es. la stessa persona/azienda con stesso numero WA ma URL/asset_type diversi) creano N record duplicati in `assets`. Il dedup attuale e' solo su `(source_url_canonical, asset_type)` dentro `upsert_asset` — non cattura match cross-canale.
+
+**Proposta utente (2026-05-17)**: introdurre dedup basato su CHIAVI MULTIPLE con UI di gestione conflitti/merge. Asset univoci per tenant.
+
+**Chiavi di match candidate** (normalizzate prima del confronto):
+
+| Chiave | Normalizzazione | Forza signal |
+|---|---|---|
+| `source_url_canonical` | rimuovi tracking params, lowercase host, no trailing `/` (già esistente) | alta |
+| `whatsapp` / `phone` | E.164 (`+39 333 1234567` → `+393331234567`) | **molto alta** (univoca per persona) |
+| `email` | lowercase, strip dots Gmail | **molto alta** |
+| `telegram_username` / `telegram_chat_id` | strip `@`, lowercase | molto alta |
+| `social_json[platform=ig].url` → handle | extract `@handle` da `instagram.com/<handle>/` | alta |
+| idem per `tiktok`, `facebook`, `onlyfans` | extract username dal path | alta |
+| `title` + `source_domain` | normalize-trim + edit distance | bassa (solo come hint) |
+
+Una coppia di asset e' "duplicate candidate" se condivide **>=1 chiave forte** (whatsapp/email/telegram/social handle) **OPPURE** **>=2 chiavi medie** (url canonico stesso path + title fuzzy match).
+
+**Modalità di gestione** (decidere quale combinare):
+1. **Auto-merge sicuro**: se match e' su chiave forte univoca (E.164 phone uguale, email uguale), merge automatico — basso rischio falsi positivi.
+2. **Flag per review**: se match e' su chiavi medie o forti ma con discordanze su altri campi, mettere il nuovo asset in una coda `pending_merge`.
+3. **Skip silenzioso**: il runner di scraping che trova un dup salta l'INSERT, logga in `dedup_log` per audit.
+
+**Schema proposto**:
+```
+ALTER TABLE assets ADD COLUMN dedup_status TEXT;  -- 'unique' | 'duplicate_pending' | 'merged_into:<id>'
+ALTER TABLE assets ADD COLUMN dedup_canonical_id BIGINT REFERENCES assets(id);  -- punta al "primary" della cluster
+
+CREATE TABLE asset_dedup_candidates (
+  id BIGSERIAL PRIMARY KEY,
+  tenant_id BIGINT REFERENCES tenants(id) ON DELETE CASCADE,
+  primary_asset_id BIGINT REFERENCES assets(id) ON DELETE CASCADE,
+  candidate_asset_id BIGINT REFERENCES assets(id) ON DELETE CASCADE,
+  match_keys JSONB,  -- es. [{"key":"whatsapp","value":"+393294257497"}, {"key":"email","value":"a@b.com"}]
+  match_score REAL,  -- 0.0-1.0 (weighted sum delle chiavi)
+  status TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'merged' | 'rejected' | 'ignored'
+  detected_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolved_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX idx_dedup_tenant_status ON asset_dedup_candidates(tenant_id, status);
+```
+
+Indici per match veloce:
+```
+CREATE INDEX idx_assets_whatsapp_norm ON assets(tenant_id, whatsapp) WHERE whatsapp IS NOT NULL;
+CREATE INDEX idx_assets_email_norm ON assets(tenant_id, LOWER(email)) WHERE email IS NOT NULL;
+CREATE INDEX idx_assets_tg_norm ON assets(tenant_id, telegram_username) WHERE telegram_username IS NOT NULL;
+```
+
+**UI proposta — pagina `/assets/duplicates`** (per tenant):
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│ 🔀 Conflitti di duplicazione asset                  [42 da risolvere] │
+├───────────────────────────────────────────────────────────────────────┤
+│ Filtri: [match strength: forte|medio|tutti] [asset_type] [tenant]     │
+├───────────────────────────────────────────────────────────────────────┤
+│ ┌─ Cluster #1 — match su whatsapp + email ─────────────────────────┐  │
+│ │ Primary: #6251 Francesco Russo · ig_profile · qualified           │  │
+│ │   whatsapp +393294257497 · email francesco@edg.com                │  │
+│ │   created 2026-05-10 · 4 tag                                      │  │
+│ │ Candidate: #7322 F. Russo · profile_contacts · new                │  │
+│ │   whatsapp +393294257497 · email francesco@edg.com                │  │
+│ │   created 2026-05-17 · 1 tag                                      │  │
+│ │ Match keys: whatsapp(strong), email(strong) → score 0.95          │  │
+│ │ [Merge into #6251 ✓] [Mantieni separati] [Ignora]                 │  │
+│ │   ↳ merge regole:                                                 │  │
+│ │     ☑ Preferisci campi più recenti se vuoti nel primary           │  │
+│ │     ☑ Union tag (no overwrite valori esistenti)                   │  │
+│ │     ☑ Union social_json                                           │  │
+│ │     ☑ Update target_asset_ids in tasks: 7322 → 6251               │  │
+│ │     ☑ Update social_dm_log.target_asset_id: 7322 → 6251           │  │
+│ │     ☐ Eredita asset_tags del candidato (con prefix `from_7322_`)  │  │
+│ └───────────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+**Detection flow**:
+1. `upsert_asset` (e endpoint `/assets/new`): dopo INSERT, esegue `find_dedup_candidates(new_id)` async → popola `asset_dedup_candidates` per i match trovati.
+2. Job cron (o on-demand `/assets/duplicates/rescan`): full-table scan per asset esistenti pre-feature.
+
+**Merge action** (idempotente, in transaction):
+- Picks `primary_id`. Sposta riferimenti FK: `social_dm_log.target_asset_id`, `tasks.target_asset_ids` (rewrite JSON list), `asset_tags.asset_id` (con dedup di `(asset_id, tag_key)`).
+- Union `social_json`, `raw_json` campi vuoti.
+- Mark `candidate.dedup_status = 'merged_into:<primary_id>'`. NON cancellare il record (audit + ricostruibilità).
+
+**Effort**: ~12-16h (schema + detection + UI + merge action + test). Da fare in 2 PR:
+1. PR1 (~5h): schema + detection logic + chiamata in `upsert_asset` (no UI). Trova i duplicati ma non li risolve.
+2. PR2 (~10h): UI `/assets/duplicates` + merge action + redirect FK + test E2E.
+
+**Aperti / domande architetturali**:
+- **Normalizzazione phone**: `phonenumbers` lib (E.164) per parsing affidabile (gestisce +39, 0039, 39, locali italiani con prefisso 3...). Aggiunge dipendenza ma necessaria.
+- **Gmail dots**: `f.russo+spam@gmail.com` == `frusso@gmail.com`? Gmail-only equivalence, opzionale.
+- **Whatsapp vs phone**: tenere come 2 campi separati o unificare? Oggi sono già 2 colonne ma spesso contengono lo stesso valore. Proposta: chiave dedup considera entrambi (match se WA(A) == phone(B)).
+- **Tenant isolation**: dedup SOLO intra-tenant. Asset di tenant diversi non vanno mai mergiati anche se uguali.
+- **Falsi positivi**: come gestire un numero WhatsApp condiviso (centralino aziendale) che appare su 30 asset? Soluzione: chiavi `weight` configurabile, e numeri "blacklist dedup" (es. numeri di centralino noti) skippano il match.
+- **Performance**: con 100k+ asset, full scan ogni nuovo insert e' costoso. Index su chiavi normalizzate + query incrementale (`LIMIT 50` candidati per match).
+
+**Test target**:
+- Insert 2 asset stesso `whatsapp` → 1 candidate row creata.
+- Insert 2 asset con stesso `source_url_canonical` ma `asset_type` diverso → candidate row (cross-type ora possibile).
+- Merge action: candidate viene mergiato, `target_asset_ids` di un task viene riscritto, `social_dm_log` history conservata.
+- Rescan idempotente: rieseguito non duplica candidate rows.
+
+---
+
 ### B-011 · Gap anti-ban configurabile per task — ✅ CHIUSO (2026-05-17)
 
 **Cosa**: oggi `random_gap_between_dms_min()` ritorna 8-30 min (hard-coded
