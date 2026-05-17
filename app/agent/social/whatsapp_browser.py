@@ -123,6 +123,10 @@ class WhatsAppBrowser(SocialPlatform):
         - `account.password` è IGNORATO per WhatsApp (auth via QR).
         - L'integrazione con la UI "mostra il QR all'utente" è nel runner,
           non qui: questa funzione solo ASPETTA che diventi loggato.
+        - Dopo login successful, WhatsApp Web sincronizza le chat. Se l'account
+          non si logga da diversi giorni la sync puo' richiedere fino a ~60s.
+          Aspettiamo fino a SYNC_TIMEOUT_S con log progressivo (vedi screenshot
+          "Caricamento delle chat in corso N%").
         """
         log.info("[wa] navigate to %s", WA_WEB_URL)
         try:
@@ -131,8 +135,12 @@ class WhatsAppBrowser(SocialPlatform):
             log.warning("[wa] login: goto failed: %s", e)
             return HealthStatus.UNKNOWN
 
-        # Caso 1: sessione persistita → CHAT_LIST appare entro pochi secondi
-        if await _wait_for_any(page, CHAT_LIST, timeout_s=8.0):
+        # Caso 1: sessione persistita → CHAT_LIST appare. Timeout esteso a 60s
+        # per coprire il caso "account non loggato da giorni → sync chat lenta".
+        # Logga il progress della sync ("Caricamento delle chat in corso N%") ogni 5s.
+        SYNC_TIMEOUT_S = 60.0
+        sync_ok = await self._wait_chat_list_or_progress(page, SYNC_TIMEOUT_S)
+        if sync_ok:
             log.info("[wa] login: session restored (no QR needed)")
             return HealthStatus.OK
 
@@ -150,8 +158,48 @@ class WhatsAppBrowser(SocialPlatform):
             return HealthStatus.CHALLENGED
 
         # Caso 3: niente QR e niente chat-list → stato sconosciuto
-        log.warning("[wa] login: neither QR nor chat-list visible after goto")
+        log.warning("[wa] login: neither QR nor chat-list visible after %.0fs", SYNC_TIMEOUT_S)
         return HealthStatus.UNKNOWN
+
+    async def _wait_chat_list_or_progress(self, page: "Page", timeout_s: float) -> bool:
+        """Aspetta CHAT_LIST con polling intelligente: logga il progresso quando
+        WhatsApp Web sta sincronizzando le chat ("Caricamento delle chat in
+        corso N%" / "Loading your chats N%"). Ritorna True se CHAT_LIST appare
+        entro timeout_s, False altrimenti."""
+        import time, re
+        deadline = time.monotonic() + timeout_s
+        last_progress_log = 0.0
+        while time.monotonic() < deadline:
+            # Check 1: CHAT_LIST visibile?
+            for sel in CHAT_LIST:
+                try:
+                    if await page.locator(sel).first.is_visible(timeout=300):
+                        return True
+                except Exception:
+                    continue
+            # Check 2: log progress sync ogni ~5s
+            now = time.monotonic()
+            if now - last_progress_log > 5.0:
+                last_progress_log = now
+                try:
+                    body_txt = await page.locator("body").inner_text(timeout=1000)
+                    # Pattern italiano + inglese
+                    if (
+                        "Caricamento delle chat" in body_txt
+                        or "Loading your chats" in body_txt
+                        or "Loading chats" in body_txt
+                    ):
+                        m = re.search(r"(\d{1,3}\s*%)", body_txt)
+                        pct = m.group(1) if m else "?"
+                        elapsed = int(now - (deadline - timeout_s))
+                        log.info(
+                            "[wa] login: WhatsApp sta sincronizzando le chat (%s) — attendo (%ds/%.0fs)",
+                            pct, elapsed, timeout_s,
+                        )
+                except Exception:
+                    pass
+            await asyncio.sleep(1.0)
+        return False
 
     async def goto_profile(self, page: "Page", username: str) -> bool:
         """Per WhatsApp `username` è il numero di telefono (E.164 o solo cifre).

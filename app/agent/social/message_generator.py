@@ -140,9 +140,18 @@ async def generate_message(
         )
         r.raise_for_status()
         data = r.json()
-        raw = (
-            data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-        ).strip()
+        msg_obj = data.get("choices", [{}])[0].get("message", {}) or {}
+        raw = (msg_obj.get("content", "") or "").strip()
+        # Alcuni modelli "thinking" (gpt-oss, qwen thinking, deepseek-r1) mettono
+        # la risposta in `reasoning` / `reasoning_content` e lasciano content="".
+        # Fallback su quei campi.
+        if not raw:
+            reasoning = (msg_obj.get("reasoning_content") or msg_obj.get("reasoning") or "").strip()
+            if reasoning:
+                # Prendi l'ultimo paragrafo non vuoto del reasoning come fallback.
+                paragraphs = [p.strip() for p in reasoning.split("\n\n") if p.strip()]
+                if paragraphs:
+                    raw = paragraphs[-1]
 
     # Pulizia: rimuovi virgolette wrap, markdown, prefissi tipo "Messaggio:"
     raw = raw.strip("\"'`")
@@ -154,6 +163,14 @@ async def generate_message(
     # Limita lunghezza
     if len(raw) > req.max_chars:
         raw = raw[: req.max_chars].rsplit(" ", 1)[0] + "…"
+    # Se DOPO pulizia la stringa e' ancora vuota, e' un errore vero
+    # (modello thinking che non ha messo testo nel content / reasoning, oppure
+    # cleanup ha rimosso tutto). Solleva cosi' che generate_batch lo logga.
+    if not raw:
+        raise ValueError(
+            "LLM ha risposto vuoto (probabile modello 'thinking' senza output testuale "
+            "nel campo content; prova un modello chat/instruct tipo qwen2.5:instruct)"
+        )
     return raw
 
 
