@@ -100,6 +100,20 @@
       </span>
     {% endif %}
 
+    {% if has_contacts %}
+      <span class="stats-pill stats-pill-active">
+        📧📱💬 <strong>ha contatti</strong>
+        <a href="#" class="pill-close" onclick="qfDropParam(event, 'has_contacts')" title="Rimuovi filtro 'ha contatti'">×</a>
+      </span>
+    {% endif %}
+
+    {% if has_social %}
+      <span class="stats-pill stats-pill-active">
+        📷 <strong>ha social</strong>
+        <a href="#" class="pill-close" onclick="qfDropParam(event, 'has_social')" title="Rimuovi filtro 'ha social'">×</a>
+      </span>
+    {% endif %}
+
     {% for slug in selected_qualifiers %}
       {% for q in qualifier_menu if q.slug == slug %}
         <span class="stats-pill stats-pill-active" title="qualifier slug: {{ slug }}">
@@ -204,6 +218,26 @@
             {% endif %}
             <span class="modal-trigger-icon">⚙️</span>
           </button>
+        </label>
+
+        {# Macro-filtri "ha contatti" / "ha social": utili per ricerca rapida
+           asset contattabili (almeno un canale outreach) o con presenza social. #}
+        <label class="inline-checkbox" style="display:flex; align-items:center; gap:0.4rem">
+          <input type="checkbox" name="has_contacts" value="1"
+                 {% if has_contacts %}checked{% endif %}
+                 onchange="this.form.submit()">
+          <span>📧📱💬 <strong>ha contatti</strong>
+            <span class="muted small">(email | whatsapp | telegram)</span>
+          </span>
+        </label>
+
+        <label class="inline-checkbox" style="display:flex; align-items:center; gap:0.4rem">
+          <input type="checkbox" name="has_social" value="1"
+                 {% if has_social %}checked{% endif %}
+                 onchange="this.form.submit()">
+          <span>📷 <strong>ha social</strong>
+            <span class="muted small">(almeno un URL IG/FB/TT)</span>
+          </span>
         </label>
       </div>
 
@@ -393,7 +427,7 @@
               <th>#</th>
               <th>Tipo</th>
               <th>Titolo</th>
-              <th>Dominio</th>
+              <th>Contatti / Social</th>
               <th>Qualifier(s)</th>
               <th>Altri tag</th>
               <th>Origine</th>
@@ -406,10 +440,85 @@
               <td>{{ a.id }}</td>
               <td><code>{{ a.asset_type }}</code></td>
               <td><a href="/assets/{{ a.id }}">{{ a.title or "(senza titolo)" }}</a></td>
-              <td>
-                {% if a.source_url %}
-                <a href="{{ a.source_url }}" target="_blank" rel="noopener">{{ a.source_domain or "—" }}</a>
-                {% else %}{{ a.source_domain or "—" }}{% endif %}
+              <td class="contacts-social-cell">
+                {# Riga 1: contatti diretti. Ordine WA > TG > email. Primo non-vuoto
+                   mostrato; badge "+N" se altri canali presenti. #}
+                {% set ns_c = namespace(extras=0, primary=None, primary_icon=None, primary_kind=None) %}
+                {% if a.whatsapp %}
+                  {% set _ = ns_c.__setattr__('primary', a.whatsapp) %}
+                  {% set _ = ns_c.__setattr__('primary_icon', '📱') %}
+                  {% set _ = ns_c.__setattr__('primary_kind', 'whatsapp') %}
+                {% elif a.telegram_chat_id or a.telegram_username %}
+                  {% set _ = ns_c.__setattr__('primary', a.telegram_username or a.telegram_chat_id) %}
+                  {% set _ = ns_c.__setattr__('primary_icon', '💬') %}
+                  {% set _ = ns_c.__setattr__('primary_kind', 'telegram') %}
+                {% elif a.email %}
+                  {% set _ = ns_c.__setattr__('primary', a.email) %}
+                  {% set _ = ns_c.__setattr__('primary_icon', '📧') %}
+                  {% set _ = ns_c.__setattr__('primary_kind', 'email') %}
+                {% endif %}
+                {% if ns_c.primary_kind != 'whatsapp' and a.whatsapp %}{% set _ = ns_c.__setattr__('extras', ns_c.extras + 1) %}{% endif %}
+                {% if ns_c.primary_kind != 'telegram' and (a.telegram_chat_id or a.telegram_username) %}{% set _ = ns_c.__setattr__('extras', ns_c.extras + 1) %}{% endif %}
+                {% if ns_c.primary_kind != 'email' and a.email %}{% set _ = ns_c.__setattr__('extras', ns_c.extras + 1) %}{% endif %}
+                {% if ns_c.primary %}
+                  <span class="contact-pill" title="{{ ns_c.primary_kind }}: {{ ns_c.primary }}">
+                    {{ ns_c.primary_icon }} <code>{{ ns_c.primary|truncate(22, true, '…') }}</code>
+                    {% if ns_c.extras %}<span class="contact-extra-badge" title="altri canali: vedi dettaglio">+{{ ns_c.extras }}</span>{% endif %}
+                  </span>
+                {% else %}
+                  <span class="muted small">—</span>
+                {% endif %}
+
+                {# Riga 2: social. Parse social_json; ordine preferito IG > FB > TT.
+                   Primo URL mostrato + badge "+N". #}
+                {% set ns_s = namespace(items=[]) %}
+                {% if a.social_json %}
+                  {% set _social_raw = a.social_json %}
+                  {% if _social_raw is string %}
+                    {% set _social_parsed = (_social_raw | safe) %}
+                  {% else %}
+                    {% set _social_parsed = _social_raw %}
+                  {% endif %}
+                {% endif %}
+                {# Per parsare JSON in Jinja senza filtri custom, uso un namespace
+                   alimentato lato Python (passato in context come a._socials_list
+                   se necessario). In assenza, fallback su social_json string. #}
+                {% if a._socials %}
+                  {% set ns_s = namespace(items=a._socials) %}
+                {% endif %}
+                {% if ns_s.items %}
+                  {% set _order = ['instagram', 'facebook', 'tiktok'] %}
+                  {% set ns_pref = namespace(primary=None, others=0) %}
+                  {% for plat in _order %}
+                    {% for s in ns_s.items %}
+                      {% if not ns_pref.primary and (s.get('platform') or '')|lower == plat %}
+                        {% set _ = ns_pref.__setattr__('primary', s) %}
+                      {% endif %}
+                    {% endfor %}
+                  {% endfor %}
+                  {# Fallback: se nessuna delle 3 piattaforme preferite, prendi il primo #}
+                  {% if not ns_pref.primary and ns_s.items %}
+                    {% set _ = ns_pref.__setattr__('primary', ns_s.items[0]) %}
+                  {% endif %}
+                  {% set _ = ns_pref.__setattr__('others', ns_s.items|length - (1 if ns_pref.primary else 0)) %}
+                  {% if ns_pref.primary %}
+                    {% set p_plat = (ns_pref.primary.get('platform') or '')|lower %}
+                    {% set p_url = ns_pref.primary.get('url') or '' %}
+                    {% set p_handle = ns_pref.primary.get('handle') or '' %}
+                    {% set p_icon = {'instagram':'📷','facebook':'📘','tiktok':'🎵'}.get(p_plat, '🌐') %}
+                    <div style="margin-top:0.2rem">
+                      <span class="contact-pill" title="{{ p_plat }}: {{ p_url }}">
+                        {{ p_icon }}
+                        {% if p_url %}
+                          <a href="{{ p_url }}" target="_blank" rel="noopener" class="muted">{{ (p_handle or p_url)|truncate(22, true, '…') }}</a>
+                        {% else %}
+                          {{ p_handle|truncate(22, true, '…') }}
+                        {% endif %}
+                        {% if ns_pref.others > 0 %}<span class="contact-extra-badge" title="altri social">+{{ ns_pref.others }}</span>{% endif %}
+                      </span>
+                    </div>
+                  {% endif %}
+                {% endif %}
               </td>
               <td class="tags-cell">
                 {# Pre-processo: separo decisions (qualified/rejected) e scores per slug,

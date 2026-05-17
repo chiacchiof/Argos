@@ -3223,6 +3223,8 @@ def _qualified_assets_where_clause(
     tenant_id: int | None,
     tag_mode: str = "and",
     tag_expr: str | None = None,
+    has_contacts: bool = False,
+    has_social: bool = False,
 ) -> tuple[str, list[Any]]:
     """Costruisce WHERE+args condivisi da list_qualified_assets / count_qualified_assets.
 
@@ -3273,6 +3275,19 @@ def _qualified_assets_where_clause(
     if tenant_id is not None:
         where += " AND a.tenant_id = %s"
         args.append(tenant_id)
+    # has_contacts: almeno uno fra email, whatsapp, telegram_username|telegram_chat_id valorizzato
+    if has_contacts:
+        where += (
+            " AND ("
+            "(a.email IS NOT NULL AND a.email <> '') "
+            "OR (a.whatsapp IS NOT NULL AND a.whatsapp <> '') "
+            "OR (a.telegram_username IS NOT NULL AND a.telegram_username <> '') "
+            "OR (a.telegram_chat_id IS NOT NULL AND a.telegram_chat_id <> '')"
+            ")"
+        )
+    # has_social: social_json valorizzato con almeno una entry
+    if has_social:
+        where += " AND a.social_json IS NOT NULL AND a.social_json <> '' AND a.social_json <> '[]'"
     return where, args
 
 
@@ -3289,6 +3304,8 @@ def list_qualified_assets(
     tenant_id: Any = _UNSET,
     tag_mode: str = "and",
     tag_expr: str | None = None,
+    has_contacts: bool = False,
+    has_social: bool = False,
 ) -> list[dict[str, Any]]:
     """Lista asset filtrati per qualifier (AND multipli) + score min + filtri extra.
 
@@ -3309,11 +3326,13 @@ def list_qualified_assets(
             slugs, "qualified", score_min, asset_type, source_task_id, search,
             extra_tag_filters, limit, offset, tenant_id=tenant_id,
             tag_mode=tag_mode, tag_expr=tag_expr,
+            has_contacts=has_contacts, has_social=has_social,
         )
         rows_r = list_qualified_assets(
             slugs, "rejected", score_min, asset_type, source_task_id, search,
             extra_tag_filters, limit, offset, tenant_id=tenant_id,
             tag_mode=tag_mode, tag_expr=tag_expr,
+            has_contacts=has_contacts, has_social=has_social,
         )
         # merge + dedup per id, limit
         seen: set[int] = set()
@@ -3327,6 +3346,7 @@ def list_qualified_assets(
     where, args = _qualified_assets_where_clause(
         slugs, status_filter, score_min, asset_type, source_task_id, search,
         extra_tag_filters, tenant_id, tag_mode=tag_mode, tag_expr=tag_expr,
+        has_contacts=has_contacts, has_social=has_social,
     )
     sql = (
         "SELECT a.* FROM assets a"
@@ -3367,6 +3387,8 @@ def count_qualified_assets(
     tenant_id: Any = _UNSET,
     tag_mode: str = "and",
     tag_expr: str | None = None,
+    has_contacts: bool = False,
+    has_social: bool = False,
 ) -> int:
     """Count con gli stessi filtri di list_qualified_assets. Per paginazione."""
     tenant_id = _resolve_tenant(tenant_id)
@@ -3398,6 +3420,7 @@ def count_qualified_assets(
     where, args = _qualified_assets_where_clause(
         slugs, status_filter, score_min, asset_type, source_task_id, search,
         extra_tag_filters, tenant_id, tag_mode=tag_mode, tag_expr=tag_expr,
+        has_contacts=has_contacts, has_social=has_social,
     )
     sql = "SELECT COUNT(*) FROM assets a" + where
     with connect() as con:

@@ -175,6 +175,8 @@ async def qualified_assets_list(
     tag_mode: str = "and",
     tag_expr: str = "",
     return_to_task: str = "",
+    has_contacts: str = "",
+    has_social: str = "",
 ):
     """Tab Qualified: asset-centric con multi-select qualifier + filtri.
 
@@ -196,6 +198,8 @@ async def qualified_assets_list(
     score_min_v = _parse_optional_int(score_min)
     search = (q or "").strip() or None
     extra_tag_filters = _parse_extra_tag_filters(request)
+    has_contacts_v = bool(has_contacts and has_contacts.strip())
+    has_social_v = bool(has_social and has_social.strip())
     tag_mode_v = (tag_mode or "and").strip().lower()
     if tag_mode_v not in ("and", "or", "custom"):
         tag_mode_v = "and"
@@ -232,6 +236,8 @@ async def qualified_assets_list(
         extra_tag_filters=extra_tag_filters or None,
         tag_mode=tag_mode_v,
         tag_expr=tag_expr_v or None,
+        has_contacts=has_contacts_v,
+        has_social=has_social_v,
     )
     total_pages = max(1, (total + per_page_v - 1) // per_page_v)
     if page_v > total_pages:
@@ -250,7 +256,25 @@ async def qualified_assets_list(
         offset=offset,
         tag_mode=tag_mode_v,
         tag_expr=tag_expr_v or None,
+        has_contacts=has_contacts_v,
+        has_social=has_social_v,
     )
+    # Parse social_json di ogni asset una volta sola (lo usa il template per
+    # renderizzare l'icona platform + handle / URL nella colonna Contatti/Social).
+    import json as _json_parse
+    for _a in assets:
+        _socials_list: list[dict] = []
+        _raw = _a.get("social_json") or ""
+        if _raw:
+            try:
+                _parsed = _json_parse.loads(_raw) if isinstance(_raw, str) else _raw
+                if isinstance(_parsed, list):
+                    _socials_list = [x for x in _parsed if isinstance(x, dict)]
+                elif isinstance(_parsed, dict):
+                    _socials_list = [_parsed]
+            except (ValueError, TypeError):
+                _socials_list = []
+        _a["_socials"] = _socials_list
 
     qualifier_menu = db.list_distinct_qualifier_slugs()
     types_in_use = db.list_asset_types_in_use()
@@ -276,6 +300,8 @@ async def qualified_assets_list(
     if tag_mode_v == "custom" and tag_expr_v:
         from urllib.parse import quote as _q
         qs_parts.append(f"tag_expr={_q(tag_expr_v, safe='')}")
+    if has_contacts_v: qs_parts.append("has_contacts=1")
+    if has_social_v: qs_parts.append("has_social=1")
     if per_page_v != _QUALIFIED_PAGE_SIZE: qs_parts.append(f"per_page={per_page_v}")
     qs_base = "&".join(qs_parts)
 
@@ -299,6 +325,8 @@ async def qualified_assets_list(
             "tag_expr": tag_expr_v,
             "tag_expr_error": tag_expr_error,
             "return_to_task": _parse_optional_int(return_to_task),
+            "has_contacts": has_contacts_v,
+            "has_social": has_social_v,
             "page": page_v,
             "per_page": per_page_v,
             "total": total,

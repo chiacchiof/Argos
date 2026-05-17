@@ -230,6 +230,39 @@ def test_post_tasks_qualifier_from_qualified_requires_objective(audience_setup):
         assert r.status_code == 400
 
 
+def test_has_contacts_filter(audience_setup):
+    """has_contacts=True ritorna SOLO asset con almeno un canale outreach."""
+    aids = audience_setup["asset_ids"]
+    # Setup: 3 asset hanno email (fixture); ne marchiamo 1 senza email
+    with db.connect() as c:
+        c.execute("UPDATE assets SET email = NULL WHERE id = %s", (aids[0],))
+        c.commit()
+    rows_all = db.list_qualified_assets(qualifier_slugs=["q_test"], status_filter="qualified")
+    rows_with = db.list_qualified_assets(
+        qualifier_slugs=["q_test"], status_filter="qualified", has_contacts=True,
+    )
+    assert len(rows_all) == 3
+    assert len(rows_with) == 2
+    assert aids[0] not in [r["id"] for r in rows_with]
+
+
+def test_has_social_filter(audience_setup):
+    """has_social=True ritorna SOLO asset con social_json popolato."""
+    aids = audience_setup["asset_ids"]
+    # Aggiungi social_json a 1 asset
+    with db.connect() as c:
+        c.execute(
+            "UPDATE assets SET social_json = %s WHERE id = %s",
+            ('[{"platform":"instagram","url":"https://ig.com/x"}]', aids[1]),
+        )
+        c.commit()
+    rows = db.list_qualified_assets(
+        qualifier_slugs=["q_test"], status_filter="qualified", has_social=True,
+    )
+    assert len(rows) == 1
+    assert rows[0]["id"] == aids[1]
+
+
 def test_target_asset_ids_validator_handles_json_envelope():
     """Bug 2026-05-17: form.getlist() ritorna ['[1,2,3]'] dall'hidden field.
     Il validator deve sciogliere l'envelope JSON invece di provare int('[1,2,3]')."""
