@@ -585,6 +585,42 @@
     <details class="collapsible-section dyn-section" data-modes="outreach">
       <summary>Configurazione outreach</summary>
 
+      {# Sender (read-only): mostra quale account email/telegram verra' usato.
+         Email/TG hanno una sola config in /settings/* — non un pool — quindi
+         mostriamo il valore corrente senza selettore. #}
+      <fieldset class="sender-fieldset">
+        <legend>📨 Account che invieranno per questo task</legend>
+        <div class="row" style="gap:1rem">
+          <div class="sender-readonly">
+            <strong>✉️ Email</strong>
+            {% if email_channel_config and email_channel_config.config.get('username') %}
+              <div><code>{{ email_channel_config.config.get('username') }}</code></div>
+              <div class="muted small">
+                via {{ email_channel_config.config.get('smtp_host') or 'host non configurato' }}
+                {% if email_channel_config.config.get('rate_limit_per_minute') %}· rate {{ email_channel_config.config.get('rate_limit_per_minute') }}/min{% endif %}
+              </div>
+            {% else %}
+              <div class="muted">⚠️ non configurato — <a href="/settings/email" target="_blank">/settings/email</a></div>
+            {% endif %}
+          </div>
+          <div class="sender-readonly">
+            <strong>💬 Telegram</strong>
+            {% if telegram_channel_config and telegram_channel_config.config.get('bot_token') %}
+              <div><code>bot configurato</code></div>
+              <div class="muted small">
+                {% if telegram_channel_config.config.get('bot_username') %}@{{ telegram_channel_config.config.get('bot_username') }}{% else %}(nome bot non rilevato){% endif %}
+              </div>
+            {% else %}
+              <div class="muted">⚠️ non configurato — <a href="/settings/telegram" target="_blank">/settings/telegram</a></div>
+            {% endif %}
+          </div>
+        </div>
+        <p class="muted small" style="margin:0.3rem 0 0 0">
+          ℹ️ Email/Telegram hanno un singolo account di sistema (non multi-account come WhatsApp/Social).
+          Modificalo da <a href="/settings" target="_blank">/settings</a>.
+        </p>
+      </fieldset>
+
       <label>Subject email <span class="hint">Placeholder: <code>{display_name}</code>, <code>{source_domain}</code>, <code>{source_url}</code>, <code>{email}</code></span>
         <input type="text" name="message_subject" value="{{ p.get('message_subject','') or '' }}"
                placeholder="Proposta ottimizzazione per {display_name}">
@@ -743,6 +779,39 @@
         </select>
       </label>
 
+      {# Sender single-select: quale account social usa per questo task.
+         Lista flat di tutti gli account IG/TT/FB con label che include la
+         platform — l'utente sceglie un account che deve essere coerente con
+         la platform selezionata sopra (validato a runtime). NULL = pool default. #}
+      <fieldset class="sender-fieldset">
+        <legend>📨 Account che invieranno per questo task</legend>
+        <label>📷 Sender social
+          {% set sa_id = p.get('social_account_id') %}
+          <select name="social_account_id">
+            <option value="" {% if not sa_id %}selected{% endif %}>— pool default (tutti gli account active per la platform sopra) —</option>
+            {% for plat in ('instagram', 'tiktok', 'facebook') %}
+              {% set plat_accounts = social_accounts_by_platform.get(plat, []) %}
+              {% if plat_accounts %}
+                <optgroup label="{{ plat }}">
+                  {% for a in plat_accounts %}
+                    <option value="{{ a.id }}" {% if sa_id == a.id %}selected{% endif %}
+                            {% if a.status != 'active' %}disabled{% endif %}>
+                      #{{ a.id }} · {{ a.username }} · {{ a.status }}{% if a.status != 'active' %} ⚠️{% endif %}
+                    </option>
+                  {% endfor %}
+                </optgroup>
+              {% endif %}
+            {% endfor %}
+          </select>
+          <span class="hint">
+            Se scegli un account specifico, <strong>solo quello</strong> verrà usato.
+            Deve essere della piattaforma selezionata sopra. Lascia "pool default"
+            per usare automaticamente tutti gli account <code>active</code>.
+            Gestisci gli account in <a href="/social/accounts" target="_blank">/social/accounts</a>.
+          </span>
+        </label>
+      </fieldset>
+
       {# SEZIONE RIMOSSA: era "Contatti da includere" (target_contact_ids
          checkbox da contacts_by_platform). Sostituita da "🎯 Audience asset"
          (target_asset_ids snapshot) in sezione 6a. #}
@@ -805,6 +874,54 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
         Configura account/API in <a href="/settings/whatsapp" target="_blank">/settings/whatsapp</a>.
       </div>
 
+      {# Sender (subito dopo l'avviso ToS): chi invia per questo task. #}
+      <fieldset class="sender-fieldset">
+        <legend>📨 Account che invieranno per questo task</legend>
+        <div class="row">
+          {# Sender Motore A — single-select fra gli account WA browser #}
+          <label>📱 Sender Motore A (browser)
+            {% set wa_aid = p.get('whatsapp_account_id') %}
+            <select name="whatsapp_account_id">
+              <option value="" {% if not wa_aid %}selected{% endif %}>— pool default (tutti gli account active) —</option>
+              {% for a in (wa_accounts or []) %}
+                <option value="{{ a.id }}" {% if wa_aid == a.id %}selected{% endif %}
+                        {% if a.status != 'active' %}disabled{% endif %}>
+                  #{{ a.id }} · {{ a.username }}{% if a.phone_number %} ({{ a.phone_number }}){% endif %}
+                  · {{ a.status }}{% if a.status != 'active' %} ⚠️{% endif %}
+                </option>
+              {% endfor %}
+            </select>
+            <span class="hint">
+              Se scegli un account specifico, <strong>solo quello</strong> verrà usato.
+              Se è <code>banned</code>/<code>disabled</code> il task fallisce subito (no fallback).
+              Lascia "pool default" per usare automaticamente tutti gli account attivi.
+            </span>
+          </label>
+
+          {# Sender Motore B — single-select fra le API config #}
+          <label>🌐 Sender Motore B (API)
+            {% set wa_cid = p.get('whatsapp_api_config_id') %}
+            <select name="whatsapp_api_config_id">
+              <option value="" {% if not wa_cid %}selected{% endif %}>— prima config active —</option>
+              {% for c in (wa_api_configs or []) %}
+                <option value="{{ c.id }}" {% if wa_cid == c.id %}selected{% endif %}
+                        {% if c.status != 'active' %}disabled{% endif %}>
+                  #{{ c.id }} · {{ c.label }} ({{ c.phone_number_id }})
+                  · {{ c.status }}{% if c.status != 'active' %} ⚠️{% endif %}
+                </option>
+              {% endfor %}
+            </select>
+            <span class="hint">Vuoto = prende la prima config <code>active</code> in DB.</span>
+          </label>
+        </div>
+        {% if not wa_accounts and not wa_api_configs %}
+        <p class="muted small">
+          ⚠️ Nessun account WhatsApp configurato. Vai a
+          <a href="/settings/whatsapp" target="_blank">/settings/whatsapp</a> per aggiungerne.
+        </p>
+        {% endif %}
+      </fieldset>
+
       <label>Obiettivo / intent dell'outreach
         <span class="hint">Spiega chi sei e cosa offri. Usato dall'LLM per personalizzare ogni messaggio.</span>
         <textarea name="outreach_intent" rows="3"
@@ -839,44 +956,6 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
         <label>Max DM totali per esecuzione
           <input type="number" name="max_dms_per_run" min="1" max="500" value="{{ p.get('max_dms_per_run', 30) }}">
           <span class="hint">Cap di sicurezza. Default 30.</span>
-        </label>
-      </div>
-
-      <div class="row">
-        {# Sender Motore A — single-select fra gli account WA browser #}
-        <label>📱 Sender Motore A (browser)
-          {% set wa_aid = p.get('whatsapp_account_id') %}
-          <select name="whatsapp_account_id">
-            <option value="" {% if not wa_aid %}selected{% endif %}>— pool default (tutti gli account active) —</option>
-            {% for a in (wa_accounts or []) %}
-              <option value="{{ a.id }}" {% if wa_aid == a.id %}selected{% endif %}
-                      {% if a.status != 'active' %}disabled{% endif %}>
-                #{{ a.id }} · {{ a.username }}{% if a.phone_number %} ({{ a.phone_number }}){% endif %}
-                · <span class="muted">{{ a.status }}</span>{% if a.status != 'active' %} ⚠️{% endif %}
-              </option>
-            {% endfor %}
-          </select>
-          <span class="hint">
-            Se scegli un account specifico, <strong>solo quello</strong> verrà usato.
-            Se quell'account è <code>banned</code>/<code>disabled</code> il task fallisce subito (no fallback).
-            Lascia "pool default" per usare automaticamente tutti gli account attivi.
-          </span>
-        </label>
-
-        {# Sender Motore B — single-select fra le API config #}
-        <label>🌐 Sender Motore B (API)
-          {% set wa_cid = p.get('whatsapp_api_config_id') %}
-          <select name="whatsapp_api_config_id">
-            <option value="" {% if not wa_cid %}selected{% endif %}>— prima config active —</option>
-            {% for c in (wa_api_configs or []) %}
-              <option value="{{ c.id }}" {% if wa_cid == c.id %}selected{% endif %}
-                      {% if c.status != 'active' %}disabled{% endif %}>
-                #{{ c.id }} · {{ c.label }} ({{ c.phone_number_id }})
-                · <span class="muted">{{ c.status }}</span>{% if c.status != 'active' %} ⚠️{% endif %}
-              </option>
-            {% endfor %}
-          </select>
-          <span class="hint">Vuoto = prende la prima config <code>active</code> in DB.</span>
         </label>
       </div>
 

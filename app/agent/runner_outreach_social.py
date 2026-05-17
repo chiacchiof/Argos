@@ -211,8 +211,37 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
         return ""
 
-    # ---- 2. Carica account social attivi ----
-    rows = db.list_social_accounts(platform=platform, status="active")
+    # ---- 2. Carica account social attivi (con eventuale single-select) ----
+    sender_aid = task.get("social_account_id")
+    if sender_aid:
+        single = db.get_social_account(int(sender_aid))
+        if not single:
+            msg = f"social_account_id={sender_aid} non trovato (eliminato?). Abort."
+            jlog(f"❌ {msg}")
+            db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+            return ""
+        if single.get("platform") != platform:
+            msg = (
+                f"social_account_id={sender_aid} ha platform="
+                f"{single.get('platform')!r} ma il task richiede {platform!r}. Abort."
+            )
+            jlog(f"❌ {msg}")
+            db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+            return ""
+        if single.get("status") != "active":
+            msg = (
+                f"Account #{sender_aid} ('{single.get('username')}') ha "
+                f"status='{single.get('status')}' (non active). Abort fail-fast."
+            )
+            jlog(f"❌ {msg}")
+            db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+            return ""
+        rows = [single]
+        jlog(f"Sender social: SOLO #{single['id']} '{single.get('username')}' (single-select)")
+    else:
+        rows = db.list_social_accounts(platform=platform, status="active")
+        jlog(f"Sender social: pool default ({len(rows)} account active per {platform})")
+
     if not rows:
         msg = (
             f"Nessun account '{platform}' in stato active. "

@@ -280,6 +280,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   whatsapp_dry_run INTEGER NOT NULL DEFAULT 0,
   whatsapp_account_id BIGINT,
   whatsapp_api_config_id BIGINT,
+  social_account_id BIGINT,
   recon_mode TEXT,
   recon_social_account_id BIGINT,
   recon_hypothesis TEXT,
@@ -697,6 +698,11 @@ def _apply_multitenant_columns(conn) -> None:
     conn.execute(
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS target_asset_ids TEXT"
     )
+    # Sender single-select per outreach_social: social_account_id (IG/TT/FB).
+    # NULL = pool default (tutti gli account active per quella platform).
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS social_account_id BIGINT"
+    )
 
 
 def init_db() -> None:
@@ -963,6 +969,7 @@ def create_task(
                                   target_contact_ids, target_asset_ids,
                                   whatsapp_engine_preference, whatsapp_dry_run,
                                   whatsapp_account_id, whatsapp_api_config_id,
+                                  social_account_id,
                                   recon_mode, recon_social_account_id, recon_hypothesis,
                                   recon_max_targets_per_day, recon_score_threshold,
                                   seed_queries_friends,
@@ -974,7 +981,7 @@ def create_task(
                                   outreach_filter_tags,
                                   tenant_id, created_by_user_id,
                                   created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 data["name"],
@@ -1029,6 +1036,7 @@ def create_task(
                 1 if data.get("whatsapp_dry_run") else 0,
                 int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
                 int(data["whatsapp_api_config_id"]) if data.get("whatsapp_api_config_id") else None,
+                int(data["social_account_id"]) if data.get("social_account_id") else None,
                 (data.get("recon_mode") or None),
                 int(data["recon_social_account_id"]) if data.get("recon_social_account_id") else None,
                 (data.get("recon_hypothesis") or "").strip() or None,
@@ -1076,6 +1084,7 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 target_contact_ids = %s, target_asset_ids = %s,
                 whatsapp_engine_preference = %s, whatsapp_dry_run = %s,
                 whatsapp_account_id = %s, whatsapp_api_config_id = %s,
+                social_account_id = %s,
                 recon_mode = %s, recon_social_account_id = %s, recon_hypothesis = %s,
                 recon_max_targets_per_day = %s, recon_score_threshold = %s,
                 seed_queries_friends = %s,
@@ -1142,6 +1151,7 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 1 if data.get("whatsapp_dry_run") else 0,
                 int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
                 int(data["whatsapp_api_config_id"]) if data.get("whatsapp_api_config_id") else None,
+                int(data["social_account_id"]) if data.get("social_account_id") else None,
                 (data.get("recon_mode") or None),
                 int(data["recon_social_account_id"]) if data.get("recon_social_account_id") else None,
                 (data.get("recon_hypothesis") or "").strip() or None,

@@ -59,6 +59,9 @@ class TaskIn(BaseModel):
     status_tag: StatusTag | None = None
     # Outreach social fields (agent_mode=outreach_social)
     social_platform: str | None = None
+    # Single-select sender per outreach_social: account specifico fra IG/TT/FB.
+    # NULL = pool default (tutti gli active per quella platform).
+    social_account_id: int | None = None
     outreach_intent: str | None = None
     message_template_variants: str | None = None
     max_dms_per_run: int = Field(default=30, ge=1, le=200)
@@ -150,13 +153,25 @@ class TaskIn(BaseModel):
     def parse_contact_ids(cls, v):
         if v is None:
             return []
+        import json as _json
+        # Caso ricorrente: form.getlist() ritorna ["[1,2,3]"] (lista con 1
+        # stringa JSON) quando un hidden field invia una lista serializzata.
+        # Sciogliamo l'envelope prima di trattare come lista di IDs.
+        if isinstance(v, (list, tuple)) and len(v) == 1 and isinstance(v[0], str):
+            single = v[0].strip()
+            if single.startswith("[") and single.endswith("]"):
+                try:
+                    parsed = _json.loads(single)
+                    if isinstance(parsed, list):
+                        v = parsed
+                except (ValueError, TypeError):
+                    pass
         # Accetta: list[int|str], string CSV ("1,2,3"), oppure JSON string
         if isinstance(v, str):
             s = v.strip()
             if not s:
                 return []
             # Prova JSON prima ("[1, 2, 3]"), poi CSV ("1,2,3")
-            import json as _json
             try:
                 parsed = _json.loads(s)
                 if isinstance(parsed, list):

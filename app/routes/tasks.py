@@ -464,6 +464,7 @@ def _form_to_dict(
     whatsapp_dry_run: str = "",
     whatsapp_account_id: str = "",
     whatsapp_api_config_id: str = "",
+    social_account_id: str = "",
     # Campi recon_social (R1)
     recon_mode: str = "",
     recon_social_account_id: str = "",
@@ -533,6 +534,7 @@ def _form_to_dict(
         "whatsapp_dry_run": 1 if (str(whatsapp_dry_run).strip() in ("1", "on", "true", "yes")) else 0,
         "whatsapp_account_id": int(whatsapp_account_id) if str(whatsapp_account_id).strip().isdigit() else None,
         "whatsapp_api_config_id": int(whatsapp_api_config_id) if str(whatsapp_api_config_id).strip().isdigit() else None,
+        "social_account_id": int(social_account_id) if str(social_account_id).strip().isdigit() else None,
         # recon_social
         "recon_mode": (recon_mode or "").strip() or None,
         "recon_social_account_id": int(recon_social_account_id) if str(recon_social_account_id).strip().isdigit() else None,
@@ -684,6 +686,32 @@ def _form_extra_context() -> dict:
     except Exception:
         outreach_tag_keys = []
 
+    # Channel config (email + telegram) — singolo account di sistema (no pool).
+    # Mostrato read-only nella sezione outreach del form per chiarire "chi invia".
+    try:
+        email_channel_config = db.get_channel_config("email")
+    except Exception:
+        email_channel_config = None
+    try:
+        telegram_channel_config = db.get_channel_config("telegram")
+    except Exception:
+        telegram_channel_config = None
+    # Account social per outreach_social (single-select per platform).
+    social_accounts_by_platform: dict[str, list[dict]] = {}
+    try:
+        for plat in ("instagram", "tiktok", "facebook"):
+            social_accounts_by_platform[plat] = [
+                {
+                    "id": a["id"],
+                    "username": a.get("username"),
+                    "status": a.get("status"),
+                    "daily_dm_cap": a.get("daily_dm_cap"),
+                }
+                for a in db.list_social_accounts(platform=plat)
+            ]
+    except Exception:
+        social_accounts_by_platform = {"instagram": [], "tiktok": [], "facebook": []}
+
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
@@ -698,6 +726,9 @@ def _form_extra_context() -> dict:
         "outreach_source_tasks": outreach_source_tasks,
         "outreach_source_followers": outreach_source_followers,
         "outreach_tag_keys": outreach_tag_keys,
+        "email_channel_config": email_channel_config,
+        "telegram_channel_config": telegram_channel_config,
+        "social_accounts_by_platform": social_accounts_by_platform,
     }
 
 
@@ -754,6 +785,7 @@ async def create_task(
     whatsapp_dry_run: str = Form(""),
     whatsapp_account_id: str = Form(""),
     whatsapp_api_config_id: str = Form(""),
+    social_account_id: str = Form(""),
     recon_mode: str = Form(""),
     recon_social_account_id: str = Form(""),
     recon_hypothesis: str = Form(""),
@@ -813,6 +845,7 @@ async def create_task(
         whatsapp_dry_run=whatsapp_dry_run,
         whatsapp_account_id=whatsapp_account_id,
         whatsapp_api_config_id=whatsapp_api_config_id,
+        social_account_id=social_account_id,
         recon_mode=recon_mode,
         recon_social_account_id=recon_social_account_id,
         recon_hypothesis=recon_hypothesis,
@@ -904,6 +937,7 @@ async def update_task(
     whatsapp_dry_run: str = Form(""),
     whatsapp_account_id: str = Form(""),
     whatsapp_api_config_id: str = Form(""),
+    social_account_id: str = Form(""),
     recon_mode: str = Form(""),
     recon_social_account_id: str = Form(""),
     recon_hypothesis: str = Form(""),
@@ -992,6 +1026,7 @@ async def update_task(
         whatsapp_dry_run=whatsapp_dry_run,
         whatsapp_account_id=whatsapp_account_id,
         whatsapp_api_config_id=whatsapp_api_config_id,
+        social_account_id=social_account_id,
         recon_mode=recon_mode,
         recon_social_account_id=recon_social_account_id,
         recon_hypothesis=recon_hypothesis,

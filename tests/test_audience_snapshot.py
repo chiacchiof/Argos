@@ -174,6 +174,30 @@ def test_append_and_remove_asset_id_htmx(audience_setup):
         assert db.get_task(tid)["target_asset_ids"] == [aids[0], aids[2]]
 
 
+def test_target_asset_ids_validator_handles_json_envelope():
+    """Bug 2026-05-17: form.getlist() ritorna ['[1,2,3]'] dall'hidden field.
+    Il validator deve sciogliere l'envelope JSON invece di provare int('[1,2,3]')."""
+    from app.models import TaskIn
+    t = TaskIn(name="x", objective="y", target_asset_ids=["[10,20,30]"])
+    assert t.target_asset_ids == [10, 20, 30]
+    # Caso vuoto JSON
+    t2 = TaskIn(name="x", objective="y", target_asset_ids=["[]"])
+    assert t2.target_asset_ids == []
+
+
+def test_social_account_id_roundtrip():
+    tid = db.create_task({
+        "name": "X", "objective": "y", "agent_mode": "outreach_social",
+        "social_platform": "instagram",
+        "social_account_id": 42,
+    })
+    fetched = db.get_task(tid)
+    assert fetched.get("social_account_id") == 42
+    # Update a None
+    db.update_task(tid, {**fetched, "social_account_id": None})
+    assert db.get_task(tid).get("social_account_id") is None
+
+
 def test_append_qualified_set_unions_dedup(audience_setup):
     """POST /tasks/<id>/append_qualified_set fa UNION dei nuovi ID con esistenti."""
     from app.main import app
