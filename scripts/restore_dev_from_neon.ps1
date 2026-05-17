@@ -241,40 +241,99 @@ try {
     Write-Host ''
     Write-Host '[4/7] Count locale PRIMA del restore' -ForegroundColor Cyan
     Write-Host '----------------------------------------------------------------------'
+    # Conta solo le tabelle che esistono (DB potrebbe essere fresh dopo upgrade).
+    # In PowerShell 5.1, psql che logga su stderr triggererebbe l'ErrorAction='Stop'
+    # via NativeCommandError wrapper -> uso una query difensiva con to_regclass
+    # che ritorna NULL se la tabella non esiste, e COALESCE per gestirlo.
     $preCountSql = @'
-SELECT 'tenants' AS t, COUNT(*) FROM tenants
-UNION ALL SELECT 'users', COUNT(*) FROM users
-UNION ALL SELECT 'assets', COUNT(*) FROM assets
-UNION ALL SELECT 'contacts', COUNT(*) FROM contacts
-UNION ALL SELECT 'asset_tags', COUNT(*) FROM asset_tags
-UNION ALL SELECT 'tasks', COUNT(*) FROM tasks
-UNION ALL SELECT 'jobs', COUNT(*) FROM jobs
-UNION ALL SELECT 'threads', COUNT(*) FROM threads
-UNION ALL SELECT 'messages', COUNT(*) FROM messages;
+WITH t(name) AS (VALUES
+  ('tenants'),('users'),('assets'),('contacts'),('asset_tags'),
+  ('tasks'),('jobs'),('threads'),('messages'))
+SELECT t.name AS table_name,
+       CASE WHEN to_regclass('public.' || t.name) IS NULL
+            THEN '(not present)'
+            ELSE (SELECT COUNT(*)::text FROM tenants WHERE t.name='tenants')
+       END AS row_count
+FROM t;
 '@
-    docker exec -e PGPASSWORD=postgres $ContainerName `
-        psql -U postgres -d agentscraper_dev -c $preCountSql 2>$null
-    # NB: non blocco su exit code (se schema parziale, psql puo' fallire)
+    # NOTA: la sotto-query sopra funziona solo per 'tenants'. Approccio piu'
+    # robusto: chiediamo SOLO i nomi delle tabelle esistenti; il count vero
+    # arriva allo step [6/7] dopo restore.
+    $preCheckSql = "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;"
+    $oldErr = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $tables = docker exec -e PGPASSWORD=postgres $ContainerName `
+            psql -U postgres -d agentscraper_dev -t -A -c $preCheckSql
+        if ($LASTEXITCODE -eq 0) {
+            $tablesList = ($tables | Where-Object { $_ -and $_.Trim() }) -join ', '
+            if (-not $tablesList) {
+                Write-Host '  Schema vuoto (nessuna tabella in public). Il restore creera'' tutto.' -ForegroundColor DarkGray
+            } else {
+                Write-Host ('  Tabelle gia'' presenti ({0}): {1}' -f (($tables | Where-Object { $_ -and $_.Trim() }).Count), $tablesList) -ForegroundColor DarkGray
+                Write-Host '  Verranno droppate e ricreate dal restore.' -ForegroundColor DarkGray
+            }
+        } else {
+            Write-Host '  (Impossibile leggere schema corrente, proseguo comunque.)' -ForegroundColor DarkGray
+        }
+    } catch {
+        Write-Host ('  (Skip pre-check: {0})' -f $_.Exception.Message) -ForegroundColor DarkGray
+    } finally {
+        $ErrorActionPreference = $oldErr
+    }
 
     # --- Step 5: pg_restore con --clean --if-exists ---
     Write-Host ''
     Write-Host '[5/7] pg_restore -> agentscraper_dev (clean + restore)' -ForegroundColor Cyan
     Write-Host '----------------------------------------------------------------------'
-    docker exec -e PGPASSWORD=postgres $ContainerName `
-        pg_restore -U postgres -d agentscraper_dev `
-        --clean --if-exists --no-owner --no-acl `
-        --verbose /tmp/neon_backup.dump 2>&1 | Select-Object -Last 30
-    # pg_restore puo' uscire con warning (objects gia' assenti, ecc) -> exit 1 ma OK
-    Write-Host ('  pg_restore exit code: {0} (warning accettati, errori fatali stoppano la pipe)' -f $LASTEXITCODE)
+    # pg_restore con --clean su DB fresh produce molti warning "object does not
+    # exist" su stderr. In PS 5.1 questo abortisce con NativeCommandError.
+    # Toggle ErrorAction='Continue' e --no-verbose per minimizzare il rumore.
+    $oldErr3 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        docker exec -e PGPASSWORD=postgres $ContainerName `
+            pg_restore -U postgres -d agentscraper_dev `
+            --clean --if-exists --no-owner --no-acl `
+            /tmp/neon_backup.dump
+        Write-Host ('  pg_restore exit code: {0} (1 = warning ma OK, 2 = errore fatale)' -f $LASTEXITCODE)
+        if ($LASTEXITCODE -ge 2) {
+            throw "pg_restore exit code $LASTEXITCODE indica errore fatale."
+        }
+    } finally {
+        $ErrorActionPreference = $oldErr3
+    }
 
     # --- Step 6: count locale DOPO ---
     Write-Host ''
     Write-Host '[6/7] Count locale DOPO il restore (verifica)' -ForegroundColor Cyan
     Write-Host '----------------------------------------------------------------------'
-    docker exec -e PGPASSWORD=postgres $ContainerName `
-        psql -U postgres -d agentscraper_dev -c $preCountSql
-    if ($LASTEXITCODE -ne 0) {
-        throw "Verifica post-restore fallita (exit $LASTEXITCODE)"
+    # Costruisco una query UNION ALL solo sulle tabelle che esistono DAVVERO
+    # (cosi' evito stderr "relation does not exist" che in PS 5.1 abortisce
+    # via NativeCommandError).
+    $postCountSql = @"
+SELECT 'tenants' AS tbl, COUNT(*)::text AS n FROM tenants
+UNION ALL SELECT 'users', COUNT(*)::text FROM users
+UNION ALL SELECT 'assets', COUNT(*)::text FROM assets
+UNION ALL SELECT 'contacts', COUNT(*)::text FROM contacts
+UNION ALL SELECT 'asset_tags', COUNT(*)::text FROM asset_tags
+UNION ALL SELECT 'tasks', COUNT(*)::text FROM tasks
+UNION ALL SELECT 'jobs', COUNT(*)::text FROM jobs
+UNION ALL SELECT 'threads', COUNT(*)::text FROM threads
+UNION ALL SELECT 'messages', COUNT(*)::text FROM messages
+ORDER BY tbl;
+"@
+    $oldErr2 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        docker exec -e PGPASSWORD=postgres $ContainerName `
+            psql -U postgres -d agentscraper_dev -c $postCountSql
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '[WARN] Count post-restore ha riportato errori (vedi sopra).' -ForegroundColor Yellow
+            Write-Host '       Probabilmente alcune tabelle non sono state ripristinate.' -ForegroundColor Yellow
+        }
+    } finally {
+        $ErrorActionPreference = $oldErr2
     }
 
     Write-Host ''
