@@ -507,7 +507,7 @@ async def asset_search_htmx(
     cb = (callback or "").strip()
     # Whitelist callback name per evitare XSS via querystring (il template
     # interpola il nome dentro un onclick="").
-    if cb not in ("importFromAsset", "selectAssetForQualifier"):
+    if cb not in ("importFromAsset", "selectAssetForQualifier", "audienceAddAsset"):
         cb = "importFromAsset"
     return templates.TemplateResponse(
         request,
