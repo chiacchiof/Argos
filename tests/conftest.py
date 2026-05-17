@@ -22,21 +22,42 @@ DEFAULT_TEST_DATABASE_URL = (
 @pytest.fixture(autouse=True)
 def _isolate_test_db(monkeypatch):
     """Per ogni test:
-    1. Forza DATABASE_URL al DB di test (sovrascrive eventuali override locali).
-    2. Reset del pool psycopg di app.db (apre di nuovo con la TEST_DATABASE_URL).
-    3. DROP SCHEMA public CASCADE; CREATE SCHEMA public; → tabula rasa.
-    4. Reapplico lo schema di app.db (business) e app.db_cloud (tenants/users).
-    5. Cleanup post-test: pool chiuso, DATABASE_URL ripristinata.
+    1. Importa `app` PRIMA del monkeypatch — perche' l'import esegue
+       `app.config._apply_db_override()` che sovrascrive DATABASE_URL leggendo
+       il file cifrato `data/db_config.enc`. Se monkeypatchassimo prima,
+       l'import lo annullerebbe e dropperemmo lo schema sul DB sbagliato.
+       (Bug storico 2026-05-17: lo abbiamo wipato 'agentscraper_dev' diverse volte.)
+    2. Forza DATABASE_URL al DB di test (con monkeypatch, sovrascrive l'override).
+    3. Cintura di sicurezza: verifica che il DB target abbia "test" nel nome.
+       Se no, ABORT — meglio test failure che dati di sviluppo distrutti.
+    4. Reset pool, DROP SCHEMA public, ricrea schema.
     """
+    from app import db, db_cloud  # PRIMA del monkeypatch: vedi docstring
+
     test_dsn = os.environ.get("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
     monkeypatch.setenv("DATABASE_URL", test_dsn)
 
-    from app import db, db_cloud
+    # Safety net: il DSN target deve contenere "test". Se ad es. ci ritroviamo
+    # con `agentscraper_dev` nell'env (regressione del fix), aborto subito.
+    if "test" not in test_dsn.lower():
+        raise RuntimeError(
+            f"REFUSING TO RUN TESTS: target DSN non contiene 'test': {test_dsn!r}. "
+            "Setta TEST_DATABASE_URL o verifica DEFAULT_TEST_DATABASE_URL."
+        )
+
     db.reset_pool()
     db_cloud.close_pool()
 
-    # DROP + CREATE schema (più rapido di drop di ogni tabella)
+    # DROP + CREATE schema (più rapido di drop di ogni tabella).
+    # Doppia verifica: chiediamo a Postgres il nome del DB corrente prima di droppare.
     with db.connect() as conn:
+        row = conn.execute("SELECT current_database() AS db").fetchone()
+        current_db = (row["db"] if isinstance(row, dict) else row[0])
+        if "test" not in str(current_db).lower():
+            raise RuntimeError(
+                f"REFUSING TO DROP SCHEMA: current_database()={current_db!r} non e' un DB di test. "
+                "Verifica che _apply_db_override non abbia rimesso un DSN production."
+            )
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         conn.execute("CREATE SCHEMA public")
         conn.commit()
