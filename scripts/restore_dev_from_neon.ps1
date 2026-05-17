@@ -87,8 +87,80 @@ if ($AppRunning) {
 }
 
 # Versioni pg_dump / pg_restore disponibili nel container
-$PgVersion = (docker exec $ContainerName pg_dump --version 2>&1) -replace 'pg_dump \(PostgreSQL\) ', ''
+$PgVersionRaw = docker exec $ContainerName pg_dump --version 2>&1
+$PgVersion = $PgVersionRaw -replace 'pg_dump \(PostgreSQL\) ', ''
 Write-Host ('  pg_dump version (container): {0}' -f $PgVersion)
+
+# Estrai major version pg_dump (es. "16.14" -> 16, "17.5" -> 17)
+$PgMajor = 0
+if ($PgVersion -match '^(\d+)') { $PgMajor = [int]$Matches[1] }
+
+# Versione server Neon: query rapida via psycopg
+$probeNeonVer = @'
+import os, psycopg
+with psycopg.connect(os.environ['NEON_DSN_TMP']) as c, c.cursor() as cur:
+    cur.execute('SHOW server_version')
+    print(cur.fetchone()[0])
+'@
+$env:NEON_DSN_TMP = $NeonDsn
+$NeonVersion = (python -c $probeNeonVer 2>$null).Trim()
+$NeonMajor = 0
+if ($NeonVersion -match '^(\d+)') { $NeonMajor = [int]$Matches[1] }
+Remove-Item Env:\NEON_DSN_TMP -ErrorAction SilentlyContinue
+Write-Host ('  Neon server version:         {0}' -f $NeonVersion)
+
+# Check compatibilita': pg_dump major >= Neon server major
+if ($PgMajor -gt 0 -and $NeonMajor -gt 0 -and $PgMajor -lt $NeonMajor) {
+    Write-Host ''
+    Write-Host '[ERROR] Version mismatch: pg_dump v' -NoNewline -ForegroundColor Red
+    Write-Host -NoNewline $PgMajor -ForegroundColor Red
+    Write-Host ' non puo'' leggere server Neon v' -NoNewline -ForegroundColor Red
+    Write-Host $NeonMajor -ForegroundColor Red
+    Write-Host ''
+    Write-Host '   Il container locale e'' su una versione vecchia di Postgres.' -ForegroundColor Yellow
+    Write-Host '   Soluzione: aggiorna il container.' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host '   AVVISO: aggiornare il major Postgres distrugge i dati locali esistenti' -ForegroundColor Yellow
+    Write-Host '   (volume docker non auto-upgradabile). Visto che agentscraper_dev e''' -ForegroundColor Yellow
+    Write-Host '   gia'' vuoto, il restore subito dopo ripopolera'' tutto da Neon.' -ForegroundColor Yellow
+    Write-Host ''
+    $ans = Read-Host '   Eseguire ORA: docker compose down -v + up -d (con la nuova versione)? [y/N]'
+    if ($ans -notmatch '^(y|yes|s|si)$') {
+        Write-Host '   Annullato. Esegui manualmente:' -ForegroundColor DarkYellow
+        Write-Host '     docker compose -f docker-compose.dev.yml down -v' -ForegroundColor DarkYellow
+        Write-Host '     docker compose -f docker-compose.dev.yml up -d' -ForegroundColor DarkYellow
+        Write-Host '   poi rilancia questo script.' -ForegroundColor DarkYellow
+        exit 1
+    }
+
+    Write-Host ''
+    Write-Host '   -> docker compose down -v ...' -ForegroundColor Cyan
+    docker compose -f docker-compose.dev.yml down -v
+    if ($LASTEXITCODE -ne 0) { throw "docker compose down -v fallito (exit $LASTEXITCODE)" }
+
+    Write-Host '   -> docker compose up -d ...' -ForegroundColor Cyan
+    docker compose -f docker-compose.dev.yml up -d
+    if ($LASTEXITCODE -ne 0) { throw "docker compose up -d fallito (exit $LASTEXITCODE)" }
+
+    Write-Host '   -> wait healthcheck ...' -ForegroundColor DarkGray
+    $tries = 0
+    while ($tries -lt 30) {
+        Start-Sleep -Seconds 2
+        $tries++
+        $health = docker inspect -f '{{.State.Health.Status}}' $ContainerName 2>$null
+        if ($health -eq 'healthy') {
+            Write-Host '   -> container healthy.' -ForegroundColor Green
+            break
+        }
+    }
+    if ($health -ne 'healthy') {
+        throw "Container non e'' diventato healthy dopo 60s (status=$health)"
+    }
+    # Re-check versione dopo upgrade
+    $PgVersionRaw = docker exec $ContainerName pg_dump --version 2>&1
+    $PgVersion = $PgVersionRaw -replace 'pg_dump \(PostgreSQL\) ', ''
+    Write-Host ('   -> nuova pg_dump version: {0}' -f $PgVersion)
+}
 
 # --- Step 1: SELECT COUNT su Neon (sanity check) ---
 Write-Host ''

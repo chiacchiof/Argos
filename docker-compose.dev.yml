@@ -1,5 +1,7 @@
 # Postgres locale per sviluppo multi-tenant.
-# Stesso major (16) di Neon prod, così schema e sintassi SQL sono allineati.
+# Stesso major (17) di Neon prod, così schema e sintassi SQL sono allineati
+# e pg_dump/pg_restore non danno errori di version mismatch
+# (Neon e' passato a 17 nel 2026; il client v16 non legge piu' server v17).
 #
 # Avvio:  docker compose -f docker-compose.dev.yml up -d
 # Stop:   docker compose -f docker-compose.dev.yml stop
@@ -8,10 +10,13 @@
 # Connessione: postgresql://postgres:postgres@localhost:5432/agentscraper_dev
 #
 # I dati persistono in data/postgres-dev/ (ignorato da .gitignore via data/).
+# ATTENZIONE: cambiando major (es. 16 -> 17) il volume esistente NON viene
+# auto-upgradato. Serve `down -v` per droppare il volume e ripartire
+# fresh. Per non perdere dati: pg_dump prima di down -v, poi pg_restore.
 
 services:
   postgres-dev:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     container_name: agentscraper-postgres-dev
     environment:
       POSTGRES_USER: postgres
