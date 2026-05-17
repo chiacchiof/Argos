@@ -972,6 +972,15 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
           <span class="hint">Simula gli invii: niente DM reale, solo log con reason="dry_run". Per testare il flusso.</span>
         </label>
       </div>
+
+      <label class="inline-checkbox">
+        <input type="checkbox" name="headed" value="1" {% if p.get('headed', 1) %}checked{% endif %}>
+        <strong>🖥️ Browser visibile (headed)</strong>
+        <span class="hint">
+          Solo Motore A (browser). <strong>Raccomandato attivo</strong>: headless è detectato facilmente
+          da WhatsApp. Headed richiede PC attivo (no remote/server).
+        </span>
+      </label>
     </details>
 
     {# ============================================================
