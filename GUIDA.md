@@ -1411,8 +1411,9 @@ Per inserire **un singolo asset** senza passare da uno scraping. Tipico use case
 - **Titolo / nome** (obbligatorio): es. "Francesco Russo" o "Pizzeria Bella Napoli".
 - **Source URL** (opzionale): URL di provenienza. Usato come **chiave di dedup**: se ri-importi con lo stesso source_url + asset_type, l'asset esistente viene aggiornato.
 - **Note**: testo libero.
-- **Tag attributi** (opzionale): fino a 5 coppie `key=value`. Esempi: `city=Catania`, `interests_inferred=fitness`. Usati dai filtri `/qualified` (sezione "Filtri tag attributi").
-- **Raw JSON** (opzionale): payload custom in formato JSON. **Le chiavi note vengono promosse automaticamente** a colonne dell'asset (vedi sotto).
+- **📋 Campi rapidi** (consigliato): righe `key=value` dinamiche (`+ Aggiungi campo`, `×` rimuove). La chiave ha un dropdown con suggerimenti per le chiavi standard (whatsapp, email, telegram, role, organization, ...). **Sostituisce il bisogno di scrivere JSON manualmente** per il 90% dei casi.
+- **Tag attributi avanzati** (opzionale): fino a 5 coppie key/value con vincolo stretto sulla key (lowercase, max 50 char). Equivalente ai Campi rapidi ma con validazione strict. Usati dai filtri `/qualified`.
+- **Raw JSON** (opzionale, avanzato): payload JSON nidificato per casi non rappresentabili come key=value semplici (es. array, dict annidati). Esempio formattato disponibile in pagina. **Le chiavi note vengono promosse automaticamente** a colonne dell'asset (vedi sotto).
 
 #### Promozione automatica dei campi raw_json
 

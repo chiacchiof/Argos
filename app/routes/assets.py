@@ -637,6 +637,26 @@ async def asset_new_submit(
             continue
         asset_tags.setdefault(key, []).append(val[:200])
 
+    # === Campi rapidi (UI key=value, alternativa friendly al raw_json) ===
+    # Merge nel raw_data: per ogni quick_key__N + quick_value__N nel form,
+    # aggiungiamo la coppia al raw_data DICT (sovrascrive eventuali chiavi
+    # gia' presenti nel raw_json esplicito — i campi rapidi vincono perche'
+    # l'utente li ha digitati direttamente). La logica di promozione sotto
+    # gestira' la mappatura colonna/tag.
+    for k, v in (form.multi_items() if hasattr(form, "multi_items") else form.items()):
+        if not isinstance(k, str) or not k.startswith("quick_key__"):
+            continue
+        idx = k[len("quick_key__"):]
+        qk = (v or "").strip().lower()
+        qv = (form.get(f"quick_value__{idx}") or "").strip()
+        if not qk or not qv:
+            continue
+        if not _re.match(r"^[a-z][a-z0-9_-]{0,49}$", qk):
+            continue
+        # Inseriamo in raw_data: la promozione sotto si occupera' del routing
+        # (colonna dedicata se chiave nota, tag se chiave libera).
+        raw_data[qk] = qv[:500]
+
     # Per agevolare il pattern "asset = contatto/persona manuale", se raw_json
     # contiene chiavi note (whatsapp, email, telegram, role, organization, ...)
     # promuovile a colonne dedicate dell'asset cosi' che siano subito utilizzabili

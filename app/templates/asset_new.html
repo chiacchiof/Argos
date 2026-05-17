@@ -44,11 +44,84 @@
       <textarea name="notes" rows="3" placeholder="Note libere su questo asset"></textarea>
     </label>
 
+    {# === Campi rapidi: il modo consigliato per inserire whatsapp/email/role/ecc.
+        senza scrivere JSON a mano. Le chiavi note (whatsapp/email/telegram/...)
+        vengono promosse a colonne dell'asset dal backend; le altre diventano tag. === #}
+    <details class="collapsible-section" open>
+      <summary>📋 Campi rapidi <span class="hint">(consigliato — niente JSON da scrivere)</span></summary>
+      <p class="muted small">
+        Aggiungi righe key=value. Le chiavi <strong>standard</strong> (whatsapp, email,
+        telegram, display_name, sitoweb, role, organization, ...) sono in elenco.
+        Puoi anche scrivere chiavi <em>custom</em> nel campo (lowercase, a-z 0-9 _ -).
+        Salvate come colonne dedicate dell'asset (le standard) o come tag attributi (le altre).
+      </p>
+
+      <div id="quick-fields-rows">
+        <!-- Una riga iniziale visibile -->
+        <div class="row quick-field-row" style="margin-bottom:0.3rem;align-items:center">
+          <label style="flex:1">Chiave
+            <input name="quick_key__0" list="quick-keys-suggestions" maxlength="50"
+                   pattern="[a-z][a-z0-9_\-]{0,49}" placeholder="es. whatsapp">
+          </label>
+          <label style="flex:2">Valore
+            <input name="quick_value__0" maxlength="500" placeholder="es. +393294257497">
+          </label>
+          <button type="button" class="btn-small btn-secondary" onclick="removeQuickRow(this)"
+                  style="align-self:flex-end" title="Rimuovi questa riga">×</button>
+        </div>
+      </div>
+      <datalist id="quick-keys-suggestions">
+        <option value="whatsapp">numero WhatsApp (E.164, es. +393294257497)</option>
+        <option value="email">indirizzo email</option>
+        <option value="telegram">username Telegram (senza @)</option>
+        <option value="telegram_chat_id">chat_id Telegram (numerico)</option>
+        <option value="display_name">nome da mostrare nei messaggi</option>
+        <option value="sitoweb">URL sito web</option>
+        <option value="role">ruolo (es. CEO)</option>
+        <option value="organization">azienda / organizzazione</option>
+        <option value="city">città</option>
+        <option value="industry">settore</option>
+        <option value="phone_alt">numero alternativo</option>
+      </datalist>
+      <button type="button" class="btn-small" onclick="addQuickRow()" style="margin-top:0.3rem">
+        + Aggiungi campo
+      </button>
+
+      <script>
+        let quickRowCounter = 1;  // gia' creata la riga 0 sopra
+        function addQuickRow() {
+          const idx = quickRowCounter++;
+          const container = document.getElementById('quick-fields-rows');
+          const row = document.createElement('div');
+          row.className = 'row quick-field-row';
+          row.style.cssText = 'margin-bottom:0.3rem;align-items:center';
+          row.innerHTML = `
+            <label style="flex:1">Chiave
+              <input name="quick_key__${idx}" list="quick-keys-suggestions" maxlength="50"
+                     pattern="[a-z][a-z0-9_\\-]{0,49}" placeholder="es. role">
+            </label>
+            <label style="flex:2">Valore
+              <input name="quick_value__${idx}" maxlength="500" placeholder="es. CEO">
+            </label>
+            <button type="button" class="btn-small btn-secondary" onclick="removeQuickRow(this)"
+                    style="align-self:flex-end" title="Rimuovi questa riga">×</button>`;
+          container.appendChild(row);
+        }
+        function removeQuickRow(btn) {
+          const row = btn.closest('.quick-field-row');
+          if (row) row.remove();
+        }
+      </script>
+    </details>
+
     <details class="collapsible-section">
-      <summary>🏷️ Tag attributi <span class="hint">(opzionale, aggiungi fino a 5 ora)</span></summary>
-      <p class="muted small">Esempi: <code>municipality</code>:<code>Aci Bonaccorsi</code>,
-        <code>category</code>:<code>palestra</code>. Tag aggiuntivi modificabili dopo
-        nella schermata Edit.</p>
+      <summary>🏷️ Tag attributi avanzati <span class="hint">(opzionale, fino a 5 — vincolato a key lowercase a-z 0-9 _ -)</span></summary>
+      <p class="muted small">
+        Per tag arbitrari come <code>municipality</code>:<code>Aci Bonaccorsi</code>,
+        <code>category</code>:<code>palestra</code>. Equivalente al blocco "Campi rapidi"
+        sopra ma con vincolo stretto sulle key. Tag aggiuntivi modificabili dopo
+        in Edit.
+      </p>
       {% for i in range(5) %}
       <div class="row" style="margin-bottom:0.3rem">
         <label style="flex:1">Tag key {{ i + 1 }}
@@ -63,8 +136,33 @@
     </details>
 
     <details class="collapsible-section">
-      <summary>🔍 Raw JSON <span class="hint">(opzionale, payload custom)</span></summary>
-      <textarea name="raw_json" rows="6" placeholder='{"campo_custom": "valore", "altri_dati": [1,2,3]}'
+      <summary>🔍 Raw JSON <span class="hint">(opzionale, solo se hai bisogno di payload nidificato / array)</span></summary>
+      <p class="muted small">
+        Per casi avanzati: payload nidificato, array, dati custom non rappresentabili
+        come coppie key=value. Per la maggior parte dei casi <strong>usa "Campi rapidi"
+        sopra</strong> (piu' semplice, niente sintassi JSON da rispettare).
+      </p>
+      <p class="muted small" style="margin-top:0.3rem">
+        Formato: dict JSON valido con <strong>virgolette dritte</strong> (<code>"</code>, non <code>“</code> <code>”</code>).
+        Esempio:
+      </p>
+<pre class="code-example" style="background:#f6f8fa;border:1px solid #d0d7de;border-radius:4px;padding:0.5rem 0.7rem;font-family:monospace;font-size:0.85rem;margin:0.3rem 0;overflow:auto"><code>{
+  "whatsapp": "+393294257497",
+  "email": "francesco@edg.com",
+  "organization": "EDG",
+  "role": "CEO",
+  "social": [
+    {"platform": "instagram", "url": "https://instagram.com/francesco"}
+  ],
+  "altri_dati": [1, 2, 3]
+}</code></pre>
+      <p class="muted small" style="margin:0.3rem 0">
+        Le chiavi note (<code>whatsapp</code>, <code>email</code>, <code>telegram</code>,
+        <code>display_name</code>, <code>sitoweb</code>, <code>social</code>) vengono
+        <strong>promosse a colonne</strong> dell'asset. Le altre diventano <strong>tag</strong>
+        se il nome rispetta <code>^[a-z][a-z0-9_-]{0,49}$</code>.
+      </p>
+      <textarea name="raw_json" rows="8" placeholder='{"campo_custom": "valore", "altri_dati": [1,2,3]}'
                 style="font-family:monospace;font-size:0.85rem"></textarea>
     </details>
 
