@@ -138,6 +138,27 @@ if ($PgMajor -gt 0 -and $NeonMajor -gt 0 -and $PgMajor -lt $NeonMajor) {
     docker compose -f docker-compose.dev.yml down -v
     if ($LASTEXITCODE -ne 0) { throw "docker compose down -v fallito (exit $LASTEXITCODE)" }
 
+    # IMPORTANTE: docker-compose.dev.yml usa un BIND MOUNT (./data/postgres-dev),
+    # NON un named volume. `down -v` non lo cancella. Postgres 17 rifiuta di
+    # avviarsi su dati creati da Postgres 16 ('database files are incompatible
+    # with server'). Cancello manualmente la directory.
+    $PgDataDir = 'data\postgres-dev'
+    if (Test-Path $PgDataDir) {
+        Write-Host ('   -> wipe bind-mount: {0} ...' -f $PgDataDir) -ForegroundColor Cyan
+        try {
+            Remove-Item -Path $PgDataDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Host ('   [ERROR] Impossibile cancellare {0}: {1}' -f $PgDataDir, $_.Exception.Message) -ForegroundColor Red
+            Write-Host '   Probabilmente il container precedente sta ancora bloccando dei file.' -ForegroundColor Yellow
+            Write-Host '   Esegui manualmente:' -ForegroundColor Yellow
+            Write-Host '     docker compose -f docker-compose.dev.yml down -v' -ForegroundColor DarkYellow
+            Write-Host ('     Remove-Item -Path {0} -Recurse -Force' -f $PgDataDir) -ForegroundColor DarkYellow
+            Write-Host '     docker compose -f docker-compose.dev.yml up -d' -ForegroundColor DarkYellow
+            Write-Host '   poi rilancia questo script.' -ForegroundColor Yellow
+            throw "wipe bind-mount fallito"
+        }
+    }
+
     Write-Host '   -> docker compose up -d ...' -ForegroundColor Cyan
     docker compose -f docker-compose.dev.yml up -d
     if ($LASTEXITCODE -ne 0) { throw "docker compose up -d fallito (exit $LASTEXITCODE)" }
