@@ -162,6 +162,8 @@ async def qualified_assets_list(
     q: str = "",
     page: str = "1",
     per_page: str = "",
+    tag_mode: str = "and",
+    tag_expr: str = "",
 ):
     """Tab Qualified: asset-centric con multi-select qualifier + filtri.
 
@@ -183,6 +185,22 @@ async def qualified_assets_list(
     score_min_v = _parse_optional_int(score_min)
     search = (q or "").strip() or None
     extra_tag_filters = _parse_extra_tag_filters(request)
+    tag_mode_v = (tag_mode or "and").strip().lower()
+    if tag_mode_v not in ("and", "or", "custom"):
+        tag_mode_v = "and"
+    tag_expr_v = (tag_expr or "").strip()
+    # Validazione precoce: se mode=custom, parse_tag_expr deve passare.
+    # In caso di errore, restituiamo un context con tag_expr_error per il template.
+    tag_expr_error: str | None = None
+    if tag_mode_v == "custom" and extra_tag_filters and tag_expr_v:
+        from ..agent.tag_expr import parse_tag_expr as _parse_te
+        try:
+            _parse_te(tag_expr_v, len(extra_tag_filters))
+        except ValueError as e:
+            tag_expr_error = str(e)
+            # Fallback ad AND per evitare query rotta — l'utente vede l'errore in UI
+            tag_mode_v = "and"
+            tag_expr_v = ""
     per_page_v = _parse_optional_int(per_page) or _QUALIFIED_PAGE_SIZE
     per_page_v = max(10, min(per_page_v, 500))
     page_v = _parse_optional_int(page) or 1
@@ -197,6 +215,8 @@ async def qualified_assets_list(
         source_task_id=source_task_id_v,
         search=search,
         extra_tag_filters=extra_tag_filters or None,
+        tag_mode=tag_mode_v,
+        tag_expr=tag_expr_v or None,
     )
     total_pages = max(1, (total + per_page_v - 1) // per_page_v)
     if page_v > total_pages:
@@ -213,6 +233,8 @@ async def qualified_assets_list(
         extra_tag_filters=extra_tag_filters or None,
         limit=per_page_v,
         offset=offset,
+        tag_mode=tag_mode_v,
+        tag_expr=tag_expr_v or None,
     )
 
     qualifier_menu = db.list_distinct_qualifier_slugs()
@@ -235,6 +257,10 @@ async def qualified_assets_list(
     for i, (k, v) in enumerate(extra_tag_filters):
         qs_parts.append(f"tag_key__{i}={k}")
         qs_parts.append(f"tag_value__{i}={v}")
+    if tag_mode_v != "and": qs_parts.append(f"tag_mode={tag_mode_v}")
+    if tag_mode_v == "custom" and tag_expr_v:
+        from urllib.parse import quote as _q
+        qs_parts.append(f"tag_expr={_q(tag_expr_v, safe='')}")
     if per_page_v != _QUALIFIED_PAGE_SIZE: qs_parts.append(f"per_page={per_page_v}")
     qs_base = "&".join(qs_parts)
 
@@ -254,6 +280,9 @@ async def qualified_assets_list(
             "types_in_use": types_in_use,
             "available_tag_keys": available_tag_keys,
             "available_source_tasks": available_source_tasks,
+            "tag_mode": tag_mode_v,
+            "tag_expr": tag_expr_v,
+            "tag_expr_error": tag_expr_error,
             "page": page_v,
             "per_page": per_page_v,
             "total": total,
