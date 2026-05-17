@@ -19,6 +19,33 @@ DEFAULT_TEST_DATABASE_URL = (
 )
 
 
+def _ensure_test_database_exists(test_dsn: str) -> None:
+    """Crea il DB di test se non esiste. Tipicamente dopo un rebuild del container
+    docker locale (es. major upgrade postgres) il DB di test va ricreato a mano —
+    questa funzione automatizza l'operazione collegandosi a 'postgres' (DB di
+    sistema) ed eseguendo CREATE DATABASE."""
+    import re
+    import psycopg
+
+    m = re.match(r"(postgresql://[^/]+)/([^?]+)(\?.*)?$", test_dsn)
+    if not m:
+        return  # DSN strana, lasciamo fallire il test
+    base, db_name, qs = m.group(1), m.group(2), (m.group(3) or "")
+    admin_dsn = f"{base}/postgres{qs}"
+
+    try:
+        with psycopg.connect(admin_dsn, autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (db_name,)
+            ).fetchone()
+            if row is None:
+                conn.execute(f'CREATE DATABASE "{db_name}"')
+    except Exception:
+        # Best effort: se non riusciamo a creare, il test fallira' con un errore
+        # piu' chiaro sulla connect.
+        pass
+
+
 @pytest.fixture(autouse=True)
 def _isolate_test_db(monkeypatch):
     """Per ogni test:
@@ -44,6 +71,9 @@ def _isolate_test_db(monkeypatch):
             f"REFUSING TO RUN TESTS: target DSN non contiene 'test': {test_dsn!r}. "
             "Setta TEST_DATABASE_URL o verifica DEFAULT_TEST_DATABASE_URL."
         )
+
+    # Auto-crea il DB di test se non esiste (succede dopo rebuild del container).
+    _ensure_test_database_exists(test_dsn)
 
     db.reset_pool()
     db_cloud.close_pool()

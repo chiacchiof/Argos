@@ -2181,6 +2181,23 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   flex-direction: column;
   gap: 0.4rem;
 }
+/* 6 slot (F1..F6) in 3 colonne x 2 righe.
+   Su schermo medio (<1100px) torna a 2 colonne. Su mobile (<720px) a 1. */
+.tag-filters-grid-6 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem 0.8rem;
+}
+@media (max-width: 1100px) {
+  .tag-filters-grid-6 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 720px) {
+  .tag-filters-grid-6 {
+    grid-template-columns: 1fr;
+  }
+}
 .tag-filter-row {
   display: grid;
   grid-template-columns: 30px 1fr 1fr;

@@ -124,11 +124,14 @@ async def assets_list(
 _QUALIFIED_PAGE_SIZE = 100
 
 
+_MAX_EXTRA_TAG_SLOTS = 6
+
+
 def _parse_extra_tag_filters(request: Request) -> list[tuple[str, str]]:
-    """Parsa form fields `tag_key__N` / `tag_value__N` (con N=0..4) dal querystring.
-    Pattern compatibile con quello già usato in /inbox/contacts."""
+    """Parsa form fields `tag_key__N` / `tag_value__N` (con N=0..5, F1..F6 in UI)
+    dal querystring. Pattern compatibile con quello già usato in /inbox/contacts."""
     out: list[tuple[str, str]] = []
-    for i in range(5):
+    for i in range(_MAX_EXTRA_TAG_SLOTS):
         k = (request.query_params.get(f"tag_key__{i}") or "").strip().lower()
         v = (request.query_params.get(f"tag_value__{i}") or "").strip()
         if k and v:

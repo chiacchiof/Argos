@@ -79,7 +79,7 @@
         <label class="modal-trigger-field">
           Qualifier eseguiti
           <button type="button" class="modal-trigger-btn"
-                  onclick="document.getElementById('qualifier-picker-modal').classList.add('open');">
+                  onclick="qpmSnapshotState(); document.getElementById('qualifier-picker-modal').classList.add('open');">
             {% if selected_qualifiers %}
               <strong>{{ selected_qualifiers|length }}</strong> selezionati
               <span class="muted small">— click per modificare</span>
@@ -161,7 +161,8 @@
                   onclick="document.getElementById('qualifier-picker-modal').classList.remove('open');">✕</button>
         </div>
         <p class="muted small" style="margin-top:0">
-          Scegli uno o più qualifier (multi-select = intersezione AND).
+          Spunta uno o più qualifier, poi clicca <strong>Applica</strong> in basso.
+          Multi-select = intersezione AND.
           {% if selected_qualifiers|length > 1 %}Selezione attuale: <strong>{{ selected_qualifiers|length }}</strong> qualifier.{% endif %}
         </p>
 
@@ -178,7 +179,7 @@
             <label>
               <input type="checkbox" name="qualifiers" value="{{ q.slug }}"
                      {% if q.slug in selected_qualifiers %}checked{% endif %}
-                     onchange="document.getElementById('qualified-form').submit()">
+                     onchange="qpmCardSync(this)">
               <div class="qualifier-card-body">
                 <div class="qualifier-card-header">
                   <strong class="qualifier-card-name">{{ q.friendly_name }}</strong>
@@ -211,7 +212,11 @@
 
         <div class="modal-actions">
           <button type="button" class="btn-link"
-                  onclick="document.getElementById('qualifier-picker-modal').classList.remove('open');">Chiudi</button>
+                  onclick="qpmCancel()">Annulla</button>
+          <button type="submit" class="btn-primary"
+                  onclick="document.getElementById('qualifier-picker-modal').classList.remove('open');">
+            Applica
+          </button>
         </div>
       </div>
     </div>
@@ -258,15 +263,15 @@
             Espressione
             <input type="text" name="tag_expr" id="tag-expr-input"
                    value="{{ tag_expr or '' }}"
-                   placeholder="Es: (F1 AND F2) OR F3"
+                   placeholder="Es: (F1 AND F2) OR (F3 AND F4)"
                    style="width:100%; font-family:monospace">
           </label>
           <small class="muted">
-            Token validi: <code>F1</code>..<code>F<i id="tag-expr-max">3</i></code>, <code>AND</code>, <code>OR</code>, parentesi.
+            Token validi: <code>F1</code>..<code>F6</code>, <code>AND</code>, <code>OR</code>, parentesi.
             Click sui chip qui sotto per inserirli rapidamente:
           </small>
           <div class="tag-expr-helpers" style="margin-top:0.3rem">
-            {% for i in range(3) %}
+            {% for i in range(6) %}
               <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('F{{ i+1 }}')">F{{ i+1 }}</button>
             {% endfor %}
             <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('AND')">AND</button>
@@ -277,8 +282,8 @@
         </div>
 
         <h4 style="margin: 1rem 0 0.3rem">Filtri</h4>
-        <div class="tag-filters-grid">
-          {% for i in range(3) %}
+        <div class="tag-filters-grid tag-filters-grid-6">
+          {% for i in range(6) %}
             {% set ek = extra_tag_filters[i][0] if extra_tag_filters|length > i else '' %}
             {% set ev = extra_tag_filters[i][1] if extra_tag_filters|length > i else '' %}
             <div class="tag-filter-row" data-fn="F{{ i+1 }}">
@@ -449,6 +454,39 @@ function qpmFilter(input) {
     c.style.display = (!filter || text.includes(filter)) ? '' : 'none';
   });
 }
+
+// Snapshot dello stato checkbox al momento dell'apertura modale: serve per
+// "Annulla" che ripristina la selezione originale.
+let qpmOriginalState = null;
+function qpmSnapshotState() {
+  const cbs = document.querySelectorAll('#qualifier-picker-list input[type=checkbox][name=qualifiers]');
+  qpmOriginalState = Array.from(cbs).map(cb => ({ el: cb, checked: cb.checked }));
+}
+
+// Click su una card: sincronizza visivamente la classe 'qualifier-card-active'
+// (no submit del form: applica al click su "Applica").
+function qpmCardSync(checkbox) {
+  const card = checkbox.closest('.qualifier-card');
+  if (!card) return;
+  if (checkbox.checked) card.classList.add('qualifier-card-active');
+  else card.classList.remove('qualifier-card-active');
+}
+
+// "Annulla": ripristina lo stato dei checkbox a quello salvato all'apertura.
+function qpmCancel() {
+  if (qpmOriginalState) {
+    qpmOriginalState.forEach(({ el, checked }) => {
+      if (el && el.checked !== checked) {
+        el.checked = checked;
+        qpmCardSync(el);
+      }
+    });
+  }
+  document.getElementById('qualifier-picker-modal').classList.remove('open');
+}
+
+// Lo snapshot dello stato avviene all'onclick del bottone trigger
+// (vedi onclick="qpmSnapshotState(); ...modal.add('open')..." nel template).
 
 // --- Tag filters modal: mostra/nasconde input expression sotto radio Custom ---
 function tfmModeChanged(radio) {
