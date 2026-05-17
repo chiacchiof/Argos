@@ -573,99 +573,11 @@
       {% endif %}
     </details>
 
-    {# ============================================================
-       SEZIONE 6b: FILTRA CONTATTI DESTINATARI — solo outreach + outreach_social + outreach_whatsapp
-       Restringe la pool di contatti che il task contatterà. Si applica
-       solo se `target_contact_ids` (sezione successiva, selezione manuale)
-       è vuoto. Se selezioni esplicitamente dei contatti, vincono.
-       ============================================================ #}
-    <details class="collapsible-section dyn-section" data-modes="outreach outreach_social outreach_whatsapp">
-      <summary>📤 Filtra contatti destinatari <span class="hint">(restringi la pool — applicato SE non selezioni manualmente)</span></summary>
-
-      <p class="muted small" style="margin:0 0 0.6rem 0">
-        I filtri sotto restringono i contatti che questo task contatterà. Le condizioni
-        sono in AND. Se nella sezione "Contatti da includere" sotto selezioni
-        esplicitamente dei contatti, la <strong>selezione manuale vince</strong> e i
-        filtri vengono <em>ignorati</em>.
-      </p>
-
-      {% set fp_tid = p.get('outreach_filter_source_task_id') %}
-      {% set fp_fof = p.get('outreach_filter_source_follower_of') or '' %}
-
-      <div class="row">
-        <label>🔗 Task generatore <span class="hint">(solo contatti creati da questo task upstream)</span>
-          <select name="outreach_filter_source_task_id">
-            <option value="">— qualsiasi —</option>
-            {% for t in (outreach_source_tasks or []) %}
-              <option value="{{ t.task_id }}" {% if fp_tid and fp_tid|int == t.task_id %}selected{% endif %}>
-                #{{ t.task_id }} {{ t.name|truncate(35, true, '…') }} · {{ t.agent_mode }} ({{ t.count }})
-              </option>
-            {% endfor %}
-          </select>
-        </label>
-
-        <label>👥 Source follower of <span class="hint">(per IG/TT: "follower di @X"; FB: "amico di @X")</span>
-          <select name="outreach_filter_source_follower_of">
-            <option value="">— qualsiasi —</option>
-            {% for f in (outreach_source_followers or []) %}
-              <option value="{{ f.value }}" {% if fp_fof == f.value %}selected{% endif %}>{{ f.value }} ({{ f.count }})</option>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
-
-      <p class="muted small" style="margin:0.6rem 0 0 0">
-        💡 Esempio: <code>Source follower of = @ekipe_club</code> → il task contatterà
-        solo i 12 follower di Ekipe estratti dal recon_social. Combinabile con il filtro
-        "Tipo di asset" / "Stato" della pool generale.
-      </p>
-
-      {# Multi-tag AND filter — solo per pattern "agente_outreach_sportivi" e simili #}
-      <hr style="margin:1rem 0;border:none;border-top:1px solid #eee">
-      <strong>🎯 Filtri tag multipli (AND)</strong>
-      <p class="muted small" style="margin:0.3rem 0 0.5rem 0">
-        Aggiungi fino a 5 coppie <code>tag_key:tag_value</code>. Il task contatterà
-        SOLO i contatti che hanno TUTTI i tag selezionati (clausole AND).
-        Es. <code>interests_inferred:fitness</code> + <code>location:Catania</code>
-        → agente outreach sportivi/catanesi.
-      </p>
-      {% set _existing_tags = p.get('outreach_filter_tags') or [] %}
-      {% if _existing_tags is string %}
-        {% set _existing_tags = [] %}
-      {% endif %}
-      <div id="outreach-tag-filters-rows">
-        {% for i in range(5) %}
-          {% set _tag = _existing_tags[i] if i < (_existing_tags|length) else {} %}
-          {% set _k = _tag.get('key') if _tag else '' %}
-          {% set _v = _tag.get('value') if _tag else '' %}
-          <div class="row outreach-tag-row" style="margin-bottom:0.3rem;{% if i > 0 and not _k %}display:none{% endif %}">
-            <label style="flex:1">{% if i == 0 %}Tag key{% endif %}
-              <select name="outreach_filter_tag_key__{{ i }}"
-                      hx-get="/assets/tag_values"
-                      hx-trigger="change"
-                      hx-target="next select"
-                      hx-swap="innerHTML"
-                      hx-vals='js:{key: event.target.value}'>
-                <option value="">— nessun filtro —</option>
-                {% for tk in (outreach_tag_keys or []) %}
-                  <option value="{{ tk.key }}" {% if _k == tk.key %}selected{% endif %}>{{ tk.key }} ({{ tk.count }})</option>
-                {% endfor %}
-              </select>
-            </label>
-            <label style="flex:1">{% if i == 0 %}Tag value{% endif %}
-              <select name="outreach_filter_tag_value__{{ i }}">
-                {% if _v %}<option value="{{ _v }}" selected>{{ _v }}</option>{% endif %}
-                <option value="">— scegli key prima —</option>
-              </select>
-            </label>
-          </div>
-        {% endfor %}
-      </div>
-      <button type="button" class="btn-small btn-secondary"
-              onclick="(function(){ const rows = document.querySelectorAll('.outreach-tag-row'); for (const r of rows) { if (r.style.display === 'none') { r.style.display = ''; break; } } })()">
-        + Aggiungi tag
-      </button>
-    </details>
+    {# SEZIONE 6b RIMOSSA: era "📤 Filtra contatti destinatari" (filtri
+       dinamici contact-centric legacy outreach_filter_*). Sostituita dal
+       flusso asset-centric "🎯 Audience asset" (target_asset_ids).
+       I task vecchi continuano a funzionare: il runner outreach fa fallback
+       ai filtri legacy se target_asset_ids e' vuoto. #}
 
     {# ============================================================
        SEZIONE 7: OUTREACH — solo outreach
@@ -831,57 +743,9 @@
         </select>
       </label>
 
-      {# Selezione target: liste platform-specifiche, mostrate/nascoste via JS #}
-      {% set selected_ids = p.get('target_contact_ids') or [] %}
-      {% set selected_set = selected_ids if selected_ids is iterable else [] %}
-      <div class="contact-targets-block">
-        <label class="contact-targets-label">
-          <strong>Contatti da includere</strong>
-          <span class="hint">
-            Spunta solo quelli che vuoi contattare in questa run.
-            Se non spunti niente, il runner usa <em>tutti</em> i contacts qualified
-            con un URL della piattaforma selezionata.
-          </span>
-        </label>
-        {% for plat in ('instagram', 'tiktok', 'facebook') %}
-          {% set plat_contacts = contacts_by_platform.get(plat, []) %}
-          <div class="contact-targets-list" data-target-platform="{{ plat }}"
-               style="{% if p.get('social_platform', 'instagram') != plat %}display:none;{% endif %}">
-            {% if plat_contacts %}
-              <div class="contact-targets-actions">
-                <button type="button" class="btn-small" data-targets-toggle="all" data-target-platform="{{ plat }}">Tutti</button>
-                <button type="button" class="btn-small btn-secondary" data-targets-toggle="none" data-target-platform="{{ plat }}">Nessuno</button>
-                <span class="muted small" data-targets-count="{{ plat }}">0 / {{ plat_contacts | length }} selezionati</span>
-              </div>
-              <div class="contact-targets-grid">
-                {% for c in plat_contacts %}
-                <label class="contact-target-row">
-                  <input type="checkbox" name="target_contact_ids" value="{{ c.id }}"
-                         data-target-checkbox="{{ plat }}"
-                         {% if c.id in selected_set %}checked{% endif %}>
-                  <span class="contact-target-info">
-                    <strong>{{ c.display_name or c.url }}</strong>
-                    <small class="muted">
-                      #{{ c.id }} ·
-                      <a href="{{ c.url }}" target="_blank" rel="noopener">{{ c.url }}</a>
-                      {% if c.source_domain %} · source: {{ c.source_domain }}{% endif %}
-                      · status: {{ c.status or '—' }}
-                    </small>
-                  </span>
-                </label>
-                {% endfor %}
-              </div>
-            {% else %}
-              <p class="muted small">
-                Nessun contatto con URL <code>{{ plat }}</code> nel DB.
-                Vai a <a href="/inbox/contacts" target="_blank">Inbox › Contatti</a>
-                per aggiungerne manualmente, o lancia un task <code>auto_extract</code>
-                / <code>bulk_extract</code> che estragga URL social.
-              </p>
-            {% endif %}
-          </div>
-        {% endfor %}
-      </div>
+      {# SEZIONE RIMOSSA: era "Contatti da includere" (target_contact_ids
+         checkbox da contacts_by_platform). Sostituita da "🎯 Audience asset"
+         (target_asset_ids snapshot) in sezione 6a. #}
 
       <label>Obiettivo dell'outreach <span class="hint">(cosa offri, chi sei, perché contatti)</span>
         <textarea name="outreach_intent" rows="3" placeholder="Es. Sono un consulente di content optimization, offro alle creator del settore una review gratuita del profilo per aumentare engagement.">{{ p.get('outreach_intent', '') }}</textarea>
@@ -954,59 +818,9 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
 Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche idea per migliorare visibilità su Google e social. Vi interessa una chiacchierata?">{{ p.get('message_template_variants', '') }}</textarea>
       </label>
 
-      {# Selettore esplicito target — checkbox sui contacts con whatsapp #}
-      {% set wa_selected = p.get('target_contact_ids') or [] %}
-      {% set wa_selected_set = wa_selected if wa_selected is iterable else [] %}
-      <div class="contact-targets-block">
-        <label class="contact-targets-label">
-          <strong>📋 Contatti da contattare</strong>
-          <span class="hint">
-            Spunta i contatti dall'inbox che vuoi destinatari di questa run. Se non spunti
-            niente, il runner userà <em>tutti</em> i contacts <code>qualified</code> con il
-            campo <code>whatsapp</code> popolato (esclusi <code>optedout</code>).
-          </span>
-        </label>
-
-        {% if contacts_with_whatsapp %}
-        <div class="contact-targets-list" data-target-platform="whatsapp">
-          <div class="contact-targets-actions">
-            <button type="button" class="btn-small" data-targets-toggle="all" data-target-platform="whatsapp">Tutti</button>
-            <button type="button" class="btn-small btn-secondary" data-targets-toggle="none" data-target-platform="whatsapp">Nessuno</button>
-            <span class="muted small" data-targets-count="whatsapp">0 / {{ contacts_with_whatsapp | length }} selezionati</span>
-          </div>
-          <div class="contact-targets-grid">
-            {% for c in contacts_with_whatsapp %}
-            <label class="contact-target-row">
-              <input type="checkbox" name="target_contact_ids" value="{{ c.id }}"
-                     data-target-checkbox="whatsapp"
-                     {% if c.id in wa_selected_set %}checked{% endif %}>
-              <span class="contact-target-info">
-                <strong>{{ c.display_name or c.whatsapp }}</strong>
-                <small class="muted">
-                  #{{ c.id }} ·
-                  <code>{{ c.whatsapp }}</code>
-                  {% if c.email %} · {{ c.email }}{% endif %}
-                  · consent:
-                  {% if c.whatsapp_consent == 'opt_in' %}<span class="badge badge-ok">✓ opt_in</span>
-                  {% elif c.whatsapp_consent == 'optedout' %}<span class="badge badge-err">⛔ optedout</span>
-                  {% else %}<span class="badge badge-muted">cold</span>{% endif %}
-                  · status: {{ c.status or '—' }}
-                  {% if c.source_domain %} · src: {{ c.source_domain }}{% endif %}
-                </small>
-              </span>
-            </label>
-            {% endfor %}
-          </div>
-        </div>
-        {% else %}
-        <p class="muted small" style="padding:0.5rem;background:#f9fafb;border-radius:4px">
-          ⚠️ Nessun contatto con campo <code>whatsapp</code> popolato nel DB.
-          Vai a <a href="/inbox/contacts" target="_blank">Inbox › Contatti</a> per aggiungerne manualmente,
-          oppure lancia un task <code>auto_extract</code> / <code>bulk_extract</code>
-          su uno schema (es. <code>profile_contacts</code>) che estragga numeri WA.
-        </p>
-        {% endif %}
-      </div>
+      {# SEZIONE RIMOSSA: era "📋 Contatti da contattare" (target_contact_ids
+         checkbox da contacts_with_whatsapp). Sostituita da "🎯 Audience asset"
+         (target_asset_ids snapshot) in sezione 6a. #}
 
       <div class="row">
         <label>Engine preference
