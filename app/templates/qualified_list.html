@@ -18,6 +18,11 @@
         ➕ Aggiungi qualified
       </button>
       {% if total > 0 and not return_to_task %}
+      <button type="button" class="btn-secondary"
+              onclick="document.getElementById('rilancia-qualifier-modal').classList.add('open');"
+              title="Crea task qualifier per ri-valutare i {{ total }} asset filtrati">
+        🎯 Rilancia qualifier ({{ total }})
+      </button>
       <button type="button" class="btn-primary"
               onclick="document.getElementById('avvia-outreach-modal').classList.add('open');"
               title="Crea task outreach con i {{ total }} asset filtrati">
@@ -791,6 +796,67 @@ function selectAssetForQualifier(assetId) {
           Annulla
         </button>
         <button type="submit" class="btn-primary">🚀 Crea task</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# Modale: Rilancia qualifier sul set filtrato corrente.
+   Crea un task qualifier con `target_asset_ids` = snapshot dei filtri attivi.
+   Multi-qualifier additivo: i tag esistenti non vengono toccati. #}
+<div id="rilancia-qualifier-modal" class="modal-backdrop"
+     onclick="if(event.target===this) this.classList.remove('open');">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>🎯 Rilancia qualifier</h3>
+      <button type="button" class="btn-link"
+              onclick="document.getElementById('rilancia-qualifier-modal').classList.remove('open');">✕</button>
+    </div>
+
+    <p class="muted small" style="margin-top:0">
+      Crea un task <code>qualifier</code> che ri-valuta i <strong>{{ total }} asset</strong> attualmente
+      filtrati. Il nuovo qualifier <strong>aggiunge</strong> i tag <code>qualifier_&lt;slug&gt;</code>
+      + <code>qualifier_score_&lt;slug&gt;</code> SENZA toccare i tag dei qualifier
+      precedenti (multi-qualifier additivo). Lo slug del nuovo qualifier viene
+      derivato dal nome del task.
+    </p>
+
+    <form method="post" action="/tasks/qualifier_from_qualified" class="add-contact-form">
+      {# Hidden inputs: replica tutti i filtri attivi (stesso pattern di avvia-outreach) #}
+      {% if selected_qualifiers %}<input type="hidden" name="qualifiers" value="{{ selected_qualifiers|join(',') }}">{% endif %}
+      {% if filter_status %}<input type="hidden" name="status" value="{{ filter_status }}">{% endif %}
+      {% if filter_score_min is not none %}<input type="hidden" name="score_min" value="{{ filter_score_min }}">{% endif %}
+      {% if filter_type %}<input type="hidden" name="asset_type" value="{{ filter_type }}">{% endif %}
+      {% if filter_task %}<input type="hidden" name="source_task_id" value="{{ filter_task }}">{% endif %}
+      {% if filter_search %}<input type="hidden" name="q" value="{{ filter_search }}">{% endif %}
+      <input type="hidden" name="tag_mode" value="{{ tag_mode }}">
+      {% if tag_expr %}<input type="hidden" name="tag_expr" value="{{ tag_expr }}">{% endif %}
+      {% for tk, tv in (extra_tag_filters or []) %}
+        <input type="hidden" name="tag_key__{{ loop.index0 }}" value="{{ tk }}">
+        <input type="hidden" name="tag_value__{{ loop.index0 }}" value="{{ tv }}">
+      {% endfor %}
+
+      <label>
+        Nome task <span style="color:#cf222e">*</span>
+        <input type="text" name="name" required maxlength="200"
+               placeholder="Es. Qualifica lead_caldo su sportivi Catania"
+               value="Qualifier raffinato ({{ total }} asset)">
+        <small class="muted">Lo slug del nuovo qualifier viene derivato dal nome (snake_case).</small>
+      </label>
+
+      <label>
+        Objective / criterio di giudizio <span style="color:#cf222e">*</span>
+        <textarea name="objective" required rows="4"
+                  placeholder="Es. Tra gli sportivi qualified, identifica quelli che parlano di nutrizione/integratori e darebbero opt-in a una consulenza. Score: 1-3=non interessante, 4-6=marginale, 7-10=lead caldo."></textarea>
+        <small class="muted">Spiega al LLM cosa cercare. Lo score 0-10 e' implicito.</small>
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-link"
+                onclick="document.getElementById('rilancia-qualifier-modal').classList.remove('open');">
+          Annulla
+        </button>
+        <button type="submit" class="btn-primary">🎯 Crea task qualifier</button>
       </div>
     </form>
   </div>

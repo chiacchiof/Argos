@@ -260,6 +260,57 @@ async def task_from_qualified(request: Request):
     )
 
 
+@router.post("/tasks/qualifier_from_qualified")
+async def task_qualifier_from_qualified(request: Request):
+    """Crea un task `qualifier` con `target_asset_ids` snapshot dai filtri /qualified.
+
+    Variante di `/tasks/from_qualified`: stessa estrazione asset_id ma il task
+    creato e' di tipo qualifier. Use case: ri-qualifica/raffina un set gia'
+    qualified da un altro qualifier (multi-qualifier additivo, vedi GUIDA).
+    """
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    objective = (form.get("objective") or "").strip()
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Nome task obbligatorio.")
+    if not objective:
+        raise HTTPException(
+            status_code=400,
+            detail="Objective obbligatorio per il qualifier (descrive il criterio di giudizio LLM).",
+        )
+
+    kw = _build_qualified_filter_kwargs_from_form(form)
+
+    rows = db.list_qualified_assets(limit=_MAX_QUALIFIED_SNAPSHOT, offset=0, **kw)
+    asset_ids = [r["id"] for r in rows]
+    if not asset_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="L'audience filtrata e' vuota: torna a /qualified e raffina i filtri.",
+        )
+
+    summary = _qualified_audience_summary(kw, len(asset_ids))
+
+    task_data = {
+        "name": name,
+        "description": summary,
+        "objective": objective,
+        "agent_mode": "qualifier",
+        "target_asset_ids": asset_ids,
+        "notes": summary,
+        "model": settings.default_model,
+        "output_format": "md",
+    }
+    task_id = db.create_task(task_data)
+
+    flash = f"Task+qualifier+%23{task_id}+creato:+{len(asset_ids)}+asset+da+valutare"
+    return RedirectResponse(
+        url=f"/tasks/{task_id}/edit?flash={flash}",
+        status_code=303,
+    )
+
+
 @router.post("/tasks/{task_id}/append_qualified_set")
 async def task_append_qualified_set(request: Request, task_id: int):
     """Aggiunge UN set qualificato (filtri /qualified) al `target_asset_ids` del

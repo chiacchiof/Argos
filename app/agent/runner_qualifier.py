@@ -121,11 +121,36 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     db.set_control_signal(job_id, None)
     jlog(f"Avvio qualifier per task #{task['id']} \"{task['name']}\" — modello {task['model']}")
 
-    # SORGENTE 1 (priorità più alta): `input_asset_filter` esplicito.
-    # Permette di processare asset preesistenti senza task upstream — es. asset
-    # importati da CSV via /import. Schema: {"asset_type": "palestra"}.
+    # SORGENTE 0 (priorita' MASSIMA): `target_asset_ids` snapshot esplicito.
+    # Pattern "Rilancia qualifier" da /qualified: l'utente seleziona un set
+    # filtrato e crea un task qualifier che lo ri-valuta. Permette anche il
+    # caso "qualifier of qualified" (multi-qualifier additivo).
     assets_to_judge: list[dict[str, Any]] = []
     upstream_ids: list[int] = []
+    explicit_ids_raw = task.get("target_asset_ids") or task.get("target_contact_ids") or []
+    explicit_ids: list[int] = []
+    for x in explicit_ids_raw:
+        try:
+            i = int(x)
+            if i > 0:
+                explicit_ids.append(i)
+        except (TypeError, ValueError):
+            continue
+    if explicit_ids:
+        jlog(f"Audience snapshot: {len(explicit_ids)} asset_id espliciti da valutare.")
+        n_missing = 0
+        for aid in explicit_ids:
+            a = db.get_asset(aid)
+            if not a:
+                n_missing += 1
+                continue
+            assets_to_judge.append(a)
+        if n_missing:
+            jlog(f"  WARN {n_missing} asset_id non trovati (eliminati post-snapshot)")
+
+    # SORGENTE 1: `input_asset_filter` esplicito.
+    # Permette di processare asset preesistenti senza task upstream — es. asset
+    # importati da CSV via /import. Schema: {"asset_type": "palestra"}.
     iaf = task.get("input_asset_filter") or {}
     if isinstance(iaf, str):
         try:
@@ -134,7 +159,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         except Exception:
             iaf = {}
     filter_type = (iaf or {}).get("asset_type") if isinstance(iaf, dict) else None
-    if filter_type:
+    if not assets_to_judge and filter_type:
         assets_to_judge.extend(
             db.list_assets(asset_type=filter_type, status="new", limit=10000)
         )
@@ -172,9 +197,10 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         jlog(f"Sorgente: profiles.jsonl fallback (`{artifact}`).")
     elif not assets_to_judge:
         msg = (
-            "Nessun asset da valutare. Hai 3 opzioni: (1) imposta `input_asset_filter` "
-            "(es. asset_type=palestra), (2) collega il qualifier a un task upstream nel "
-            "workflow, (3) imposta `input_artifact_path` su un .jsonl esistente."
+            "Nessun asset da valutare. Opzioni: (0) `target_asset_ids` snapshot "
+            "(crea via /qualified -> 'Rilancia qualifier'), (1) `input_asset_filter` "
+            "(es. asset_type=palestra), (2) task upstream via workflow_edges, "
+            "(3) `input_artifact_path` su un .jsonl esistente."
         )
         jlog(msg)
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())

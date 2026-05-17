@@ -504,12 +504,14 @@
        Quando non vuota: vince sui filtri legacy (sezione 6b) nei runner.
        ============================================================ #}
     <details class="collapsible-section dyn-section audience-section"
-             data-modes="outreach outreach_social outreach_whatsapp" open>
+             data-modes="outreach outreach_social outreach_whatsapp qualifier" open>
       <summary>
         🎯 Audience asset
         <span class="hint">
-          ({{ (p.get('target_asset_ids') or [])|length }} selezionati
-          {% if p.get('target_asset_ids') %}— vincono sui filtri sotto{% else %}— se vuota, vengono usati i filtri sotto{% endif %})
+          ({{ (p.get('target_asset_ids') or [])|length }} selezionati —
+          {% if p.get('agent_mode') == 'qualifier' %}asset DA VALUTARE
+          {% else %}destinatari outreach{% endif %};
+          se vuota, fallback ai filtri sotto)
         </span>
       </summary>
 

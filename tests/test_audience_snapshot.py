@@ -174,6 +174,62 @@ def test_append_and_remove_asset_id_htmx(audience_setup):
         assert db.get_task(tid)["target_asset_ids"] == [aids[0], aids[2]]
 
 
+def test_post_tasks_qualifier_from_qualified_creates_task(audience_setup):
+    """POST /tasks/qualifier_from_qualified crea task qualifier con snapshot.
+    Use case "qualifier of qualified": multi-qualifier additivo."""
+    from app.main import app
+    if not db_cloud.get_user_by_email("testadmin"):
+        db_cloud.create_user(
+            tenant_id=None, email="testadmin",
+            password_hash=hash_password("testpwd"), role="super_admin",
+        )
+    client = TestClient(app)
+    with client:
+        client.post("/login", data={"email": "testadmin", "password": "testpwd"})
+
+        r = client.post(
+            "/tasks/qualifier_from_qualified",
+            data={
+                "name": "Qualifier raffinato",
+                "objective": "Tra i qualified, identifica i lead caldi (score 7-10).",
+                "qualifiers": "q_test",
+                "status": "qualified",
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303, r.text[:300]
+        loc = r.headers["location"]
+        assert "/tasks/" in loc and "/edit" in loc
+        task_id = int(loc.split("/tasks/")[1].split("/")[0])
+        task = db.get_task(task_id)
+        assert task["agent_mode"] == "qualifier"
+        assert len(task["target_asset_ids"]) == 3
+        assert "lead caldi" in (task.get("objective") or "")
+
+
+def test_post_tasks_qualifier_from_qualified_requires_objective(audience_setup):
+    """L'objective e' obbligatorio per il qualifier (criterio LLM)."""
+    from app.main import app
+    if not db_cloud.get_user_by_email("testadmin"):
+        db_cloud.create_user(
+            tenant_id=None, email="testadmin",
+            password_hash=hash_password("testpwd"), role="super_admin",
+        )
+    client = TestClient(app)
+    with client:
+        client.post("/login", data={"email": "testadmin", "password": "testpwd"})
+        r = client.post(
+            "/tasks/qualifier_from_qualified",
+            data={
+                "name": "X",
+                "objective": "",  # vuoto
+                "qualifiers": "q_test",
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 400
+
+
 def test_target_asset_ids_validator_handles_json_envelope():
     """Bug 2026-05-17: form.getlist() ritorna ['[1,2,3]'] dall'hidden field.
     Il validator deve sciogliere l'envelope JSON invece di provare int('[1,2,3]')."""
