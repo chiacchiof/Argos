@@ -377,18 +377,26 @@
                 {% else %}{{ a.source_domain or "—" }}{% endif %}
               </td>
               <td class="tags-cell">
+                {# Pre-processo: separo decisions (qualified/rejected) e scores per slug,
+                   poi un singolo chip per qualifier con colore derivato dalla decision. #}
+                {% set ns = namespace(decisions={}, scores={}) %}
                 {% for k, vs in a.tags.items() %}
-                  {% if k.startswith("qualifier_score_") %}
-                    {% set slug = k[16:] %}
-                    {% for v in vs %}
-                      <span class="qualifier-score-badge" title="score qualifier {{ slug }}">{{ slug }}: <strong>{{ v }}</strong></span>
-                    {% endfor %}
-                  {% elif k.startswith("qualifier_") %}
-                    {% set slug = k[10:] %}
-                    {% for v in vs %}
-                      <span class="qualifier-chip qualifier-{{ v }}" title="qualifier {{ slug }} = {{ v }}">{{ slug }}: {{ v }}</span>
-                    {% endfor %}
+                  {% if k.startswith('qualifier_score_') %}
+                    {% set _ = ns.scores.update({k[16:]: vs[0]}) %}
+                  {% elif k.startswith('qualifier_') %}
+                    {% set _ = ns.decisions.update({k[10:]: vs[0]}) %}
                   {% endif %}
+                {% endfor %}
+                {% for slug, decision in ns.decisions.items() %}
+                  <span class="qualifier-score-badge qualifier-{{ decision }}"
+                        title="{{ slug }}: {{ decision }}{% if slug in ns.scores %} (score {{ ns.scores[slug] }}){% endif %}">
+                    {{ slug }}
+                    {% if slug in ns.scores %}
+                      <strong>{{ ns.scores[slug] }}</strong>
+                    {% else %}
+                      {% if decision == 'qualified' %}✅{% else %}❌{% endif %}
+                    {% endif %}
+                  </span>
                 {% endfor %}
               </td>
               <td class="tags-cell">

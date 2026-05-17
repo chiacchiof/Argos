@@ -2417,6 +2417,22 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   color: #0969da;
   border: 1px solid #b6e3ff;
 }
+/* Varianti di colore basate sulla decision (qualified/rejected) — applicate
+   come classe aggiuntiva sul badge nel template /qualified list. */
+.qualifier-score-badge.qualifier-qualified {
+  background: #dafbe1;
+  color: #1a7f37;
+  border-color: #aceebb;
+}
+.qualifier-score-badge.qualifier-rejected {
+  background: #ffebe9;
+  color: #cf222e;
+  border-color: #ffabaa;
+}
+.qualifier-score-badge strong {
+  font-weight: 700;
+  margin-left: 0.15rem;
+}
 .status-chip {
   display: inline-block;
   padding: 0.05rem 0.4rem;
