@@ -25,7 +25,7 @@ from .humanize import (
     human_wait,
     idle_session,
     is_active_hour,
-    random_gap_between_dms_min,
+    pick_gap_minutes,
     random_session_duration_min,
 )
 from .facebook import Facebook
@@ -181,12 +181,17 @@ class OutreachEngine:
         warmup_min: float = 5.0,
         max_dms_per_session: int = 5,
         jlog: "Callable[[str], None] | None" = None,
+        gap_min_minutes: float | None = None,
+        gap_max_minutes: float | None = None,
     ) -> list[DMResult]:
         """Una sessione = login → warmup → N DM con gap umani → close.
 
         Acquisisce 1 account dal pool, esegue gli N DM, rilascia.
         `jlog`, se passato, riceve i log-eventi chiave (login fail, off-hours,
         warmup, DM esito) — utile per propagare alla job-log del runner.
+
+        `gap_min_minutes` / `gap_max_minutes`: override per-task del gap
+        anti-ban (B-011). None → default per-platform da humanize.
         """
         def _say(line: str) -> None:
             if jlog:
@@ -293,18 +298,23 @@ class OutreachEngine:
                             self.pool.release(rt.account.uuid, dm_sent=result.ok, health=health_now)
                             return results
                         # Random gap human-like tra un DM e il successivo.
-                        # Range: random_gap_between_dms_min() ritorna 8-30 min
-                        # (anti-ban su IG/TikTok). Per WhatsApp è eccessivo: il
-                        # cap a 2 min lo rende usabile per test pur restando
-                        # umano. Comunque scriviamo SEMPRE nel job log così
-                        # l'utente sa che il runner sta facendo idle, non è
-                        # bloccato.
+                        # B-011: pick_gap_minutes onora override per-task se
+                        # gap_min/max_minutes passati, altrimenti default per
+                        # platform da humanize.DEFAULT_GAP_RANGE_MIN
+                        # (WA: 0.15-0.35 min = 9-21s; IG/TT/FB: 8-30 min).
+                        # Scriviamo SEMPRE nel job log così l'utente sa che il
+                        # runner sta facendo idle, non e' bloccato.
                         if i < n_to_send - 1:
-                            gap_min = random_gap_between_dms_min()
-                            if platform_name == "whatsapp_browser":
-                                gap_min = min(gap_min, 2.0)  # cap 2 min su WA
-                            log.debug("Gap %.1f min...", gap_min)
-                            _say(f"  ⏳ gap anti-ban: idle per {gap_min:.1f} min prima del prossimo DM")
+                            gap_min = pick_gap_minutes(
+                                platform_name,
+                                task_min=gap_min_minutes,
+                                task_max=gap_max_minutes,
+                            )
+                            log.debug("Gap %.2f min...", gap_min)
+                            if gap_min < 1.0:
+                                _say(f"  ⏳ gap anti-ban: idle per {gap_min*60:.0f}s prima del prossimo DM")
+                            else:
+                                _say(f"  ⏳ gap anti-ban: idle per {gap_min:.1f} min prima del prossimo DM")
                             await asyncio.sleep(gap_min * 60)
                     # Save session aggiornata
                     await save_session(context, rt.account.uuid)

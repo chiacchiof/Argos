@@ -287,6 +287,68 @@ def test_social_account_id_roundtrip():
     assert db.get_task(tid).get("social_account_id") is None
 
 
+def test_gap_between_dms_roundtrip():
+    """B-011: gap_between_dms_min/max persistito e recuperato (clamp + None)."""
+    tid = db.create_task({
+        "name": "X", "objective": "y", "agent_mode": "outreach_whatsapp",
+        "gap_between_dms_min": 0.15,
+        "gap_between_dms_max": 0.35,
+    })
+    fetched = db.get_task(tid)
+    assert abs(fetched["gap_between_dms_min"] - 0.15) < 1e-6
+    assert abs(fetched["gap_between_dms_max"] - 0.35) < 1e-6
+    # String input → float
+    db.update_task(tid, {**fetched, "gap_between_dms_min": "1.5", "gap_between_dms_max": "3,0"})
+    fetched2 = db.get_task(tid)
+    assert abs(fetched2["gap_between_dms_min"] - 1.5) < 1e-6
+    assert abs(fetched2["gap_between_dms_max"] - 3.0) < 1e-6
+    # Empty string → None
+    db.update_task(tid, {**fetched, "gap_between_dms_min": "", "gap_between_dms_max": ""})
+    fetched3 = db.get_task(tid)
+    assert fetched3.get("gap_between_dms_min") is None
+    assert fetched3.get("gap_between_dms_max") is None
+    # Clamp eccesso → 60.0
+    db.update_task(tid, {**fetched, "gap_between_dms_min": 9999, "gap_between_dms_max": 0.001})
+    fetched4 = db.get_task(tid)
+    assert fetched4["gap_between_dms_min"] == 60.0
+    assert abs(fetched4["gap_between_dms_max"] - 0.05) < 1e-6  # clamp basso
+
+
+def test_pick_gap_minutes_defaults_and_override():
+    """B-011: pick_gap_minutes onora task override; fallback su default platform."""
+    from app.agent.social.humanize import pick_gap_minutes, default_gap_range_min
+
+    # Default WA: range stretto 0.15-0.35
+    lo, hi = default_gap_range_min("whatsapp_browser")
+    assert (lo, hi) == (0.15, 0.35)
+    for _ in range(20):
+        g = pick_gap_minutes("whatsapp_browser")
+        assert lo <= g <= hi
+
+    # Default IG: range largo 8-30
+    for _ in range(20):
+        g = pick_gap_minutes("instagram")
+        assert 8.0 <= g <= 30.0
+
+    # Override task: uniform fra i due
+    for _ in range(20):
+        g = pick_gap_minutes("instagram", task_min=0.5, task_max=1.0)
+        assert 0.5 <= g <= 1.0
+
+    # Override solo min → fix point (no jitter)
+    assert pick_gap_minutes("instagram", task_min=2.0) == 2.0
+
+    # Override invertito (min > max) → swap
+    for _ in range(10):
+        g = pick_gap_minutes("instagram", task_min=5.0, task_max=1.0)
+        assert 1.0 <= g <= 5.0
+
+    # Platform sconosciuta → fallback legacy 8-30
+    for _ in range(20):
+        g = pick_gap_minutes("unknown_platform")
+        assert 8.0 <= g <= 30.0
+
+
 def test_append_qualified_set_unions_dedup(audience_setup):
     """POST /tasks/<id>/append_qualified_set fa UNION dei nuovi ID con esistenti."""
     from app.main import app

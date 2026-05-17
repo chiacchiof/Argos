@@ -293,6 +293,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   outreach_filter_source_task_id BIGINT,
   outreach_filter_source_follower_of TEXT,
   outreach_filter_tags TEXT,
+  gap_between_dms_min REAL,
+  gap_between_dms_max REAL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -703,6 +705,15 @@ def _apply_multitenant_columns(conn) -> None:
     conn.execute(
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS social_account_id BIGINT"
     )
+    # Gap anti-ban tra DM consecutivi (B-011).
+    # NULL = usa default per-platform da humanize.default_gap_range_min().
+    # Range espresso in minuti (float): es. 0.15-0.35 = 9-21s.
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS gap_between_dms_min REAL"
+    )
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS gap_between_dms_max REAL"
+    )
 
 
 def init_db() -> None:
@@ -761,6 +772,30 @@ def _coerce_speed_profile(value: Any) -> str:
     """Accetta 'safe', 'balanced', 'aggressive' (case-insensitive). Default 'safe'."""
     s = (value or "").strip().lower() if isinstance(value, str) else ""
     return s if s in ("safe", "balanced", "aggressive") else "safe"
+
+
+def _coerce_gap_minutes(value: Any) -> float | None:
+    """Gap anti-ban minuti (B-011). Accetta None/empty/numero/str-numero.
+    Clamp [0.05, 60.0]. None se vuoto o non parsabile."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            value = float(s.replace(",", "."))
+        except ValueError:
+            return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f < 0.05:
+        f = 0.05
+    if f > 60.0:
+        f = 60.0
+    return f
 
 
 def _serialize_outreach_filter_tags(value: Any) -> str | None:
@@ -979,9 +1014,10 @@ def create_task(
                                   outreach_filter_source_task_id,
                                   outreach_filter_source_follower_of,
                                   outreach_filter_tags,
+                                  gap_between_dms_min, gap_between_dms_max,
                                   tenant_id, created_by_user_id,
                                   created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 data["name"],
@@ -1049,6 +1085,8 @@ def create_task(
                 int(data["outreach_filter_source_task_id"]) if data.get("outreach_filter_source_task_id") else None,
                 (data.get("outreach_filter_source_follower_of") or "").strip() or None,
                 _serialize_outreach_filter_tags(data.get("outreach_filter_tags")),
+                _coerce_gap_minutes(data.get("gap_between_dms_min")),
+                _coerce_gap_minutes(data.get("gap_between_dms_max")),
                 tenant_id,
                 created_by_user_id,
                 ts,
@@ -1094,6 +1132,8 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 outreach_filter_source_task_id = %s,
                 outreach_filter_source_follower_of = %s,
                 outreach_filter_tags = %s,
+                gap_between_dms_min = %s,
+                gap_between_dms_max = %s,
                 updated_at = %s
             WHERE id = %s
               AND (%s::bigint IS NULL OR tenant_id = %s)
@@ -1164,6 +1204,8 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 int(data["outreach_filter_source_task_id"]) if data.get("outreach_filter_source_task_id") else None,
                 (data.get("outreach_filter_source_follower_of") or "").strip() or None,
                 _serialize_outreach_filter_tags(data.get("outreach_filter_tags")),
+                _coerce_gap_minutes(data.get("gap_between_dms_min")),
+                _coerce_gap_minutes(data.get("gap_between_dms_max")),
                 now_iso(),
                 task_id,
                 tenant_id,

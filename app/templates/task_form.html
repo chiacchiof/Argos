@@ -843,6 +843,23 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
           <span class="hint">Default 5. Una "sessione" = login → warmup → N DM → logout. Mai &gt; 10-15.</span>
         </label>
 
+        {# B-011: Gap anti-ban tra DM consecutivi. NULL → default per platform
+           (IG/TT/FB: 8-30 min; WA: 0.15-0.35 min = 9-21s). #}
+        <div class="form-row-2col">
+          <label>Gap min tra DM (minuti)
+            <input type="number" step="0.05" min="0.05" max="60" name="gap_between_dms_min"
+                   value="{{ p.get('gap_between_dms_min') if p.get('gap_between_dms_min') is not none else '' }}"
+                   placeholder="default IG/TT/FB: 8">
+            <span class="hint">Vuoto = default platform.</span>
+          </label>
+          <label>Gap max tra DM (minuti)
+            <input type="number" step="0.05" min="0.05" max="60" name="gap_between_dms_max"
+                   value="{{ p.get('gap_between_dms_max') if p.get('gap_between_dms_max') is not none else '' }}"
+                   placeholder="default IG/TT/FB: 30">
+            <span class="hint">Vuoto = default platform. Jitter uniforme [min,max].</span>
+          </label>
+        </div>
+
         <label class="inline-checkbox">
           <input type="checkbox" name="headed" value="1" {% if p.get('headed', 1) %}checked{% endif %}>
           <strong>Browser visibile (headed)</strong>
@@ -972,6 +989,24 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
                  {% if p.get('whatsapp_dry_run') %}checked{% endif %}>
           <strong>🧪 Dry-run</strong>
           <span class="hint">Simula gli invii: niente DM reale, solo log con reason="dry_run". Per testare il flusso.</span>
+        </label>
+      </div>
+
+      {# B-011: Gap anti-ban tra DM consecutivi (Motore A browser).
+         Default WA: 0.15-0.35 min (9-21s) — account reale tollera gap brevi.
+         Su Cloud API (Motore B) il gap e' gestito dai rate-limit Meta. #}
+      <div class="row">
+        <label>Gap min tra DM (minuti)
+          <input type="number" step="0.05" min="0.05" max="60" name="gap_between_dms_min"
+                 value="{{ p.get('gap_between_dms_min') if p.get('gap_between_dms_min') is not none else '' }}"
+                 placeholder="default WA: 0.15 (9s)">
+          <span class="hint">Vuoto = default platform.</span>
+        </label>
+        <label>Gap max tra DM (minuti)
+          <input type="number" step="0.05" min="0.05" max="60" name="gap_between_dms_max"
+                 value="{{ p.get('gap_between_dms_max') if p.get('gap_between_dms_max') is not none else '' }}"
+                 placeholder="default WA: 0.35 (21s)">
+          <span class="hint">Vuoto = default. Jitter uniforme [min,max]. ⚠️ Sotto 0.1 min e contatti freddi alza il rischio ban.</span>
         </label>
       </div>
 

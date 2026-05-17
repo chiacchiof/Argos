@@ -153,7 +153,7 @@ Totale: ~6.5h se fatti tutti insieme.
 
 ---
 
-### B-011 · Gap anti-ban configurabile per task
+### B-011 · Gap anti-ban configurabile per task — ✅ CHIUSO (2026-05-17)
 
 **Cosa**: oggi `random_gap_between_dms_min()` ritorna 8-30 min (hard-coded
 in `humanize.py`). Su WhatsApp un task da 5 DM aspetta 40-150 min totali =
@@ -163,7 +163,10 @@ Soluzione definitiva: campo `gap_between_dms_min/max` nel task (default
 sensato per platform: IG/TikTok 8-30, WA 1-3, dry-run 0.1-0.5).
 UI: nuovi 2 input nella sezione configurazione outreach.
 
-**Effort**: ~1h.
+**Implementato**: `tasks.gap_between_dms_min/max REAL NULL` (NULL = default
+platform da `humanize.DEFAULT_GAP_RANGE_MIN`); WA default abbassato a
+0.15-0.35 min (9-21s) — account reale loggato. UI in entrambe le sezioni
+outreach (social + WA). Doc in [GUIDA.md §17.9](GUIDA.md#179). Vedi commit.
 
 ---
 

@@ -161,5 +161,54 @@ def is_active_hour(now_hour: int | None = None) -> bool:
 
 
 def random_gap_between_dms_min() -> float:
-    """Gap random tra DM consecutivi della stessa sessione: 8-30 min."""
+    """Gap random tra DM consecutivi della stessa sessione: 8-30 min.
+
+    DEPRECATO per uso diretto: usa `pick_gap_minutes(platform_name, task)`
+    che onora override per-task (B-011) e default per platform.
+    Restano valori IG/TikTok (anti-ban aggressivo); WA usa range piu' breve.
+    """
     return random.uniform(8, 30)
+
+
+# B-011: default per platform. Una platform "calda" come WhatsApp con account
+# reale tollera gap piccoli; IG/TikTok hanno rate-limiting piu' aggressivo.
+# Tutto in minuti (float). Override per-task ha priorità (vedi pick_gap_minutes).
+DEFAULT_GAP_RANGE_MIN: dict[str, tuple[float, float]] = {
+    "whatsapp_browser": (0.15, 0.35),  # 9-21 secondi
+    "instagram":        (8.0, 30.0),
+    "tiktok":           (8.0, 30.0),
+    "facebook":         (8.0, 30.0),
+}
+
+
+def default_gap_range_min(platform_name: str) -> tuple[float, float]:
+    """Range (min, max) di default in minuti per `platform_name`.
+    Fallback (8, 30) per platform sconosciuta (comportamento legacy)."""
+    return DEFAULT_GAP_RANGE_MIN.get(platform_name, (8.0, 30.0))
+
+
+def pick_gap_minutes(
+    platform_name: str,
+    *,
+    task_min: float | None = None,
+    task_max: float | None = None,
+) -> float:
+    """Sceglie un gap (minuti) per il prossimo DM.
+
+    Precedenza:
+      1) Se `task_min` e `task_max` entrambi valorizzati → uniform(min, max).
+      2) Se solo uno valorizzato → fix point (no jitter).
+      3) Altrimenti → default per platform da `DEFAULT_GAP_RANGE_MIN`.
+    Sanitizza min<=max.
+    """
+    if task_min is not None and task_max is not None:
+        lo, hi = float(task_min), float(task_max)
+        if lo > hi:
+            lo, hi = hi, lo
+        return random.uniform(lo, hi)
+    if task_min is not None:
+        return float(task_min)
+    if task_max is not None:
+        return float(task_max)
+    lo, hi = default_gap_range_min(platform_name)
+    return random.uniform(lo, hi)

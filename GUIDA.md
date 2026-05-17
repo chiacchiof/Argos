@@ -2472,6 +2472,33 @@ Job#147 con 3 target (cap 500 ciascuno), speed=aggressive:
 
 Riferimento per pre-fix scroll: stesso workload prendeva 24-48h (vedi cap. 20.4).
 
+### 17.9 Gap anti-ban tra DM consecutivi (B-011, 2026-05-17)
+
+`outreach_social` e `outreach_whatsapp` (Motore A browser) inseriscono un **gap idle** fra un DM e il successivo nella stessa sessione browser, per simulare comportamento umano ed evitare rate-limit/ban della piattaforma.
+
+**Default per platform** (in [app/agent/social/humanize.py](app/agent/social/humanize.py) — costante `DEFAULT_GAP_RANGE_MIN`):
+
+| Platform | Gap range (minuti) | Esempio (s) | Rationale |
+|---|---|---|---|
+| `whatsapp_browser` | **0.15 – 0.35** | 9-21s | Account reale loggato → rate-limit interno tollera DM ravvicinati |
+| `instagram` | 8 – 30 | — | IG ha anti-spam aggressivo, gap lunghi necessari |
+| `tiktok` | 8 – 30 | — | Idem IG |
+| `facebook` | 8 – 30 | — | Idem IG |
+
+**Override per task**: nella sezione "Limiti e velocità" (outreach_social) o "Configurazione outreach WhatsApp" (outreach_whatsapp) del task form, due input `gap_between_dms_min` e `gap_between_dms_max` (entrambi in minuti, float). Lasciali vuoti per usare i default platform.
+
+- Se entrambi valorizzati → `random.uniform(min, max)` per ogni gap (jitter).
+- Se solo uno valorizzato → fix point (no jitter).
+- Se entrambi vuoti → default platform.
+
+Clamp DB: `[0.05, 60.0]` (3s – 60min). Persistito in `tasks.gap_between_dms_min/max REAL NULL`.
+
+**⚠️ ATTENZIONE**: abbassare il gap su IG/TT/FB aumenta il rischio ban. Per WhatsApp con account reale, gap sotto 0.1 min (6s) verso contatti freddi può triggerare il sospetto WA (multi-DM-burst pattern).
+
+Log strutturato: il runner stampa "⏳ gap anti-ban: idle per Xs/Xmin prima del prossimo DM" in `job.log` per trasparenza (`< 1 min` → format secondi, altrimenti minuti).
+
+Implementazione: `app/agent/social/humanize.py::pick_gap_minutes(platform, task_min, task_max)`, chiamata da `OutreachEngine.run_session(... gap_min_minutes=, gap_max_minutes=)`.
+
 ## 18. Outreach multi-tag filter (audience-driven, 2026-05-15)
 
 Filtra i contatti destinatari per **tag attributi AND multipli**, costruiti dai tag derivati dall'extract LLM (cap. 17.6). Esempio: `interests_inferred=fitness AND location=Catania` → contatta SOLO i contatti che hanno entrambi.

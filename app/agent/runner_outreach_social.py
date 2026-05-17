@@ -389,6 +389,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             warmup_min=warmup_min,
             max_dms_per_session=max_per_session,
             jlog=jlog,
+            gap_min_minutes=task.get("gap_between_dms_min"),
+            gap_max_minutes=task.get("gap_between_dms_max"),
         )
         all_results.extend(results)
         if not results:

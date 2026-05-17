@@ -505,6 +505,8 @@ async def _run_engine_a(
             warmup_min=warmup_min,
             max_dms_per_session=max_per_session,
             jlog=jlog,
+            gap_min_minutes=task.get("gap_between_dms_min"),
+            gap_max_minutes=task.get("gap_between_dms_max"),
         )
         for r in results:
             phone = r.target_username or ""

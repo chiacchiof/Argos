@@ -67,6 +67,11 @@ class TaskIn(BaseModel):
     max_dms_per_run: int = Field(default=30, ge=1, le=200)
     max_dms_per_session: int = Field(default=5, ge=1, le=15)
     headed: int = Field(default=1, ge=0, le=1)
+    # Gap anti-ban tra DM consecutivi (B-011). Espresso in minuti (float).
+    # NULL = usa default per-platform (vedi humanize.default_gap_range_min).
+    # Clamp lato DB [0.05, 60.0] = 3s..60min.
+    gap_between_dms_min: float | None = Field(default=None, ge=0.05, le=60.0)
+    gap_between_dms_max: float | None = Field(default=None, ge=0.05, le=60.0)
     # Selezione esplicita di target outreach_social: lista di contact.id (legacy).
     # Se vuota, il runner usa TUTTI i qualified con social[platform] popolato.
     target_contact_ids: list[int] = Field(default_factory=list)
@@ -125,6 +130,22 @@ class TaskIn(BaseModel):
     def parse_rating(cls, v):
         if v in (None, "", "0", 0):
             return None
+        return v
+
+    @field_validator("gap_between_dms_min", "gap_between_dms_max", mode="before")
+    @classmethod
+    def parse_gap_minutes(cls, v):
+        # Form posta "" quando l'utente lascia vuoto → None (usa default platform).
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            try:
+                return float(s.replace(",", "."))
+            except ValueError:
+                return None
         return v
 
     @field_validator("status_tag", mode="before")
