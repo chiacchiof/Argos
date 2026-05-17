@@ -29,6 +29,7 @@ from .. import db
 from ..config import RESULTS_DIR, settings
 from .extraction_templates import get_schema
 from .llm_providers import get_provider, resolve_api_key, resolve_base_url
+from .ollama import maybe_add_keep_alive
 
 
 log = logging.getLogger(__name__)
@@ -1340,7 +1341,7 @@ async def _write_site_playbook(
         f"Scrivi ora il JSON del playbook."
     )
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": sys_prompt},
@@ -1350,6 +1351,7 @@ async def _write_site_playbook(
         "max_tokens": 600,
         "response_format": {"type": "json_object"},
     }
+    maybe_add_keep_alive(payload, base_url)
     api_url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}"}
 

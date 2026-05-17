@@ -28,6 +28,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from selectolax.parser import HTMLParser
 
+from .ollama import maybe_add_keep_alive
 from .runner_bulk_extract import (
     _group_urls_by_pattern,
     _registrable_domain,
@@ -312,13 +313,14 @@ async def profile_site(
         from .http_fetcher import HttpFetcher
         async with HttpFetcher(user_agent=user_agent, timeout=timeout) as fetch_client:
             for iteration in range(_MAX_EXPLORE_ITERATIONS + 1):
-                payload = {
+                payload: dict[str, Any] = {
                     "model": llm_model,
                     "messages": messages,
                     "temperature": 0.0,
                     "max_tokens": 500,
                     "response_format": {"type": "json_object"},
                 }
+                maybe_add_keep_alive(payload, llm_base_url)
                 try:
                     r = await llm_client.post(
                         f"{llm_base_url.rstrip('/')}/chat/completions",

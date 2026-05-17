@@ -2499,6 +2499,22 @@ Log strutturato: il runner stampa "⏳ gap anti-ban: idle per Xs/Xmin prima del 
 
 Implementazione: `app/agent/social/humanize.py::pick_gap_minutes(platform, task_min, task_max)`, chiamata da `OutreachEngine.run_session(... gap_min_minutes=, gap_max_minutes=)`.
 
+### 17.10 Ollama `keep_alive` — anti cold-start tra job (2026-05-17)
+
+Ollama scarica il modello dalla VRAM dopo **5 minuti** di idle di default. Per workflow tipo outreach (genera tutti i messaggi upfront in ~10s, poi invia DM per N minuti con gap anti-ban) il modello viene scaricato **durante** il job e ricaricato (cold-start) al job successivo — costo: 10-60s a seconda della dimensione del modello.
+
+**Fix**: tutti i call-site LLM verso Ollama (rilevati con heuristic `base_url` contiene `11434` o `ollama`) iniettano `keep_alive` nel payload. Default: **30 minuti**.
+
+Override globale via env var: `AGENTSCRAPER_OLLAMA_KEEP_ALIVE` (formato Ollama):
+- `"30m"` (default) — modello in VRAM per 30 min dopo l'ultima richiesta
+- `"1h"`, `"2h"` — vita più lunga
+- `"-1"` — modello in VRAM **fino al server restart** (consigliato per single-user heavy-use)
+- `"0"` — eject immediato dopo la risposta (utile per debug VRAM)
+
+Endpoint cloud (OpenAI, Anthropic, ecc.) **non** ricevono il campo (rifiuterebbero con 400). Wrapper centralizzato in [app/agent/ollama.py](app/agent/ollama.py): `maybe_add_keep_alive(payload, base_url)` + `ollama_keep_alive()` + `preload(model)` per pre-warm esplicito.
+
+Call-site coperti: message_generator (outreach social/WA), runner_qualifier (qualifier-of-qualified), runner_recon_social, runner_bulk_extract, runner_site_explorer, runner_browseruse, runner_responder, site_profiler, orchestrator, ollama.chat (tool-calling).
+
 ## 18. Outreach multi-tag filter (audience-driven, 2026-05-15)
 
 Filtra i contatti destinatari per **tag attributi AND multipli**, costruiti dai tag derivati dall'extract LLM (cap. 17.6). Esempio: `interests_inferred=fitness AND location=Catania` → contatta SOLO i contatti che hanno entrambi.

@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 from .. import db
 from ..config import RESULTS_DIR
 from .llm_providers import resolve_api_key, resolve_base_url
+from .ollama import maybe_add_keep_alive
 from .runner_control import RunnerStopped, wait_if_paused_or_stop
 from .social import facebook_recon, instagram_recon, tiktok_recon
 from .social.crypto_creds import is_configured
@@ -182,6 +183,7 @@ async def _llm_fill_schema(
     if "11434" in llm_base_url or ("/v1" in llm_base_url and
         "openai.com" not in llm_base_url and "anthropic.com" not in llm_base_url):
         payload["format"] = "json"
+    maybe_add_keep_alive(payload, llm_base_url)
 
     raw = ""
     try:
@@ -269,7 +271,7 @@ async def _llm_generate_narrative(
         "Output: SOLO il testo italiano della sintesi, niente prefissi o JSON."
     )
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": llm_model,
         "messages": [
             {"role": "system", "content": "Sei un analista di profili social. Scrivi in italiano fluido."},
@@ -278,6 +280,7 @@ async def _llm_generate_narrative(
         "temperature": 0.3,
         "max_tokens": 1200,
     }
+    maybe_add_keep_alive(payload, llm_base_url)
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from . import db, jobs
 from .agent.extraction_templates import get_schema, list_templates
 from .agent.llm_providers import get_provider, resolve_api_key, resolve_base_url
-from .agent.ollama import list_models as ollama_list_models
+from .agent.ollama import list_models as ollama_list_models, maybe_add_keep_alive
 from .config import settings
 
 
@@ -983,6 +983,7 @@ async def _build_llm_plan(
         "tools": PLANNER_TOOLS_SPEC,
         "tool_choice": "auto",
     }
+    maybe_add_keep_alive(payload, base_url)
     headers = {"Authorization": f"Bearer {api_key}"}
     url = f"{base_url.rstrip('/')}/chat/completions"
 

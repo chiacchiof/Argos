@@ -38,6 +38,7 @@ from .. import db
 from ..config import RESULTS_DIR, settings
 from .extraction_templates import get_schema
 from .llm_providers import get_provider, resolve_api_key, resolve_base_url
+from .ollama import maybe_add_keep_alive
 from .tools.fetch_http import fetch_http
 
 
@@ -438,13 +439,14 @@ async def _rerank_listings_via_llm(
         "dove i numeri sono gli indici (1-based) della lista, ordinati dal piu' "
         "promettente al meno. Niente prosa."
     )
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.0,
         "max_tokens": 200,
         "response_format": {"type": "json_object"},
     }
+    maybe_add_keep_alive(payload, base_url)
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         r = await client.post(
@@ -573,6 +575,7 @@ async def _auto_detect_pattern_via_llm(
         "temperature": 0.0,
         "max_tokens": 200,
     }
+    maybe_add_keep_alive(payload, base_url)
     try:
         r = await client.post(
             f"{base_url.rstrip('/')}/chat/completions",
@@ -737,6 +740,7 @@ async def _llm_extract_json(
     # Per Ollama: parametro nativo `format=json` (forza output JSON puro, niente prosa)
     if "11434" in base_url or "/v1" in base_url and "openai.com" not in base_url and "anthropic.com" not in base_url and "x.ai" not in base_url:
         payload["format"] = "json"
+    maybe_add_keep_alive(payload, base_url)
 
     headers = {"Authorization": f"Bearer {api_key}"}
     api_url = f"{base_url.rstrip('/')}/chat/completions"

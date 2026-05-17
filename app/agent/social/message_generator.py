@@ -26,7 +26,18 @@ from typing import Any
 
 import httpx
 
+from ..ollama import ollama_keep_alive
+
 log = logging.getLogger(__name__)
+
+
+def _is_ollama_endpoint(base_url: str) -> bool:
+    """Heuristic per riconoscere endpoint Ollama (OpenAI-compat su :11434 o
+    explicit 'ollama' nel path). Solo su Ollama possiamo passare `keep_alive`
+    in payload — provider cloud (OpenAI, anthropic, ecc.) rifiuterebbero il
+    campo extra con 400."""
+    u = (base_url or "").lower()
+    return ("11434" in u) or ("ollama" in u)
 
 
 # Diverse "personalita'" per variare ulteriormente lo stile del messaggio.
@@ -122,7 +133,7 @@ async def generate_message(
     tone = random.choice(_TONE_VARIANTS)
     user_prompt = _build_user_prompt(req, tone)
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": llm_model,
         "messages": [
             {"role": "system", "content": "Sei un copywriter italiano specializzato in outreach social. Scrivi messaggi DM che sembrano genuini, mai template."},
@@ -131,6 +142,11 @@ async def generate_message(
         "temperature": 0.85,  # piu' alta per variabilita' (vs 0.0 per JSON extract)
         "max_tokens": 200,
     }
+    # Ollama-only: keep_alive estende la permanenza del modello in VRAM dopo
+    # la risposta. Senza questo flag il default Ollama e' 5min → modelli grandi
+    # vengono scaricati tra job consecutivi causando cold-start ripetuti.
+    if _is_ollama_endpoint(llm_base_url):
+        payload["keep_alive"] = ollama_keep_alive()
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(

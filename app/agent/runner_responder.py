@@ -19,6 +19,7 @@ from ..channels import telegram as ch_telegram
 from ..channels.base import is_enabled as channel_enabled
 from ..config import RESULTS_DIR, settings
 from .llm_providers import get_provider, resolve_api_key, resolve_base_url
+from .ollama import maybe_add_keep_alive
 
 
 log = logging.getLogger(__name__)
@@ -68,12 +69,13 @@ async def _generate_reply(
     if not msgs[-1]["content"].startswith(incoming_body[:50]):
         msgs.append({"role": "user", "content": incoming_body[:4000]})
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": msgs,
         "temperature": 0.4,
         "max_tokens": 600,
     }
+    maybe_add_keep_alive(payload, base_url)
     headers = {"Authorization": f"Bearer {api_key}"} if api_key and api_key != "ollama-local" else {}
     if api_key == "ollama-local":
         headers["Authorization"] = "Bearer ollama-local"  # alcuni gateway lo richiedono comunque

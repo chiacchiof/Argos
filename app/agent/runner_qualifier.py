@@ -17,6 +17,7 @@ import httpx
 from .. import db
 from ..config import RESULTS_DIR
 from .llm_providers import resolve_api_key, resolve_base_url
+from .ollama import maybe_add_keep_alive
 
 
 log = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ async def _judge(
         "reason: <una frase breve>"
     )
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": sys_prompt},
@@ -71,6 +72,7 @@ async def _judge(
         "temperature": 0.1,
         "max_tokens": 200,
     }
+    maybe_add_keep_alive(payload, base_url)
     headers = {"Authorization": f"Bearer {api_key}"}
     url = f"{base_url.rstrip('/')}/chat/completions"
     async with httpx.AsyncClient(timeout=60) as client:

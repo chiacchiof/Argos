@@ -36,6 +36,7 @@ from .. import db
 from ..config import RESULTS_DIR, settings
 from .extraction_templates import get_schema
 from .llm_providers import resolve_api_key, resolve_base_url
+from .ollama import maybe_add_keep_alive
 from .runner_bulk_extract import (
     _extract_links,
     _group_urls_by_pattern,
@@ -547,6 +548,7 @@ async def _run_agent_inner(
         "tools": SITE_EXPLORER_TOOLS_SPEC,
         "tool_choice": "auto",
     }
+    maybe_add_keep_alive(payload, base_url)
     headers = {"Authorization": f"Bearer {api_key}"}
     api_url = f"{base_url.rstrip('/')}/chat/completions"
 
