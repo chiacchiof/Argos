@@ -2499,6 +2499,43 @@ Log strutturato: il runner stampa "⏳ gap anti-ban: idle per Xs/Xmin prima del 
 
 Implementazione: `app/agent/social/humanize.py::pick_gap_minutes(platform, task_min, task_max)`, chiamata da `OutreachEngine.run_session(... gap_min_minutes=, gap_max_minutes=)`.
 
+### 17.13 Selezione bulk su `/qualified` con select-all-filtered gmail-style (2026-05-18)
+
+Pre-feature: `/qualified` aveva i bottoni `🚀 Avvia outreach (N)` e `🎯 Rilancia qualifier (N)` che usavano **tutti** gli N filtrati. Niente checkbox per riga, niente delete bulk, niente modo di restringere a un subset visibile.
+
+**Ora**: pattern checkbox + bulk action bar con 3 stati di selezione (Gmail-style):
+1. **Nessuno selezionato** → bottoni grey-out (`disabled`), label `(0)`.
+2. **Selezione pagina** (checkbox individuali o "Seleziona pagina") → bottoni attivi con count. Se ci sono altri risultati fuori pagina, appare un banner giallo:
+   ```
+   Hai selezionato 100 asset di questa pagina.
+   [Seleziona tutti i 1049 asset filtrati]
+   ```
+3. **Tutti i filtrati** (click sul link del banner) → banner verde "✅ Tutti i 1049 asset filtrati sono selezionati. [Annulla selezione]". Bottoni mostrano `(N totali)`.
+
+**Tre azioni bulk**:
+- `🎯 Rilancia qualifier (N)` → apre modal qualifier-from-qualified, crea task con `target_asset_ids=<selezione>`.
+- `🚀 Avvia outreach (N)` → apre modal outreach, idem.
+- `🗑️ Cancella (N)` → POST `/assets/delete-bulk` (riusato dal `/assets`), redirect su `/qualified` con flash.
+
+**Implementazione backend** ([app/routes/tasks.py](app/routes/tasks.py)):
+- Helper `_extract_audience_from_form(form)` ritorna `(asset_ids, kw_or_None)`:
+  - Se `asset_ids[]` presente e `select_all_filtered != "1"` → usa quelli (selezione esplicita, dedup + ordine preservato).
+  - Altrimenti → applica filtri attivi e fetcha fino a `_MAX_QUALIFIED_SNAPSHOT` (10k).
+- Endpoints `/tasks/from_qualified` e `/tasks/qualifier_from_qualified` usano il helper. Summary del task riflette la modalità (filtri vs "X asset selezionati esplicitamente").
+
+**Implementazione frontend** ([app/templates/qualified_list.html](app/templates/qualified_list.html)):
+- Form `qualified-bulk-form` wrappa la tabella. Action default `/assets/delete-bulk` con `redirect_to` indietro a `/qualified?<qs_base>`.
+- Checkbox `data-qbulk-row` per riga, `id="qbulk-select-all"` per pagina.
+- JS `qbulkSelectAllFiltered()` setta flag JS interno + hidden `select_all_filtered=1` nel modal form al submit.
+- JS `qbulkApplyTo(modalId)` rimuove eventuali hidden inputs precedenti e inietta i nuovi:
+  - In modalità "tutti filtrati" → solo `select_all_filtered=1`.
+  - In modalità "esplicita" → un `<input name="asset_ids" value="<id>">` per ogni selezionato.
+- I bottoni grey-out se 0 (effective count) selezionati.
+
+**Limiti noti**:
+- "Seleziona tutti i N filtrati" non scarica gli IDs in browser — usa il flag che fa ri-fetchare lato server. Limite hard: `_MAX_QUALIFIED_SNAPSHOT = 10000`. Sopra 10k l'utente vedrebbe solo i primi 10k.
+- La selezione non persiste tra pagine: cambiando pagina (paginazione) o filtri, lo stato selection si resetta. Pattern Gmail richiede sessioni stateful — overkill per ora.
+
 ### 17.12 Filtro autore su `/tasks` e `/workflows` (2026-05-18)
 
 Le liste `/` (tasks) e `/workflows` mostrano **di default solo gli elementi creati dall'utente loggato** (`tenant_user`). Toggle per vedere tutto il tenant:

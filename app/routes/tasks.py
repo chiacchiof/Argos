@@ -201,6 +201,38 @@ def _build_qualified_filter_kwargs_from_form(form) -> dict:
 _MAX_QUALIFIED_SNAPSHOT = 10000
 
 
+def _extract_audience_from_form(form) -> tuple[list[int], dict | None]:
+    """Estrae la lista asset_ids da form `/qualified`. Due modi:
+      1) `asset_ids` (multivalue) presenti e `select_all_filtered != 1` →
+         usa quelli (selezione esplicita checkbox dell'utente).
+      2) altrimenti → applica i filtri attivi e fetcha fino a
+         _MAX_QUALIFIED_SNAPSHOT. Ritorna (ids, kw) per costruire summary.
+    Ritorna (ids, kw_dict_or_None). kw=None se modalita' (1) — niente filtri.
+    """
+    select_all_filtered = (form.get("select_all_filtered") or "").strip() == "1"
+    explicit_raw: list[str] = (
+        form.getlist("asset_ids") if hasattr(form, "getlist") else []
+    )
+    if explicit_raw and not select_all_filtered:
+        # Modalita' selezione esplicita: parsa interi, dedup conservando ordine.
+        seen: set[int] = set()
+        ids: list[int] = []
+        for v in explicit_raw:
+            try:
+                i = int(v)
+            except (TypeError, ValueError):
+                continue
+            if i in seen:
+                continue
+            seen.add(i)
+            ids.append(i)
+        return ids, None
+    # Modalita' "tutti i filtrati": ricalcola da filtri.
+    kw = _build_qualified_filter_kwargs_from_form(form)
+    rows = db.list_qualified_assets(limit=_MAX_QUALIFIED_SNAPSHOT, offset=0, **kw)
+    return [r["id"] for r in rows], kw
+
+
 def _qualified_audience_summary(kw: dict, count: int) -> str:
     """Stringa human-readable per `task.notes` quando il task viene creato da
     /qualified. Mostra i filtri principali + count."""
@@ -254,18 +286,18 @@ async def task_from_qualified(request: Request):
                 detail="Per agent_mode=outreach_social serve social_platform IG/TT/FB."
             )
 
-    kw = _build_qualified_filter_kwargs_from_form(form)
-
-    # Estrai snapshot: limit cap soft.
-    rows = db.list_qualified_assets(limit=_MAX_QUALIFIED_SNAPSHOT, offset=0, **kw)
-    asset_ids = [r["id"] for r in rows]
+    asset_ids, kw = _extract_audience_from_form(form)
     if not asset_ids:
         raise HTTPException(
             status_code=400,
-            detail="L'audience filtrata e' vuota: torna a /qualified e raffina i filtri.",
+            detail="L'audience e' vuota: seleziona almeno un asset o raffina i filtri.",
         )
 
-    summary = _qualified_audience_summary(kw, len(asset_ids))
+    # Summary diverso a seconda della modalita':
+    if kw is not None:
+        summary = _qualified_audience_summary(kw, len(asset_ids))
+    else:
+        summary = f"Audience da /qualified ({db.now_iso()[:10]}): {len(asset_ids)} asset selezionati esplicitamente"
 
     # Default minimi per il task draft.
     task_data = {
@@ -308,17 +340,17 @@ async def task_qualifier_from_qualified(request: Request):
             detail="Objective obbligatorio per il qualifier (descrive il criterio di giudizio LLM).",
         )
 
-    kw = _build_qualified_filter_kwargs_from_form(form)
-
-    rows = db.list_qualified_assets(limit=_MAX_QUALIFIED_SNAPSHOT, offset=0, **kw)
-    asset_ids = [r["id"] for r in rows]
+    asset_ids, kw = _extract_audience_from_form(form)
     if not asset_ids:
         raise HTTPException(
             status_code=400,
-            detail="L'audience filtrata e' vuota: torna a /qualified e raffina i filtri.",
+            detail="L'audience e' vuota: seleziona almeno un asset o raffina i filtri.",
         )
 
-    summary = _qualified_audience_summary(kw, len(asset_ids))
+    if kw is not None:
+        summary = _qualified_audience_summary(kw, len(asset_ids))
+    else:
+        summary = f"Audience da /qualified ({db.now_iso()[:10]}): {len(asset_ids)} asset selezionati esplicitamente"
 
     task_data = {
         "name": name,

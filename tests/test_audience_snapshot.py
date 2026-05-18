@@ -110,6 +110,79 @@ def test_post_tasks_from_qualified_creates_task(audience_setup):
         assert len(task["target_asset_ids"]) == 3  # tutti e 3 i qualified
 
 
+def test_post_tasks_from_qualified_with_explicit_asset_ids(audience_setup):
+    """POST /tasks/from_qualified con asset_ids[] usa quelli, ignorando i filtri.
+
+    Use case: utente seleziona 2 di 3 asset filtrati via checkbox e crea
+    un task con solo quei 2.
+    """
+    from app.main import app
+    if not db_cloud.get_user_by_email("testadmin"):
+        db_cloud.create_user(
+            tenant_id=None, email="testadmin",
+            password_hash=hash_password("testpwd"), role="super_admin",
+        )
+    aids = audience_setup["asset_ids"]
+    client = TestClient(app)
+    with client:
+        client.post("/login", data={"email": "testadmin", "password": "testpwd"})
+
+        # Submit con asset_ids espliciti (subset) + filtri che matchano tutti
+        r = client.post(
+            "/tasks/from_qualified",
+            data={
+                "name": "Selezione esplicita",
+                "agent_mode": "outreach",
+                "qualifiers": "q_test",
+                "status": "qualified",
+                "asset_ids": [str(aids[0]), str(aids[2])],
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        loc = r.headers["location"]
+        task_id = int(loc.split("/tasks/")[1].split("/")[0])
+        task = db.get_task(task_id)
+        # Esattamente i 2 selezionati, NON tutti e 3 dai filtri.
+        assert sorted(task["target_asset_ids"]) == sorted([aids[0], aids[2]])
+        assert len(task["target_asset_ids"]) == 2
+
+
+def test_post_tasks_from_qualified_select_all_filtered_flag(audience_setup):
+    """POST /tasks/from_qualified con asset_ids[] MA `select_all_filtered=1`:
+    il flag vince e il backend usa i filtri (espande a tutti i filtrati)."""
+    from app.main import app
+    if not db_cloud.get_user_by_email("testadmin"):
+        db_cloud.create_user(
+            tenant_id=None, email="testadmin",
+            password_hash=hash_password("testpwd"), role="super_admin",
+        )
+    aids = audience_setup["asset_ids"]
+    client = TestClient(app)
+    with client:
+        client.post("/login", data={"email": "testadmin", "password": "testpwd"})
+
+        r = client.post(
+            "/tasks/from_qualified",
+            data={
+                "name": "All filtered",
+                "agent_mode": "outreach",
+                "qualifiers": "q_test",
+                "status": "qualified",
+                "select_all_filtered": "1",
+                # asset_ids esplicito ma sara' ignorato per via del flag
+                "asset_ids": [str(aids[0])],
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        loc = r.headers["location"]
+        task_id = int(loc.split("/tasks/")[1].split("/")[0])
+        task = db.get_task(task_id)
+        # Tutti e 3 (dai filtri), non solo aids[0].
+        assert len(task["target_asset_ids"]) == 3
+
+
 def test_post_tasks_from_qualified_empty_audience_returns_400(audience_setup):
     """Se i filtri producono 0 asset, ritorna 400."""
     from app.main import app

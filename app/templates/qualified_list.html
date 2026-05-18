@@ -17,18 +17,6 @@
               onclick="document.getElementById('add-qualified-modal').classList.add('open');">
         ➕ Aggiungi qualified
       </button>
-      {% if total > 0 and not return_to_task %}
-      <button type="button" class="btn-secondary"
-              onclick="document.getElementById('rilancia-qualifier-modal').classList.add('open');"
-              title="Crea task qualifier per ri-valutare i {{ total }} asset filtrati">
-        🎯 Rilancia qualifier ({{ total }})
-      </button>
-      <button type="button" class="btn-primary"
-              onclick="document.getElementById('avvia-outreach-modal').classList.add('open');"
-              title="Crea task outreach con i {{ total }} asset filtrati">
-        🚀 Avvia outreach ({{ total }})
-      </button>
-      {% endif %}
     </div>
   </div>
 
@@ -424,9 +412,64 @@
     {# Lista asset principale (full-width, no piu' sidebar). #}
     <div class="qualified-main-wrap">
         {% if assets %}
+        {# Form bulk: wrappa la tabella. La submit puo' andare verso
+           /assets/delete-bulk (delete) o nei modal di outreach/qualifier
+           via JS che copia gli asset_ids selezionati nei form modal. #}
+        <form id="qualified-bulk-form" method="post" action="/assets/delete-bulk"
+              onsubmit="return window.bulkConfirmDelete(this, 'asset');">
+          <input type="hidden" name="redirect_to" value="/qualified?{{ qs_base }}">
+          <input type="hidden" name="select_all_filtered" value="0" id="qbulk-select-all-flag">
+
+          {# Bulk action bar: select-all + counter + bottoni d'azione + banner gmail-style #}
+          {% if not return_to_task %}
+          <div class="bulk-action-bar qualified-bulk-bar">
+            <label class="bulk-select-all-label">
+              <input type="checkbox" id="qbulk-select-all"> Seleziona pagina
+            </label>
+            <span class="bulk-count" id="qbulk-count">0 selezionati</span>
+
+            {# Bottoni d'azione: grey-out se 0 selezionati. Click apre il modal,
+               che al submit eredita gli asset_ids via JS (window.qbulkApplyTo). #}
+            <button type="button" class="btn-secondary"
+                    id="qbulk-btn-rilancia" disabled
+                    title="Crea task qualifier per ri-valutare gli asset selezionati"
+                    onclick="window.qbulkApplyTo('rilancia-qualifier-modal'); document.getElementById('rilancia-qualifier-modal').classList.add('open');">
+              🎯 Rilancia qualifier (<span data-qbulk-action-count>0</span>)
+            </button>
+            <button type="button" class="btn-primary"
+                    id="qbulk-btn-outreach" disabled
+                    title="Crea task outreach con gli asset selezionati"
+                    onclick="window.qbulkApplyTo('avvia-outreach-modal'); document.getElementById('avvia-outreach-modal').classList.add('open');">
+              🚀 Avvia outreach (<span data-qbulk-action-count>0</span>)
+            </button>
+            <button type="submit" class="btn-danger-inline"
+                    id="qbulk-btn-delete" disabled
+                    title="Cancella definitivamente gli asset selezionati">
+              🗑️ Cancella (<span data-qbulk-action-count>0</span>)
+            </button>
+          </div>
+
+          {# Banner gmail-style: appare quando user seleziona TUTTA la pagina
+             e ci sono altri risultati fuori pagina. #}
+          <div id="qbulk-select-all-banner" class="qbulk-banner" style="display:none">
+            <span id="qbulk-banner-text">
+              Hai selezionato <strong>{{ assets|length }}</strong> asset di questa pagina.
+            </span>
+            <a href="#" id="qbulk-select-all-link"
+               onclick="window.qbulkSelectAllFiltered(); return false;">
+              Seleziona tutti i <strong>{{ total }}</strong> asset filtrati
+            </a>
+          </div>
+          <div id="qbulk-all-selected-banner" class="qbulk-banner qbulk-banner-active" style="display:none">
+            ✅ Tutti i <strong>{{ total }}</strong> asset filtrati sono selezionati.
+            <a href="#" onclick="window.qbulkClearAll(); return false;">Annulla selezione</a>
+          </div>
+          {% endif %}
+
         <table class="data assets-table">
           <thead>
             <tr>
+              <th class="bulk-col"><span class="visually-hidden">Seleziona</span></th>
               <th>#</th>
               <th>Tipo</th>
               <th>Titolo</th>
@@ -440,6 +483,7 @@
           <tbody>
             {% for a in assets %}
             <tr>
+              <td><input type="checkbox" name="asset_ids" value="{{ a.id }}" data-qbulk-row></td>
               <td>{{ a.id }}</td>
               <td><code>{{ a.asset_type }}</code></td>
               <td><a href="/assets/{{ a.id }}">{{ a.title or "(senza titolo)" }}</a></td>
@@ -568,6 +612,7 @@
             {% endfor %}
           </tbody>
         </table>
+        </form>
 
         {# Paginazione #}
         {% set page_from = offset + 1 %}
@@ -758,6 +803,127 @@ function selectAssetForQualifier(assetId) {
   const sr = document.getElementById('qualifier-asset-search-results');
   if (sr) sr.innerHTML = '';
 }
+</script>
+
+{# JS: bulk selection su /qualified (Gmail-style). Gestisce:
+   - checkbox per riga + select-all on page
+   - banner "Seleziona tutti i N filtrati" → flag select_all_filtered
+   - bottoni grey-out se 0 selezionati, label dinamico con count
+   - qbulkApplyTo(modalId): copia selezione attuale nei hidden input
+     del modal form (asset_ids+ o select_all_filtered=1). #}
+<script>
+(function () {
+  const form = document.getElementById('qualified-bulk-form');
+  if (!form) return;  // pagina vuota (no asset)
+  const selectAll = document.getElementById('qbulk-select-all');
+  const rows = form.querySelectorAll('[data-qbulk-row]');
+  const counter = document.getElementById('qbulk-count');
+  const flagInput = document.getElementById('qbulk-select-all-flag');
+  const banner = document.getElementById('qbulk-select-all-banner');
+  const bannerAll = document.getElementById('qbulk-all-selected-banner');
+  const btnRilancia = document.getElementById('qbulk-btn-rilancia');
+  const btnOutreach = document.getElementById('qbulk-btn-outreach');
+  const btnDelete = document.getElementById('qbulk-btn-delete');
+  const actionCounts = form.querySelectorAll('[data-qbulk-action-count]');
+
+  const TOTAL = {{ total }};
+  const PAGE_SIZE = rows.length;
+
+  let selectAllFiltered = false;
+
+  function refresh() {
+    const sel = Array.from(rows).filter(c => c.checked).length;
+    const effective = selectAllFiltered ? TOTAL : sel;
+
+    if (counter) counter.textContent = selectAllFiltered
+      ? `${TOTAL} selezionati (tutti i filtrati)`
+      : `${sel} selezionati`;
+
+    actionCounts.forEach(el => el.textContent = effective);
+
+    // Greyout bottoni se 0 effective
+    [btnRilancia, btnOutreach, btnDelete].forEach(b => {
+      if (b) b.disabled = effective === 0;
+    });
+
+    // Select-all checkbox: indeterminate / checked
+    if (selectAll) {
+      selectAll.checked = sel === rows.length && sel > 0;
+      selectAll.indeterminate = sel > 0 && sel < rows.length;
+    }
+
+    // Banner "seleziona tutti filtrati": appare solo se pagina selezionata
+    // tutta E ci sono altri risultati fuori pagina E non gia' attivato.
+    const showBanner = (sel === rows.length && sel > 0 && TOTAL > PAGE_SIZE && !selectAllFiltered);
+    if (banner) banner.style.display = showBanner ? '' : 'none';
+    if (bannerAll) bannerAll.style.display = selectAllFiltered ? '' : 'none';
+    if (flagInput) flagInput.value = selectAllFiltered ? '1' : '0';
+  }
+
+  if (selectAll) {
+    selectAll.addEventListener('change', () => {
+      rows.forEach(c => c.checked = selectAll.checked);
+      selectAllFiltered = false;  // toggle manuale = uscita da "tutti filtrati"
+      refresh();
+    });
+  }
+  rows.forEach(c => c.addEventListener('change', () => {
+    selectAllFiltered = false;  // qualunque change manuale → uscita
+    refresh();
+  }));
+
+  window.qbulkSelectAllFiltered = function () {
+    selectAllFiltered = true;
+    refresh();
+  };
+  window.qbulkClearAll = function () {
+    selectAllFiltered = false;
+    rows.forEach(c => c.checked = false);
+    if (selectAll) selectAll.checked = false;
+    refresh();
+  };
+
+  // Confirm delete (riusato da onsubmit della form)
+  window.bulkConfirmDelete = window.bulkConfirmDelete || function (form, label) {
+    const sel = selectAllFiltered ? TOTAL : Array.from(rows).filter(c => c.checked).length;
+    if (!sel) return false;
+    return confirm(`Cancellare ${sel} ${label}${sel === 1 ? '' : 's'}? L'azione è permanente.`);
+  };
+
+  // qbulkApplyTo(modalId): copia la selezione attuale come hidden input nel
+  // form del modal. Il modal form ha gia' hidden inputs per i filtri (qualifiers,
+  // status, ecc.). Aggiungiamo asset_ids[] oppure select_all_filtered=1.
+  window.qbulkApplyTo = function (modalId) {
+    const modal = document.getElementById(modalId);
+    if (!modal) return;
+    const modalForm = modal.querySelector('form');
+    if (!modalForm) return;
+    // Rimuovi prima eventuali hidden inputs aggiunti da precedente apertura.
+    modalForm.querySelectorAll('[data-qbulk-injected]').forEach(el => el.remove());
+    if (selectAllFiltered) {
+      // Mode: tutti i filtrati. Backend usera' i filtri (gia' presenti come
+      // hidden inputs nel modal form) per ri-estrarre. Flag esplicito.
+      const flag = document.createElement('input');
+      flag.type = 'hidden';
+      flag.name = 'select_all_filtered';
+      flag.value = '1';
+      flag.setAttribute('data-qbulk-injected', '');
+      modalForm.appendChild(flag);
+    } else {
+      // Mode: selezione esplicita. Inietta asset_ids[].
+      Array.from(rows).filter(c => c.checked).forEach(c => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = 'asset_ids';
+        inp.value = c.value;
+        inp.setAttribute('data-qbulk-injected', '');
+        modalForm.appendChild(inp);
+      });
+    }
+  };
+
+  refresh();
+})();
 </script>
 
 {# Modal: aggiungi qualified manualmente a un asset esistente. #}

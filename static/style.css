@@ -2782,6 +2782,48 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   background: rgba(255,255,255,0.25);
 }
 
+/* Bulk action bar su /qualified (riusa pattern /assets ma piu' componenti).
+   Mostra select-all + counter + bottoni d'azione (rilancia/outreach/delete). */
+.qualified-bulk-bar {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.55rem 0.7rem;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  margin: 0.6rem 0;
+}
+.qualified-bulk-bar .bulk-count {
+  font-size: 0.88rem;
+  color: #57606a;
+  font-weight: 500;
+  min-width: 8em;
+}
+.qualified-bulk-bar button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Gmail-style banner "Seleziona tutti i N filtrati" */
+.qbulk-banner {
+  margin: 0.4rem 0;
+  padding: 0.55rem 0.85rem;
+  background: #fff7e0;
+  border: 1px solid #f0c674;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  color: #6b4f00;
+}
+.qbulk-banner a { color: #0969da; font-weight: 500; }
+.qbulk-banner-active {
+  background: #e6ffec;
+  border-color: #6fcf97;
+  color: #1a7f37;
+}
+.qbulk-banner-active a { color: #1a7f37; text-decoration: underline; }
+
 /* B-016: Asset dedup UI (/assets/duplicates) */
 .dedup-cluster {
   border: 1px solid #e1e4e8;
