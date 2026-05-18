@@ -1,4 +1,9 @@
-"""Loop ReAct sopra Ollama. Esegue tool web_search/fetch_url, conclude con finalize."""
+"""Loop ReAct. Tool web_search/fetch_url, conclude con finalize.
+
+Dispatch LLM per `llm_provider` del progetto:
+- `ollama` → /api/chat nativo (`chat()`)
+- altri (openai/anthropic/gemini/grok/custom) → /v1/chat/completions (`chat_openai_compat()`)
+"""
 from __future__ import annotations
 
 import json
@@ -7,13 +12,37 @@ from urllib.parse import urlparse
 
 from .. import db
 from ..storage import write_result
-from .ollama import chat
+from .llm_providers import resolve_api_key, resolve_base_url
+from .ollama import chat, chat_openai_compat
 from .prompts import SYSTEM_PROMPT, TOOLS_SPEC, build_user_prompt
 from .tools.fetch_http import fetch_http
 from .tools.search import web_search
 
 
 LogFn = Callable[[str], None]
+
+
+async def _llm_chat(
+    task: dict[str, Any],
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    temperature: float = 0.2,
+) -> dict[str, Any]:
+    """Dispatch sul provider LLM scelto nel progetto."""
+    provider = (task.get("llm_provider") or "ollama").lower()
+    model = task["model"]
+    if provider == "ollama":
+        return await chat(model=model, messages=messages, tools=tools, temperature=temperature)
+    base_url = resolve_base_url(provider, task.get("llm_base_url"))
+    api_key = resolve_api_key(provider, task.get("llm_api_key"))
+    return await chat_openai_compat(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        messages=messages,
+        tools=tools,
+        temperature=temperature,
+    )
 
 
 def _domain_allowed(url: str, allowed: list[str], blocked: list[str]) -> bool:
@@ -101,7 +130,11 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         db.append_job_log(job_id, line)
 
     db.update_job(job_id, status="running", started_at=db.now_iso())
-    log(f"Avvio agente per task #{task['id']} \"{task['name']}\" — modello {task['model']}")
+    provider = (task.get("llm_provider") or "ollama").lower()
+    log(
+        f"Avvio agente per task #{task['id']} \"{task['name']}\" — "
+        f"provider {provider} / modello {task['model']}"
+    )
 
     user_prompt = build_user_prompt(
         objective=task["objective"],
@@ -122,9 +155,9 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     for step in range(1, max_iter + 1):
         log(f"--- step {step}/{max_iter} ---")
         try:
-            msg = await chat(model=task["model"], messages=messages, tools=TOOLS_SPEC)
+            msg = await _llm_chat(task, messages, tools=TOOLS_SPEC)
         except Exception as e:
-            log(f"Errore Ollama: {e}")
+            log(f"Errore LLM ({provider}): {e}")
             raise
 
         tool_calls = msg.get("tool_calls") or []
@@ -139,16 +172,24 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             final_report = content.strip() or "(nessun output)"
             break
 
-        for tc in tool_calls:
+        for idx, tc in enumerate(tool_calls):
             fn = tc.get("function", {})
             name = fn.get("name", "")
             args = _parse_args(fn.get("arguments"))
+            # OpenAI-compat richiede tool_call_id sul messaggio role=tool;
+            # Ollama nativo lo tollera. Sintetizziamo un id se il provider non l'ha fornito.
+            tool_call_id = tc.get("id") or f"call_{step}_{idx}"
             try:
                 observation, final_report = await _exec_tool(name, args, task, log)
             except Exception as e:
                 observation = f"Errore esecuzione tool {name}: {e}"
                 log(observation)
-            messages.append({"role": "tool", "name": name, "content": observation[:12000]})
+            messages.append({
+                "role": "tool",
+                "name": name,
+                "tool_call_id": tool_call_id,
+                "content": observation[:12000],
+            })
             if final_report:
                 break
 
@@ -179,7 +220,7 @@ async def _force_summary(task: dict[str, Any], messages: list[dict[str, Any]], l
         }
     ]
     try:
-        msg = await chat(model=task["model"], messages=closing, tools=None, temperature=0.2)
+        msg = await _llm_chat(task, closing, tools=None, temperature=0.2)
         return (msg.get("content") or "").strip() or "(nessun output)"
     except Exception as e:
         log(f"Errore nel riassunto forzato: {e}")

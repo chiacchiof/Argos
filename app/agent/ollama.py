@@ -41,6 +41,39 @@ async def chat(
     return data.get("message", {})
 
 
+async def chat_openai_compat(
+    base_url: str,
+    api_key: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    temperature: float = 0.2,
+) -> dict[str, Any]:
+    """Chiama /v1/chat/completions su un endpoint OpenAI-compatible e ritorna
+    il dict `message` (stessa shape di `chat()` Ollama: {content, tool_calls?}).
+
+    Usato per dispatchare il loop ReAct verso provider cloud
+    (OpenAI/Anthropic/Gemini/Grok/custom) oltre che verso Ollama via /v1.
+    """
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    maybe_add_keep_alive(payload, base_url)
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    async with httpx.AsyncClient(timeout=300) as client:
+        r = await client.post(url, json=payload, headers=headers)
+        r.raise_for_status()
+        data = r.json()
+    return (data.get("choices") or [{}])[0].get("message", {}) or {}
+
+
 def maybe_add_keep_alive(payload: dict[str, Any], base_url: str) -> None:
     """In-place: aggiunge `keep_alive` al payload se l'endpoint sembra Ollama.
     Da chiamare PRIMA di POST a /v1/chat/completions su endpoint locali.
