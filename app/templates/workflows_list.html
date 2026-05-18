@@ -10,6 +10,22 @@
   </p>
   <p><a href="/workflows/new">+ Nuovo workflow</a></p>
 
+  {% set af = author_filter or 'mine' %}
+  {% if current_user_authenticated %}
+  <nav class="author-filter-bar" aria-label="Filtro autore">
+    <a href="/workflows"
+       class="author-filter-tab {% if af == 'mine' %}author-filter-tab-active{% endif %}"
+       title="Solo i workflow che hai creato tu">
+      👤 I miei workflow
+    </a>
+    <a href="/workflows?author=tenant"
+       class="author-filter-tab {% if af != 'mine' %}author-filter-tab-active{% endif %}"
+       title="Tutti i workflow del tenant">
+      🏢 Tutti del tenant <span class="author-filter-count">{{ total_tenant }}</span>
+    </a>
+  </nav>
+  {% endif %}
+
   {% if workflows %}
   <table class="data">
     <thead>

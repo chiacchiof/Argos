@@ -2665,6 +2665,54 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   color: #57606a;
 }
 
+/* Filtro autore (I miei / Tutti del tenant) su /tasks e /workflows */
+.author-filter-bar {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0.8rem 0;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.author-filter-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #d0d7de;
+  border-radius: 14px;
+  text-decoration: none;
+  color: #57606a;
+  background: #fff;
+  font-size: 0.85rem;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.author-filter-tab:hover {
+  background: #f6f8fa;
+  border-color: #adbac7;
+}
+.author-filter-tab-active {
+  background: #0969da;
+  border-color: #0969da;
+  color: #fff;
+}
+.author-filter-tab-active:hover {
+  background: #0860c8;
+  border-color: #0860c8;
+  color: #fff;
+}
+.author-filter-count {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.07);
+  font-size: 0.78rem;
+  min-width: 1.2em;
+  text-align: center;
+}
+.author-filter-tab-active .author-filter-count {
+  background: rgba(255,255,255,0.25);
+}
+
 /* B-016: Asset dedup UI (/assets/duplicates) */
 .dedup-cluster {
   border: 1px solid #e1e4e8;

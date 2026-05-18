@@ -2499,6 +2499,28 @@ Log strutturato: il runner stampa "⏳ gap anti-ban: idle per Xs/Xmin prima del 
 
 Implementazione: `app/agent/social/humanize.py::pick_gap_minutes(platform, task_min, task_max)`, chiamata da `OutreachEngine.run_session(... gap_min_minutes=, gap_max_minutes=)`.
 
+### 17.12 Filtro autore su `/tasks` e `/workflows` (2026-05-18)
+
+Le liste `/` (tasks) e `/workflows` mostrano **di default solo gli elementi creati dall'utente loggato** (`tenant_user`). Toggle per vedere tutto il tenant:
+
+```
+👤 I miei task   |   🏢 Tutti del tenant (<N>)
+```
+
+Querystring: `?author=mine` (default tenant_user) o `?author=tenant`. Valore invalido cade su `mine` (sicurezza by default).
+
+**Eccezione super_admin**: per i super-admin il default è `tenant` (overview cross-tenant). Conservativo: super-admin tipicamente vuole vedere tutto.
+
+**Persistenza nei link**: tutti i link interni alla pagina (tab tipo task, chip status_tag) preservano il parametro `?author=tenant` se attivo, così cambiando filtro non si torna involontariamente alla vista "miei".
+
+**Implementazione**:
+- [app/db.py](app/db.py) `list_tasks(tenant_id=, created_by_user_id=)` e `list_workflows(...)` accettano filtro autore opzionale.
+- [app/routes/tasks.py](app/routes/tasks.py) `index()` legge `?author=` e calcola `total_tenant` per il badge.
+- [app/routes/workflows.py](app/routes/workflows.py) `workflows_list()` idem.
+- UI: nav `author-filter-bar` sopra le tab/lista, mostrata solo se utente autenticato (`current_user_authenticated`).
+
+**Limite noto**: il filtro è per `created_by_user_id`. Se un task viene creato da Alice ma poi viene modificato/usato da Bob, resta "di Alice" nella vista. Per condivisione esplicita servirebbe una colonna `shared_with` o ruoli di task.
+
 ### 17.11 Asset dedup cross-task + merge UI (B-016, 2026-05-18)
 
 Pre-feature: dedup era solo `(source_url_canonical, asset_type)` dentro `upsert_asset` — non catturava match cross-canale (es. stesso numero WhatsApp scoperto via scraping IG + scraping sito).

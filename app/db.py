@@ -953,16 +953,28 @@ def _row_to_task(row: dict[str, Any]) -> dict[str, Any]:
 #   inserisce; un super-admin che crea senza specificare lascia tenant_id NULL
 #   (il record sarà invisibile a tutti i tenant_user finché non assegnato).
 
-def list_tasks(tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+def list_tasks(
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = None,
+) -> list[dict[str, Any]]:
+    """Lista task del tenant. Se `created_by_user_id` valorizzato (int),
+    filtra ulteriormente per autore (uso 'I miei task'). None = no filtro
+    autore (mostra tutti i task del tenant)."""
     tenant_id = _resolve_tenant(tenant_id)
+    clauses: list[str] = []
+    args: list[Any] = []
+    if tenant_id is not None:
+        clauses.append("tenant_id = %s")
+        args.append(tenant_id)
+    if created_by_user_id is not None:
+        clauses.append("created_by_user_id = %s")
+        args.append(int(created_by_user_id))
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     with connect() as con:
-        if tenant_id is None:
-            rows = con.execute("SELECT * FROM tasks ORDER BY id DESC").fetchall()
-        else:
-            rows = con.execute(
-                "SELECT * FROM tasks WHERE tenant_id = %s ORDER BY id DESC",
-                (tenant_id,),
-            ).fetchall()
+        rows = con.execute(
+            f"SELECT * FROM tasks{where} ORDER BY id DESC",
+            tuple(args),
+        ).fetchall()
     return [_row_to_task(r) for r in rows]
 
 
@@ -1408,16 +1420,27 @@ def get_control_signal(job_id: int) -> str | None:
 # Workflows (entità di prima classe)
 # ===========================================================================
 
-def list_workflows(tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+def list_workflows(
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = None,
+) -> list[dict[str, Any]]:
+    """Lista workflow del tenant. Se `created_by_user_id` valorizzato (int),
+    filtra per autore (uso 'I miei workflow')."""
     tenant_id = _resolve_tenant(tenant_id)
+    clauses: list[str] = []
+    args: list[Any] = []
+    if tenant_id is not None:
+        clauses.append("tenant_id = %s")
+        args.append(tenant_id)
+    if created_by_user_id is not None:
+        clauses.append("created_by_user_id = %s")
+        args.append(int(created_by_user_id))
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     with connect() as con:
-        if tenant_id is None:
-            rows = con.execute("SELECT * FROM workflows ORDER BY id DESC").fetchall()
-        else:
-            rows = con.execute(
-                "SELECT * FROM workflows WHERE tenant_id = %s ORDER BY id DESC",
-                (tenant_id,),
-            ).fetchall()
+        rows = con.execute(
+            f"SELECT * FROM workflows{where} ORDER BY id DESC",
+            tuple(args),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 

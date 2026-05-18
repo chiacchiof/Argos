@@ -17,8 +17,21 @@ router = APIRouter()
 
 
 @router.get("/workflows", response_class=HTMLResponse)
-async def workflows_list(request: Request):
-    workflows = db.list_workflows()
+async def workflows_list(request: Request, author: str = ""):
+    """Lista workflow. `author`:
+       - `mine` (default per tenant_user): solo workflow creati dall'utente
+       - `tenant` (default per super_admin): tutti i workflow visibili
+    """
+    current_user = getattr(request.state, "current_user", None)
+    is_super_admin = bool(current_user and current_user.is_super_admin)
+    current_uid = db.current_user_id()
+    default_author = "tenant" if is_super_admin else "mine"
+    author_norm = (author or default_author).strip().lower()
+    if author_norm not in ("mine", "tenant", "all"):
+        author_norm = default_author
+    filter_uid = current_uid if (author_norm == "mine" and current_uid is not None) else None
+    workflows = db.list_workflows(created_by_user_id=filter_uid)
+    total_tenant = len(db.list_workflows()) if author_norm == "mine" else len(workflows)
     # arricchisci con count di task / edges per workflow
     enriched = []
     for w in workflows:
@@ -29,7 +42,13 @@ async def workflows_list(request: Request):
             task_ids.add(e["to_task_id"])
         enriched.append({**w, "n_edges": len(edges), "n_tasks": len(task_ids)})
     return templates.TemplateResponse(
-        request, "workflows_list.html", {"workflows": enriched}
+        request, "workflows_list.html",
+        {
+            "workflows": enriched,
+            "author_filter": author_norm,
+            "total_tenant": total_tenant,
+            "current_user_authenticated": current_uid is not None,
+        },
     )
 
 

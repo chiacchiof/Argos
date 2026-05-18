@@ -82,8 +82,33 @@ def _task_type_of(agent_mode: str | None) -> str:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, status_tag: str = "", type: str = ""):
-    all_tasks = db.list_tasks()
+async def index(
+    request: Request,
+    status_tag: str = "",
+    type: str = "",
+    author: str = "",
+):
+    """Lista task. `author`:
+       - `mine` (default per tenant_user): solo task creati dall'utente corrente
+       - `tenant` (default per super_admin): tutti i task visibili (tenant per
+         tenant_user, tutti i tenant per super_admin)
+    Il filtro author si applica PRIMA degli altri (status_tag, type)."""
+    current_user = getattr(request.state, "current_user", None)
+    is_super_admin = bool(current_user and current_user.is_super_admin)
+    current_uid = db.current_user_id()
+
+    # Default author dipende dal ruolo: super_admin -> 'tenant' (overview),
+    # tenant_user -> 'mine' (focus sui propri).
+    default_author = "tenant" if is_super_admin else "mine"
+    author_norm = (author or default_author).strip().lower()
+    if author_norm not in ("mine", "tenant", "all"):
+        author_norm = default_author
+
+    filter_uid = current_uid if (author_norm == "mine" and current_uid is not None) else None
+    all_tasks = db.list_tasks(created_by_user_id=filter_uid)
+    # Conteggio "totali del tenant" (per badge sul toggle): calcolato sempre
+    # senza filtro author, cosi' l'utente vede quanti ne perde mostrando solo i suoi.
+    total_tenant = len(db.list_tasks()) if author_norm == "mine" else len(all_tasks)
     # Conteggi per tab (sempre calcolati su all_tasks, prima di filtrare per tab,
     # ma DOPO l'eventuale filtro status_tag — cosi' i numeri sui tab riflettono
     # cio' che vedrebbe l'utente cliccandoli con lo status_tag attivo).
@@ -118,6 +143,9 @@ async def index(request: Request, status_tag: str = "", type: str = ""):
             "active_type": active_type,
             "task_type_tabs": TASK_TYPE_TABS,
             "counts_by_type": counts_by_type,
+            "author_filter": author_norm,
+            "total_tenant": total_tenant,
+            "current_user_authenticated": current_uid is not None,
         },
     )
 

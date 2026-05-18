@@ -15,15 +15,45 @@
     <a href="/tasks/new" class="btn-primary">+ Nuovo task</a>
   </div>
 
-  {# Tab orizzontali per tipo task. `type` in querystring; preserva status_tag. #}
+  {# Tab orizzontali per tipo task. `type` in querystring; preserva status_tag + author. #}
   {% set st = active_status_tag or '' %}
   {% set at = active_type or 'all' %}
+  {% set af = author_filter or 'mine' %}
+  {# author_qs: include in tutti i link solo se != default ('mine') #}
   {% macro tab_href(type_key) -%}
     {%- set qs = [] -%}
     {%- if type_key and type_key != 'all' -%}{%- set _ = qs.append('type=' ~ type_key) -%}{%- endif -%}
     {%- if st -%}{%- set _ = qs.append('status_tag=' ~ st) -%}{%- endif -%}
+    {%- if af and af != 'mine' -%}{%- set _ = qs.append('author=' ~ af) -%}{%- endif -%}
     /{% if qs %}?{{ qs|join('&') }}{% endif %}
   {%- endmacro %}
+
+  {# Toggle "I miei task" / "Tutti del tenant".
+     Default = mine (mostra solo i task creati dall'utente corrente).
+     Tutti = mostra tutti i task del tenant. Il count nel badge "Tutti" e'
+     il totale del tenant (utile per capire quanti task perdi col filtro). #}
+  {% if current_user_authenticated %}
+  <nav class="author-filter-bar" aria-label="Filtro autore">
+    {% macro author_href(akey) -%}
+      {%- set qs = [] -%}
+      {%- if at and at != 'all' -%}{%- set _ = qs.append('type=' ~ at) -%}{%- endif -%}
+      {%- if st -%}{%- set _ = qs.append('status_tag=' ~ st) -%}{%- endif -%}
+      {%- if akey and akey != 'mine' -%}{%- set _ = qs.append('author=' ~ akey) -%}{%- endif -%}
+      /{% if qs %}?{{ qs|join('&') }}{% endif %}
+    {%- endmacro %}
+    <a href="{{ author_href('mine') }}"
+       class="author-filter-tab {% if af == 'mine' %}author-filter-tab-active{% endif %}"
+       title="Solo i task che hai creato tu">
+      👤 I miei task
+    </a>
+    <a href="{{ author_href('tenant') }}"
+       class="author-filter-tab {% if af != 'mine' %}author-filter-tab-active{% endif %}"
+       title="Tutti i task del tenant (anche quelli creati da altri utenti)">
+      🏢 Tutti del tenant <span class="author-filter-count">{{ total_tenant }}</span>
+    </a>
+  </nav>
+  {% endif %}
+
   <nav class="task-type-tabs" aria-label="Tipologia task">
     {% for key, label in task_type_tabs %}
       {% set n = counts_by_type.get(key, 0) %}
@@ -36,11 +66,12 @@
     {% endfor %}
   </nav>
 
-  {# Filtro per status_tag — query string ?status_tag=... ; preserva il tab attivo. #}
+  {# Filtro per status_tag — query string ?status_tag=... ; preserva il tab attivo + author. #}
   {% macro chip_href(status_key) -%}
     {%- set qs = [] -%}
     {%- if at and at != 'all' -%}{%- set _ = qs.append('type=' ~ at) -%}{%- endif -%}
     {%- if status_key -%}{%- set _ = qs.append('status_tag=' ~ status_key) -%}{%- endif -%}
+    {%- if af and af != 'mine' -%}{%- set _ = qs.append('author=' ~ af) -%}{%- endif -%}
     /{% if qs %}?{{ qs|join('&') }}{% endif %}
   {%- endmacro %}
   <div class="task-filter">
