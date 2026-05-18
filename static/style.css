@@ -8,9 +8,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
        margin: 0; background: var(--bg); color: var(--fg); }
 header { display: flex; justify-content: space-between; align-items: center;
          padding: 0.6rem 1.2rem; background: #fff; border-bottom: 1px solid var(--border); }
-header h1 { font-size: 1.1rem; margin: 0; }
+header h1 { font-size: 1.1rem; margin: 0; flex-shrink: 0; }
 header h1 a { text-decoration: none; color: var(--fg); }
-header nav a { margin-left: 1rem; text-decoration: none; color: var(--accent); }
+/* Nav: flex su una sola riga (nowrap). La pill utente sta sempre
+   all'estrema destra grazie a margin-left:auto. flex-shrink:0 sulla
+   pill per evitare che venga schiacciata da nav-items larghi. */
+header nav { display: flex; align-items: center; flex-wrap: nowrap;
+             flex: 1; min-width: 0; justify-content: flex-end; }
+header nav a { margin-left: 1rem; text-decoration: none; color: var(--accent);
+               white-space: nowrap; }
+header nav .user-menu { flex-shrink: 0; margin-left: 1rem; }
 main { max-width: 1000px; margin: 1.5rem auto; padding: 0 1rem; }
 footer { text-align: center; color: var(--muted); padding: 2rem 0; }
 h2 { margin-top: 0; }
@@ -1848,9 +1855,9 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
 /* ============================================================
    Auth: user pill in header + dropdown menu (Settings / Memoria sito / Esci)
    ============================================================ */
-/* <details class="user-menu"><summary class="user-pill">FC</summary>...</details> */
+/* <details class="user-menu"><summary class="user-pill">FC</summary>...</details>
+   margin-left fornita da `header nav .user-menu` per stare a destra. */
 .user-menu {
-  margin-left: auto;
   position: relative;
 }
 .user-menu summary {
