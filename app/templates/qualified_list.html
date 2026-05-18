@@ -409,6 +409,8 @@
       </div>
     </div>
 
+  </form>  {# /qualified-form (filtri GET) — chiuso qui per non nidificare con #qualified-bulk-form sotto (HTML5 vieta form annidati). #}
+
     {# Lista asset principale (full-width, no piu' sidebar). #}
     <div class="qualified-main-wrap">
         {% if assets %}
@@ -668,7 +670,6 @@
         </div>
         {% endif %}
     </div>
-  </form>
 </section>
 
 {# JS: helper per le due modali (qualifier picker + tag filters builder). #}
