@@ -554,9 +554,11 @@ async def assets_export_csv(request: Request):
     tags_csv = (form.get("tags") or "").strip()
     tag_filters = _parse_tag_filters(tags_csv) if tags_csv else []
     source_task_id_v = _parse_optional_int(form.get("source_task_id") or "")
+    # Flag "Tutti i N filtrati" vince su asset_ids esplicito.
+    select_all_filtered = (form.get("select_all_filtered") or "").strip() == "1"
     # Selezione esplicita da bulk checkbox (se utente ha selezionato righe).
     explicit_raw = form.getlist("asset_ids") if hasattr(form, "getlist") else []
-    if explicit_raw:
+    if explicit_raw and not select_all_filtered:
         seen: set[int] = set()
         ids: list[int] = []
         for v in explicit_raw:
@@ -1241,17 +1243,39 @@ async def assets_delete_bulk(
 ):
     """Cancella in massa gli asset selezionati. Riceve `asset_ids` come lista di
     checkbox dal form della lista. Tag associati cascade-eliminati per FK.
+
+    Se `select_all_filtered=1` e' presente, ignora asset_ids[] e re-estrae
+    tutti gli asset matching i filtri della pagina (asset_type, status, tags,
+    source_task_id) — fino a _MAX_EXPORT. Cosi' l'utente puo' cancellare
+    bulk anche oltre la pagina corrente.
     """
     form = await request.form()
-    raw_ids = form.getlist("asset_ids") if hasattr(form, "getlist") else form.get("asset_ids")
-    if not isinstance(raw_ids, list):
-        raw_ids = [raw_ids] if raw_ids else []
-    ids: list[int] = []
-    for v in raw_ids:
-        try:
-            ids.append(int(v))
-        except (TypeError, ValueError):
-            continue
+    select_all_filtered = (form.get("select_all_filtered") or "").strip() == "1"
+    if select_all_filtered:
+        asset_type = (form.get("asset_type") or "").strip() or None
+        status = (form.get("status") or "").strip() or None
+        tags_csv = (form.get("tags") or "").strip()
+        tag_filters = _parse_tag_filters(tags_csv) if tags_csv else []
+        source_task_id_v = _parse_optional_int(form.get("source_task_id") or "")
+        rows = db.list_assets(
+            asset_type=asset_type,
+            status=status,
+            tag_filters=tag_filters or None,
+            source_task_id=source_task_id_v,
+            limit=_MAX_EXPORT,
+            offset=0,
+        )
+        ids = [int(r["id"]) for r in rows if r.get("id") is not None]
+    else:
+        raw_ids = form.getlist("asset_ids") if hasattr(form, "getlist") else form.get("asset_ids")
+        if not isinstance(raw_ids, list):
+            raw_ids = [raw_ids] if raw_ids else []
+        ids = []
+        for v in raw_ids:
+            try:
+                ids.append(int(v))
+            except (TypeError, ValueError):
+                continue
     n = db.delete_assets_bulk(ids) if ids else 0
     target = redirect_to if redirect_to.startswith("/") else "/assets"
     sep = "&" if "?" in target else "?"

@@ -120,12 +120,32 @@
   <form method="post" action="/assets/delete-bulk" class="bulk-action-form" data-bulk-form
         onsubmit="return window.bulkConfirmDelete(this, 'asset')">
     <input type="hidden" name="redirect_to" value="/assets?asset_type={{ filter_type }}&status={{ filter_status }}&tags={{ filter_tags_str }}">
+    {# Replica filtri come hidden inputs: usati quando l'utente clicca
+       "Tutti filtrati" (flag select_all_filtered=1) → backend re-estrae. #}
+    <input type="hidden" name="select_all_filtered" value="0" data-bulk-saf-flag>
+    {% if filter_type %}<input type="hidden" name="asset_type" value="{{ filter_type }}">{% endif %}
+    {% if filter_status %}<input type="hidden" name="status" value="{{ filter_status }}">{% endif %}
+    {% if filter_tags_str %}<input type="hidden" name="tags" value="{{ filter_tags_str }}">{% endif %}
+    {% if filter_task %}<input type="hidden" name="source_task_id" value="{{ filter_task }}">{% endif %}
     <div class="bulk-action-bar">
       <label class="bulk-select-all-label">
-        <input type="checkbox" data-bulk-select-all> Seleziona tutti
+        <input type="checkbox" data-bulk-select-all> Seleziona pagina
       </label>
+      <button type="button" id="abulk-select-all-filtered"
+              class="bulk-select-all-filtered-btn"
+              aria-pressed="false"
+              {% if total <= assets|length %}disabled
+                 title="Tutti i risultati sono già nella pagina corrente"
+              {% else %}
+                 title="Seleziona tutti gli asset filtrati (anche fuori pagina)"
+              {% endif %}
+              onclick="window.abulkToggleSelectAllFiltered(); return false;">
+        <span class="qbulk-saf-icon-off">🌐</span><span class="qbulk-saf-icon-on" style="display:none">✅</span>
+        <span class="qbulk-saf-label-off">Tutti i {{ total }} filtrati</span>
+        <span class="qbulk-saf-label-on" style="display:none">Tutti i {{ total }} selezionati (annulla)</span>
+      </button>
       <span class="bulk-count" data-bulk-count>0 selezionati</span>
-      <button type="submit" class="btn-danger-inline" data-bulk-submit disabled>🗑️ Cancella selezionati</button>
+      <button type="submit" class="btn-danger-inline" data-bulk-submit disabled>🗑️ Cancella (<span data-bulk-action-count>0</span>)</button>
     </div>
   <table class="data assets-table">
     <thead>
@@ -318,22 +338,34 @@ window.exportToggleGroup = function (btn, on) {
   group.querySelectorAll('input[type=checkbox][name=fields]').forEach(cb => cb.checked = on);
 };
 
-// Al submit del modal: se ci sono asset selezionati via bulk checkbox della
-// tabella, li iniettiamo come hidden asset_ids nel form (override dei filtri).
+// Al submit del modal: se l'utente ha attivato "Tutti filtrati" iniettiamo
+// il flag select_all_filtered=1; altrimenti se ha selezionato righe individuali,
+// iniettiamo asset_ids[]. Niente di iniettato → backend usa solo i filtri
+// (gia' presenti come hidden inputs).
 (function () {
   const form = document.getElementById('export-csv-form');
   if (!form) return;
   form.addEventListener('submit', function () {
     form.querySelectorAll('[data-export-injected]').forEach(el => el.remove());
-    const selected = document.querySelectorAll('[data-bulk-row]:checked');
-    selected.forEach(cb => {
+    const safFlag = document.querySelector('[data-bulk-saf-flag]');
+    const isAll = safFlag && safFlag.value === '1';
+    if (isAll) {
       const inp = document.createElement('input');
       inp.type = 'hidden';
-      inp.name = 'asset_ids';
-      inp.value = cb.value;
+      inp.name = 'select_all_filtered';
+      inp.value = '1';
       inp.setAttribute('data-export-injected', '');
       form.appendChild(inp);
-    });
+    } else {
+      document.querySelectorAll('[data-bulk-row]:checked').forEach(cb => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = 'asset_ids';
+        inp.value = cb.value;
+        inp.setAttribute('data-export-injected', '');
+        form.appendChild(inp);
+      });
+    }
   });
 })();
 </script>
@@ -350,36 +382,80 @@ window.exportToggleGroup = function (btn, on) {
 
 <script>
 (function () {
+  // Stato globale "tutti filtrati" per /assets (1 sola form bulk in pagina).
+  let assetsSelectAllFiltered = false;
+  const TOTAL_ASSETS = {{ total | default(0) }};
+
+  function _syncBtnFilteredVisualA(btn) {
+    if (!btn) return;
+    btn.setAttribute('aria-pressed', assetsSelectAllFiltered ? 'true' : 'false');
+    btn.classList.toggle('bulk-select-all-filtered-btn-active', assetsSelectAllFiltered);
+    btn.querySelectorAll('.qbulk-saf-icon-off, .qbulk-saf-label-off').forEach(el => el.style.display = assetsSelectAllFiltered ? 'none' : '');
+    btn.querySelectorAll('.qbulk-saf-icon-on, .qbulk-saf-label-on').forEach(el => el.style.display = assetsSelectAllFiltered ? '' : 'none');
+  }
+
   // Wiring "select all" + counter + bottone abilitato solo se >0 selezionati
   function wire(form) {
     const all = form.querySelector('[data-bulk-select-all]');
     const rows = form.querySelectorAll('[data-bulk-row]');
     const submit = form.querySelector('[data-bulk-submit]');
     const counter = form.querySelector('[data-bulk-count]');
+    const flag = form.querySelector('[data-bulk-saf-flag]');
+    const actionCounts = form.querySelectorAll('[data-bulk-action-count]');
+    const btnFiltered = document.getElementById('abulk-select-all-filtered');
     if (!rows.length) return;
+
     function refresh() {
       const sel = Array.from(rows).filter(c => c.checked).length;
-      if (counter) counter.textContent = `${sel} selezionati`;
-      if (submit) submit.disabled = sel === 0;
+      const effective = assetsSelectAllFiltered ? TOTAL_ASSETS : sel;
+
+      if (counter) counter.textContent = assetsSelectAllFiltered
+        ? `${TOTAL_ASSETS} selezionati (tutti i filtrati)`
+        : `${sel} selezionati`;
+      actionCounts.forEach(el => el.textContent = effective);
+      if (submit) submit.disabled = effective === 0;
       if (all) {
-        all.checked = sel === rows.length;
+        all.checked = sel === rows.length && sel > 0;
         all.indeterminate = sel > 0 && sel < rows.length;
       }
+      _syncBtnFilteredVisualA(btnFiltered);
+      if (flag) flag.value = assetsSelectAllFiltered ? '1' : '0';
     }
+
     if (all) all.addEventListener('change', () => {
       rows.forEach(c => { c.checked = all.checked; });
+      assetsSelectAllFiltered = false;  // toggle manuale → uscita
       refresh();
     });
-    rows.forEach(c => c.addEventListener('change', refresh));
+    rows.forEach(c => c.addEventListener('change', () => {
+      assetsSelectAllFiltered = false;
+      refresh();
+    }));
+
+    window.abulkToggleSelectAllFiltered = function () {
+      if (assetsSelectAllFiltered) {
+        assetsSelectAllFiltered = false;
+        rows.forEach(c => c.checked = false);
+        if (all) all.checked = false;
+      } else {
+        assetsSelectAllFiltered = true;
+        rows.forEach(c => c.checked = false);
+      }
+      refresh();
+    };
+
     refresh();
   }
   document.querySelectorAll('[data-bulk-form]').forEach(wire);
 
-  // Confirm + label generica per submit bulk
+  // Confirm + label generica per submit bulk (counts anche "all filtered")
   window.bulkConfirmDelete = function (form, label) {
     const sel = form.querySelectorAll('[data-bulk-row]:checked').length;
-    if (!sel) return false;
-    return confirm(`Cancellare ${sel} ${label}${sel === 1 ? '' : 's'}? L'azione è permanente.`);
+    const flag = form.querySelector('[data-bulk-saf-flag]');
+    const isAll = flag && flag.value === '1';
+    const n = isAll ? TOTAL_ASSETS : sel;
+    if (!n) return false;
+    return confirm(`Cancellare ${n} ${label}${n === 1 ? '' : 's'}? L'azione è permanente.`);
   };
 })();
 </script>

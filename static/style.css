@@ -2863,23 +2863,40 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   cursor: not-allowed;
 }
 
-/* Gmail-style banner "Seleziona tutti i N filtrati" */
-.qbulk-banner {
-  margin: 0.4rem 0;
-  padding: 0.55rem 0.85rem;
-  background: #fff7e0;
-  border: 1px solid #f0c674;
-  border-radius: 6px;
-  font-size: 0.88rem;
-  color: #6b4f00;
+/* Bottone toggle "Tutti i N filtrati" (su /qualified e /assets).
+   Sempre visibile accanto al "Seleziona pagina". Click → flag
+   select_all_filtered=1 attivo; visual diventa verde con check. */
+.bulk-select-all-filtered-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #d0d7de;
+  border-radius: 14px;
+  background: #fff;
+  color: #24292f;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
 }
-.qbulk-banner a { color: #0969da; font-weight: 500; }
-.qbulk-banner-active {
-  background: #e6ffec;
-  border-color: #6fcf97;
-  color: #1a7f37;
+.bulk-select-all-filtered-btn:hover:not(:disabled) {
+  background: #f6f8fa;
+  border-color: #adbac7;
 }
-.qbulk-banner-active a { color: #1a7f37; text-decoration: underline; }
+.bulk-select-all-filtered-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.bulk-select-all-filtered-btn-active {
+  background: #1a7f37 !important;
+  border-color: #1a7f37 !important;
+  color: #fff !important;
+}
+.bulk-select-all-filtered-btn-active:hover:not(:disabled) {
+  background: #14692e !important;
+  border-color: #14692e !important;
+}
 
 /* B-016: Asset dedup UI (/assets/duplicates) */
 .dedup-cluster {

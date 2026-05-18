@@ -2532,6 +2532,30 @@ Default selection (`DEFAULT_FIELDS`): id, asset_type, title, status, email, what
 
 **Test**: 11 in `tests/test_export_csv.py` (render + endpoint, tutte e 3 le tags_mode, BOM check, filtri vs asset_ids, select_all_filtered override, empty audience 400).
 
+### 17.15 Bottone "Tutti i N filtrati" diretto (2026-05-18 — sostituisce banner gmail)
+
+Il pattern Gmail (select-page → banner "Seleziona tutti i N filtrati") richiedeva 2 click e non era discoverable. Sostituito con un **bottone toggle sempre visibile** accanto a "Seleziona pagina":
+
+```
+☐ Seleziona pagina (50)   🌐 Tutti i 5974 filtrati   |  0 selezionati  |  [Avvia outreach (0)] [Cancella (0)] [Esporta (0)]
+```
+
+**Comportamento**:
+- Click → flag `select_all_filtered=1` attivo, counter `"5974 selezionati (tutti i filtrati)"`, bottone diventa verde `✅ Tutti i 5974 selezionati (annulla)`. Le checkbox per-riga vengono deselezionate (sarebbero ridondanti).
+- Re-click → annulla. Le checkbox per-riga restano vuote.
+- Disabilitato (grey) se `total <= page_size` (tutti i risultati sono già nella pagina, equivalente al per-page).
+- Toggle manuale di una checkbox per-riga o "Seleziona pagina" → automatic uscita dalla modalità "tutti filtrati" (i due stati sono mutuamente esclusivi).
+
+**Applicato a entrambe le sezioni**:
+- `/qualified` — bottone `#qbulk-select-all-filtered`, integrato con tutti i bottoni d'azione esistenti (Outreach, Rilancia, Cancella, Esporta).
+- `/assets` — bottone `#abulk-select-all-filtered`, integrato con Delete bulk + Export CSV.
+
+**Backend supporto**:
+- `/assets/delete-bulk`: se `select_all_filtered=1`, re-estrae da `db.list_assets()` con filtri (asset_type, status, tags, source_task_id) → cancella fino a `_MAX_EXPORT = 50000`.
+- `/qualified/export.csv` e `/assets/export.csv` già supportavano il flag (rimasto coerente).
+
+**Rimosso**: i due banner gmail-style (`#qbulk-select-all-banner` giallo + `#qbulk-all-selected-banner` verde) erano informativi ma ridondanti col bottone toggle che mostra già lo stato.
+
 ### 17.13 Selezione bulk su `/qualified` con select-all-filtered gmail-style (2026-05-18)
 
 Pre-feature: `/qualified` aveva i bottoni `🚀 Avvia outreach (N)` e `🎯 Rilancia qualifier (N)` che usavano **tutti** gli N filtrati. Niente checkbox per riga, niente delete bulk, niente modo di restringere a un subset visibile.

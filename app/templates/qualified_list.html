@@ -428,6 +428,23 @@
             <label class="bulk-select-all-label">
               <input type="checkbox" id="qbulk-select-all"> Seleziona pagina
             </label>
+            {# Bottone "Tutti filtrati" sempre visibile (toggle).
+               Click → flag select_all_filtered=1 attivo (counter = TOTAL).
+               Re-click → annulla.
+               Disabilitato se total <= page_size (sarebbe equivalente al per-page). #}
+            <button type="button" id="qbulk-select-all-filtered"
+                    class="bulk-select-all-filtered-btn"
+                    aria-pressed="false"
+                    {% if total <= assets|length %}disabled
+                       title="Tutti i risultati sono già nella pagina corrente"
+                    {% else %}
+                       title="Seleziona tutti gli asset filtrati (anche fuori pagina)"
+                    {% endif %}
+                    onclick="window.qbulkToggleSelectAllFiltered(); return false;">
+              <span class="qbulk-saf-icon-off">🌐</span><span class="qbulk-saf-icon-on" style="display:none">✅</span>
+              <span class="qbulk-saf-label-off">Tutti i {{ total }} filtrati</span>
+              <span class="qbulk-saf-label-on" style="display:none">Tutti i {{ total }} selezionati (annulla)</span>
+            </button>
             <span class="bulk-count" id="qbulk-count">0 selezionati</span>
 
             {# Bottoni d'azione: grey-out se 0 selezionati. Click apre il modal,
@@ -455,22 +472,6 @@
                     onclick="window.qbulkApplyTo('export-csv-modal'); document.getElementById('export-csv-modal').classList.add('open');">
               📥 Esporta CSV (<span data-qbulk-action-count>0</span>)
             </button>
-          </div>
-
-          {# Banner gmail-style: appare quando user seleziona TUTTA la pagina
-             e ci sono altri risultati fuori pagina. #}
-          <div id="qbulk-select-all-banner" class="qbulk-banner" style="display:none">
-            <span id="qbulk-banner-text">
-              Hai selezionato <strong>{{ assets|length }}</strong> asset di questa pagina.
-            </span>
-            <a href="#" id="qbulk-select-all-link"
-               onclick="window.qbulkSelectAllFiltered(); return false;">
-              Seleziona tutti i <strong>{{ total }}</strong> asset filtrati
-            </a>
-          </div>
-          <div id="qbulk-all-selected-banner" class="qbulk-banner qbulk-banner-active" style="display:none">
-            ✅ Tutti i <strong>{{ total }}</strong> asset filtrati sono selezionati.
-            <a href="#" onclick="window.qbulkClearAll(); return false;">Annulla selezione</a>
           </div>
           {% endif %}
 
@@ -823,13 +824,12 @@ function selectAssetForQualifier(assetId) {
   const form = document.getElementById('qualified-bulk-form');
   if (!form) return;  // pagina vuota (no asset)
   const selectAll = document.getElementById('qbulk-select-all');
+  const selectAllFilteredBtn = document.getElementById('qbulk-select-all-filtered');
   // NB: scope a `document` (non `form`): alcuni browser HTML5 fanno
   // foster-parenting di <form>+<table> separandoli nel DOM. Fallback safe.
   const rows = document.querySelectorAll('#qualified-bulk-form [data-qbulk-row], table.assets-table [data-qbulk-row]');
   const counter = document.getElementById('qbulk-count');
   const flagInput = document.getElementById('qbulk-select-all-flag');
-  const banner = document.getElementById('qbulk-select-all-banner');
-  const bannerAll = document.getElementById('qbulk-all-selected-banner');
   const btnRilancia = document.getElementById('qbulk-btn-rilancia');
   const btnOutreach = document.getElementById('qbulk-btn-outreach');
   const btnDelete = document.getElementById('qbulk-btn-delete');
@@ -837,11 +837,20 @@ function selectAssetForQualifier(assetId) {
 
   const TOTAL = {{ total }};
   const PAGE_SIZE = rows.length;
-  // Debug: se ti serve verificare che il script abbia trovato le checkbox,
-  // apri DevTools console e cerca questo log.
   console.log('[qbulk] init: rows=' + rows.length + ', total=' + TOTAL);
 
   let selectAllFiltered = false;
+
+  function _syncBtnFilteredVisual() {
+    if (!selectAllFilteredBtn) return;
+    selectAllFilteredBtn.setAttribute('aria-pressed', selectAllFiltered ? 'true' : 'false');
+    selectAllFilteredBtn.classList.toggle('bulk-select-all-filtered-btn-active', selectAllFiltered);
+    // Swap icone/label off/on
+    const offEls = selectAllFilteredBtn.querySelectorAll('.qbulk-saf-icon-off, .qbulk-saf-label-off');
+    const onEls = selectAllFilteredBtn.querySelectorAll('.qbulk-saf-icon-on, .qbulk-saf-label-on');
+    offEls.forEach(el => el.style.display = selectAllFiltered ? 'none' : '');
+    onEls.forEach(el => el.style.display = selectAllFiltered ? '' : 'none');
+  }
 
   function refresh() {
     const sel = Array.from(rows).filter(c => c.checked).length;
@@ -864,11 +873,7 @@ function selectAssetForQualifier(assetId) {
       selectAll.indeterminate = sel > 0 && sel < rows.length;
     }
 
-    // Banner "seleziona tutti filtrati": appare solo se pagina selezionata
-    // tutta E ci sono altri risultati fuori pagina E non gia' attivato.
-    const showBanner = (sel === rows.length && sel > 0 && TOTAL > PAGE_SIZE && !selectAllFiltered);
-    if (banner) banner.style.display = showBanner ? '' : 'none';
-    if (bannerAll) bannerAll.style.display = selectAllFiltered ? '' : 'none';
+    _syncBtnFilteredVisual();
     if (flagInput) flagInput.value = selectAllFiltered ? '1' : '0';
   }
 
@@ -884,10 +889,21 @@ function selectAssetForQualifier(assetId) {
     refresh();
   }));
 
-  window.qbulkSelectAllFiltered = function () {
-    selectAllFiltered = true;
+  window.qbulkToggleSelectAllFiltered = function () {
+    if (selectAllFiltered) {
+      // Toggle off: annulla tutto
+      selectAllFiltered = false;
+      rows.forEach(c => c.checked = false);
+      if (selectAll) selectAll.checked = false;
+    } else {
+      // Toggle on: attiva flag, deseleziona per-row (sarebbero ridondanti)
+      selectAllFiltered = true;
+      rows.forEach(c => c.checked = false);
+    }
     refresh();
   };
+  // Backward-compat (alcune entry-point legacy chiamano questi nomi)
+  window.qbulkSelectAllFiltered = function () { selectAllFiltered = true; refresh(); };
   window.qbulkClearAll = function () {
     selectAllFiltered = false;
     rows.forEach(c => c.checked = false);
