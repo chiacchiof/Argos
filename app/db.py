@@ -375,6 +375,12 @@ CREATE TABLE IF NOT EXISTS assets (
   social_json          TEXT,
   sitoweb              TEXT,
   outreach_status      TEXT DEFAULT 'pending',
+  -- B-016: dedup cross-task. NULL/unique = standalone. 'merged_into:<id>' =
+  -- record secondario di un cluster (queries di default filtrano via WHERE).
+  -- dedup_canonical_id = primary del cluster (NULL se questo e' primary o
+  -- ancora non dedupato).
+  dedup_status         TEXT,
+  dedup_canonical_id   BIGINT,
   created_at           TEXT NOT NULL,
   updated_at           TEXT NOT NULL
 );
@@ -385,6 +391,31 @@ CREATE TABLE IF NOT EXISTS asset_tags (
   tag_value TEXT NOT NULL,
   PRIMARY KEY (asset_id, tag_key, tag_value)
 );
+
+-- ============================================================
+-- B-016: Asset dedup candidates (cross-task duplicate detection)
+-- Una riga per coppia (primary, candidate) di asset sospetti duplicati.
+-- Popolata da app.agent.asset_dedup.find_dedup_candidates() ogni volta
+-- che un asset viene insertato/updato. Risolta via UI /assets/duplicates.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS asset_dedup_candidates (
+  id BIGSERIAL PRIMARY KEY,
+  primary_asset_id   BIGINT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  candidate_asset_id BIGINT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  match_keys         TEXT NOT NULL,   -- JSON: [{"key":"whatsapp","value":"+393..","weight":"strong"}, ...]
+  match_score        REAL NOT NULL,   -- 0.0-1.0
+  status             TEXT NOT NULL DEFAULT 'pending',  -- 'pending'|'merged'|'rejected'|'ignored'
+  detected_at        TEXT NOT NULL,
+  resolved_at        TEXT,
+  resolved_by_user_id BIGINT,
+  -- (primary, candidate) unico: idempotenza re-scan. Mettiamo primary<candidate
+  -- come convenzione applicativa per evitare duplicati specchio (A,B) vs (B,A).
+  UNIQUE (primary_asset_id, candidate_asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_dedup_status
+  ON asset_dedup_candidates(status, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_asset_dedup_primary
+  ON asset_dedup_candidates(primary_asset_id) WHERE status = 'pending';
 
 -- ============================================================
 -- Social accounts (Instagram/TikTok/WhatsApp browser-based)
@@ -713,6 +744,13 @@ def _apply_multitenant_columns(conn) -> None:
     )
     conn.execute(
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS gap_between_dms_max REAL"
+    )
+    # B-016: asset dedup cross-task. Colonne idempotenti su assets esistenti.
+    conn.execute(
+        "ALTER TABLE assets ADD COLUMN IF NOT EXISTS dedup_status TEXT"
+    )
+    conn.execute(
+        "ALTER TABLE assets ADD COLUMN IF NOT EXISTS dedup_canonical_id BIGINT"
     )
 
 
@@ -2518,6 +2556,16 @@ def upsert_asset(
                         "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                         (asset_id, tk, tv),
                     )
+
+    # B-016: detection dedup post-insert. Best-effort, errori non bloccano.
+    # Import locale per evitare circolarita' (asset_dedup importa db).
+    try:
+        from .agent.asset_dedup import find_dedup_candidates
+        find_dedup_candidates(asset_id, tenant_id=tenant_id)
+    except Exception as _e:
+        # Logged ma non solleva: dedup e' opt-in, l'upsert riesce comunque.
+        import logging as _log
+        _log.getLogger(__name__).debug("dedup detection skipped for %s: %s", asset_id, _e)
 
     return asset_id
 

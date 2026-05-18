@@ -10,6 +10,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .. import db
+from ..agent import asset_dedup
 from ..templates import templates
 
 
@@ -576,6 +577,103 @@ async def asset_preview_json(asset_id: int) -> JSONResponse:
         "facebook_url": social_urls.get("facebook", ""),
         "notes": (asset.get("notes") or "")[:300],
     })
+
+
+# === B-016: Asset dedup UI =================================================
+# Lista candidates pendenti, side-by-side comparison, merge / reject action.
+# Path /assets/duplicates definito PRIMA di /assets/{asset_id} per evitare
+# match come asset_id int.
+
+@router.get("/assets/duplicates", response_class=HTMLResponse)
+async def assets_duplicates_list(request: Request, limit: int = 50, offset: int = 0):
+    """Pagina lista candidates dedup pendenti per il tenant corrente."""
+    limit = max(1, min(int(limit or 50), 200))
+    offset = max(0, int(offset or 0))
+    tenant_id = db.current_tenant_id()
+    rows = asset_dedup.list_pending_candidates(
+        tenant_id=tenant_id, limit=limit, offset=offset,
+    )
+    total = asset_dedup.count_pending_candidates(tenant_id=tenant_id)
+
+    # Hydrate: per ogni coppia, fetch i 2 asset con i campi rilevanti.
+    clusters: list[dict] = []
+    for r in rows:
+        pa = db.get_asset(r["primary_asset_id"], tenant_id=None)
+        ca = db.get_asset(r["candidate_asset_id"], tenant_id=None)
+        if not pa or not ca:
+            continue
+        # Tag count per asset (aiuta a decidere quale e' "piu' ricco")
+        with db.connect() as con:
+            pa_tags = con.execute(
+                "SELECT COUNT(*) AS n FROM asset_tags WHERE asset_id = %s",
+                (pa["id"],),
+            ).fetchone()
+            ca_tags = con.execute(
+                "SELECT COUNT(*) AS n FROM asset_tags WHERE asset_id = %s",
+                (ca["id"],),
+            ).fetchone()
+        clusters.append({
+            "id": r["id"],
+            "score": r["match_score"],
+            "match_keys": r["match_keys"],
+            "detected_at": r["detected_at"],
+            "primary": {**pa, "tag_count": int(pa_tags["n"]) if pa_tags else 0},
+            "candidate": {**ca, "tag_count": int(ca_tags["n"]) if ca_tags else 0},
+        })
+
+    return templates.TemplateResponse(
+        request,
+        "assets_duplicates.html",
+        {
+            "clusters": clusters,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        },
+    )
+
+
+@router.post("/assets/duplicates/{cand_id}/merge")
+async def assets_duplicates_merge(cand_id: int, primary_id: int = Form(...)):
+    """Esegue il merge. `primary_id` (dal form) decide quale dei due asset
+    e' il primary (l'utente puo' invertire). L'altro diventa il candidate."""
+    tenant_id = db.current_tenant_id()
+    user_id = db.current_user_id()
+    # Recupera la coppia
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT primary_asset_id, candidate_asset_id FROM asset_dedup_candidates "
+            "WHERE id = %s AND status = 'pending'",
+            (cand_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="candidate non trovato o gia' risolto")
+    a, b = int(row["primary_asset_id"]), int(row["candidate_asset_id"])
+    if primary_id not in (a, b):
+        raise HTTPException(status_code=400, detail="primary_id deve essere uno dei due asset del cluster")
+    candidate_id = b if primary_id == a else a
+    try:
+        asset_dedup.merge_assets(
+            primary_id, candidate_id,
+            resolved_by_user_id=user_id, tenant_id=tenant_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return RedirectResponse(
+        url=f"/assets/duplicates?flash=Merge+OK+{candidate_id}+%E2%86%92+{primary_id}",
+        status_code=303,
+    )
+
+
+@router.post("/assets/duplicates/{cand_id}/reject")
+async def assets_duplicates_reject(cand_id: int):
+    """Marca il cluster come 'rejected' (non e' un duplicato)."""
+    user_id = db.current_user_id()
+    asset_dedup.reject_candidate(cand_id, resolved_by_user_id=user_id)
+    return RedirectResponse(
+        url="/assets/duplicates?flash=Cluster+marcato+come+non-duplicato",
+        status_code=303,
+    )
 
 
 # === ADD MANUALE === (definito PRIMA di /assets/{asset_id} per evitare che

@@ -153,7 +153,7 @@ Totale: ~6.5h se fatti tutti insieme.
 
 ---
 
-### B-016 · Asset deduplication cross-task + UI merge conflitti (per-tenant)
+### B-016 · Asset deduplication cross-task + UI merge conflitti (per-tenant) — ✅ CHIUSO (2026-05-18)
 
 **Cosa**: oggi più task di scraping che scoprono lo stesso soggetto reale (es. la stessa persona/azienda con stesso numero WA ma URL/asset_type diversi) creano N record duplicati in `assets`. Il dedup attuale e' solo su `(source_url_canonical, asset_type)` dentro `upsert_asset` — non cattura match cross-canale.
 

@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Asset duplicati — AgentScraper{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<section>
+  <div class="page-header">
+    <div>
+      <h2>🔀 Asset duplicati</h2>
+      <p class="page-subtitle">
+        Coppie di asset sospetti duplicati rilevati cross-task per il tenant
+        corrente. Match keys: <code>whatsapp</code>, <code>email</code>,
+        <code>telegram</code>, social handles, URL canonico.
+      </p>
+    </div>
+    <div class="page-actions">
+      <a href="/assets" class="btn-secondary">← Asset list</a>
+    </div>
+  </div>
+
+  {% if request.query_params.get('flash') %}
+  <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
+  {% endif %}
+
+  <div class="stats-bar">
+    <span class="stats-pill"><strong>{{ total }}</strong> cluster pending</span>
+  </div>
+
+  {% if clusters %}
+  {% for c in clusters %}
+  <div class="dedup-cluster">
+    <div class="dedup-cluster-header">
+      <strong>Cluster #{{ c.id }}</strong>
+      <span class="dedup-score">score
+        <strong>{{ '%.2f' | format(c.score) }}</strong>
+      </span>
+      <span class="muted small">{{ c.detected_at[:19].replace('T', ' ') }} UTC</span>
+      <span class="dedup-match-keys">
+        match:
+        {% for mk in c.match_keys %}
+          <code class="dedup-key dedup-key-{{ mk.weight }}">{{ mk.key }}={{ mk.value | truncate(30, true, '…') }}</code>
+        {% endfor %}
+      </span>
+    </div>
+
+    <form action="/assets/duplicates/{{ c.id }}/merge" method="post" class="dedup-form">
+      <div class="dedup-pair">
+        {% for which, a in [('primary', c.primary), ('candidate', c.candidate)] %}
+        <label class="dedup-card">
+          <input type="radio" name="primary_id" value="{{ a.id }}"
+                 {% if which == 'primary' %}checked{% endif %}>
+          <div class="dedup-card-body">
+            <div class="dedup-card-title">
+              <strong>{{ a.title or '(senza titolo)' }}</strong>
+              <span class="dedup-card-type"><code>{{ a.asset_type }}</code></span>
+            </div>
+            <div class="dedup-card-meta">
+              <span class="muted">#{{ a.id }}</span>
+              {% if a.status %}
+                {% set sc = '#0f7b3e' if a.status == 'qualified' else ('#b13838' if a.status == 'rejected' else '#666') %}
+                <span style="color:{{ sc }};font-weight:500">{{ a.status }}</span>
+              {% endif %}
+              <span class="muted">· {{ a.tag_count }} tag</span>
+              <span class="muted">· creato {{ (a.created_at or '')[:10] }}</span>
+            </div>
+            {% if a.source_url %}
+            <div class="dedup-card-row"><span class="dedup-icon">🌐</span> <a href="{{ a.source_url }}" target="_blank">{{ a.source_url | truncate(60, true, '…') }}</a></div>
+            {% endif %}
+            {% if a.whatsapp %}<div class="dedup-card-row"><span class="dedup-icon">📱</span> <code>{{ a.whatsapp }}</code></div>{% endif %}
+            {% if a.email %}<div class="dedup-card-row"><span class="dedup-icon">📧</span> <code>{{ a.email }}</code></div>{% endif %}
+            {% if a.telegram_username %}<div class="dedup-card-row"><span class="dedup-icon">💬</span> @{{ a.telegram_username }}</div>{% endif %}
+            {% if a.social_json %}<div class="dedup-card-row"><span class="dedup-icon">📷</span> <span class="muted small">social_json</span></div>{% endif %}
+            <div class="dedup-card-row">
+              <a href="/assets/{{ a.id }}" target="_blank" class="btn-link small">vedi dettaglio →</a>
+            </div>
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+
+      <div class="dedup-actions">
+        <span class="hint">Scegli quale tenere come <strong>primary</strong> (l'altro viene mergiato e marcato come <code>merged_into</code>). I tag, social_json e campi vuoti vengono uniti. Riferimenti in task e DM log riscritti.</span>
+        <div class="dedup-actions-row">
+          <button type="submit" class="btn-primary">🔀 Merge</button>
+          <button type="submit" formaction="/assets/duplicates/{{ c.id }}/reject"
+                  class="btn-secondary"
+                  onclick="return confirm('Conferma: questi due asset NON sono duplicati. Verranno nascosti dalla lista.')">
+            ✕ Non è un duplicato
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+  {% endfor %}
+
+  {# Pagination semplice #}
+  <div class="pagination">
+    {% if offset > 0 %}
+      <a href="?offset={{ [offset - limit, 0] | max }}&limit={{ limit }}">← Indietro</a>
+    {% endif %}
+    {% if offset + clusters|length < total %}
+      <a href="?offset={{ offset + limit }}&limit={{ limit }}">Avanti →</a>
+    {% endif %}
+  </div>
+
+  {% else %}
+  <div class="empty-state">
+    <p>🎉 Nessun cluster di duplicati pendente. Asset puliti!</p>
+    <p class="muted small">
+      I cluster vengono rilevati automaticamente quando un nuovo asset viene insertato
+      (via runner o <a href="/assets/new">creazione manuale</a>) e condivide chiavi forti
+      (telefono/email/social handle) con un asset esistente dello stesso tenant.
+    </p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

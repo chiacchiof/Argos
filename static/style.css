@@ -2664,3 +2664,112 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   border-top: 1px solid #eaeef2;
   color: #57606a;
 }
+
+/* B-016: Asset dedup UI (/assets/duplicates) */
+.dedup-cluster {
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.2rem;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.dedup-cluster-header {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px dashed #eaeef2;
+  font-size: 0.88rem;
+}
+.dedup-score {
+  background: #fff7e0;
+  border: 1px solid #f0c674;
+  border-radius: 4px;
+  padding: 0.1rem 0.45rem;
+  color: #6b4f00;
+}
+.dedup-match-keys {
+  display: inline-flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.dedup-key {
+  font-size: 0.78rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+}
+.dedup-key-strong { background: #e6ffec; border-color: #6fcf97; color: #1a7f37; }
+.dedup-key-medium { background: #fffce6; border-color: #d4ac0d; color: #7a5a00; }
+
+.dedup-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+}
+.dedup-card {
+  display: block;
+  border: 2px solid #e1e4e8;
+  border-radius: 6px;
+  padding: 0.7rem;
+  cursor: pointer;
+  background: #fafbfc;
+  transition: border-color 0.15s, background 0.15s;
+}
+.dedup-card:has(input[type="radio"]:checked) {
+  border-color: #1565c0;
+  background: #e3f2fd;
+}
+.dedup-card input[type="radio"] { margin-right: 0.4rem; }
+.dedup-card-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.4rem;
+  align-items: baseline;
+  margin-bottom: 0.3rem;
+}
+.dedup-card-type code {
+  background: #e3f2fd;
+  color: #1565c0;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.78rem;
+}
+.dedup-card-meta {
+  font-size: 0.78rem;
+  color: #57606a;
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+.dedup-card-row {
+  font-size: 0.82rem;
+  margin: 0.15rem 0;
+  word-break: break-all;
+}
+.dedup-icon { display: inline-block; width: 1.4em; }
+.dedup-actions {
+  margin-top: 0.8rem;
+  padding-top: 0.7rem;
+  border-top: 1px dashed #eaeef2;
+}
+.dedup-actions .hint {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.82rem;
+  color: #57606a;
+}
+.dedup-actions-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+@media (max-width: 720px) {
+  .dedup-pair { grid-template-columns: 1fr; }
+}

@@ -2499,6 +2499,55 @@ Log strutturato: il runner stampa "⏳ gap anti-ban: idle per Xs/Xmin prima del 
 
 Implementazione: `app/agent/social/humanize.py::pick_gap_minutes(platform, task_min, task_max)`, chiamata da `OutreachEngine.run_session(... gap_min_minutes=, gap_max_minutes=)`.
 
+### 17.11 Asset dedup cross-task + merge UI (B-016, 2026-05-18)
+
+Pre-feature: dedup era solo `(source_url_canonical, asset_type)` dentro `upsert_asset` — non catturava match cross-canale (es. stesso numero WhatsApp scoperto via scraping IG + scraping sito).
+
+**Modello dati**:
+- `assets.dedup_status`: NULL/unique = standalone; `merged_into:<id>` = record secondario di un cluster (UI puo' filtrarli via `WHERE dedup_status IS NULL OR dedup_status NOT LIKE 'merged_into%'`).
+- `assets.dedup_canonical_id`: punta al primary del cluster (FK, NULL se questo e' primary).
+- `asset_dedup_candidates`: 1 riga per coppia (primary < candidate) con `match_keys` JSON, `match_score` 0-1, `status` (`pending|merged|rejected`). UNIQUE su (primary, candidate) per idempotenza re-scan.
+
+**Detection** ([app/agent/asset_dedup.py](app/agent/asset_dedup.py)):
+- Hook in `db.upsert_asset` (best-effort, no-op se fallisce).
+- Estrae chiavi normalizzate dall'asset insertato: phone E.164, email lowercase, telegram username/chat_id, social handles (instagram/tiktok/facebook/onlyfans), url canonico.
+- Query SQL per ogni chiave su asset dello stesso tenant. Score = somma pesi (strong=1.0, medium=0.4). Soglia min `0.5` = almeno 1 chiave forte O 2 medie.
+- Tenant-isolated: match SQL filtra sempre su `tenant_id`.
+
+**Chiavi e pesi**:
+
+| Chiave | Peso | Normalizzazione |
+|---|---|---|
+| `whatsapp` | strong (1.0) | E.164 IT-focused (regex hand-rolled, niente `phonenumbers` lib) |
+| `email` | strong (1.0) | lowercase + trim |
+| `telegram` | strong (1.0) | username lowercase senza `@`, fallback chat_id |
+| `social:instagram/tiktok/facebook/onlyfans` | strong (1.0) | extract handle dall'URL via regex |
+| `url_canonical` | medium (0.4) | lowercase host+path, no query/fragment/trailing slash |
+
+**UI** ([app/templates/assets_duplicates.html](app/templates/assets_duplicates.html), route `/assets/duplicates`):
+- Lista cluster pendenti per tenant, score DESC.
+- Side-by-side comparison: 2 card con title, asset_type, status, channels icon (📱📧💬📷), tag count, source URL.
+- Radio per scegliere quale tenere come primary.
+- Bottoni: 🔀 Merge | ✕ Non e' un duplicato (`reject`).
+- Banner di accesso da `/assets` (header → "🔀 Duplicati").
+
+**Merge action** (`asset_dedup.merge_assets`, in transazione):
+1. `tasks.target_asset_ids`: rewrite JSON list, sostituisce candidate con primary (dedup, conserva ordine).
+2. `social_dm_log.target_asset_id`: candidate → primary.
+3. `asset_tags`: tag del candidate copiati al primary con `ON CONFLICT DO NOTHING`, poi delete del candidato.
+4. `assets`: union campi vuoti (email, telegram, whatsapp, social_json, sitoweb, display_name).
+5. Candidate marcato `dedup_status='merged_into:<primary>'` (NON cancellato — audit).
+6. Coppia in `asset_dedup_candidates` → `status='merged'`. Altre coppie pendenti che coinvolgono il candidate → `merged` (effetto collaterale: candidate non e' piu' standalone).
+
+**Reject action** (`asset_dedup.reject_candidate`):
+Marca il cluster come `rejected` (non e' un duplicato). Usato per casi tipo numero condiviso di centralino: gli asset restano separati legittimi.
+
+**Limiti noti / TODO**:
+- Normalizzazione phone IT-only (non gestisce paesi diversi senza prefisso esplicito). Per multi-paese aggiungere `phonenumbers` lib.
+- No auto-merge anche su match score=1.0 strong univoco — tutto va per review manuale. Decisione conservativa per evitare merge sbagliati irrecuperabili.
+- No background rescan job — la detection scatta solo all'insert. Per migrare asset pre-feature: chiamare manualmente `find_dedup_candidates(asset_id)` su tutti gli asset esistenti (script una tantum).
+- Performance OK fino a ~10k asset/tenant. Per >100k servono index su colonne normalizzate (es. generated column `whatsapp_e164`).
+
 ### 17.10 Ollama `keep_alive` — anti cold-start tra job (2026-05-17)
 
 Ollama scarica il modello dalla VRAM dopo **5 minuti** di idle di default. Per workflow tipo outreach (genera tutti i messaggi upfront in ~10s, poi invia DM per N minuti con gap anti-ban) il modello viene scaricato **durante** il job e ricaricato (cold-start) al job successivo — costo: 10-60s a seconda della dimensione del modello.
