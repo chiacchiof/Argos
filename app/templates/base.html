@@ -27,19 +27,30 @@
       <a href="/assets">📦 Assets</a>
       <a href="/qualified">✅ Qualified</a>
       <a href="/inbox">📨 Inbox</a>
-      <a href="/site_memory">🧠 Memoria sito</a>
-      <a href="/settings">⚙️ Settings</a>
       {% if current_user %}
       {% if current_user.is_super_admin %}<a href="/admin" class="admin-link">🛡️ Admin</a>{% endif %}
-      <span class="user-pill">
-        👤 {{ current_user.email }}
-        {% if current_user.is_super_admin %}
-          <small class="user-role">super-admin</small>
-        {% elif current_user.tenant_name %}
-          <small class="user-tenant">🏢 {{ current_user.tenant_name }}</small>
-        {% endif %}
-        <a href="/logout" class="user-logout">esci</a>
-      </span>
+      {# User menu compatto: pill con iniziali + dropdown. Uso <details> per
+         non avere JS framework; click su summary apre/chiude. #}
+      <details class="user-menu">
+        <summary class="user-pill"
+                 title="{{ current_user.email }}{% if current_user.tenant_name %} · {{ current_user.tenant_name }}{% endif %}">
+          {{ current_user.initials }}
+        </summary>
+        <div class="user-menu-dropdown" role="menu">
+          <div class="user-menu-header">
+            <strong>{{ current_user.email }}</strong>
+            {% if current_user.is_super_admin %}
+              <small class="user-role">super-admin</small>
+            {% elif current_user.tenant_name %}
+              <small class="user-tenant">🏢 {{ current_user.tenant_name }}</small>
+            {% endif %}
+          </div>
+          <a href="/settings" role="menuitem">⚙️ Settings</a>
+          <a href="/site_memory" role="menuitem">🧠 Memoria sito</a>
+          <hr class="user-menu-sep">
+          <a href="/logout" role="menuitem" class="user-menu-logout">🚪 Esci</a>
+        </div>
+      </details>
       {% endif %}
     </nav>
   </header>
@@ -49,5 +60,14 @@
   <footer>
     <small>Locale &middot; Ollama @ {{ request.app.state if false else "" }}</small>
   </footer>
+  <script>
+    // Chiudi user menu dropdown su click fuori
+    document.addEventListener('click', function(e) {
+      var menu = document.querySelector('details.user-menu[open]');
+      if (menu && !menu.contains(e.target)) {
+        menu.removeAttribute('open');
+      }
+    });
+  </script>
 </body>
 </html>

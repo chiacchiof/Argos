@@ -1846,21 +1846,86 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
 }
 
 /* ============================================================
-   Auth: user pill in header + login form
+   Auth: user pill in header + dropdown menu (Settings / Memoria sito / Esci)
    ============================================================ */
-.user-pill {
+/* <details class="user-menu"><summary class="user-pill">FC</summary>...</details> */
+.user-menu {
   margin-left: auto;
+  position: relative;
+}
+.user-menu summary {
+  list-style: none;          /* rimuovi triangolino default */
+  cursor: pointer;
+}
+.user-menu summary::-webkit-details-marker { display: none; }
+.user-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0.6rem;
-  border: 1px solid #d0d7de;
-  border-radius: 999px;
-  background: #f6f8fa;
-  font-size: 0.85rem;
-  color: #24292f;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #0969da;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid #0860c8;
+  user-select: none;
+  transition: background 0.15s, transform 0.15s;
 }
-.user-pill .user-role {
+.user-pill:hover { background: #0860c8; transform: translateY(-1px); }
+.user-menu[open] .user-pill { background: #054da8; }
+
+.user-menu-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.4rem);
+  min-width: 220px;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+  padding: 0.3rem 0;
+  z-index: 100;
+}
+.user-menu-header {
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid #eaeef2;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+}
+.user-menu-header strong {
+  color: #24292f;
+  word-break: break-all;
+  font-weight: 600;
+}
+.user-menu-dropdown a[role="menuitem"] {
+  display: block;
+  padding: 0.5rem 0.8rem;
+  color: #24292f;
+  text-decoration: none;
+  font-size: 0.88rem;
+  transition: background 0.1s;
+}
+.user-menu-dropdown a[role="menuitem"]:hover {
+  background: #f6f8fa;
+}
+.user-menu-sep {
+  margin: 0.3rem 0;
+  border: none;
+  border-top: 1px solid #eaeef2;
+}
+.user-menu-logout {
+  color: #cf222e !important;
+}
+.user-menu-logout:hover {
+  background: #ffebe9 !important;
+}
+.user-role {
+  display: inline-block;
   padding: 0.05rem 0.35rem;
   background: #ffd33d;
   color: #24292f;
@@ -1869,21 +1934,18 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   text-transform: uppercase;
   letter-spacing: 0.03em;
   font-weight: 600;
+  width: fit-content;
 }
-.user-pill .user-tenant {
+.user-tenant {
+  display: inline-block;
   padding: 0.05rem 0.4rem;
   background: #ddf4ff;
   color: #0969da;
   border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 500;
+  width: fit-content;
 }
-.user-pill .user-logout {
-  color: #cf222e;
-  text-decoration: none;
-  font-weight: 500;
-}
-.user-pill .user-logout:hover { text-decoration: underline; }
 
 .login-main {
   display: flex;
@@ -1964,7 +2026,7 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   font-size: 0.85rem;
 }
 .admin-link:hover { background: #fae17d; }
-.admin-link + .user-pill { margin-left: 0.5rem; }
+.admin-link + .user-menu { margin-left: 0.5rem; }
 
 .admin-section { max-width: 1100px; margin: 0 auto; padding: 1rem; }
 .admin-section h2 { margin-top: 0.5rem; }

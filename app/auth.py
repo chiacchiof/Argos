@@ -39,6 +39,22 @@ class CurrentUser:
     def is_super_admin(self) -> bool:
         return self.role == "super_admin"
 
+    @property
+    def initials(self) -> str:
+        """Iniziali (max 2 char) derivate dall'email per l'UI compact pill.
+        Es. 'francesco.castiglione@x.com' -> 'FC',
+            'mario_rossi@x.com'           -> 'MR',
+            'chifer81@gmail.com'          -> 'CH'."""
+        local = (self.email or "").split("@", 1)[0]
+        # Split su separatori comuni
+        import re as _re
+        parts = [p for p in _re.split(r"[._\-+]", local) if p]
+        if len(parts) >= 2:
+            return (parts[0][:1] + parts[1][:1]).upper()
+        if parts:
+            return parts[0][:2].upper()
+        return "?"
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(_to_bcrypt_bytes(password), bcrypt.gensalt()).decode("ascii")
