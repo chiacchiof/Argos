@@ -2782,6 +2782,63 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   background: rgba(255,255,255,0.25);
 }
 
+/* Export CSV modal — grid di checkbox raggruppati per categoria. */
+.export-field-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+.export-field-group {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 0.4rem 0.7rem;
+  background: #fafbfc;
+}
+.export-field-group > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  list-style: revert;
+}
+.export-field-group .export-group-toggle {
+  margin-left: auto;
+  font-size: 0.78rem;
+}
+.export-field-group .export-group-toggle + .export-group-toggle {
+  margin-left: 0.4rem;
+}
+.export-field-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.3rem 0.8rem;
+  margin-top: 0.5rem;
+  padding: 0.3rem 0 0.2rem 0.3rem;
+}
+.export-field-item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  cursor: pointer;
+  padding: 0.15rem 0;
+}
+.export-field-item input[type="checkbox"] { margin: 0; }
+.export-field-item code {
+  font-size: 0.75rem;
+  color: #6e7781;
+  margin-left: auto;
+}
+.export-tags-mode {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.export-tags-mode select { flex: 0 0 auto; max-width: 360px; }
+
 /* Bulk action bar su /qualified (riusa pattern /assets ma piu' componenti).
    Mostra select-all + counter + bottoni d'azione (rilancia/outreach/delete). */
 .qualified-bulk-bar {

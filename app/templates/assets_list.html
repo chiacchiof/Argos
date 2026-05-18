@@ -15,6 +15,11 @@
       <a href="/import" class="btn-link-action" style="background:#1565c0;color:#fff;border-color:#1565c0;font-weight:500">
         📥 Import CSV
       </a>
+      <button type="button" class="btn-link-action"
+              onclick="document.getElementById('export-csv-modal').classList.add('open');"
+              title="Esporta gli asset filtrati (o selezionati) in CSV">
+        📤 Esporta CSV
+      </button>
       <a href="/assets/duplicates" class="btn-link-action" title="Conflitti di duplicazione rilevati cross-task">
         🔀 Duplicati
       </a>
@@ -234,6 +239,104 @@
   </div>
   {% endif %}
 </section>
+
+{# Modal: Export CSV con scelta campi. Usa i filtri della pagina come hidden
+   inputs. Se l'utente ha selezionato righe via checkbox bulk, le iniettiamo
+   tramite JS al submit (vedi assetsExportApplySelection sotto). #}
+<div id="export-csv-modal" class="modal-backdrop"
+     onclick="if(event.target===this) this.classList.remove('open');">
+  <div class="modal-content" style="max-width:720px">
+    <div class="modal-header">
+      <h3>📤 Esporta CSV — Assets</h3>
+      <button type="button" class="btn-link"
+              onclick="document.getElementById('export-csv-modal').classList.remove('open');">✕</button>
+    </div>
+
+    <p class="muted small" style="margin-top:0">
+      Scarica gli asset filtrati (o selezionati via checkbox) in CSV. UTF-8 con
+      BOM, compatibile Excel. Default: campi piu' utili per outreach (id, titolo,
+      contatti, social).
+    </p>
+
+    <form id="export-csv-form" method="post" action="/assets/export.csv" class="add-contact-form">
+      {# Hidden filtri /assets #}
+      {% if filter_type %}<input type="hidden" name="asset_type" value="{{ filter_type }}">{% endif %}
+      {% if filter_status %}<input type="hidden" name="status" value="{{ filter_status }}">{% endif %}
+      {% if filter_tags_str %}<input type="hidden" name="tags" value="{{ filter_tags_str }}">{% endif %}
+      {% if filter_task %}<input type="hidden" name="source_task_id" value="{{ filter_task }}">{% endif %}
+
+      <div class="export-field-groups">
+        {% for cat_key, cat_label, cat_fields in export_field_groups %}
+        <details class="export-field-group" {% if loop.first %}open{% endif %}>
+          <summary>
+            {{ cat_label }}
+            <span class="muted small">({{ cat_fields|length }} campi)</span>
+            <button type="button" class="btn-link small export-group-toggle"
+                    onclick="window.exportToggleGroup(this, true); return false;">tutti</button>
+            <button type="button" class="btn-link small export-group-toggle"
+                    onclick="window.exportToggleGroup(this, false); return false;">nessuno</button>
+          </summary>
+          <div class="export-field-list">
+          {% for field_key, field_label in cat_fields %}
+            <label class="export-field-item">
+              <input type="checkbox" name="fields" value="{{ field_key }}"
+                     {% if field_key in default_export_fields %}checked{% endif %}>
+              {{ field_label }}
+              <code class="muted small">{{ field_key }}</code>
+            </label>
+          {% endfor %}
+          </div>
+        </details>
+        {% endfor %}
+      </div>
+
+      <label class="export-tags-mode" style="margin-top:0.8rem">
+        Tag asset:
+        <select name="tags_mode">
+          <option value="none">non includere</option>
+          <option value="flat" selected>colonna 'Tags' compatta (k=v;k=v)</option>
+          <option value="columns">una colonna per ogni tag_key</option>
+        </select>
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-link"
+                onclick="document.getElementById('export-csv-modal').classList.remove('open');">
+          Annulla
+        </button>
+        <button type="submit" class="btn-primary">📥 Scarica CSV</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// Toggle "tutti/nessuno" per un gruppo di campi nel modal export.
+window.exportToggleGroup = function (btn, on) {
+  const group = btn.closest('details.export-field-group');
+  if (!group) return;
+  group.querySelectorAll('input[type=checkbox][name=fields]').forEach(cb => cb.checked = on);
+};
+
+// Al submit del modal: se ci sono asset selezionati via bulk checkbox della
+// tabella, li iniettiamo come hidden asset_ids nel form (override dei filtri).
+(function () {
+  const form = document.getElementById('export-csv-form');
+  if (!form) return;
+  form.addEventListener('submit', function () {
+    form.querySelectorAll('[data-export-injected]').forEach(el => el.remove());
+    const selected = document.querySelectorAll('[data-bulk-row]:checked');
+    selected.forEach(cb => {
+      const inp = document.createElement('input');
+      inp.type = 'hidden';
+      inp.name = 'asset_ids';
+      inp.value = cb.value;
+      inp.setAttribute('data-export-injected', '');
+      form.appendChild(inp);
+    });
+  });
+})();
+</script>
 
 <style>
 .pagination { display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; flex-wrap: wrap; gap: 0.5rem; }

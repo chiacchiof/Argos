@@ -2499,6 +2499,39 @@ Log strutturato: il runner stampa "⏳ gap anti-ban: idle per Xs/Xmin prima del 
 
 Implementazione: `app/agent/social/humanize.py::pick_gap_minutes(platform, task_min, task_max)`, chiamata da `OutreachEngine.run_session(... gap_min_minutes=, gap_max_minutes=)`.
 
+### 17.14 Export CSV con scelta campi (`/qualified` + `/assets`, 2026-05-18)
+
+Bottone **📥 Esporta CSV** (su `/qualified` nella bulk-action-bar accanto a Cancella; su `/assets` in alto a destra accanto a Import). Apre un modal con catalogo campi raggruppati per categoria.
+
+**Catalogo campi** (in [app/export_csv.py](app/export_csv.py) `FIELD_CATEGORIES`):
+
+| Categoria | Campi |
+|---|---|
+| 📋 Core | id, asset_type, title, status, qualifier_score, notes, created_at, updated_at, source_url, source_url_canonical |
+| 📞 Contatti | display_name, email, whatsapp, whatsapp_consent, telegram_username, telegram_chat_id, sitoweb |
+| 📷 Social | social_instagram, social_tiktok, social_facebook, social_onlyfans (estratti da `social_json`), social_json_raw |
+| 🏷️ Origine | source_task_id, source_job_id, source_domain |
+| 📤 Outreach | outreach_status, whatsapp_last_inbound_at |
+| ✅ Qualifier | qualifier_slugs (csv di slug attivi), qualifier_scores (csv `slug=N`) |
+| 🔀 Dedup | dedup_status, dedup_canonical_id |
+
+Default selection (`DEFAULT_FIELDS`): id, asset_type, title, status, email, whatsapp, telegram_username, social_instagram, social_tiktok, social_facebook, source_task_id. Bottoni "tutti / nessuno" per ogni gruppo.
+
+**Modalità tag** (select sotto le categorie):
+- `non includere` (default): niente colonna tag
+- `colonna 'Tags' compatta`: una sola colonna con `"k=v;k=v;..."` (multi-valore join con `;`)
+- `una colonna per ogni tag_key`: scan dataset, ogni `tag_key` distinto diventa colonna `tag:<key>`
+
+**Formato output**: CSV RFC 4180, **UTF-8 con BOM** (compat Excel italiano), `Content-Disposition: attachment; filename="qualified_export_<ts>.csv"`. StreamingResponse — niente buffer intero in memoria.
+
+**Audience source**:
+- `/qualified/export.csv`: stesso pattern di `from_qualified` — `asset_ids[]` esplicito (selezione bulk checkbox) vince su filtri; `select_all_filtered=1` re-applica filtri. Cap `_MAX_EXPORT = 50000`.
+- `/assets/export.csv`: filtri standard (`asset_type`, `status`, `tags`, `source_task_id`); se `asset_ids[]` presente (selezione via checkbox della bulk delete bar), usa quelli.
+
+**Endpoint**: entrambi POST (per supportare asset_ids[] lunghi e niente caching browser su download). Implementazione in [app/routes/assets.py](app/routes/assets.py) `qualified_export_csv` / `assets_export_csv`.
+
+**Test**: 11 in `tests/test_export_csv.py` (render + endpoint, tutte e 3 le tags_mode, BOM check, filtri vs asset_ids, select_all_filtered override, empty audience 400).
+
 ### 17.13 Selezione bulk su `/qualified` con select-all-filtered gmail-style (2026-05-18)
 
 Pre-feature: `/qualified` aveva i bottoni `🚀 Avvia outreach (N)` e `🎯 Rilancia qualifier (N)` che usavano **tutti** gli N filtrati. Niente checkbox per riga, niente delete bulk, niente modo di restringere a un subset visibile.

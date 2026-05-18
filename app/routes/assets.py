@@ -7,9 +7,10 @@ una lista filtrabile per asset_type + tag.
 from __future__ import annotations
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from .. import db
+from .. import export_csv
 from ..agent import asset_dedup
 from ..templates import templates
 
@@ -114,6 +115,8 @@ async def assets_list(
             "total_pages": total_pages,
             "offset": offset,
             "qs_base": qs_base,
+            "export_field_groups": _export_field_groups_for_template(),
+            "default_export_fields": list(export_csv.DEFAULT_FIELDS),
         },
     )
 
@@ -334,8 +337,34 @@ async def qualified_assets_list(
             "total_pages": total_pages,
             "offset": offset,
             "qs_base": qs_base,
+            "export_field_groups": _export_field_groups_for_template(),
+            "default_export_fields": list(export_csv.DEFAULT_FIELDS),
         },
     )
+
+
+# Label human-readable per le categorie del modal export CSV (vedi
+# app/export_csv.py FIELD_CATEGORIES).
+_EXPORT_CATEGORY_LABELS = {
+    "core": "📋 Core",
+    "contact": "📞 Contatti",
+    "social": "📷 Social",
+    "origin": "🏷️ Origine",
+    "outreach": "📤 Outreach",
+    "qualifier": "✅ Qualifier",
+    "dedup": "🔀 Dedup",
+}
+
+
+def _export_field_groups_for_template() -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Trasforma FIELD_CATEGORIES (in export_csv) in formato consumabile dal
+    template del modal: [(cat_key, cat_label, [(field_key, field_label), ...])]."""
+    out: list[tuple[str, str, list[tuple[str, str]]]] = []
+    for cat_key, fields in export_csv.FIELD_CATEGORIES.items():
+        label = _EXPORT_CATEGORY_LABELS.get(cat_key, cat_key)
+        items = [(f[0], f[1]) for f in fields]
+        out.append((cat_key, label, items))
+    return out
 
 
 _QUALIFIER_SLUG_RE = __import__("re").compile(r"^[a-z0-9_]+$")
@@ -401,6 +430,170 @@ async def qualified_add(
     return RedirectResponse(
         url=f"/qualified?qualifiers={slug}&status={decision}&flash={flash}",
         status_code=303,
+    )
+
+
+# ===========================================================================
+# CSV export — /qualified e /assets
+# ===========================================================================
+
+_MAX_EXPORT = 50000  # cap per non saturare memoria/timeout su DB enormi
+
+
+def _audience_from_qualified_form(form) -> list[dict]:
+    """Estrae la lista asset (dicts) per export CSV su /qualified.
+    Riusa la stessa logica di `_extract_audience_from_form` (routes/tasks.py):
+      - asset_ids[] presenti + no flag => selezione esplicita (fetch per id)
+      - altrimenti => applica i filtri + cap _MAX_EXPORT
+    """
+    select_all_filtered = (form.get("select_all_filtered") or "").strip() == "1"
+    explicit_raw: list[str] = (
+        form.getlist("asset_ids") if hasattr(form, "getlist") else []
+    )
+    if explicit_raw and not select_all_filtered:
+        seen: set[int] = set()
+        ids: list[int] = []
+        for v in explicit_raw:
+            try:
+                i = int(v)
+            except (TypeError, ValueError):
+                continue
+            if i not in seen:
+                seen.add(i)
+                ids.append(i)
+        out: list[dict] = []
+        for aid in ids:
+            a = db.get_asset(aid)
+            if a:
+                out.append(a)
+        return out
+
+    # Filtri da form
+    qualifier_slugs = [
+        s.strip() for s in (form.get("qualifiers") or "").split(",") if s.strip()
+    ]
+    status = (form.get("status") or "qualified").strip()
+    if status not in ("qualified", "rejected", "both"):
+        status = "qualified"
+    score_min_v = _parse_optional_int(form.get("score_min") or "")
+    asset_type_v = (form.get("asset_type") or "").strip() or None
+    source_task_id_v = _parse_optional_int(form.get("source_task_id") or "")
+    search = (form.get("q") or "").strip() or None
+    extra_tag_filters = _parse_extra_tag_filters_from_mapping(form)
+    tag_mode_v = (form.get("tag_mode") or "and").strip().lower()
+    if tag_mode_v not in ("and", "or", "custom"):
+        tag_mode_v = "and"
+    tag_expr_v = (form.get("tag_expr") or "").strip() or None
+    has_contacts_v = bool((form.get("has_contacts") or "").strip())
+    has_social_v = bool((form.get("has_social") or "").strip())
+
+    return db.list_qualified_assets(
+        qualifier_slugs=qualifier_slugs,
+        status_filter=status,
+        score_min=score_min_v,
+        asset_type=asset_type_v,
+        source_task_id=source_task_id_v,
+        search=search,
+        extra_tag_filters=extra_tag_filters or None,
+        limit=_MAX_EXPORT,
+        offset=0,
+        tag_mode=tag_mode_v,
+        tag_expr=tag_expr_v,
+        has_contacts=has_contacts_v,
+        has_social=has_social_v,
+    )
+
+
+def _csv_filename(prefix: str) -> str:
+    ts = db.now_iso()[:19].replace(":", "").replace("-", "")
+    return f"{prefix}_{ts}.csv"
+
+
+def _parse_export_fields(form) -> tuple[list[str], str]:
+    """Da form `fields` (multivalue checkbox) + `tags_mode` ritorna
+    (fields_list, tags_mode in {none, flat, columns})."""
+    fields: list[str] = (
+        form.getlist("fields") if hasattr(form, "getlist") else []
+    )
+    fields = [f for f in fields if isinstance(f, str) and f.strip()]
+    tags_mode = (form.get("tags_mode") or "none").strip().lower()
+    if tags_mode not in ("none", "flat", "columns"):
+        tags_mode = "none"
+    return fields, tags_mode
+
+
+@router.post("/qualified/export.csv")
+async def qualified_export_csv(request: Request):
+    """Export CSV dell'audience /qualified. POST per supportare asset_ids[]
+    grandi + filtri + selezione campi. Vedi app/export_csv.py per i field key."""
+    form = await request.form()
+    assets = _audience_from_qualified_form(form)
+    if not assets:
+        raise HTTPException(
+            status_code=400,
+            detail="Audience vuota: seleziona almeno un asset o raffina i filtri.",
+        )
+    fields, tags_mode = _parse_export_fields(form)
+    fname = _csv_filename("qualified_export")
+    gen = export_csv.render_assets_csv(assets, fields, tags_mode=tags_mode)
+    return StreamingResponse(
+        gen,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/assets/export.csv")
+async def assets_export_csv(request: Request):
+    """Export CSV degli asset filtrati. Riusa i filtri di /assets:
+      asset_type, status, tags (csv "k:v,..."), q (search), source_task_id."""
+    form = await request.form()
+    # Filtri /assets standard
+    asset_type = (form.get("asset_type") or "").strip() or None
+    status = (form.get("status") or "").strip() or None
+    tags_csv = (form.get("tags") or "").strip()
+    tag_filters = _parse_tag_filters(tags_csv) if tags_csv else []
+    source_task_id_v = _parse_optional_int(form.get("source_task_id") or "")
+    # Selezione esplicita da bulk checkbox (se utente ha selezionato righe).
+    explicit_raw = form.getlist("asset_ids") if hasattr(form, "getlist") else []
+    if explicit_raw:
+        seen: set[int] = set()
+        ids: list[int] = []
+        for v in explicit_raw:
+            try:
+                i = int(v)
+            except (TypeError, ValueError):
+                continue
+            if i not in seen:
+                seen.add(i)
+                ids.append(i)
+        assets: list[dict] = []
+        for aid in ids:
+            a = db.get_asset(aid)
+            if a:
+                assets.append(a)
+    else:
+        # Re-fetch dai filtri (no paginazione: ritorna fino a _MAX_EXPORT).
+        assets = db.list_assets(
+            asset_type=asset_type,
+            status=status,
+            tag_filters=tag_filters or None,
+            source_task_id=source_task_id_v,
+            limit=_MAX_EXPORT,
+            offset=0,
+        )
+    if not assets:
+        raise HTTPException(
+            status_code=400,
+            detail="Audience vuota: nessun asset matching.",
+        )
+    fields, tags_mode = _parse_export_fields(form)
+    fname = _csv_filename("assets_export")
+    gen = export_csv.render_assets_csv(assets, fields, tags_mode=tags_mode)
+    return StreamingResponse(
+        gen,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
 
 
