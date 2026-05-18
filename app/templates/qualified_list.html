@@ -816,7 +816,9 @@ function selectAssetForQualifier(assetId) {
   const form = document.getElementById('qualified-bulk-form');
   if (!form) return;  // pagina vuota (no asset)
   const selectAll = document.getElementById('qbulk-select-all');
-  const rows = form.querySelectorAll('[data-qbulk-row]');
+  // NB: scope a `document` (non `form`): alcuni browser HTML5 fanno
+  // foster-parenting di <form>+<table> separandoli nel DOM. Fallback safe.
+  const rows = document.querySelectorAll('#qualified-bulk-form [data-qbulk-row], table.assets-table [data-qbulk-row]');
   const counter = document.getElementById('qbulk-count');
   const flagInput = document.getElementById('qbulk-select-all-flag');
   const banner = document.getElementById('qbulk-select-all-banner');
@@ -824,10 +826,13 @@ function selectAssetForQualifier(assetId) {
   const btnRilancia = document.getElementById('qbulk-btn-rilancia');
   const btnOutreach = document.getElementById('qbulk-btn-outreach');
   const btnDelete = document.getElementById('qbulk-btn-delete');
-  const actionCounts = form.querySelectorAll('[data-qbulk-action-count]');
+  const actionCounts = document.querySelectorAll('[data-qbulk-action-count]');
 
   const TOTAL = {{ total }};
   const PAGE_SIZE = rows.length;
+  // Debug: se ti serve verificare che il script abbia trovato le checkbox,
+  // apri DevTools console e cerca questo log.
+  console.log('[qbulk] init: rows=' + rows.length + ', total=' + TOTAL);
 
   let selectAllFiltered = false;
 
