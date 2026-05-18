@@ -78,13 +78,25 @@ if (-not (Test-Path $activate)) {
 
 # -------- Step 3: pip install --------
 Write-Step 3 $TOTAL "Installazione dipendenze Python (pip install -e .)"
+Write-Host "  Scarica ~30-50 pacchetti (200-400 MB). Su fibra 3-6 min, su connessione" -ForegroundColor Gray
+Write-Host "  lenta anche 15-20 min. NON chiudere la finestra anche se sembra ferma —" -ForegroundColor Gray
+Write-Host "  pip mostrera' 'Collecting ...' e progress bar per ogni pacchetto." -ForegroundColor Gray
 python -m pip install --upgrade pip --quiet
-python -m pip install -e . --quiet
+python -m pip install -e .
+if ($LASTEXITCODE -ne 0) {
+    Write-Err "pip install fallito (exit $LASTEXITCODE). Vedi l'errore qui sopra."
+    exit 1
+}
 Write-Ok "Dipendenze installate."
 
 # -------- Step 4: playwright --------
 Write-Step 4 $TOTAL "Download browser Chromium (Playwright, ~150MB)"
-python -m playwright install chromium 2>&1 | Out-Null
+Write-Host "  Anche questo step richiede qualche minuto. Output di playwright in corso:" -ForegroundColor Gray
+python -m playwright install chromium
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn "playwright install ha riportato un errore (exit $LASTEXITCODE). Puoi rilanciarlo dopo con:"
+    Write-Host "    .\.venv\Scripts\python.exe -m playwright install chromium" -ForegroundColor Gray
+}
 Write-Ok "Chromium installato nella cache di Playwright."
 
 # -------- Step 5: .env --------
@@ -161,10 +173,13 @@ if ($testResult -match "^ERR") {
 # -------- Step 9: pronto --------
 Write-Step 9 $TOTAL "Setup completato!"
 Write-Host ""
-Write-Host "Per avviare l'app:" -ForegroundColor Green
-Write-Host "  agentscraper" -ForegroundColor White
+Write-Host "Per avviare l'app (modo consigliato):" -ForegroundColor Green
+Write-Host "  Doppio click su start.bat nella cartella del progetto." -ForegroundColor White
 Write-Host ""
-Write-Host "Apri http://127.0.0.1:8000 nel browser." -ForegroundColor Green
+Write-Host "  In alternativa da PowerShell (con venv da attivare ogni volta):" -ForegroundColor Gray
+Write-Host "    .\.venv\Scripts\Activate.ps1; agentscraper" -ForegroundColor Gray
+Write-Host ""
+Write-Host "Poi apri http://127.0.0.1:8000 nel browser." -ForegroundColor Green
 Write-Host ""
 Write-Host "Se è la prima installazione del cluster (= devi creare i tenant/utenti):" -ForegroundColor Cyan
 Write-Host "  1. Aggiungi BOOTSTRAP_SUPER_ADMIN_EMAIL e _PASSWORD a .env" -ForegroundColor Gray

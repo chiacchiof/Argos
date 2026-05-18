@@ -15,23 +15,39 @@ Niente Docker, niente Postgres locale: il DB è centralizzato in cloud (Neon), a
 1. Scarica l'ultima release `agentscraper-vX.Y.Z.zip` dalla pagina GitHub Releases (link nel banner dell'app o ti viene inviato).
 2. Estrai il contenuto in una cartella stabile, es. `C:\Apps\AgentScraper\`.
 3. Apri **PowerShell** in quella cartella (Shift + tasto destro nello sfondo della cartella → "Apri finestra PowerShell qui").
-4. Se è la prima volta che esegui script .ps1 su questo PC, abilita l'esecuzione (una tantum):
+4. **Sblocca gli script** (i file estratti da uno zip scaricato sono marcati da Windows come "provenienti da internet" e PowerShell li rifiuta finché non li sblocchi):
    ```powershell
-   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+   Get-ChildItem -Path .\scripts\ -Recurse | Unblock-File
    ```
+   > **Nota**: se è anche la prima volta in assoluto che esegui script `.ps1` su questo PC, esegui PRIMA questo comando una tantum (poi non serve più):
+   > ```powershell
+   > Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+   > ```
 5. Esegui l'installer:
    ```powershell
    .\scripts\install_client.ps1
    ```
+
+   > **In alternativa**, se non vuoi modificare permessi: lancialo bypassando la policy solo per quella invocazione:
+   > ```powershell
+   > powershell -ExecutionPolicy Bypass -File .\scripts\install_client.ps1
+   > ```
 6. Lo script ti chiederà la **DATABASE_URL** (la connection string Postgres / Neon). Te la fornisce Ferdinando. Esempio:
    ```
    postgresql://neondb_owner:la-tua-password@ep-xxx.aws.neon.tech/neondb?sslmode=require
    ```
-7. Al termine vedrai "Setup completato!" + il comando per avviare:
+7. Al termine vedrai "Setup completato!". Per avviare l'app, **fai doppio click su `start.bat`** nella cartella radice del progetto. Si aprirà una finestra che attiva la venv e lancia il server.
+
+   In alternativa, da PowerShell:
    ```powershell
+   .\.venv\Scripts\Activate.ps1
    agentscraper
    ```
+   (la venv va attivata ogni volta che apri un nuovo terminale — `start.bat` lo fa al posto tuo).
+
 8. Apri il browser su <http://127.0.0.1:8000> → vedi la pagina di login.
+
+> **Suggerimento**: crea un collegamento di `start.bat` sul desktop (tasto destro → "Crea collegamento" → trascina sul desktop) così avvii AgentScraper come una normale app Windows.
 
 ### Credenziali
 
@@ -50,8 +66,9 @@ Vedrai nell'header un banner giallo:
 2. Scarica il nuovo zip dalla release.
 3. **Importante**: prima di estrarre, fai un **backup** della cartella `data\` (contiene config locali).
 4. Estrai il nuovo zip sopra la cartella attuale, **sovrascrivendo** i file. Il `.env` e `data\` NON vengono toccati (sono ignorati dallo zip).
-5. Apri PowerShell nella cartella e lancia:
+5. Apri PowerShell nella cartella, **sblocca i nuovi file** (servono perché vengono dallo zip) e lancia:
    ```powershell
+   Get-ChildItem -Path .\scripts\ -Recurse | Unblock-File
    .\scripts\update_client.ps1
    ```
 6. Quando lo script finisce, vai nel terminale dove gira `agentscraper`, premi **Ctrl+C** per fermarlo, poi rilancia:
@@ -61,6 +78,16 @@ Vedrai nell'header un banner giallo:
 7. Apri il browser, ricarica → il banner di update non c'è più: hai la nuova versione.
 
 ## Troubleshooting
+
+### "PSSecurityException / UnauthorizedAccess: il file non è firmato digitalmente"
+Lo script `.ps1` è marcato come "internet" perché viene da uno zip scaricato. Sblocca i file con:
+```powershell
+Get-ChildItem -Path .\scripts\ -Recurse | Unblock-File
+```
+Oppure lancia con bypass per quella sola invocazione:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_client.ps1
+```
 
 ### "L'app non parte: ImportError"
 Hai dimenticato di rieseguire `update_client.ps1` dopo aver scaricato lo zip nuovo. Le dipendenze Python sono cambiate.

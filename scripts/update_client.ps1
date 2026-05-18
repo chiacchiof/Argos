@@ -63,13 +63,22 @@ if (Test-Path ".\data") {
 
 # -------- Step 2: pip install --------
 Write-Step 2 $TOTAL "Aggiornamento dipendenze (pip install -e .)"
+Write-Host "  In genere 1-3 minuti (solo i pacchetti cambiati). Output pip in corso:" -ForegroundColor Gray
 python -m pip install --upgrade pip --quiet
-python -m pip install -e . --quiet
+python -m pip install -e .
+if ($LASTEXITCODE -ne 0) {
+    Write-Err "pip install fallito (exit $LASTEXITCODE). Vedi l'errore qui sopra."
+    exit 1
+}
 Write-Ok "Dipendenze aggiornate."
 
 # -------- Step 3: playwright --------
 Write-Step 3 $TOTAL "Verifica/aggiornamento Chromium (Playwright)"
-python -m playwright install chromium 2>&1 | Out-Null
+python -m playwright install chromium
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn "playwright install ha riportato un errore (exit $LASTEXITCODE). Puoi rilanciarlo dopo con:"
+    Write-Host "    .\.venv\Scripts\python.exe -m playwright install chromium" -ForegroundColor Gray
+}
 Write-Ok "Chromium aggiornato (se necessario)."
 
 # -------- Step 4: version check --------
