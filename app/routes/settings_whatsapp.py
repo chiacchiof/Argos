@@ -60,6 +60,7 @@ async def whatsapp_settings_page(request: Request):
             "flash": flash,
             "error": error,
             "secret_configured": crypto_creds.is_configured(),
+            "current_user_id": db.current_user_id(),
         },
     )
 

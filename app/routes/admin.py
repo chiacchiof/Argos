@@ -171,6 +171,8 @@ def users_create(
     password: str = Form(...),
     role: str = Form("tenant_user"),
     tenant_id: str = Form(""),
+    first_name: str = Form(""),
+    last_name: str = Form(""),
     current_user: CurrentUser = Depends(require_super_admin),
 ):
     email = email.strip().lower()
@@ -205,11 +207,34 @@ def users_create(
             email=email,
             password_hash=hash_password(password),
             role=role,
+            first_name=first_name,
+            last_name=last_name,
         )
         _flash(request, "success", f"Utente '{email}' creato (id={new_id}, ruolo={role}).")
     except Exception as exc:
         log.error("Errore creazione utente: %s", exc)
         _flash(request, "error", f"Errore: {exc}")
+    return RedirectResponse(url="/admin/users", status_code=303)
+
+
+@router.post("/users/{user_id}/edit")
+def users_edit(
+    request: Request,
+    user_id: int,
+    first_name: str = Form(""),
+    last_name: str = Form(""),
+    current_user: CurrentUser = Depends(require_super_admin),
+):
+    """Aggiorna first_name/last_name di un utente esistente."""
+    u = db_cloud.get_user(user_id)
+    if not u:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utente non trovato")
+    db_cloud.update_user(
+        user_id,
+        first_name=first_name,
+        last_name=last_name,
+    )
+    _flash(request, "success", f"Anagrafica utente '{u['email']}' aggiornata.")
     return RedirectResponse(url="/admin/users", status_code=303)
 
 

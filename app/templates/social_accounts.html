@@ -77,14 +77,16 @@
          dropdown e' disabled (forzato a se stesso lato backend); per
          super_admin selezionabile. #}
       {% if tenant_users and tenant_users|length >= 2 %}
-      <label>Owner <span class="hint">(utente del tenant che possiede l'account)</span>
+      <label>Tenant Owner <span class="hint">(utente del tenant che possiede l'account)</span>
         <select name="owner_user_id"
                 {% if not is_secret_configured %}disabled{% endif %}
                 {% if not request.state.current_user.is_super_admin %}disabled
                    title="Solo super-admin possono assegnare l'owner ad un altro utente"{% endif %}>
           {% for u in tenant_users %}
+            {% set _label = (u.first_name or '') ~ ' ' ~ (u.last_name or '') %}
+            {% set _label = _label.strip() %}
             <option value="{{ u.id }}" {% if u.id == current_user_id %}selected{% endif %}>
-              {{ u.email }}{% if u.id == current_user_id %} (tu){% endif %}
+              {% if _label %}{{ _label }} &lt;{{ u.email }}&gt;{% else %}{{ u.email }}{% endif %}{% if u.id == current_user_id %} (tu){% endif %}
             </option>
           {% endfor %}
         </select>
@@ -103,7 +105,7 @@
         <th title="DM inviati nelle ultime 24h">DMs / 24h</th>
         <th title="Cap giornaliero">Cap</th>
         <th>Proxy</th>
-        <th title="Utente del tenant che ha creato l'account">Owner</th>
+        <th title="Utente del tenant che possiede l'account">Tenant Owner</th>
         <th>Creato</th><th></th>
       </tr>
     </thead>
@@ -124,10 +126,10 @@
         <td>{{ a.daily_dm_cap }}</td>
         <td><small>{{ a.proxy_label or '—' }}</small></td>
         <td>
-          {% if a.owner_email %}
+          {% if a.created_by_user_id %}
             <small {% if a.created_by_user_id == current_user_id %}style="font-weight:600;color:#0969da"{% endif %}
-                   title="user_id={{ a.created_by_user_id }}">
-              {{ a.owner_email }}{% if a.created_by_user_id == current_user_id %} (tu){% endif %}
+                   title="{{ a.owner_email }} (user_id={{ a.created_by_user_id }})">
+              {{ a | owner_display }}{% if a.created_by_user_id == current_user_id %} (tu){% endif %}
             </small>
           {% else %}
             <small class="muted">—</small>

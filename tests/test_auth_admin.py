@@ -101,7 +101,8 @@ class FakeCloudDB:
                 return dict(u)
         return None
 
-    def create_user(self, *, tenant_id, email, password_hash, role):
+    def create_user(self, *, tenant_id, email, password_hash, role,
+                    first_name=None, last_name=None):
         if role == "super_admin" and tenant_id is not None:
             raise ValueError("super_admin senza tenant")
         if role == "tenant_user" and tenant_id is None:
@@ -114,14 +115,21 @@ class FakeCloudDB:
             "password_hash": password_hash,
             "role": role,
             "is_active": True,
+            "first_name": (first_name or "").strip() or None,
+            "last_name": (last_name or "").strip() or None,
             "created_at": datetime.now(timezone.utc),
         }
         return self._uid
 
-    def update_user(self, uid: int, *, password_hash=None, is_active=None):
+    def update_user(self, uid: int, *, password_hash=None, is_active=None,
+                    first_name=None, last_name=None):
         u = self.users[uid]
         if password_hash is not None:
             u["password_hash"] = password_hash
+        if first_name is not None:
+            u["first_name"] = first_name.strip() or None
+        if last_name is not None:
+            u["last_name"] = last_name.strip() or None
         if is_active is not None:
             u["is_active"] = is_active
 

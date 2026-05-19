@@ -2593,7 +2593,28 @@ Pre-feature: `/qualified` aveva i bottoni `🚀 Avvia outreach (N)` e `🎯 Rila
 - "Seleziona tutti i N filtrati" non scarica gli IDs in browser — usa il flag che fa ri-fetchare lato server. Limite hard: `_MAX_QUALIFIED_SNAPSHOT = 10000`. Sopra 10k l'utente vedrebbe solo i primi 10k.
 - La selezione non persiste tra pagine: cambiando pagina (paginazione) o filtri, lo stato selection si resetta. Pattern Gmail richiede sessioni stateful — overkill per ora.
 
-### 17.16 Owner sui social accounts (2026-05-19)
+### 17.17 Anagrafica utenti (nome/cognome) + disable/enable (2026-05-19)
+
+`users` ora ha `first_name TEXT` + `last_name TEXT` (idempotent ADD COLUMN al boot). Sostituiscono l'email come label nelle UI quando popolati.
+
+**Admin UI** ([app/templates/admin/users.html](app/templates/admin/users.html)):
+- Form "Crea nuovo utente": nuovi input Nome + Cognome (opzionali).
+- Tabella utenti: nuova colonna "Nome Cognome".
+- Per ogni utente: dropdown "anagrafica" con form inline `POST /admin/users/{id}/edit` (first_name + last_name).
+- Toggle is_active: bottoni `⏸ Disabilita` / `▶ Riabilita`. is_active=False → blocca login (`app/routes/auth.py:72`).
+
+**Display fallback** ([app/db_cloud.py](app/db_cloud.py) `user_display_name`): se `first_name` o `last_name` popolati → "Nome Cognome"; altrimenti email. Helper riusato anche come filtro Jinja `owner_display` per le colonne Tenant Owner.
+
+**Dropdown owner** in social_accounts: mostra "Nome Cognome <email>" se anagrafica popolata, altrimenti solo email.
+
+### 17.16 Owner sui social accounts (2026-05-19) → rinominato in **Tenant Owner**
+
+Colonna `Owner` rinominata in **Tenant Owner** su:
+- `/social/accounts` (tabella + dropdown form Aggiungi)
+- `/settings/whatsapp` accounts table (Motore A)
+- `/settings/whatsapp` api_configs table (Motore B)
+
+Tutte le 3 tabelle ora mostrano l'owner via filtro Jinja `owner_display` (nome cognome o fallback email). Il backend `list_whatsapp_api_config` ha ricevuto JOIN users analogo a `list_social_accounts` (commit precedente).
 
 `/social/accounts` ora include:
 1. **Colonna Owner** nella tabella: mostra l'email dell'utente del tenant che ha creato l'account. La riga corrente dell'utente loggato è evidenziata in blu con `(tu)`.

@@ -4238,7 +4238,8 @@ def list_social_accounts(
     per autore (uso 'I miei account')."""
     tenant_id = _resolve_tenant(tenant_id)
     sql = (
-        "SELECT s.*, u.email AS owner_email "
+        "SELECT s.*, u.email AS owner_email, "
+        "       u.first_name AS owner_first_name, u.last_name AS owner_last_name "
         "FROM social_accounts s "
         "LEFT JOIN users u ON u.id = s.created_by_user_id "
         "WHERE 1=1"
@@ -4403,15 +4404,29 @@ def insert_whatsapp_api_config(
         return int(cur.fetchone()['id'])
 
 
-def list_whatsapp_api_config(status: str | None = None, tenant_id: Any = _UNSET) -> list[dict]:
+def list_whatsapp_api_config(
+    status: str | None = None,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = None,
+) -> list[dict]:
+    """Lista whatsapp_api_config + owner_email via LEFT JOIN users.
+    Se `created_by_user_id` valorizzato, filtra per autore."""
     tenant_id = _resolve_tenant(tenant_id)
-    sql = "SELECT * FROM whatsapp_api_config WHERE 1=1"
+    sql = (
+        "SELECT w.*, u.email AS owner_email, "
+        "       u.first_name AS owner_first_name, u.last_name AS owner_last_name "
+        "FROM whatsapp_api_config w "
+        "LEFT JOIN users u ON u.id = w.created_by_user_id "
+        "WHERE 1=1"
+    )
     args: list = []
     if status:
-        sql += " AND status = %s"; args.append(status)
+        sql += " AND w.status = %s"; args.append(status)
     if tenant_id is not None:
-        sql += " AND tenant_id = %s"; args.append(tenant_id)
-    sql += " ORDER BY id DESC"
+        sql += " AND w.tenant_id = %s"; args.append(tenant_id)
+    if created_by_user_id is not None:
+        sql += " AND w.created_by_user_id = %s"; args.append(int(created_by_user_id))
+    sql += " ORDER BY w.id DESC"
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]

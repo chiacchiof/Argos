@@ -12,6 +12,14 @@
     <h3>Crea nuovo utente</h3>
     <form method="post" action="/admin/users" class="admin-form-inline" id="create-user-form">
       <label>
+        Nome
+        <input type="text" name="first_name" placeholder="Mario" spellcheck="false">
+      </label>
+      <label>
+        Cognome
+        <input type="text" name="last_name" placeholder="Rossi" spellcheck="false">
+      </label>
+      <label>
         Email o username
         <input type="text" name="email" required placeholder="mario@edg.it oppure mario">
       </label>
@@ -37,7 +45,7 @@
       </label>
       <button type="submit" class="btn-primary">Crea utente</button>
     </form>
-    <p class="admin-hint"><small>I super-admin non sono collegati ad alcuna azienda; i tenant_user devono averne una.</small></p>
+    <p class="admin-hint"><small>Nome/Cognome sono opzionali ma raccomandati (verranno mostrati al posto dell'email nelle UI). I super-admin non sono collegati ad alcuna azienda; i tenant_user devono averne una.</small></p>
   </div>
 
   <div class="admin-card-block">
@@ -47,6 +55,7 @@
       <thead>
         <tr>
           <th>ID</th>
+          <th>Nome Cognome</th>
           <th>Login</th>
           <th>Ruolo</th>
           <th>Azienda</th>
@@ -59,6 +68,15 @@
         {% for u in users %}
         <tr class="{% if not u.is_active %}row-disabled{% endif %}">
           <td>{{ u.id }}</td>
+          <td>
+            {% set _fn = (u.first_name or '') %}
+            {% set _ln = (u.last_name or '') %}
+            {% if _fn or _ln %}
+              <strong>{{ (_fn ~ ' ' ~ _ln).strip() }}</strong>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
           <td>
             <strong>{{ u.email }}</strong>
             {% if u.id == current_user.id %}<small class="self-tag">(tu)</small>{% endif %}
@@ -81,6 +99,14 @@
           <td><small>{{ u.created_at.strftime("%Y-%m-%d %H:%M") if u.created_at else "-" }}</small></td>
           <td class="admin-actions-cell">
             <details>
+              <summary>anagrafica</summary>
+              <form method="post" action="/admin/users/{{ u.id }}/edit" class="reset-pwd-form">
+                <input type="text" name="first_name" value="{{ u.first_name or '' }}" placeholder="Nome" spellcheck="false">
+                <input type="text" name="last_name" value="{{ u.last_name or '' }}" placeholder="Cognome" spellcheck="false">
+                <button type="submit" class="btn-link">Salva</button>
+              </form>
+            </details>
+            <details>
               <summary>password</summary>
               <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="reset-pwd-form">
                 <input type="text" name="new_password" required placeholder="nuova password" spellcheck="false">
@@ -89,7 +115,10 @@
             </details>
             {% if u.id != current_user.id %}
             <form method="post" action="/admin/users/{{ u.id }}/toggle" style="display:inline">
-              <button type="submit" class="btn-link">{% if u.is_active %}Disattiva{% else %}Attiva{% endif %}</button>
+              <button type="submit" class="btn-link"
+                      title="{% if u.is_active %}Disabilita l'utente: non potrà più accedere finché non riabilitato{% else %}Riabilita l'utente{% endif %}">
+                {% if u.is_active %}⏸ Disabilita{% else %}▶ Riabilita{% endif %}
+              </button>
             </form>
             <form method="post" action="/admin/users/{{ u.id }}/delete" style="display:inline"
                   onsubmit="return confirm('Eliminare definitivamente {{ u.email }}?');">

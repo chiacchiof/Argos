@@ -42,6 +42,7 @@
         <th>Numero</th>
         <th>Status</th>
         <th>DM cap/giorno</th>
+        <th title="Utente del tenant che possiede l'account">Tenant Owner</th>
         <th>Ultimo agg.</th>
         <th>Azioni</th>
       </tr>
@@ -60,6 +61,16 @@
           {% else %}<span class="badge">{{ a.status }}</span>{% endif %}
         </td>
         <td>{{ a.daily_dm_cap }}</td>
+        <td>
+          {% if a.created_by_user_id %}
+            <small {% if a.created_by_user_id == current_user_id %}style="font-weight:600;color:#0969da"{% endif %}
+                   title="{{ a.owner_email }} (user_id={{ a.created_by_user_id }})">
+              {{ a | owner_display }}{% if a.created_by_user_id == current_user_id %} (tu){% endif %}
+            </small>
+          {% else %}
+            <small class="muted">—</small>
+          {% endif %}
+        </td>
         <td><small>{{ a.updated_at[:19] if a.updated_at else '—' }}</small></td>
         <td>
           <a href="/settings/whatsapp/account/{{ a.id }}/edit" class="btn-small" title="Modifica metadati account">✏️ Modifica</a>
@@ -134,6 +145,7 @@
         <th>WABA ID</th>
         <th>Template default</th>
         <th>Status</th>
+        <th title="Utente del tenant che possiede la config">Tenant Owner</th>
         <th>Azioni</th>
       </tr>
     </thead>
@@ -149,6 +161,16 @@
           {% if c.status == 'active' %}<span class="badge badge-ok">✓ active</span>
           {% elif c.status == 'disabled' %}<span class="badge badge-muted">⏸ disabled</span>
           {% else %}<span class="badge">{{ c.status }}</span>{% endif %}
+        </td>
+        <td>
+          {% if c.created_by_user_id %}
+            <small {% if c.created_by_user_id == current_user_id %}style="font-weight:600;color:#0969da"{% endif %}
+                   title="{{ c.owner_email }} (user_id={{ c.created_by_user_id }})">
+              {{ c | owner_display }}{% if c.created_by_user_id == current_user_id %} (tu){% endif %}
+            </small>
+          {% else %}
+            <small class="muted">—</small>
+          {% endif %}
         </td>
         <td>
           <a href="/settings/whatsapp/api/{{ c.id }}/edit" class="btn-small" title="Modifica parametri (incluso re-cifra access_token)">✏️ Modifica</a>

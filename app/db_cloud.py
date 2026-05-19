@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash  TEXT NOT NULL,
   role           TEXT NOT NULL CHECK (role IN ('super_admin', 'tenant_user')),
   is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+  first_name     TEXT,
+  last_name      TEXT,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (
     (role = 'super_admin' AND tenant_id IS NULL)
@@ -107,6 +109,9 @@ def init_db() -> None:
     try:
         with connect() as conn:
             conn.execute(SCHEMA_SQL)
+            # Idempotent: aggiungi first_name + last_name su users esistenti.
+            conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
+            conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT")
             conn.commit()
         _bootstrap_super_admin()
         log.info("Cloud DB inizializzato (tenants/users pronti).")
@@ -204,7 +209,8 @@ def delete_tenant(tenant_id: int) -> None:
 def list_users(tenant_id: int | None = None) -> list[dict[str, Any]]:
     """Lista utenti. Se tenant_id è None ritorna tutti (per super-admin); altrimenti filtra."""
     base_sql = (
-        "SELECT u.id, u.tenant_id, u.email, u.role, u.is_active, u.created_at, "
+        "SELECT u.id, u.tenant_id, u.email, u.role, u.is_active, "
+        "       u.first_name, u.last_name, u.created_at, "
         "       t.name AS tenant_name "
         "FROM users u LEFT JOIN tenants t ON u.tenant_id = t.id "
     )
@@ -219,10 +225,22 @@ def list_users(tenant_id: int | None = None) -> list[dict[str, Any]]:
         )
 
 
+def user_display_name(user: dict[str, Any] | None) -> str:
+    """Ritorna 'Nome Cognome' se popolati, altrimenti email. Helper per UI."""
+    if not user:
+        return ""
+    fn = (user.get("first_name") or "").strip()
+    ln = (user.get("last_name") or "").strip()
+    if fn or ln:
+        return f"{fn} {ln}".strip()
+    return (user.get("email") or "").strip()
+
+
 def get_user(user_id: int) -> dict[str, Any] | None:
     with connect() as conn:
         return conn.execute(
-            "SELECT id, tenant_id, email, password_hash, role, is_active, created_at "
+            "SELECT id, tenant_id, email, password_hash, role, is_active, "
+            "       first_name, last_name, created_at "
             "FROM users WHERE id = %s",
             (user_id,),
         ).fetchone()
@@ -231,24 +249,35 @@ def get_user(user_id: int) -> dict[str, Any] | None:
 def get_user_by_email(email: str) -> dict[str, Any] | None:
     with connect() as conn:
         return conn.execute(
-            "SELECT id, tenant_id, email, password_hash, role, is_active, created_at "
+            "SELECT id, tenant_id, email, password_hash, role, is_active, "
+            "       first_name, last_name, created_at "
             "FROM users WHERE email = %s",
             (email.strip().lower(),),
         ).fetchone()
 
 
-def create_user(*, tenant_id: int | None, email: str, password_hash: str, role: str) -> int:
+def create_user(
+    *,
+    tenant_id: int | None,
+    email: str,
+    password_hash: str,
+    role: str,
+    first_name: str | None = None,
+    last_name: str | None = None,
+) -> int:
     if role not in ("super_admin", "tenant_user"):
         raise ValueError(f"role non valido: {role}")
     if role == "super_admin" and tenant_id is not None:
         raise ValueError("super_admin non deve avere tenant_id")
     if role == "tenant_user" and tenant_id is None:
         raise ValueError("tenant_user richiede tenant_id")
+    fn = (first_name or "").strip() or None
+    ln = (last_name or "").strip() or None
     with connect() as conn:
         row = conn.execute(
-            "INSERT INTO users (tenant_id, email, password_hash, role) "
-            "VALUES (%s, %s, %s, %s) RETURNING id",
-            (tenant_id, email.strip().lower(), password_hash, role),
+            "INSERT INTO users (tenant_id, email, password_hash, role, first_name, last_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (tenant_id, email.strip().lower(), password_hash, role, fn, ln),
         ).fetchone()
         conn.commit()
         return int(row["id"])
@@ -259,7 +288,11 @@ def update_user(
     *,
     password_hash: str | None = None,
     is_active: bool | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
 ) -> None:
+    """Aggiorna utente. `first_name`/`last_name`: stringa vuota → NULL (clear);
+    stringa non vuota → set; None → preserve (no-op su quel campo)."""
     fields: list[str] = []
     params: list[Any] = []
     if password_hash is not None:
@@ -268,6 +301,12 @@ def update_user(
     if is_active is not None:
         fields.append("is_active = %s")
         params.append(is_active)
+    if first_name is not None:
+        fields.append("first_name = %s")
+        params.append(first_name.strip() or None)
+    if last_name is not None:
+        fields.append("last_name = %s")
+        params.append(last_name.strip() or None)
     if not fields:
         return
     params.append(user_id)
