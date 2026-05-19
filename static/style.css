@@ -2771,21 +2771,23 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #f6f8fa;
-  border: 1px solid #d0d7de;
+  background: transparent;
+  border: 0;
   color: #57606a;
-  font-size: 1.1rem;
+  font-size: 1.3rem;
   line-height: 1;
   font-weight: 600;
-  transition: background 0.15s, border-color 0.15s;
+  /* Il glyph ⋮ ha bounding box molto piu' alta del visibile (dots
+     concentrati in alto-medio): un mini nudge verso il basso centra meglio. */
+  padding-bottom: 2px;
+  transition: background 0.15s, color 0.15s;
 }
 .kebab-trigger:hover {
-  background: #e7eaee;
-  border-color: #adbac7;
+  background: #eaeef2;
+  color: #24292f;
 }
 .kebab-menu[open] .kebab-trigger {
   background: #0969da;
-  border-color: #0969da;
   color: #fff;
 }
 .kebab-dropdown {
