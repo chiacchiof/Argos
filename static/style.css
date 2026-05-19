@@ -2734,6 +2734,128 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   color: #57606a;
 }
 
+/* ============================================================
+   Kebab menu (⋮) riusabile per colonne 'Azioni' troppo affollate.
+   Pattern: <details class="kebab-menu"><summary>⋮</summary>
+              <div class="kebab-dropdown">
+                <a/>, <form>...</form>, ...
+              </div>
+            </details>
+   Niente JS framework: <details> nativo + close-on-outside in base.html.
+   ============================================================ */
+.kebab-menu {
+  display: inline-block;
+  position: relative;
+}
+.kebab-menu summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.kebab-menu summary::-webkit-details-marker { display: none; }
+.kebab-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  color: #57606a;
+  font-size: 1.1rem;
+  line-height: 1;
+  font-weight: 600;
+  transition: background 0.15s, border-color 0.15s;
+}
+.kebab-trigger:hover {
+  background: #e7eaee;
+  border-color: #adbac7;
+}
+.kebab-menu[open] .kebab-trigger {
+  background: #0969da;
+  border-color: #0969da;
+  color: #fff;
+}
+.kebab-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.3rem);
+  min-width: 180px;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+  padding: 0.25rem 0;
+  z-index: 100;
+}
+/* Voci del menu: link, button, e button dentro <form> inline (per le azioni
+   POST tipo Disabilita/Elimina/Reset). Uniformiamo lo styling. */
+.kebab-dropdown a,
+.kebab-dropdown > button,
+.kebab-dropdown > form > button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 0.8rem;
+  color: #24292f;
+  text-decoration: none;
+  font-size: 0.88rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+.kebab-dropdown > form {
+  margin: 0;
+  padding: 0;
+  display: block;
+}
+.kebab-dropdown a:hover,
+.kebab-dropdown > button:hover,
+.kebab-dropdown > form > button:hover {
+  background: #f6f8fa;
+}
+.kebab-dropdown .menu-sep {
+  margin: 0.2rem 0;
+  border: none;
+  border-top: 1px solid #eaeef2;
+}
+.kebab-dropdown .menu-danger,
+.kebab-dropdown > form > button.menu-danger {
+  color: #cf222e;
+}
+.kebab-dropdown .menu-danger:hover,
+.kebab-dropdown > form > button.menu-danger:hover {
+  background: #ffebe9;
+}
+/* Sub-section per piccoli form inline tipo reset password / anagrafica */
+.kebab-dropdown details {
+  border-top: 1px solid #eaeef2;
+  padding: 0.3rem 0.8rem;
+}
+.kebab-dropdown details:first-child { border-top: 0; }
+.kebab-dropdown details > summary {
+  font-size: 0.85rem;
+  color: #24292f;
+  cursor: pointer;
+  padding: 0.2rem 0;
+}
+.kebab-dropdown details > form.reset-pwd-form {
+  display: flex;
+  gap: 0.3rem;
+  padding: 0.3rem 0;
+}
+.kebab-dropdown details > form.reset-pwd-form input[type=text] {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.4rem;
+}
+.kebab-dropdown details > form.reset-pwd-form button {
+  font-size: 0.8rem;
+}
+
 /* Filtro autore (I miei / Tutti del tenant) su /tasks e /workflows */
 .author-filter-bar {
   display: flex;

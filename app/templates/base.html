@@ -61,12 +61,11 @@
     <small>Locale &middot; Ollama @ {{ request.app.state if false else "" }}</small>
   </footer>
   <script>
-    // Chiudi user menu dropdown su click fuori
+    // Chiudi dropdown su click fuori (user-menu + kebab-menu generici).
     document.addEventListener('click', function(e) {
-      var menu = document.querySelector('details.user-menu[open]');
-      if (menu && !menu.contains(e.target)) {
-        menu.removeAttribute('open');
-      }
+      document.querySelectorAll('details.user-menu[open], details.kebab-menu[open]').forEach(function (menu) {
+        if (!menu.contains(e.target)) menu.removeAttribute('open');
+      });
     });
   </script>
 </body>

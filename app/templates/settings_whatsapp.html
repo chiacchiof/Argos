@@ -73,26 +73,31 @@
         </td>
         <td><small>{{ a.updated_at[:19] if a.updated_at else '—' }}</small></td>
         <td>
-          <a href="/settings/whatsapp/account/{{ a.id }}/edit" class="btn-small" title="Modifica metadati account">✏️ Modifica</a>
-          {% if a.status == 'pending_login' %}
-          <form method="post" action="/settings/whatsapp/account/{{ a.id }}/login" style="display:inline">
-            <button type="submit" class="btn-small btn-primary" title="Apre Chromium headed per scansionare il QR">📱 Avvia QR login</button>
-          </form>
-          {% endif %}
-          {% if a.status == 'active' %}
-          <form method="post" action="/settings/whatsapp/account/{{ a.id }}/disable" style="display:inline">
-            <button type="submit" class="btn-small" title="Disabilita temporaneamente">⏸ Disabilita</button>
-          </form>
-          {% elif a.status == 'disabled' %}
-          <form method="post" action="/settings/whatsapp/account/{{ a.id }}/enable" style="display:inline">
-            <button type="submit" class="btn-small">▶ Riattiva</button>
-          </form>
-          {% endif %}
-          <form method="post" action="/settings/whatsapp/account/{{ a.id }}/delete"
-                style="display:inline"
-                onsubmit="return confirm('Elimino l\'account {{ a.username }} + cartella sessione?');">
-            <button type="submit" class="btn-small btn-danger">🗑️ Elimina</button>
-          </form>
+          <details class="kebab-menu">
+            <summary class="kebab-trigger" title="Azioni">⋮</summary>
+            <div class="kebab-dropdown" role="menu">
+              <a href="/settings/whatsapp/account/{{ a.id }}/edit" role="menuitem">✏️ Modifica</a>
+              {% if a.status == 'pending_login' %}
+              <form method="post" action="/settings/whatsapp/account/{{ a.id }}/login">
+                <button type="submit" role="menuitem" title="Apre Chromium headed per scansionare il QR">📱 Avvia QR login</button>
+              </form>
+              {% endif %}
+              {% if a.status == 'active' %}
+              <form method="post" action="/settings/whatsapp/account/{{ a.id }}/disable">
+                <button type="submit" role="menuitem">⏸ Disabilita</button>
+              </form>
+              {% elif a.status == 'disabled' %}
+              <form method="post" action="/settings/whatsapp/account/{{ a.id }}/enable">
+                <button type="submit" role="menuitem">▶ Riattiva</button>
+              </form>
+              {% endif %}
+              <hr class="menu-sep">
+              <form method="post" action="/settings/whatsapp/account/{{ a.id }}/delete"
+                    onsubmit="return confirm('Elimino l\'account {{ a.username }} + cartella sessione?');">
+                <button type="submit" class="menu-danger" role="menuitem">🗑️ Elimina</button>
+              </form>
+            </div>
+          </details>
         </td>
       </tr>
       {% endfor %}
@@ -173,23 +178,28 @@
           {% endif %}
         </td>
         <td>
-          <a href="/settings/whatsapp/api/{{ c.id }}/edit" class="btn-small" title="Modifica parametri (incluso re-cifra access_token)">✏️ Modifica</a>
-          <button type="button" class="btn-small" onclick="testWaApi({{ c.id }})">🧪 Test</button>
-          <span id="wa-api-test-{{ c.id }}" class="muted small"></span>
-          {% if c.status == 'active' %}
-          <form method="post" action="/settings/whatsapp/api/{{ c.id }}/disable" style="display:inline">
-            <button type="submit" class="btn-small">⏸ Disabilita</button>
-          </form>
-          {% else %}
-          <form method="post" action="/settings/whatsapp/api/{{ c.id }}/enable" style="display:inline">
-            <button type="submit" class="btn-small">▶ Riattiva</button>
-          </form>
-          {% endif %}
-          <form method="post" action="/settings/whatsapp/api/{{ c.id }}/delete"
-                style="display:inline"
-                onsubmit="return confirm('Elimino la config API {{ c.label }}?');">
-            <button type="submit" class="btn-small btn-danger">🗑️ Elimina</button>
-          </form>
+          <details class="kebab-menu">
+            <summary class="kebab-trigger" title="Azioni">⋮</summary>
+            <div class="kebab-dropdown" role="menu">
+              <a href="/settings/whatsapp/api/{{ c.id }}/edit" role="menuitem">✏️ Modifica</a>
+              <button type="button" onclick="testWaApi({{ c.id }})" role="menuitem">🧪 Test</button>
+              {% if c.status == 'active' %}
+              <form method="post" action="/settings/whatsapp/api/{{ c.id }}/disable">
+                <button type="submit" role="menuitem">⏸ Disabilita</button>
+              </form>
+              {% else %}
+              <form method="post" action="/settings/whatsapp/api/{{ c.id }}/enable">
+                <button type="submit" role="menuitem">▶ Riattiva</button>
+              </form>
+              {% endif %}
+              <hr class="menu-sep">
+              <form method="post" action="/settings/whatsapp/api/{{ c.id }}/delete"
+                    onsubmit="return confirm('Elimino la config API {{ c.label }}?');">
+                <button type="submit" class="menu-danger" role="menuitem">🗑️ Elimina</button>
+              </form>
+            </div>
+          </details>
+          <span id="wa-api-test-{{ c.id }}" class="muted small" style="display:block;margin-top:0.2rem"></span>
         </td>
       </tr>
       {% endfor %}

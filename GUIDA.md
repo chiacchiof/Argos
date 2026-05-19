@@ -2593,6 +2593,34 @@ Pre-feature: `/qualified` aveva i bottoni `🚀 Avvia outreach (N)` e `🎯 Rila
 - "Seleziona tutti i N filtrati" non scarica gli IDs in browser — usa il flag che fa ri-fetchare lato server. Limite hard: `_MAX_QUALIFIED_SNAPSHOT = 10000`. Sopra 10k l'utente vedrebbe solo i primi 10k.
 - La selezione non persiste tra pagine: cambiando pagina (paginazione) o filtri, lo stato selection si resetta. Pattern Gmail richiede sessioni stateful — overkill per ora.
 
+### 17.18 Kebab menu ⋮ per azioni multiple (2026-05-19)
+
+Le colonne "Azioni" di `/social/accounts`, `/settings/whatsapp` (Motore A + Motore B) e `/admin/users` mostravano 3-5 bottoni a fianco/sopra/sotto, occupando uno spazio enorme e cluttering l'UX. Sostituiti con un **kebab menu (⋮)** standard a singolo bottone che apre un dropdown popover con le azioni.
+
+**Pattern** (no JS framework, solo `<details>` HTML5):
+```html
+<details class="kebab-menu">
+  <summary class="kebab-trigger" title="Azioni">⋮</summary>
+  <div class="kebab-dropdown" role="menu">
+    <a href="..." role="menuitem">✏️ Modifica</a>
+    <form method="post" action="..."><button role="menuitem">⏸ Disabilita</button></form>
+    <hr class="menu-sep">
+    <form method="post" action="..." onsubmit="return confirm(...);">
+      <button class="menu-danger" role="menuitem">🗑️ Elimina</button>
+    </form>
+  </div>
+</details>
+```
+
+**CSS** ([static/style.css](static/style.css) `.kebab-menu` / `.kebab-trigger` / `.kebab-dropdown`):
+- Trigger: cerchio 28×28 con `⋮`, hover bg, attivo blu quando `[open]`
+- Dropdown: popover assoluto top:100% right:0, shadow, min-width 180px
+- Voci uniformate via selettore (a + button + form>button), `.menu-danger` rosso per delete
+
+**Close-on-outside-click** generalizzato in [app/templates/base.html](app/templates/base.html): include sia `.user-menu` (header) sia `.kebab-menu` (tutte le tabelle).
+
+**Sub-details dentro kebab** (su `/admin/users`): l'edit anagrafica e reset password sono form inline che si aprono come sub-dropdown dentro il kebab — niente modal pesante per un campo o due.
+
 ### 17.17 Anagrafica utenti (nome/cognome) + disable/enable (2026-05-19)
 
 `users` ora ha `first_name TEXT` + `last_name TEXT` (idempotent ADD COLUMN al boot). Sostituiscono l'email come label nelle UI quando popolati.

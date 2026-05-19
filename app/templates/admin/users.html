@@ -98,33 +98,39 @@
           </td>
           <td><small>{{ u.created_at.strftime("%Y-%m-%d %H:%M") if u.created_at else "-" }}</small></td>
           <td class="admin-actions-cell">
-            <details>
-              <summary>anagrafica</summary>
-              <form method="post" action="/admin/users/{{ u.id }}/edit" class="reset-pwd-form">
-                <input type="text" name="first_name" value="{{ u.first_name or '' }}" placeholder="Nome" spellcheck="false">
-                <input type="text" name="last_name" value="{{ u.last_name or '' }}" placeholder="Cognome" spellcheck="false">
-                <button type="submit" class="btn-link">Salva</button>
-              </form>
+            <details class="kebab-menu">
+              <summary class="kebab-trigger" title="Azioni">⋮</summary>
+              <div class="kebab-dropdown" role="menu">
+                <details>
+                  <summary>✏️ Anagrafica</summary>
+                  <form method="post" action="/admin/users/{{ u.id }}/edit" class="reset-pwd-form">
+                    <input type="text" name="first_name" value="{{ u.first_name or '' }}" placeholder="Nome" spellcheck="false">
+                    <input type="text" name="last_name" value="{{ u.last_name or '' }}" placeholder="Cognome" spellcheck="false">
+                    <button type="submit" class="btn-link">Salva</button>
+                  </form>
+                </details>
+                <details>
+                  <summary>🔑 Password</summary>
+                  <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="reset-pwd-form">
+                    <input type="text" name="new_password" required placeholder="nuova password" spellcheck="false">
+                    <button type="submit" class="btn-link">Reset</button>
+                  </form>
+                </details>
+                {% if u.id != current_user.id %}
+                <form method="post" action="/admin/users/{{ u.id }}/toggle">
+                  <button type="submit" role="menuitem"
+                          title="{% if u.is_active %}Disabilita l'utente: non potrà più accedere finché non riabilitato{% else %}Riabilita l'utente{% endif %}">
+                    {% if u.is_active %}⏸ Disabilita{% else %}▶ Riabilita{% endif %}
+                  </button>
+                </form>
+                <hr class="menu-sep">
+                <form method="post" action="/admin/users/{{ u.id }}/delete"
+                      onsubmit="return confirm('Eliminare definitivamente {{ u.email }}?');">
+                  <button type="submit" class="menu-danger" role="menuitem">🗑️ Elimina</button>
+                </form>
+                {% endif %}
+              </div>
             </details>
-            <details>
-              <summary>password</summary>
-              <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="reset-pwd-form">
-                <input type="text" name="new_password" required placeholder="nuova password" spellcheck="false">
-                <button type="submit" class="btn-link">Reset</button>
-              </form>
-            </details>
-            {% if u.id != current_user.id %}
-            <form method="post" action="/admin/users/{{ u.id }}/toggle" style="display:inline">
-              <button type="submit" class="btn-link"
-                      title="{% if u.is_active %}Disabilita l'utente: non potrà più accedere finché non riabilitato{% else %}Riabilita l'utente{% endif %}">
-                {% if u.is_active %}⏸ Disabilita{% else %}▶ Riabilita{% endif %}
-              </button>
-            </form>
-            <form method="post" action="/admin/users/{{ u.id }}/delete" style="display:inline"
-                  onsubmit="return confirm('Eliminare definitivamente {{ u.email }}?');">
-              <button type="submit" class="btn-link btn-link-danger">Elimina</button>
-            </form>
-            {% endif %}
           </td>
         </tr>
         {% endfor %}

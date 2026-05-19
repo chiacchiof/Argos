@@ -137,18 +137,26 @@
         </td>
         <td><small>{{ a.created_at[:10] if a.created_at else '—' }}</small></td>
         <td class="row-actions">
-          <a href="/social/accounts/{{ a.id }}/edit" class="btn-small" title="Modifica username, password, cap, status, note">✏️ edit</a>
-          <form method="post" action="/social/accounts/{{ a.id }}/toggle-status" style="display:inline;">
-            {% if a.status == 'active' %}
-              <button type="submit" class="btn-small btn-secondary">⏸ quarantine</button>
-            {% elif a.status in ('quarantine','warming_up') %}
-              <button type="submit" class="btn-small">▶ active</button>
-            {% endif %}
-          </form>
-          <form method="post" action="/social/accounts/{{ a.id }}/delete" style="display:inline;"
-                onsubmit="return confirm('Cancellare account #{{ a.id }} ({{ a.platform }}/{{ a.username }})? Anche i log DM saranno cancellati.');">
-            <button type="submit" class="btn-small btn-danger">🗑️</button>
-          </form>
+          <details class="kebab-menu">
+            <summary class="kebab-trigger" title="Azioni">⋮</summary>
+            <div class="kebab-dropdown" role="menu">
+              <a href="/social/accounts/{{ a.id }}/edit" role="menuitem">✏️ Modifica</a>
+              {% if a.status == 'active' %}
+              <form method="post" action="/social/accounts/{{ a.id }}/toggle-status">
+                <button type="submit" role="menuitem">⏸ Quarantine</button>
+              </form>
+              {% elif a.status in ('quarantine','warming_up') %}
+              <form method="post" action="/social/accounts/{{ a.id }}/toggle-status">
+                <button type="submit" role="menuitem">▶ Attiva</button>
+              </form>
+              {% endif %}
+              <hr class="menu-sep">
+              <form method="post" action="/social/accounts/{{ a.id }}/delete"
+                    onsubmit="return confirm('Cancellare account #{{ a.id }} ({{ a.platform }}/{{ a.username }})? Anche i log DM saranno cancellati.');">
+                <button type="submit" class="menu-danger" role="menuitem">🗑️ Elimina</button>
+              </form>
+            </div>
+          </details>
         </td>
       </tr>
       {% endfor %}
