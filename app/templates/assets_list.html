@@ -2,6 +2,23 @@
 {% block title %}Assets — AgentScraper{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
+
+{# Macro: costruisce un URL /assets preservando tutti i filtri correnti +
+   sostituendo il set di tag (k, v) con `pairs`. Usato dai chip attivi e dai
+   facets per non azzerare lo stato del widget quando l'utente clicca un tag. #}
+{% macro assets_url(pairs) -%}
+/assets?
+{%- if filter_type %}asset_type={{ filter_type|urlencode }}&{% endif -%}
+{%- if filter_status %}status={{ filter_status|urlencode }}&{% endif -%}
+{%- if filter_task %}source_task_id={{ filter_task }}&{% endif -%}
+{%- if filter_q %}q={{ filter_q|urlencode }}&{% endif -%}
+{%- if has_contacts %}has_contacts=1&{% endif -%}
+{%- if has_social %}has_social=1&{% endif -%}
+{%- if tag_mode and tag_mode != 'and' %}tag_mode={{ tag_mode }}&{% endif -%}
+{%- if tag_mode == 'custom' and tag_expr %}tag_expr={{ tag_expr|urlencode }}&{% endif -%}
+{%- for k, v in pairs %}tag_key__{{ loop.index0 }}={{ k|urlencode }}&tag_value__{{ loop.index0 }}={{ v|urlencode }}&{% endfor -%}
+{%- endmacro %}
+
 <section>
   <div class="page-header">
     <div>
@@ -71,7 +88,7 @@
     {% if filter_status %}<span class="stats-pill stats-pill-active">stato: <strong>{{ filter_status }}</strong> <a class="pill-close" href="/assets?asset_type={{ filter_type }}&tags={{ filter_tags_str }}{% if filter_q %}&q={{ filter_q }}{% endif %}" title="rimuovi">×</a></span>{% endif %}
   </div>
 
-  <details class="filter-panel" {% if filter_type or filter_status or filter_tags_str %}open{% endif %}>
+  <details class="filter-panel" {% if filter_type or filter_status or filter_tags_str or has_contacts or has_social %}open{% endif %}>
     <summary>🔎 Filtra asset</summary>
     <form method="get" action="/assets">
       <div class="filter-grid">
@@ -94,10 +111,49 @@
           </select>
         </label>
       </div>
-      <input type="hidden" name="tags" value="{{ filter_tags_str }}">
-      <div class="filter-actions">
+
+      {# Filtri rapidi has_* — su stessa riga.
+         Stile inline difensivo: il selettore CSS in style.css.filter-panel
+         viene già applicato, ma `form label { display: block }` (style.css:30)
+         può vincere se il browser ha un foglio in cache senza la nostra
+         override. Inline-style win sempre. #}
+      <div class="filter-quick-flags"
+           style="display:flex; flex-wrap:wrap; align-items:center; gap:0.4rem 1.5rem; margin-top:0.6rem">
+        <label class="check-inline"
+               style="display:inline-flex !important; align-items:center; gap:0.4rem; margin:0; cursor:pointer; user-select:none; font-size:0.92em">
+          <input type="checkbox" name="has_contacts" value="1"
+                 style="margin:0"
+                 {% if has_contacts %}checked{% endif %}>
+          <span>📧 Solo con contatto (email / whatsapp / telegram)</span>
+        </label>
+        <label class="check-inline"
+               style="display:inline-flex !important; align-items:center; gap:0.4rem; margin:0; cursor:pointer; user-select:none; font-size:0.92em">
+          <input type="checkbox" name="has_social" value="1"
+                 style="margin:0"
+                 {% if has_social %}checked{% endif %}>
+          <span>📱 Solo con profili social</span>
+        </label>
+      </div>
+
+      {# Widget tag filter condiviso con /qualified.
+         La presenza di tag_key__N nel form URL "vince" sul legacy `tags=`
+         (vedi _resolve_unified_tag_filters in routes/assets.py). #}
+      <details class="tag-filter-subpanel" style="margin-top:0.8rem"
+               {% if filter_tags %}open{% endif %}>
+        <summary>🏷️ Filtri per tag avanzati (AND/OR/custom)</summary>
+        <div style="padding:0.4rem 0">
+          {% with extra_tag_filters=filter_tags,
+                  available_tag_keys=available_tag_keys,
+                  widget_prefix='assets-tw',
+                  n_slots=6 %}
+            {% include "_tag_filter_widget.html" %}
+          {% endwith %}
+        </div>
+      </details>
+
+      <div class="filter-actions" style="margin-top:0.6rem">
         <button type="submit" class="btn-primary">Applica filtri</button>
-        {% if filter_type or filter_status or filter_tags_str %}
+        {% if filter_type or filter_status or filter_tags_str or has_contacts or has_social %}
           <a href="/assets" class="btn-link">✕ Reset filtri</a>
         {% endif %}
       </div>
@@ -109,44 +165,17 @@
     <strong>Tag attivi:</strong>
     {% for k, v in filter_tags %}
       {% set remaining = filter_tags | reject("equalto", (k, v)) | list %}
-      {% set rem_str = remaining | map("join", ":") | join(",") %}
       <span class="tag-chip">
         {{ k }}: {{ v }}
-        <a href="/assets?asset_type={{ filter_type }}&status={{ filter_status }}&tags={{ rem_str }}"
-           title="Rimuovi questo filtro">×</a>
+        <a href="{{ assets_url(remaining)|trim }}" title="Rimuovi questo filtro">×</a>
       </span>
     {% endfor %}
   </div>
   {% endif %}
 
-  {% if facet_values %}
-  <details class="facets" {% if filter_tags %}open{% endif %}>
-    <summary><strong>Filtra per tag</strong></summary>
-    <div class="facets-grid">
-    {% for key, values in facet_values.items() %}
-      {% if values %}
-      <div class="facet-block">
-        <h4>{{ key }}</h4>
-        <ul>
-          {% for v in values[:12] %}
-            {% set already = (key, v.value) in filter_tags %}
-            {% set base_pairs = filter_tags if already else (filter_tags + [(key, v.value)]) %}
-            {% set base_pairs = base_pairs | reject("equalto", (key, v.value)) | list if already else base_pairs %}
-            {% set pairs_str = base_pairs | map("join", ":") | join(",") %}
-            <li>
-              <a href="/assets?asset_type={{ filter_type }}&status={{ filter_status }}&tags={{ pairs_str }}"
-                 class="{% if already %}tag-active{% endif %}">
-                {{ v.value }} <small class="muted">({{ v.count }})</small>
-              </a>
-            </li>
-          {% endfor %}
-        </ul>
-      </div>
-      {% endif %}
-    {% endfor %}
-    </div>
-  </details>
-  {% endif %}
+  {# Pannello facets/discovery rimosso 2026-05-19: ridondante col widget F1-F6
+     che già mostra count `(N)` accanto a ogni tag_key e tag_value nelle dropdown.
+     Per esplorare 'quali valori esistono per X', apri il widget e seleziona X. #}
 
   {% if assets %}
   <form method="post" action="/assets/delete-bulk" class="bulk-action-form" data-bulk-form

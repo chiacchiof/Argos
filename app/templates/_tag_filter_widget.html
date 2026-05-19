@@ -1,0 +1,154 @@
+{# Partial: widget filtri tag con AND/OR/custom + grid dropdown a cascata key→value.
+   Usato da /assets e /qualified per avere la stessa UX di filtraggio tag.
+
+   Variabili attese in context:
+     - extra_tag_filters: list[tuple[str, str]] — filtri attivi (max n_slots)
+     - tag_mode: 'and' | 'or' | 'custom'
+     - tag_expr: str — espressione boolean (solo se tag_mode == 'custom')
+     - tag_expr_error: str | None — errore parsing dell'espressione, se presente
+     - available_tag_keys: list[{key, count}] — tag keys disponibili per il dropdown
+     - filter_type: str — asset_type corrente (passato a HTMX per restringere i tag values)
+     - n_slots: int — numero di slot tag (default 6)
+     - widget_prefix: str — prefisso univoco per gli id DOM (default 'tw')
+     - tag_values_endpoint: str — endpoint HTMX per il cascade (default '/assets/tag_values')
+#}
+{% set n_slots = n_slots|default(6) %}
+{% set widget_prefix = widget_prefix|default('tw') %}
+{% set tag_values_endpoint = tag_values_endpoint|default('/assets/tag_values') %}
+
+{% if tag_expr_error %}
+<p class="flash-err" style="margin-bottom:0.5rem">
+  ⚠️ Espressione tag non valida: {{ tag_expr_error }}. Tornato a modalità AND.
+</p>
+{% endif %}
+
+<fieldset class="tag-mode-fieldset">
+  <legend>Modalità di combinazione</legend>
+  <label class="radio-inline">
+    <input type="radio" name="tag_mode" value="and"
+           {% if tag_mode == 'and' %}checked{% endif %}
+           onchange="tfmModeChanged(this, '{{ widget_prefix }}')">
+    <strong>AND</strong> — l'asset deve avere <em>tutti</em> i filtri
+  </label>
+  <label class="radio-inline">
+    <input type="radio" name="tag_mode" value="or"
+           {% if tag_mode == 'or' %}checked{% endif %}
+           onchange="tfmModeChanged(this, '{{ widget_prefix }}')">
+    <strong>OR</strong> — basta <em>almeno uno</em>
+  </label>
+  <label class="radio-inline">
+    <input type="radio" name="tag_mode" value="custom"
+           {% if tag_mode == 'custom' %}checked{% endif %}
+           onchange="tfmModeChanged(this, '{{ widget_prefix }}')">
+    <strong>Custom</strong> — costruisci tu (es. <code>(F1 AND F2) OR F3</code>)
+  </label>
+</fieldset>
+
+<div id="{{ widget_prefix }}-expr-block"
+     style="{% if tag_mode != 'custom' %}display:none{% endif %}; margin: 0.5rem 0">
+  <label style="display:block">
+    Espressione
+    <input type="text" name="tag_expr"
+           id="{{ widget_prefix }}-expr-input"
+           value="{{ tag_expr or '' }}"
+           placeholder="Es: (F1 AND F2) OR (F3 AND F4)"
+           style="width:100%; font-family:monospace">
+  </label>
+  <small class="muted">
+    Token validi: <code>F1</code>..<code>F{{ n_slots }}</code>, <code>AND</code>, <code>OR</code>, parentesi.
+    Click sui chip qui sotto per inserirli rapidamente:
+  </small>
+  <div class="tag-expr-helpers" style="margin-top:0.3rem">
+    {% for i in range(n_slots) %}
+      <button type="button" class="btn-small tag-helper-btn"
+              onclick="tfmInsertToken('F{{ i+1 }}', '{{ widget_prefix }}')">F{{ i+1 }}</button>
+    {% endfor %}
+    <button type="button" class="btn-small tag-helper-btn"
+            onclick="tfmInsertToken('AND', '{{ widget_prefix }}')">AND</button>
+    <button type="button" class="btn-small tag-helper-btn"
+            onclick="tfmInsertToken('OR', '{{ widget_prefix }}')">OR</button>
+    <button type="button" class="btn-small tag-helper-btn"
+            onclick="tfmInsertToken('(', '{{ widget_prefix }}')">(</button>
+    <button type="button" class="btn-small tag-helper-btn"
+            onclick="tfmInsertToken(')', '{{ widget_prefix }}')">)</button>
+  </div>
+</div>
+
+<h4 style="margin: 1rem 0 0.3rem">Filtri</h4>
+
+{# Datalist condivisa per le tag_key: si scrive nell'input e il browser
+   filtra typeahead-style. Renderizzata una volta sola (16 key tipici, no
+   server roundtrip). #}
+<datalist id="{{ widget_prefix }}-tag-keys">
+  {% for tk in (available_tag_keys or []) %}
+    <option value="{{ tk.key }}" label="{{ tk.key }} ({{ tk.count }})">
+  {% endfor %}
+</datalist>
+
+<div class="tag-filters-grid tag-filters-grid-{{ n_slots }}">
+  {% for i in range(n_slots) %}
+    {% set ek = extra_tag_filters[i][0] if extra_tag_filters|length > i else '' %}
+    {% set ev = extra_tag_filters[i][1] if extra_tag_filters|length > i else '' %}
+    <div class="tag-filter-row" data-fn="F{{ i+1 }}">
+      <span class="tag-filter-label">F{{ i+1 }}</span>
+      {# Tag key: <input list> + datalist condivisa. Type-to-filter nativo.
+         Su `change` HTMX carica la datalist dei value per la key scelta. #}
+      <input type="text" name="tag_key__{{ i }}"
+             list="{{ widget_prefix }}-tag-keys"
+             value="{{ ek }}"
+             placeholder="tag key…"
+             autocomplete="off"
+             hx-get="{{ tag_values_endpoint }}"
+             hx-trigger="change, search"
+             hx-target="#{{ widget_prefix }}-tagvals-{{ i }}"
+             hx-vals='js:{key: event.target.value, scope: "assets", asset_type: "{{ filter_type|default('') }}", format: "datalist"}'
+             class="tag-filter-key-input">
+      {# Tag value: <input list> + datalist popolata dinamicamente via HTMX
+         su change della key (vedi sopra) E su typing nella value stessa (per
+         server-side search se ci sono migliaia di value). Selector via
+         `closest('.tag-filter-row')` per pescare il SIBLING key input dentro
+         la stessa riga, ignorando hidden input con stesso name in altre form
+         (es. qualified_list.html ha 'tag_key__N' anche come hidden in bulk forms). #}
+      <input type="text" name="tag_value__{{ i }}"
+             list="{{ widget_prefix }}-tagvals-{{ i }}"
+             value="{{ ev }}"
+             placeholder="tag value…"
+             autocomplete="off"
+             hx-get="{{ tag_values_endpoint }}"
+             hx-trigger="input changed delay:250ms, focus"
+             hx-target="#{{ widget_prefix }}-tagvals-{{ i }}"
+             hx-vals='js:{key: event.target.closest(".tag-filter-row").querySelector("input[name^=tag_key__]").value, scope: "assets", asset_type: "{{ filter_type|default('') }}", q: event.target.value, format: "datalist"}'
+             class="tag-filter-value-input">
+      <datalist id="{{ widget_prefix }}-tagvals-{{ i }}">
+        {# Pre-popolato se filtro attivo (per dare hint nella dropdown). #}
+        {% if ek and ev %}
+          <option value="{{ ev }}">
+        {% endif %}
+      </datalist>
+    </div>
+  {% endfor %}
+</div>
+
+{# JS condiviso: namespaced per widget_prefix così istanze multiple sulla stessa pagina
+   (improbabile ma possibile) non si pestano. Le funzioni sono registrate globalmente
+   alla prima inclusione del partial. #}
+<script>
+if (typeof window.tfmModeChanged !== 'function') {
+  window.tfmModeChanged = function(radio, prefix) {
+    var block = document.getElementById(prefix + '-expr-block');
+    if (!block) return;
+    block.style.display = (radio.value === 'custom') ? '' : 'none';
+  };
+  window.tfmInsertToken = function(token, prefix) {
+    var inp = document.getElementById(prefix + '-expr-input');
+    if (!inp) return;
+    var pos = inp.selectionStart || inp.value.length;
+    var before = inp.value.slice(0, pos);
+    var after = inp.value.slice(pos);
+    var pad_before = (before && !/[\s(]$/.test(before)) ? ' ' : '';
+    var pad_after = (after && !/^[\s)]/.test(after)) ? ' ' : '';
+    inp.value = before + pad_before + token + pad_after + after;
+    inp.focus();
+  };
+}
+</script>

@@ -324,80 +324,8 @@
           {% if filter_type %}<br><span style="color:#0969da">ℹ️ Tag ristretti agli asset di tipo <code>{{ filter_type }}</code>.</span>{% endif %}
         </p>
 
-        <fieldset class="tag-mode-fieldset">
-          <legend>Modalità di combinazione</legend>
-          <label class="radio-inline">
-            <input type="radio" name="tag_mode" value="and"
-                   {% if tag_mode == 'and' %}checked{% endif %}
-                   onchange="tfmModeChanged(this)">
-            <strong>AND</strong> — l'asset deve avere <em>tutti</em> i filtri
-          </label>
-          <label class="radio-inline">
-            <input type="radio" name="tag_mode" value="or"
-                   {% if tag_mode == 'or' %}checked{% endif %}
-                   onchange="tfmModeChanged(this)">
-            <strong>OR</strong> — basta <em>almeno uno</em>
-          </label>
-          <label class="radio-inline">
-            <input type="radio" name="tag_mode" value="custom"
-                   {% if tag_mode == 'custom' %}checked{% endif %}
-                   onchange="tfmModeChanged(this)">
-            <strong>Custom</strong> — costruisci tu (es. <code>(F1 AND F2) OR F3</code>)
-          </label>
-        </fieldset>
-
-        <div id="tag-expr-block" style="{% if tag_mode != 'custom' %}display:none{% endif %}; margin: 0.5rem 0">
-          <label style="display:block">
-            Espressione
-            <input type="text" name="tag_expr" id="tag-expr-input"
-                   value="{{ tag_expr or '' }}"
-                   placeholder="Es: (F1 AND F2) OR (F3 AND F4)"
-                   style="width:100%; font-family:monospace">
-          </label>
-          <small class="muted">
-            Token validi: <code>F1</code>..<code>F6</code>, <code>AND</code>, <code>OR</code>, parentesi.
-            Click sui chip qui sotto per inserirli rapidamente:
-          </small>
-          <div class="tag-expr-helpers" style="margin-top:0.3rem">
-            {% for i in range(6) %}
-              <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('F{{ i+1 }}')">F{{ i+1 }}</button>
-            {% endfor %}
-            <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('AND')">AND</button>
-            <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('OR')">OR</button>
-            <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken('(')">(</button>
-            <button type="button" class="btn-small tag-helper-btn" onclick="tfmInsertToken(')')">)</button>
-          </div>
-        </div>
-
-        <h4 style="margin: 1rem 0 0.3rem">Filtri</h4>
-        <div class="tag-filters-grid tag-filters-grid-6">
-          {% for i in range(6) %}
-            {% set ek = extra_tag_filters[i][0] if extra_tag_filters|length > i else '' %}
-            {% set ev = extra_tag_filters[i][1] if extra_tag_filters|length > i else '' %}
-            <div class="tag-filter-row" data-fn="F{{ i+1 }}">
-              <span class="tag-filter-label">F{{ i+1 }}</span>
-              <select name="tag_key__{{ i }}"
-                      hx-get="/assets/tag_values"
-                      hx-trigger="change"
-                      hx-target="#qualified-tag-value-{{ i }}"
-                      hx-include="this"
-                      hx-vals='{"key": "", "scope": "assets", "asset_type": "{{ filter_type }}"}'
-                      onchange="this.setAttribute('hx-vals', JSON.stringify({key: this.value, scope: 'assets', asset_type: '{{ filter_type }}'}));">
-                <option value="">— nessuno —</option>
-                {% for tk in (available_tag_keys or []) %}
-                  <option value="{{ tk.key }}" {% if tk.key == ek %}selected{% endif %}>{{ tk.key }} ({{ tk.count }})</option>
-                {% endfor %}
-              </select>
-              <select name="tag_value__{{ i }}" id="qualified-tag-value-{{ i }}">
-                {% if ek and ev %}
-                  <option value="{{ ev }}" selected>{{ ev }}</option>
-                {% else %}
-                  <option value="">— prima scegli una key —</option>
-                {% endif %}
-              </select>
-            </div>
-          {% endfor %}
-        </div>
+        {# Widget condiviso con /assets: stessa UX, stessa grammatica URL. #}
+        {% include "_tag_filter_widget.html" with context %}
 
         <div class="modal-actions">
           <button type="button" class="btn-link"
@@ -724,32 +652,8 @@ function qpmCancel() {
 // Lo snapshot dello stato avviene all'onclick del bottone trigger
 // (vedi onclick="qpmSnapshotState(); ...modal.add('open')..." nel template).
 
-// --- Tag filters modal: mostra/nasconde input expression sotto radio Custom ---
-function tfmModeChanged(radio) {
-  const block = document.getElementById('tag-expr-block');
-  if (!block) return;
-  block.style.display = (radio.value === 'custom') ? '' : 'none';
-}
-
-// --- Tag filters modal: inserisce un token nell'input expression al cursore ---
-function tfmInsertToken(token) {
-  const inp = document.getElementById('tag-expr-input');
-  if (!inp) return;
-  const start = inp.selectionStart ?? inp.value.length;
-  const end = inp.selectionEnd ?? inp.value.length;
-  const before = inp.value.slice(0, start);
-  const after = inp.value.slice(end);
-  // Aggiungi spazio prima/dopo se serve per leggibilita'
-  const needSpaceBefore = before && !before.endsWith(' ') && !before.endsWith('(');
-  const needSpaceAfter = after && !after.startsWith(' ') && !after.startsWith(')');
-  const sep1 = needSpaceBefore ? ' ' : '';
-  const sep2 = needSpaceAfter ? ' ' : '';
-  inp.value = before + sep1 + token + sep2 + after;
-  inp.focus();
-  // Posiziona il cursore dopo il token inserito
-  const pos = (before + sep1 + token + sep2).length;
-  inp.setSelectionRange(pos, pos);
-}
+// tfmModeChanged / tfmInsertToken sono ora definite globalmente dal partial
+// _tag_filter_widget.html, condivise con /assets. Firma: (radio|token, widget_prefix).
 
 // Esc chiude le modali
 document.addEventListener('keydown', (e) => {

@@ -2012,9 +2012,13 @@ def list_distinct_tag_keys_for_assets(
 
 def list_distinct_tag_values_for_assets(
     tag_key: str, limit: int = 100, asset_type: str | None = None,
+    q: str | None = None,
 ) -> list[dict[str, Any]]:
     """Valori distinct per una tag_key, con count di asset che la hanno.
-    Se `asset_type` valorizzato, restringe agli asset di quel tipo."""
+    Se `asset_type` valorizzato, restringe agli asset di quel tipo.
+    Se `q` valorizzato, filtra i value con LIKE %q% (case-insensitive) —
+    usato per typeahead datalist nel widget tag filter (può esserci migliaia
+    di value distinti, server-side search evita di trasferirli tutti)."""
     tk = (tag_key or "").strip().lower()
     if not tk:
         return []
@@ -2027,6 +2031,11 @@ def list_distinct_tag_values_for_assets(
     if asset_type:
         sql += "AND a.asset_type = %s "
         args.append(asset_type)
+    if q:
+        q_clean = q.strip()
+        if q_clean:
+            sql += "AND LOWER(t.tag_value) LIKE LOWER(%s) "
+            args.append(f"%{q_clean}%")
     sql += "GROUP BY t.tag_value ORDER BY n DESC, t.tag_value LIMIT %s"
     args.append(int(limit))
     with connect() as con:
@@ -2645,46 +2654,34 @@ def count_assets(
     tag_filters: list[tuple[str, str]] | None = None,
     search: str | None = None,
     tenant_id: Any = _UNSET,
+    tag_mode: str = "and",
+    tag_expr: str | None = None,
+    has_contacts: bool = False,
+    has_social: bool = False,
 ) -> int:
-    """Conta gli asset matchando gli stessi filtri di `list_assets`."""
+    """Conta gli asset matchando gli stessi filtri di `list_assets`.
+
+    Riusa `_qualified_assets_where_clause` con qualifier_slugs vuoto, cosi'
+    /assets e /qualified hanno la stessa grammatica di tag (and/or/custom),
+    la stessa search scope, e gli stessi flag has_contacts/has_social.
+    """
     tenant_id = _resolve_tenant(tenant_id)
-    sql = "SELECT COUNT(DISTINCT a.id) FROM assets a"
-    args: list[Any] = []
-    if tag_filters:
-        for i, (k, v) in enumerate(tag_filters):
-            alias = f"t{i}"
-            sql += (
-                f" JOIN asset_tags {alias} ON {alias}.asset_id = a.id "
-                f"AND {alias}.tag_key = %s AND {alias}.tag_value = %s"
-            )
-            args.extend([k.lower(), v])
-    sql += " WHERE 1=1"
-    if asset_type:
-        sql += " AND a.asset_type = %s"
-        args.append(asset_type)
-    if status:
-        sql += " AND a.status = %s"
-        args.append(status)
-    if source_task_id is not None:
-        sql += " AND a.source_task_id = %s"
-        args.append(source_task_id)
-    if search:
-        # LIKE su title + source_url + source_domain + notes (case-insensitive).
-        # Match anche su asset_tags.tag_value via EXISTS (es. "fitness" trova
-        # asset con interests_inferred:fitness).
-        q_like = f"%{search.lower()}%"
-        sql += (
-            " AND (LOWER(COALESCE(a.title, '')) LIKE %s"
-            "  OR LOWER(COALESCE(a.source_url, '')) LIKE %s"
-            "  OR LOWER(COALESCE(a.source_domain, '')) LIKE %s"
-            "  OR LOWER(COALESCE(a.notes, '')) LIKE %s"
-            "  OR EXISTS (SELECT 1 FROM asset_tags st WHERE st.asset_id = a.id"
-            "             AND LOWER(st.tag_value) LIKE %s))"
-        )
-        args.extend([q_like, q_like, q_like, q_like, q_like])
-    if tenant_id is not None:
-        sql += " AND a.tenant_id = %s"
-        args.append(tenant_id)
+    where, args = _qualified_assets_where_clause(
+        qualifier_slugs=[],
+        status_filter="qualified",  # no-op senza slug
+        score_min=None,
+        asset_type=asset_type,
+        source_task_id=source_task_id,
+        search=search,
+        extra_tag_filters=tag_filters,
+        tenant_id=tenant_id,
+        tag_mode=tag_mode,
+        tag_expr=tag_expr,
+        has_contacts=has_contacts,
+        has_social=has_social,
+        asset_status_col=status,
+    )
+    sql = "SELECT COUNT(*) FROM assets a" + where
     with connect() as con:
         row = con.execute(sql, args).fetchone()
         return int(row["count"] if isinstance(row, dict) else row[0])
@@ -2699,44 +2696,30 @@ def list_assets(
     limit: int = 200,
     offset: int = 0,
     tenant_id: Any = _UNSET,
+    tag_mode: str = "and",
+    tag_expr: str | None = None,
+    has_contacts: bool = False,
+    has_social: bool = False,
 ) -> list[dict[str, Any]]:
+    """Lista asset (con tag combine and/or/custom, has_*). Helper condiviso
+    con list_qualified_assets via `_qualified_assets_where_clause`."""
     tenant_id = _resolve_tenant(tenant_id)
-    sql = "SELECT a.* FROM assets a"
-    args: list[Any] = []
-    if tag_filters:
-        for i, (k, v) in enumerate(tag_filters):
-            alias = f"t{i}"
-            sql += (
-                f" JOIN asset_tags {alias} ON {alias}.asset_id = a.id "
-                f"AND {alias}.tag_key = %s AND {alias}.tag_value = %s"
-            )
-            args.extend([k.lower(), v])
-    sql += " WHERE 1=1"
-    if asset_type:
-        sql += " AND a.asset_type = %s"
-        args.append(asset_type)
-    if status:
-        sql += " AND a.status = %s"
-        args.append(status)
-    if source_task_id is not None:
-        sql += " AND a.source_task_id = %s"
-        args.append(source_task_id)
-    if search:
-        # Stesso pattern di count_assets (LIKE su title/url/domain/notes/tag_value).
-        q_like = f"%{search.lower()}%"
-        sql += (
-            " AND (LOWER(COALESCE(a.title, '')) LIKE %s"
-            "  OR LOWER(COALESCE(a.source_url, '')) LIKE %s"
-            "  OR LOWER(COALESCE(a.source_domain, '')) LIKE %s"
-            "  OR LOWER(COALESCE(a.notes, '')) LIKE %s"
-            "  OR EXISTS (SELECT 1 FROM asset_tags st WHERE st.asset_id = a.id"
-            "             AND LOWER(st.tag_value) LIKE %s))"
-        )
-        args.extend([q_like, q_like, q_like, q_like, q_like])
-    if tenant_id is not None:
-        sql += " AND a.tenant_id = %s"
-        args.append(tenant_id)
-    sql += " ORDER BY a.id DESC LIMIT %s OFFSET %s"
+    where, args = _qualified_assets_where_clause(
+        qualifier_slugs=[],
+        status_filter="qualified",
+        score_min=None,
+        asset_type=asset_type,
+        source_task_id=source_task_id,
+        search=search,
+        extra_tag_filters=tag_filters,
+        tenant_id=tenant_id,
+        tag_mode=tag_mode,
+        tag_expr=tag_expr,
+        has_contacts=has_contacts,
+        has_social=has_social,
+        asset_status_col=status,
+    )
+    sql = "SELECT a.* FROM assets a" + where + " ORDER BY a.id DESC LIMIT %s OFFSET %s"
     args.append(limit)
     args.append(max(0, int(offset)))
     with connect() as con:
@@ -3387,14 +3370,29 @@ def _qualified_assets_where_clause(
     tag_expr: str | None = None,
     has_contacts: bool = False,
     has_social: bool = False,
+    asset_status_col: str | None = None,
 ) -> tuple[str, list[Any]]:
-    """Costruisce WHERE+args condivisi da list_qualified_assets / count_qualified_assets.
+    """Costruisce WHERE+args condivisi da list_assets / list_qualified_assets
+    (e relative count_*). Tabella aliasata come `a`.
 
-    `tag_mode` (and|or|custom) controlla come combinare gli `extra_tag_filters`:
-      - and (default, retrocompat): tutti AND (un EXISTS per ciascuno)
+    Parametri qualifier-specific (NO-OP per /assets generic):
+      - `qualifier_slugs`: se vuota/None, skip del filtro qualifier_<slug>.
+      - `score_min`: applicato a TUTTI i qualifier in lista; ignorato senza slug.
+      - `status_filter`: 'qualified'|'rejected'|'both' — solo per qualifier tag.
+
+    `asset_status_col`: filtra `assets.status` (colonna SQL, non tag). Usato
+    da /assets per filtrare per stato del record asset (new/processed/...).
+
+    `tag_mode` (and|or|custom): combinazione di `extra_tag_filters`:
+      - and: tutti AND (un EXISTS per ciascuno) — default retrocompat
       - or: legati con OR
-      - custom: usa `tag_expr` (es. '(F1 AND F2) OR F3'); validata da
+      - custom: usa `tag_expr` (es. '(F1 AND F2) OR F3') via
         app.agent.tag_expr.build_where_clause.
+
+    `search`: LIKE %q% su tutti gli identificatori comuni: title, source_url,
+    source_domain, notes, display_name, email, whatsapp, telegram_username,
+    social_json + tag_value (via EXISTS). Cosi' /assets e /qualified hanno la
+    stessa search scope.
     """
     where = " WHERE 1=1"
     args: list[Any] = []
@@ -3418,13 +3416,32 @@ def _qualified_assets_where_clause(
     if asset_type:
         where += " AND a.asset_type = %s"
         args.append(asset_type)
+    if asset_status_col:
+        where += " AND a.status = %s"
+        args.append(asset_status_col)
     if source_task_id is not None:
         where += " AND a.source_task_id = %s"
         args.append(source_task_id)
     if search:
-        like = f"%{search.strip()}%"
-        where += " AND (LOWER(COALESCE(a.title,'')) LIKE LOWER(%s) OR LOWER(COALESCE(a.raw_json,'')) LIKE LOWER(%s))"
-        args.extend([like, like])
+        # Unified search scope: identificatori asset + contatti + tag value.
+        # Allinea /assets e /qualified — un termine cercato matcha gli stessi
+        # campi in entrambe le pagine.
+        like = f"%{search.strip().lower()}%"
+        where += (
+            " AND ("
+            "LOWER(COALESCE(a.title, '')) LIKE %s"
+            " OR LOWER(COALESCE(a.source_url, '')) LIKE %s"
+            " OR LOWER(COALESCE(a.source_domain, '')) LIKE %s"
+            " OR LOWER(COALESCE(a.notes, '')) LIKE %s"
+            " OR LOWER(COALESCE(a.display_name, '')) LIKE %s"
+            " OR LOWER(COALESCE(a.email, '')) LIKE %s"
+            " OR LOWER(COALESCE(a.whatsapp, '')) LIKE %s"
+            " OR LOWER(COALESCE(a.telegram_username, '')) LIKE %s"
+            " OR LOWER(COALESCE(a.social_json, '')) LIKE %s"
+            " OR EXISTS (SELECT 1 FROM asset_tags st WHERE st.asset_id = a.id"
+            "            AND LOWER(st.tag_value) LIKE %s))"
+        )
+        args.extend([like] * 10)
     if extra_tag_filters:
         from .agent.tag_expr import build_where_clause as _tag_build
         norm = [(str(k).lower(), str(v)) for (k, v) in extra_tag_filters]

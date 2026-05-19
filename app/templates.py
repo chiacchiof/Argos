@@ -41,3 +41,20 @@ def _owner_display(row: Any) -> str:
 
 
 templates.env.filters["owner_display"] = _owner_display
+
+
+def _static_css_mtime() -> int:
+    """mtime di static/style.css per cache-busting. Cambia ad ogni modifica del
+    file; serializzato come int (secondi). Usato in base.html:
+    `<link href="/static/style.css?v={{ static_css_mtime }}">`."""
+    try:
+        css = Path(__file__).resolve().parent.parent / "static" / "style.css"
+        return int(css.stat().st_mtime)
+    except Exception:
+        return 0
+
+
+# Esposto come callable (non valore congelato): cosi' viene ricalcolato a ogni
+# render del template — utile in dev con uvicorn --reload che NON ricarica
+# moduli Python quando solo la CSS cambia. Overhead minimo (1 stat() per page).
+templates.env.globals["static_css_mtime"] = _static_css_mtime

@@ -19,7 +19,13 @@ router = APIRouter()
 
 
 def _parse_tag_filters(raw: str | None) -> list[tuple[str, str]]:
-    """Parsa il querystring `tags=key:value,key2:value2` in coppie."""
+    """Parsa il legacy querystring `tags=key:value,key2:value2` in coppie.
+
+    Mantenuto per backward-compat con bookmark / link salvati / il filtro
+    dropdown del tipo. Il nuovo formato canonico per /assets e /qualified e'
+    `tag_key__N` / `tag_value__N` (slot numerati) parsato da
+    `_parse_extra_tag_filters_from_mapping`.
+    """
     if not raw:
         return []
     out: list[tuple[str, str]] = []
@@ -39,6 +45,26 @@ def _serialize_tag_filters(pairs: list[tuple[str, str]]) -> str:
     return ",".join(f"{k}:{v}" for k, v in pairs)
 
 
+def _resolve_unified_tag_filters(
+    request: Request,
+    legacy_tags_param: str | None,
+) -> list[tuple[str, str]]:
+    """Risolve i tag filter unificando i due formati storici di /assets e /qualified.
+
+    Priorita':
+      1) Slot numerati `tag_key__N` / `tag_value__N` (formato canonico nuovo,
+         allineato con /qualified).
+      2) Fallback al legacy `tags=k:v,k:v` (string serializzata) — preserva
+         i bookmark e i link salvati che usavano il vecchio formato.
+
+    Cosi' /assets parla la stessa "grammatica" di /qualified senza rompere URL.
+    """
+    new_format = _parse_extra_tag_filters_from_mapping(request.query_params)
+    if new_format:
+        return new_format
+    return _parse_tag_filters(legacy_tags_param)
+
+
 _ASSETS_PAGE_SIZE = 100
 
 
@@ -47,16 +73,38 @@ async def assets_list(
     request: Request,
     asset_type: str | None = None,
     status: str | None = None,
-    tags: str | None = None,
+    tags: str | None = None,           # legacy: tags=k:v,k:v (parsato per backcompat)
     source_task_id: int | None = None,
     q: str | None = None,
+    tag_mode: str = "and",
+    tag_expr: str = "",
+    has_contacts: str = "",
+    has_social: str = "",
     page: int = 1,
     per_page: int = _ASSETS_PAGE_SIZE,
 ):
     asset_type = (asset_type or "").strip() or None
     status = (status or "").strip() or None
     q_clean = (q or "").strip() or None
-    tag_filters = _parse_tag_filters(tags)
+    # Tag filters: nuovo formato (tag_key__N) preferito, legacy 'tags=' fallback.
+    tag_filters = _resolve_unified_tag_filters(request, tags)
+    tag_mode_v = (tag_mode or "and").strip().lower()
+    if tag_mode_v not in ("and", "or", "custom"):
+        tag_mode_v = "and"
+    tag_expr_v = (tag_expr or "").strip()
+    tag_expr_error: str | None = None
+    if tag_mode_v == "custom" and not tag_expr_v:
+        tag_mode_v = "and"
+    if tag_mode_v == "custom" and tag_filters and tag_expr_v:
+        from ..agent.tag_expr import parse_tag_expr as _parse_te
+        try:
+            _parse_te(tag_expr_v, len(tag_filters))
+        except ValueError as e:
+            tag_expr_error = str(e)
+            tag_mode_v = "and"
+            tag_expr_v = ""
+    has_contacts_v = bool(has_contacts and has_contacts.strip())
+    has_social_v = bool(has_social and has_social.strip())
     # Sanitize paginazione
     per_page = max(10, min(int(per_page or _ASSETS_PAGE_SIZE), 500))
     page = max(1, int(page or 1))
@@ -68,6 +116,10 @@ async def assets_list(
         source_task_id=source_task_id,
         tag_filters=tag_filters or None,
         search=q_clean,
+        tag_mode=tag_mode_v,
+        tag_expr=tag_expr_v or None,
+        has_contacts=has_contacts_v,
+        has_social=has_social_v,
     )
     total_pages = max(1, (total + per_page - 1) // per_page)
     # Clamp page se l'utente passa un numero oltre la fine
@@ -81,22 +133,39 @@ async def assets_list(
         source_task_id=source_task_id,
         tag_filters=tag_filters or None,
         search=q_clean,
+        tag_mode=tag_mode_v,
+        tag_expr=tag_expr_v or None,
+        has_contacts=has_contacts_v,
+        has_social=has_social_v,
         limit=per_page,
         offset=offset,
     )
     types_in_use = db.list_asset_types_in_use()
-    tag_keys = db.list_asset_tag_keys(asset_type=asset_type)
-    facet_values: dict[str, list[dict]] = {}
-    for k in tag_keys:
-        facet_values[k] = db.list_asset_tag_values(k, asset_type=asset_type, limit=30)
+    # Tag keys per il widget condiviso _tag_filter_widget.html (dropdown F1-F6).
+    # Esclude qualifier_* (vivono in /qualified). Il vecchio facets panel è
+    # stato rimosso: la discovery è già fornita dal count `(N)` nelle dropdown.
+    available_tag_keys = db.list_distinct_tag_keys_for_assets(
+        exclude_qualifier_tags=True,
+        asset_type=asset_type,
+    )
 
-    # Querystring base per i link di paginazione (senza page=)
+    # Querystring base per i link di paginazione (senza page=).
+    # Usiamo il NUOVO formato tag_key__N / tag_value__N per essere coerenti con
+    # /qualified — i link salvati con `tags=` legacy continuano a funzionare in input.
     from urllib.parse import quote
     qs_parts: list[str] = []
-    if asset_type: qs_parts.append(f"asset_type={asset_type}")
-    if status: qs_parts.append(f"status={status}")
+    if asset_type: qs_parts.append(f"asset_type={quote(asset_type)}")
+    if status: qs_parts.append(f"status={quote(status)}")
     if source_task_id is not None: qs_parts.append(f"source_task_id={source_task_id}")
-    if tag_filters: qs_parts.append(f"tags={_serialize_tag_filters(tag_filters)}")
+    for i, (k, v) in enumerate(tag_filters):
+        qs_parts.append(f"tag_key__{i}={quote(k)}")
+        qs_parts.append(f"tag_value__{i}={quote(v)}")
+    if tag_filters and tag_mode_v != "and":
+        qs_parts.append(f"tag_mode={tag_mode_v}")
+    if tag_mode_v == "custom" and tag_expr_v:
+        qs_parts.append(f"tag_expr={quote(tag_expr_v)}")
+    if has_contacts_v: qs_parts.append("has_contacts=1")
+    if has_social_v: qs_parts.append("has_social=1")
     if q_clean: qs_parts.append(f"q={quote(q_clean)}")
     if per_page != _ASSETS_PAGE_SIZE: qs_parts.append(f"per_page={per_page}")
     qs_base = "&".join(qs_parts)
@@ -112,9 +181,13 @@ async def assets_list(
             "filter_tags_str": _serialize_tag_filters(tag_filters),
             "filter_task": source_task_id,
             "filter_q": q_clean or "",
+            "tag_mode": tag_mode_v,
+            "tag_expr": tag_expr_v,
+            "tag_expr_error": tag_expr_error,
+            "has_contacts": has_contacts_v,
+            "has_social": has_social_v,
             "types_in_use": types_in_use,
-            "facet_values": facet_values,
-            "tag_keys": tag_keys,
+            "available_tag_keys": available_tag_keys,
             # paginazione
             "page": page,
             "per_page": per_page,
@@ -641,6 +714,7 @@ async def asset_preview_inline(asset_id: str = ""):
 @router.get("/assets/tag_values", response_class=HTMLResponse)
 async def asset_tag_values_htmx(
     request: Request, key: str = "", scope: str = "contacts", asset_type: str = "",
+    q: str = "", format: str = "select",
 ):
     """HTMX endpoint: ritorna <option> per il dropdown tag_value dato un
     tag_key. Usato sia dal form task (filtro outreach multi-tag) sia dai
@@ -649,25 +723,46 @@ async def asset_tag_values_htmx(
     scope=contacts (default, backward-compat): count = N contatti per value
     scope=assets:                              count = N asset per value
     asset_type (solo con scope=assets): restringe ai value presenti su quel tipo.
+    q (opzionale, solo scope=assets): substring LIKE %q% per typeahead (datalist).
+    format='select' (default): include un'option placeholder. format='datalist':
+        nessun placeholder (datalist non li vuole come hint utili).
     """
     key = (key or "").strip().lower()
+    fmt = (format or "select").strip().lower()
     if not key:
+        if fmt == "datalist":
+            return HTMLResponse("")
         return HTMLResponse('<option value="">— prima scegli una key —</option>')
     use_assets = (scope or "").strip().lower() == "assets"
     at = (asset_type or "").strip() or None
+    q_clean = (q or "").strip() or None
+    # Cap aumentato a 200 per typeahead: se l'utente digita "fit" su un tag
+    # come 'interests_inferred' con 1000+ valori, 100 LIKE-match potrebbero
+    # essere troppo restrittivi. Con server-side q-filter è ancora gestibile.
     try:
         if use_assets:
-            values = db.list_distinct_tag_values_for_assets(key, limit=100, asset_type=at)
+            values = db.list_distinct_tag_values_for_assets(
+                key, limit=200, asset_type=at, q=q_clean,
+            )
         else:
+            # Scope=contacts non ha q-filter (legacy, raramente usato con typeahead).
             values = db.list_distinct_tag_values_for_contacts(key, limit=100)
     except Exception:
         values = []
-    parts = ['<option value="">— seleziona —</option>']
+    parts: list[str] = []
+    if fmt != "datalist":
+        parts.append('<option value="">— seleziona —</option>')
     for v in values:
         # Escape HTML semplice
         val = (v.get("value") or "").replace('"', "&quot;").replace("<", "&lt;")
         n = v.get("count", 0)
-        parts.append(f'<option value="{val}">{val} ({n})</option>')
+        # Per datalist mettiamo il count nel `label` invece che dentro al text:
+        # alcuni browser nascondono il text di <option> nella datalist e mostrano
+        # solo il value, quindi il count finirebbe invisibile.
+        if fmt == "datalist":
+            parts.append(f'<option value="{val}" label="{val} ({n})">')
+        else:
+            parts.append(f'<option value="{val}">{val} ({n})</option>')
     return HTMLResponse("".join(parts))
 
 

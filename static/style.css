@@ -67,6 +67,10 @@ a.tag-chip-mini:hover { background: #e8f1ff; border-color: #93c5fd; color: #1d4e
 .facet-block h4 { margin: 0 0 0.3rem; font-size: 0.9em; color: #374151; }
 .facet-block ul { list-style: none; margin: 0; padding: 0; }
 .facet-block li { margin: 0.15rem 0; font-size: 0.86em; }
+
+/* (Pannello facets ridisegnato rimosso 2026-05-19: ridondante col widget F1-F6
+   che già mostra count nelle dropdown. Regole .facets / .facets-grid /
+   .facet-block sopra restano come dead code per eventuale futuro riuso.) */
 .assets-table .tags-cell { max-width: 280px; }
 .code-block { background: #f9fafb; border: 1px solid var(--border); border-radius: 4px; padding: 0.8rem; font-size: 0.82em; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 0.8rem; margin: 0.6rem 0; }
@@ -1604,6 +1608,52 @@ main.wide { max-width: 1300px; }
   padding: 0.4rem 1rem;
 }
 
+/* Quick-flags row (has_contacts / has_social): checkbox + label inline,
+   sulla stessa riga. Override del `form label { display: block }` globale
+   (style.css:30). */
+.filter-panel .filter-quick-flags {
+  display: flex; flex-wrap: wrap;
+  gap: 0.4rem 1.2rem;
+  align-items: center;
+  margin-top: 0.6rem;
+}
+.filter-panel .filter-quick-flags label {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.92em;
+  cursor: pointer;
+  user-select: none;
+}
+.filter-panel .filter-quick-flags input[type="checkbox"] {
+  margin: 0;
+}
+
+/* Sub-panel "Filtri per tag avanzati" dentro il pannello filtri: piccolo
+   inset per distinguerlo visivamente dal blocco superiore senza dare
+   l'impressione di un secondo pannello indipendente. */
+.filter-panel .tag-filter-subpanel {
+  margin-top: 0.8rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fafbfc;
+  padding: 0;
+}
+.filter-panel .tag-filter-subpanel > summary {
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.92em;
+  list-style: revert;
+}
+.filter-panel .tag-filter-subpanel[open] > summary {
+  border-bottom: 1px solid #e5e7eb;
+}
+.filter-panel .tag-filter-subpanel > div {
+  padding: 0.6rem 0.7rem;
+}
+
 /* Tabelle .data: row hover + zebra + cell-padding consistente */
 table.data { border-radius: 4px; overflow: hidden; }
 table.data tbody tr { transition: background 0.12s; }
@@ -2399,12 +2449,32 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   color: #0969da;
   text-align: center;
 }
-.tag-filter-row select {
+.tag-filter-row select,
+.tag-filter-row input[type="text"] {
   width: 100%;
   padding: 0.35rem 0.5rem;
   font-size: 0.88rem;
   border: 1px solid #d0d7de;
   border-radius: 4px;
+  background: #fff;
+}
+/* Hint visivo che gli input hanno autocomplete datalist (freccia simulata):
+   datalist non disegna nativamente l'icona dropdown sull'input, l'utente
+   non sa che può digitare per filtrare. Aggiungiamo un piccolo "▾" a destra. */
+.tag-filter-row input.tag-filter-key-input,
+.tag-filter-row input.tag-filter-value-input {
+  background-image: linear-gradient(45deg, transparent 50%, #6b7280 50%),
+                    linear-gradient(135deg, #6b7280 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 10px) 50%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  padding-right: 22px;
+}
+.tag-filter-row input.tag-filter-key-input:focus,
+.tag-filter-row input.tag-filter-value-input:focus {
+  outline: 2px solid #93c5fd;
+  outline-offset: -1px;
+  border-color: #0969da;
 }
 .tag-expr-helpers {
   display: flex;
