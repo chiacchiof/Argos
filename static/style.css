@@ -2783,12 +2783,12 @@ form .actions { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid v
   transition: background 0.15s, color 0.15s;
 }
 .kebab-trigger:hover {
-  background: #eaeef2;
-  color: #24292f;
+  background: transparent;
+  color: #0969da;
 }
 .kebab-menu[open] .kebab-trigger {
-  background: #0969da;
-  color: #fff;
+  background: transparent;
+  color: #0969da;
 }
 .kebab-dropdown {
   position: absolute;
