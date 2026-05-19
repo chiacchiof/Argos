@@ -88,13 +88,18 @@ class TikTok(SocialPlatform):
             await human_wait(2, 5)
 
     async def send_dm(
-        self, page: "Page", username: str, message: str
+        self,
+        page: "Page",
+        username: str,
+        message: str,
+        *,
+        speed_profile: str | None = None,
     ) -> DMResult:
         ok_profile = await self.goto_profile(page, username)
         if not ok_profile:
             return DMResult(ok=False, reason="profile_not_found", target_username=username)
         await human_scroll(page, n=1)
-        await human_wait(3, 7)
+        await human_wait(3, 7, profile=speed_profile)
         try:
             # TikTok mostra icona paper-airplane (Message) sul profile header
             msg_sels = [
@@ -113,7 +118,7 @@ class TikTok(SocialPlatform):
                     continue
             if not clicked:
                 return DMResult(ok=False, reason="message_button_not_found", target_username=username)
-            await human_wait(3, 6)
+            await human_wait(3, 6, profile=speed_profile)
             input_sels = [
                 "div[contenteditable='true']",
                 "textarea[placeholder*='message']",
@@ -123,14 +128,14 @@ class TikTok(SocialPlatform):
             for sel in input_sels:
                 try:
                     if await page.locator(sel).first.is_visible(timeout=2000):
-                        await human_type(page, sel, message)
+                        await human_type(page, sel, message, profile=speed_profile)
                         typed = True
                         break
                 except Exception:
                     continue
             if not typed:
                 return DMResult(ok=False, reason="dm_input_not_found", target_username=username)
-            await human_wait(1, 3)
+            await human_wait(1, 3, profile=speed_profile)
             # Send: cerca button send, fallback Enter
             send_sels = [
                 "[data-e2e='message-send']",

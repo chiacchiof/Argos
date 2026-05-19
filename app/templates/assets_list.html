@@ -33,10 +33,42 @@
   <div class="flash-ok">✅ Import completato: <strong>{{ request.query_params.get('imported') }}</strong> record processati.</div>
   {% endif %}
 
+  {# Live search bar — filtra man mano che l'utente scrive (debounce 300ms). #}
+  {# Match su title, source_url, source_domain, notes, e tag_value (asset_tags). #}
+  <div class="search-row" style="margin:0.6rem 0">
+    <input type="search"
+           name="q"
+           value="{{ filter_q }}"
+           placeholder="🔍 Cerca per titolo, URL, dominio, tag (es. 'Catania', 'fitness', 'instagram.com')..."
+           class="search-input"
+           autocomplete="off"
+           hx-get="/assets"
+           hx-trigger="keyup changed delay:300ms, search, input changed delay:300ms"
+           hx-target="#assets-results"
+           hx-select="#assets-results"
+           hx-swap="outerHTML"
+           hx-push-url="true"
+           hx-include="[name='asset_type'], [name='status'], [name='tags'], [name='source_task_id']"
+           hx-indicator="#search-spinner">
+    <span id="search-spinner" class="htmx-indicator muted small" style="white-space:nowrap">⏳ cerco...</span>
+    {% if filter_q %}
+    <a href="?{% if filter_type %}asset_type={{ filter_type }}&{% endif %}{% if filter_status %}status={{ filter_status }}&{% endif %}{% if filter_tags_str %}tags={{ filter_tags_str }}{% endif %}"
+       class="btn-link" title="Pulisci ricerca">✕</a>
+    {% endif %}
+  </div>
+
+  {# Hidden inputs per propagare i filtri non-search via hx-include #}
+  <input type="hidden" name="asset_type" value="{{ filter_type }}">
+  <input type="hidden" name="status" value="{{ filter_status }}">
+  <input type="hidden" name="tags" value="{{ filter_tags_str }}">
+  {% if filter_task %}<input type="hidden" name="source_task_id" value="{{ filter_task }}">{% endif %}
+
+  <div id="assets-results">
   <div class="stats-bar">
-    <span class="stats-pill"><strong>{{ total }}</strong> asset {% if filter_type or filter_status or filter_tags_str %}filtrati{% else %}totali{% endif %}</span>
-    {% if filter_type %}<span class="stats-pill stats-pill-active">tipo: <strong>{{ filter_type }}</strong> <a class="pill-close" href="/assets?status={{ filter_status }}&tags={{ filter_tags_str }}" title="rimuovi">×</a></span>{% endif %}
-    {% if filter_status %}<span class="stats-pill stats-pill-active">stato: <strong>{{ filter_status }}</strong> <a class="pill-close" href="/assets?asset_type={{ filter_type }}&tags={{ filter_tags_str }}" title="rimuovi">×</a></span>{% endif %}
+    <span class="stats-pill"><strong>{{ total }}</strong> asset {% if filter_type or filter_status or filter_tags_str or filter_q %}filtrati{% else %}totali{% endif %}</span>
+    {% if filter_q %}<span class="stats-pill stats-pill-active">🔍 ricerca: <strong>{{ filter_q }}</strong></span>{% endif %}
+    {% if filter_type %}<span class="stats-pill stats-pill-active">tipo: <strong>{{ filter_type }}</strong> <a class="pill-close" href="/assets?status={{ filter_status }}&tags={{ filter_tags_str }}{% if filter_q %}&q={{ filter_q }}{% endif %}" title="rimuovi">×</a></span>{% endif %}
+    {% if filter_status %}<span class="stats-pill stats-pill-active">stato: <strong>{{ filter_status }}</strong> <a class="pill-close" href="/assets?asset_type={{ filter_type }}&tags={{ filter_tags_str }}{% if filter_q %}&q={{ filter_q }}{% endif %}" title="rimuovi">×</a></span>{% endif %}
   </div>
 
   <details class="filter-panel" {% if filter_type or filter_status or filter_tags_str %}open{% endif %}>

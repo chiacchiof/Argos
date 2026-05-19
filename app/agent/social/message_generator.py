@@ -31,6 +31,84 @@ from ..ollama import ollama_keep_alive
 log = logging.getLogger(__name__)
 
 
+# Etichette/heading che il modello a volte "rilasca" quando non rispetta il
+# vincolo "solo testo del messaggio". Match case-insensitive su sottostringa.
+# Coprire IT + EN perché i thinking models (qwen3.x, gpt-oss, deepseek-r1)
+# tendono a ragionare in inglese anche con prompt italiano.
+_INSTRUCTION_LEAK_KEYWORDS: tuple[str, ...] = (
+    # IT
+    "analizza", "analisi della richiesta", "obiettivo", "compito",
+    "ruolo:", "target:", "piattaforma:", "informazioni profilo",
+    "informazioni del profilo", "vincoli:", "stile:", "tono:",
+    "passo 1", "passo 2", "passo 3", "fase 1", "fase 2",
+    "lingua:", "lunghezza:", "max caratteri", "output:", "input:",
+    "istruzioni:", "esempi:", "constraints:", "obiettivo dell'outreach",
+    # EN
+    "analyze the request", "analyze the prompt", "role:", "task:",
+    "target:", "platform:", "profile info", "profile information",
+    "step 1", "step 2", "step 3", "step-by-step", "let's think",
+    "let me think", "first, ", "first,\n", "language:", "tone:",
+    "constraints:", "output:", "instructions:", "context:", "audience:",
+    "italian copywriter", "specialized in", "dm message for",
+    "as instructed", "as requested", "your task is", "according to",
+)
+
+
+def _looks_like_instructions(text: str) -> tuple[bool, str | None]:
+    """Riconosce output dove l'LLM ha rilasciato il proprio ragionamento /
+    le istruzioni del prompt invece del messaggio finito.
+
+    Trigger comuni dai thinking models (qwen3.x, gpt-oss, deepseek-r1):
+      - liste markdown con `**Label:**` o `* *Label:*` (3+ run)
+      - numerazione di step `1.`, `2.`, ...
+      - keyword esplicite ("Analyze the Request", "Role:", "Target:")
+      - prefisso meta ("Step 1:", "OUTPUT:", "Task:")
+
+    Tornare (False, None) per output "puliti" che assomigliano a un messaggio
+    umano genuino. Non perfetto — favoriamo i falsi negativi rari ai falsi
+    positivi che bloccherebbero messaggi validi (es. un DM che cita "1." o
+    contiene una breve frase tipo "ruolo importante").
+    """
+    if not text:
+        return False, None
+    t = text.strip()
+    if not t:
+        return False, None
+    lower = t.lower()
+
+    # 1) Run di `**Label:**` (markdown bold + colon). 3+ è cattivo segno: i
+    #    DM umani usano al massimo un grassetto enfatico, mai 3+ etichette.
+    label_runs = re.findall(r"\*\*[^*\n]{1,40}?\*\*\s*:", t)
+    if len(label_runs) >= 3:
+        return True, f"markdown_label_runs={len(label_runs)}"
+
+    # 2) Bullet con singolo `*Label:*` (markdown italic + colon).
+    star_label = re.findall(r"^\s*\*\s*\*[^*\n]{1,40}?\*\s*:", t, re.MULTILINE)
+    if len(star_label) >= 3:
+        return True, f"star_label_runs={len(star_label)}"
+
+    # 3) Multipla numerazione step: 2+ righe con "1.", "2.", ...
+    numbered = re.findall(r"^\s*\d+[\.\)]\s+\S", t, re.MULTILINE)
+    if len(numbered) >= 2:
+        return True, f"numbered_steps={len(numbered)}"
+
+    # 4) Keyword red-flag: 2+ hit fra le tipiche etichette meta.
+    keyword_hits = sum(1 for kw in _INSTRUCTION_LEAK_KEYWORDS if kw in lower)
+    if keyword_hits >= 2:
+        return True, f"red_flag_keywords={keyword_hits}"
+
+    # 5) Prefisso meta esplicito alla prima riga.
+    first_line = t.split("\n", 1)[0].strip().lower()
+    if re.match(
+        r"^(step\s*\d|output|input|task|role|target|platform|profile\s*info|"
+        r"ruolo|compito|piattaforma|obiettivo|vincoli|istruzioni|esempi)\s*:",
+        first_line,
+    ):
+        return True, "leading_meta_label"
+
+    return False, None
+
+
 def _is_ollama_endpoint(base_url: str) -> bool:
     """Heuristic per riconoscere endpoint Ollama (OpenAI-compat su :11434 o
     explicit 'ollama' nel path). Solo su Ollama possiamo passare `keep_alive`
@@ -115,7 +193,12 @@ VINCOLI ASSOLUTI:
 - Aprire con saluto naturale, chiudere con domanda aperta o invito leggero
 - Se ESEMPI sono forniti sopra, segui IL TONO e LA LUNGHEZZA media ma cambia parole e struttura
 
-OUTPUT: solo il testo del messaggio, niente prefissi tipo "Messaggio:", niente commenti."""
+OUTPUT (CRITICAL): la risposta deve essere ESCLUSIVAMENTE il testo del DM finito,
+pronto da inviare. Niente analisi, niente "Step 1/2/3", niente bullet markdown,
+niente etichette come "Role:", "Target:", "Platform:", "Profile Info:".
+Niente "Messaggio:" come prefisso. Niente preamboli, niente commenti, niente
+spiegazioni di cosa stai facendo. Se il destinatario leggesse la tua risposta
+COSI' COME E', deve sembrargli un messaggio umano normale, non un'istruzione."""
 
 
 async def generate_message(
@@ -136,7 +219,23 @@ async def generate_message(
     payload: dict[str, Any] = {
         "model": llm_model,
         "messages": [
-            {"role": "system", "content": "Sei un copywriter italiano specializzato in outreach social. Scrivi messaggi DM che sembrano genuini, mai template."},
+            {
+                "role": "system",
+                "content": (
+                    "Sei un copywriter italiano specializzato in outreach social. "
+                    "Scrivi messaggi DM che sembrano genuini, mai template.\n\n"
+                    "REGOLA #1 — ZERO META-OUTPUT: la tua risposta DEVE essere "
+                    "solo e soltanto il testo che il destinatario leggera'. "
+                    "Mai 'Analizza la richiesta', 'Role:', 'Task:', 'Target:', "
+                    "'Platform:', 'Profile Info:', 'Step 1:', 'OUTPUT:'. Mai "
+                    "elenchi puntati o numerati. Mai markdown con etichette in "
+                    "grassetto come **Label:**. Mai spiegare cosa stai per scrivere. "
+                    "Solo il messaggio finito, come se lo stessi scrivendo tu su "
+                    "WhatsApp/IG. Se non hai abbastanza info per personalizzare, "
+                    "scrivi un saluto breve generico ma umano (3-4 righe max), "
+                    "non rifiutarti."
+                ),
+            },
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.85,  # piu' alta per variabilita' (vs 0.0 per JSON extract)
@@ -186,6 +285,19 @@ async def generate_message(
         raise ValueError(
             "LLM ha risposto vuoto (probabile modello 'thinking' senza output testuale "
             "nel campo content; prova un modello chat/instruct tipo qwen2.5:instruct)"
+        )
+
+    # Guardrail anti instruction-leak: bocca i casi in cui il modello ha
+    # mandato la sua catena-di-ragionamento o ha echo'd le istruzioni del
+    # prompt invece del messaggio finale. Se non fermassimo, il runner
+    # spedirebbe DAVVERO quel testo al destinatario (succede gia' con
+    # qwen3.5 thinking + Sebastiano Arcidiacono, 2026-05-19).
+    is_leak, leak_reason = _looks_like_instructions(raw)
+    if is_leak:
+        raise ValueError(
+            f"LLM ha emesso un output meta/ragionamento invece del messaggio "
+            f"({leak_reason}). Cambia modello (es. qwen2.5:instruct, mistral) "
+            f"o irrigidisci il prompt. Output bloccato per non inviare istruzioni al destinatario."
         )
     return raw
 

@@ -585,6 +585,66 @@
        ai filtri legacy se target_asset_ids e' vuoto. #}
 
     {# ============================================================
+       SEZIONE 6c: TARGET CONTACT LEGACY (read-only)
+       Mostrata solo se target_contact_ids non vuoto. I task creati dall'
+       orchestrator quando il contact non ha asset_id linkato finiscono qui;
+       senza questa sezione l'utente non li vedeva e pensava che l'audience
+       fosse vuota. Il runner outreach legge fallback su target_contact_ids
+       quando target_asset_ids e' vuoto, quindi il task FUNZIONA comunque.
+       Per portarli nel flusso canonico, "Promuovi" li converte in asset.
+       ============================================================ #}
+    {% if legacy_contacts %}
+    <details class="collapsible-section dyn-section audience-section"
+             data-modes="outreach outreach_social outreach_whatsapp" open>
+      <summary>
+        🗂️ Contatti legacy
+        <span class="hint">
+          ({{ legacy_contacts|length }} in target_contact_ids — fallback runtime,
+          non visibili nella sezione asset; promuovi per gestione completa)
+        </span>
+      </summary>
+      <table class="table-compact" style="margin-top:0.5rem">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Nome</th>
+            <th>Canali</th>
+            <th>Origine</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in legacy_contacts %}
+          <tr>
+            <td><a href="/inbox/contact/{{ c.id }}">#{{ c.id }}</a></td>
+            <td>{{ c.display_name or '—' }}</td>
+            <td>
+              {% if c.whatsapp %}<span class="pill">WA {{ c.whatsapp }}</span>{% endif %}
+              {% if c.email %}<span class="pill">{{ c.email }}</span>{% endif %}
+              {% if c.telegram_username %}<span class="pill">TG @{{ c.telegram_username }}</span>{% endif %}
+            </td>
+            <td class="muted small">
+              {% if c.asset_id %}asset #{{ c.asset_id }}{% else %}manuale{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if task and task.id %}
+      <form method="post" action="/tasks/{{ task.id }}/promote_legacy_contacts"
+            style="margin-top:0.6rem">
+        <button type="submit" class="btn-secondary btn-small">
+          📥 Promuovi tutti ad asset (sposta in target_asset_ids)
+        </button>
+        <span class="hint">
+          crea un asset di tipo 'contact' per ognuno (se non già linkato),
+          li sposta in target_asset_ids, svuota target_contact_ids.
+        </span>
+      </form>
+      {% endif %}
+    </details>
+    {% endif %}
+
+    {# ============================================================
        SEZIONE 7: OUTREACH — solo outreach
        ============================================================ #}
     <details class="collapsible-section dyn-section" data-modes="outreach">

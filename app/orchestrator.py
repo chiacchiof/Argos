@@ -23,7 +23,10 @@ AgentMode = Literal[
     "site_explorer",
     "qualifier",
     "outreach",
+    "outreach_social",
+    "outreach_whatsapp",
     "responder",
+    "recon_social",
 ]
 
 AutonomyLevel = Literal["advisor", "builder", "supervised", "autonomous"]
@@ -56,7 +59,7 @@ AUTONOMY_LEVELS: dict[str, dict[str, Any]] = {
     },
 }
 
-RISKY_AGENT_MODES = {"outreach", "responder"}
+RISKY_AGENT_MODES = {"outreach", "outreach_social", "outreach_whatsapp", "responder"}
 
 PLANNER_TOOL_MAX_LOOPS = 3
 
@@ -397,6 +400,40 @@ class PlannedTask(BaseModel):
     crawler_max_depth: int = 3
     notes: str | None = None
     status_tag: str | None = "tuning"
+    # Audience selection (outreach_*): id-list di destinatari espliciti.
+    # target_asset_ids vince su target_contact_ids quando entrambi valorizzati.
+    target_contact_ids: list[int] = Field(default_factory=list)
+    target_asset_ids: list[int] = Field(default_factory=list)
+    # Filtri alternativi alla selezione esplicita (si combinano in AND).
+    outreach_filter_source_task_id: int | None = None
+    outreach_filter_source_follower_of: str | None = None
+    outreach_filter_tags: list[dict] = Field(default_factory=list)
+    # Input asset filter (legge asset esistenti come input)
+    input_asset_filter: dict | None = None
+    output_asset_type: str | None = None
+    # outreach_social
+    social_platform: str | None = None
+    social_account_id: int | None = None
+    outreach_intent: str | None = None
+    message_template_variants: str | None = None
+    max_dms_per_run: int = 30
+    max_dms_per_session: int = 5
+    headed: int = 1
+    gap_between_dms_min: float | None = None
+    gap_between_dms_max: float | None = None
+    # outreach_whatsapp
+    whatsapp_engine_preference: Literal["auto", "force_A", "force_B"] = "auto"
+    whatsapp_dry_run: int = 0
+    whatsapp_account_id: int | None = None
+    whatsapp_api_config_id: int | None = None
+    # recon_social
+    recon_mode: Literal["url_driven", "exploration", "follower_scrape"] | None = None
+    recon_social_account_id: int | None = None
+    recon_hypothesis: str | None = None
+    recon_max_targets_per_day: int = 50
+    recon_score_threshold: int = 6
+    seed_queries_friends: list[str] = Field(default_factory=list)
+    speed_profile: Literal["safe", "balanced", "aggressive"] = "safe"
 
 
 class PlannedEdge(BaseModel):
@@ -1388,6 +1425,37 @@ def _task_to_db_payload(task: PlannedTask) -> dict[str, Any]:
         "rating": None,
         "notes": task.notes,
         "status_tag": task.status_tag,
+        # Audience selection (outreach_*)
+        "target_contact_ids": list(task.target_contact_ids),
+        "target_asset_ids": list(task.target_asset_ids),
+        "outreach_filter_source_task_id": task.outreach_filter_source_task_id,
+        "outreach_filter_source_follower_of": task.outreach_filter_source_follower_of,
+        "outreach_filter_tags": list(task.outreach_filter_tags),
+        "input_asset_filter": task.input_asset_filter,
+        "output_asset_type": task.output_asset_type,
+        # outreach_social
+        "social_platform": task.social_platform,
+        "social_account_id": task.social_account_id,
+        "outreach_intent": task.outreach_intent,
+        "message_template_variants": task.message_template_variants,
+        "max_dms_per_run": task.max_dms_per_run,
+        "max_dms_per_session": task.max_dms_per_session,
+        "headed": task.headed,
+        "gap_between_dms_min": task.gap_between_dms_min,
+        "gap_between_dms_max": task.gap_between_dms_max,
+        # outreach_whatsapp
+        "whatsapp_engine_preference": task.whatsapp_engine_preference,
+        "whatsapp_dry_run": task.whatsapp_dry_run,
+        "whatsapp_account_id": task.whatsapp_account_id,
+        "whatsapp_api_config_id": task.whatsapp_api_config_id,
+        # recon_social
+        "recon_mode": task.recon_mode,
+        "recon_social_account_id": task.recon_social_account_id,
+        "recon_hypothesis": task.recon_hypothesis,
+        "recon_max_targets_per_day": task.recon_max_targets_per_day,
+        "recon_score_threshold": task.recon_score_threshold,
+        "seed_queries_friends": list(task.seed_queries_friends),
+        "speed_profile": task.speed_profile,
     }
 
 

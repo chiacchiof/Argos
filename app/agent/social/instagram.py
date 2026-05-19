@@ -110,14 +110,19 @@ class Instagram(SocialPlatform):
             await human_wait(2, 6)
 
     async def send_dm(
-        self, page: "Page", username: str, message: str
+        self,
+        page: "Page",
+        username: str,
+        message: str,
+        *,
+        speed_profile: str | None = None,
     ) -> DMResult:
         ok_profile = await self.goto_profile(page, username)
         if not ok_profile:
             return DMResult(ok=False, reason="profile_not_found", target_username=username)
         # Lettura profilo
         await human_scroll(page, n=2)
-        await human_wait(3, 7)
+        await human_wait(3, 7, profile=speed_profile)
         # Click "Message" — selettore tipico (puo' variare)
         try:
             msg_btn_selectors = [
@@ -136,10 +141,10 @@ class Instagram(SocialPlatform):
                     continue
             if not clicked:
                 return DMResult(ok=False, reason="message_button_not_found", target_username=username)
-            await human_wait(3, 6)
+            await human_wait(3, 6, profile=speed_profile)
             # Type + send
-            await human_type(page, "div[role='textbox'][contenteditable='true']", message)
-            await human_wait(1, 3)
+            await human_type(page, "div[role='textbox'][contenteditable='true']", message, profile=speed_profile)
+            await human_wait(1, 3, profile=speed_profile)
             # Send button (Enter o icona)
             send_sels = [
                 "div[role='button']:has-text('Send')",
@@ -157,7 +162,7 @@ class Instagram(SocialPlatform):
             if not sent:
                 # Fallback: Enter key
                 await page.keyboard.press("Enter")
-            await human_wait(4, 7)
+            await human_wait(4, 7, profile=speed_profile)
             # Verifica delivery: cerca il messaggio nel chat history
             try:
                 await page.locator(f"div:has-text('{message[:40]}')").wait_for(timeout=5000)

@@ -380,9 +380,18 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         batch = pairs[:max_per_session]
         pairs = pairs[max_per_session:]
         jlog(f"→ Sessione: {len(batch)} DM via {platform}")
-        # Warmup variabile 3-5 min: rende meno prevedibile il pattern temporale
-        # session → DM (un fisso 5min dopo login e' un signal facilmente fingerprintabile).
-        warmup_min = random.uniform(3.0, 5.0)
+        # Warmup variabile, range modulato dal speed_profile del task.
+        # safe (default): 3.0-5.0 min (anti-ban max, social ha feed da scrollare).
+        # balanced: ~50% (1.5-2.5 min). aggressive: 0 (niente warmup).
+        # Override via speed_profile per ridurre tempo a costo di rischio.
+        speed_profile = task.get("speed_profile") or None
+        if speed_profile == "balanced":
+            wu_lo, wu_hi = 1.5, 2.5
+        elif speed_profile == "aggressive":
+            wu_lo, wu_hi = 0.0, 0.0
+        else:
+            wu_lo, wu_hi = 3.0, 5.0
+        warmup_min = random.uniform(wu_lo, wu_hi)
         results = await engine.run_session(
             platform_name=platform,
             targets=batch,
@@ -391,6 +400,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             jlog=jlog,
             gap_min_minutes=task.get("gap_between_dms_min"),
             gap_max_minutes=task.get("gap_between_dms_max"),
+            speed_profile=speed_profile,
         )
         all_results.extend(results)
         if not results:

@@ -466,6 +466,63 @@ async def task_remove_asset_id(request: Request, task_id: int, asset_id: int):
     )
 
 
+@router.post("/tasks/{task_id}/promote_legacy_contacts")
+async def task_promote_legacy_contacts(request: Request, task_id: int):
+    """Per ogni contact in target_contact_ids, crea un asset di tipo 'contact'
+    (se non già linkato), lo aggiunge a target_asset_ids, svuota
+    target_contact_ids. Idempotente. Redirect alla pagina edit."""
+    import json as _json
+
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+    cids_raw = task.get("target_contact_ids") or []
+    cids = [int(x) for x in cids_raw if str(x).strip().lstrip("-").isdigit()]
+    if not cids:
+        return RedirectResponse(url=f"/tasks/{task_id}/edit", status_code=303)
+
+    existing_aids: list[int] = list(task.get("target_asset_ids") or [])
+    promoted_aids: list[int] = []
+    for cid in cids:
+        contact = db.get_contact(cid)
+        if not contact:
+            continue
+        if contact.get("asset_id"):
+            aid = int(contact["asset_id"])
+        else:
+            asset_data = {
+                "asset_type": "contact",
+                "source_url": contact.get("source_url") or None,
+                "source_domain": contact.get("source_domain") or None,
+                "source_task_id": contact.get("source_task_id"),
+                "source_job_id": contact.get("source_job_id"),
+                "title": (contact.get("display_name") or "").strip() or f"Contact #{cid}",
+                "display_name": contact.get("display_name"),
+                "email": contact.get("email"),
+                "telegram_username": contact.get("telegram_username"),
+                "telegram_chat_id": contact.get("telegram_chat_id"),
+                "whatsapp": contact.get("whatsapp"),
+                "whatsapp_consent": contact.get("whatsapp_consent"),
+                "whatsapp_last_inbound_at": contact.get("whatsapp_last_inbound_at"),
+                "social_json": contact.get("social_json"),
+                "sitoweb": contact.get("sitoweb"),
+                "notes": contact.get("notes"),
+                "status": "qualified",
+                "raw_json": _json.dumps(
+                    {"promoted_from_contact_id": cid}, ensure_ascii=False
+                ),
+            }
+            aid = int(db.upsert_asset(asset_data))
+            db.update_contact(cid, {"asset_id": aid})
+        if aid not in existing_aids and aid not in promoted_aids:
+            promoted_aids.append(aid)
+
+    if promoted_aids:
+        db.update_task_target_asset_ids(task_id, existing_aids + promoted_aids)
+    db.update_task_target_contact_ids(task_id, [])
+    return RedirectResponse(url=f"/tasks/{task_id}/edit", status_code=303)
+
+
 @router.get("/tasks/new", response_class=HTMLResponse)
 async def new_task_form(request: Request):
     try:
@@ -506,6 +563,16 @@ async def edit_task_form(request: Request, task_id: int):
         by_id = {a["id"]: a for a in raw}
         audience_assets = [by_id[aid] for aid in first_50 if aid in by_id]
 
+    # Legacy target_contact_ids: i task creati prima dello switch asset-centric
+    # (o da orchestrator quando i contacts non hanno asset linkato) usano questo.
+    # Senza visibilità l'utente non sa che l'audience è configurata. Mostriamo
+    # una sezione read-only quando non vuota.
+    legacy_contacts: list[dict] = []
+    cids = task.get("target_contact_ids") or []
+    if cids:
+        first_50_cids = [int(c) for c in cids[:50] if str(c).strip().lstrip("-").isdigit()]
+        legacy_contacts = db.get_contacts_by_ids(first_50_cids)
+
     return templates.TemplateResponse(
         request,
         "task_form.html",
@@ -515,6 +582,7 @@ async def edit_task_form(request: Request, task_id: int):
             "default_model": settings.default_model,
             "errors": None,
             "audience_assets": audience_assets,
+            "legacy_contacts": legacy_contacts,
             **_form_extra_context(),
         },
     )

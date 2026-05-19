@@ -44,8 +44,16 @@ router = APIRouter()
 CHAT_FILE_MAX_BYTES = 5 * 1024 * 1024
 CHAT_FILE_CONTEXT_CHARS = 40_000
 CHAT_HISTORY_FILE_CONTEXT_CHARS = 8_000
-CHAT_TOOL_MAX_LOOPS = 3
-CHAT_MAX_TOKENS = 420
+# Tetto iterazioni del loop tool-calling. Ogni iterazione = 1 chiamata LLM.
+# Aumentato da 3 a 6 perché i flussi outreach_* fanno tipicamente 3-4 tool
+# (list_*_senders, search_contacts, [create_contact_asset opzionale], create_task)
+# e con la sintesi finale serve almeno 1 iterazione extra dopo l'ultimo tool.
+CHAT_TOOL_MAX_LOOPS = 6
+# Tetto output token. Tenuto largo perché i modelli "thinking" (qwen3.x, gpt-oss,
+# deepseek-r1) consumano una fetta di questo budget nel campo `reasoning` PRIMA
+# del `content` visibile: con 420 token il content finiva spesso vuoto e l'utente
+# vedeva "(il modello non ha prodotto risposta)".
+CHAT_MAX_TOKENS = 2000
 CHAT_ALLOWED_FILE_EXTENSIONS = {
     ".txt",
     ".md",
@@ -291,6 +299,74 @@ CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_contacts",
+            "description": (
+                "Risolve nomi/email/handle in contact_id da passare a outreach_*. "
+                "LIKE %q% su display_name, email, telegram_username, whatsapp, sitoweb, "
+                "source_url, source_domain, notes, social_json. "
+                "Filtra per channel ('email'|'telegram'|'whatsapp'|'social'|'instagram'|"
+                "'tiktok'|'facebook'|'any') quando ti serve solo chi ha quel canale. "
+                "Esempio: cercare il destinatario di un DM WhatsApp di nome 'Sebastiano' "
+                "→ search_contacts(name='Sebastiano', channel='whatsapp')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Testo libero da cercare (nome, parte di email, parte di numero, ecc.).",
+                    },
+                    "channel": {
+                        "type": "string",
+                        "description": "Filtro 'email'|'telegram'|'whatsapp'|'sitoweb'|'social'|'instagram'|'tiktok'|'facebook'|'any'.",
+                    },
+                    "limit": {"type": "integer", "description": "Max risultati (default 10, cap 50)."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_whatsapp_senders",
+            "description": (
+                "Lista i sender WhatsApp disponibili nel progetto. Ritorna due liste: "
+                "engine_A (social_accounts WHERE platform='whatsapp', cioè browser via "
+                "Playwright/QR-login) e engine_B (whatsapp_api_config, Meta Cloud API). "
+                "Usalo PRIMA di create_task(agent_mode='outreach_whatsapp') per risolvere "
+                "il sender che l'utente ha indicato e ottenere whatsapp_account_id o "
+                "whatsapp_api_config_id. Senza sender attivi, il task non può partire."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_social_senders",
+            "description": (
+                "Lista i social_accounts (sender DM) di una specifica platform. "
+                "Usalo PRIMA di create_task(agent_mode='outreach_social') per risolvere "
+                "il social_account_id. Senza platform ritorna tutti."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "description": "'instagram'|'tiktok'|'facebook' (omettere per tutti).",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Filtra per status (default 'active').",
+                    },
+                },
+            },
+        },
+    },
 ]
 
 CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
@@ -335,8 +411,14 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
             "description": (
                 "Crea un singolo task. Per piani multi-step preferisci propose_plan+execute_plan. "
                 "Campi minimi: name, agent_mode, objective. "
+                "agent_mode valido: react, browser_use, bulk_extract, auto_extract, site_explorer, qualifier, "
+                "outreach, outreach_social, outreach_whatsapp, responder, recon_social. "
                 "Per site_explorer su sito infinite-scroll/unbounded: passa target_cap_per_site=0 E un objective "
-                "con keyword-trigger ('tutti i profili', 'infinite scroll', 'centinaia', ecc.)."
+                "con keyword-trigger ('tutti i profili', 'infinite scroll', 'centinaia', ecc.). "
+                "Per outreach_whatsapp: passa whatsapp_account_id (Engine A browser) o whatsapp_api_config_id "
+                "(Engine B Meta Cloud API) e specifica i destinatari via target_contact_ids OPPURE target_asset_ids "
+                "OPPURE outreach_filter_*. Risolvi i nomi (es. 'Sebastiano') con search_contacts(name=..., channel='whatsapp') "
+                "PRIMA di chiamare create_task. Risolvi il sender con list_whatsapp_senders()."
             ),
             "parameters": {
                 "type": "object",
@@ -344,14 +426,27 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                     "name": {"type": "string"},
                     "agent_mode": {"type": "string"},
                     "objective": {"type": "string"},
-                    "model": {"type": "string"},
+                    "model": {
+                        "type": "string",
+                        "description": (
+                            "Bare model id (es. 'llama3.1:8b', 'qwen3.5:latest', 'gpt-4o'). "
+                            "NON includere il prefisso provider — 'llm_provider' è settato a parte. "
+                            "Esempio sbagliato: 'ollama:llama3.1:8b'. Esempio giusto: 'llama3.1:8b'."
+                        ),
+                    },
                     "seed_queries": {"type": "array", "items": {"type": "string"}},
                     "allowed_domains": {"type": "array", "items": {"type": "string"}},
                     "max_iterations": {"type": "integer"},
                     "extraction_template": {"type": "string"},
                     "input_artifact_path": {"type": "string"},
                     "message_subject": {"type": "string"},
-                    "message_template": {"type": "string"},
+                    "message_template": {
+                        "type": "string",
+                        "description": (
+                            "Testo messaggio outreach. Placeholder supportati: {display_name}, {first_name}, "
+                            "{role}, {organization}. Per multi-variante (A/B testing) usa message_template_variants."
+                        ),
+                    },
                     "message_channels": {"type": "array", "items": {"type": "string"}},
                     "responder_system_prompt": {"type": "string"},
                     "target_cap_per_site": {
@@ -376,8 +471,165 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                         "type": "integer",
                         "description": "bulk_extract crawler: hop massimi dal seed (default 3).",
                     },
+                    "target_contact_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "outreach_*: ids dei contacts destinatari (legacy). Risolvi i nomi con "
+                            "search_contacts(...) prima di passarli."
+                        ),
+                    },
+                    "target_asset_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "outreach_*: ids degli asset destinatari (audience snapshot, picker /qualified). "
+                            "Vince su target_contact_ids quando entrambi valorizzati."
+                        ),
+                    },
+                    "outreach_filter_source_task_id": {
+                        "type": "integer",
+                        "description": "outreach_*: restringi destinatari a quelli generati da un task specifico.",
+                    },
+                    "outreach_filter_source_follower_of": {
+                        "type": "integer",
+                        "description": "outreach_*: restringi destinatari ai follower di un asset specifico.",
+                    },
+                    "outreach_filter_tags": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {"type": "string"},
+                                "value": {"type": "string"},
+                            },
+                            "required": ["key", "value"],
+                        },
+                        "description": (
+                            "outreach_*: multi-tag AND filter sui contatti destinatari. "
+                            "Es: [{key:'interests_inferred', value:'fitness'}, {key:'location', value:'Catania'}] "
+                            "→ contatta SOLO chi ha entrambi i tag."
+                        ),
+                    },
+                    "input_asset_filter": {
+                        "type": "object",
+                        "description": (
+                            "Filtro per leggere asset esistenti come input al task (qualifier/outreach). "
+                            "Es: {\"asset_type\": \"palestra\"}."
+                        ),
+                    },
+                    "output_asset_type": {
+                        "type": "string",
+                        "description": "asset_type assegnato agli asset PRODOTTI dal task (es. 'ig_profile', 'palestra', 'follower').",
+                    },
+                    "social_platform": {
+                        "type": "string",
+                        "description": "outreach_social: 'instagram', 'tiktok', 'facebook'.",
+                    },
+                    "social_account_id": {
+                        "type": "integer",
+                        "description": (
+                            "outreach_social: id del social_account che invierà i DM. Risolvi con "
+                            "list_social_senders(platform=...). Lascia null per usare il pool default."
+                        ),
+                    },
+                    "outreach_intent": {"type": "string"},
+                    "message_template_variants": {
+                        "type": "string",
+                        "description": "outreach_social: variants per A/B testing, separate da '---' su righe distinte.",
+                    },
+                    "max_dms_per_run": {
+                        "type": "integer",
+                        "description": "outreach_*: max DM inviati in un singolo run (default 30).",
+                    },
+                    "max_dms_per_session": {
+                        "type": "integer",
+                        "description": "outreach_*: max DM per sessione browser prima di pausa (default 5).",
+                    },
+                    "headed": {
+                        "type": "integer",
+                        "description": "outreach_*: 1=Chromium visibile (debug), 0=headless. Default 1.",
+                    },
+                    "gap_between_dms_min": {
+                        "type": "number",
+                        "description": "outreach_*: pausa min tra DM in minuti (range 0.05-60). Null=default platform.",
+                    },
+                    "gap_between_dms_max": {
+                        "type": "number",
+                        "description": "outreach_*: pausa max tra DM in minuti. Null=default platform.",
+                    },
+                    "whatsapp_engine_preference": {
+                        "type": "string",
+                        "enum": ["auto", "force_A", "force_B"],
+                        "description": (
+                            "outreach_whatsapp: 'auto' (default, selezione per contatto), "
+                            "'force_A' (browser, cold outreach, viola ToS Meta), "
+                            "'force_B' (Cloud API, solo opt-in/24h-window)."
+                        ),
+                    },
+                    "whatsapp_dry_run": {
+                        "type": "integer",
+                        "description": "outreach_whatsapp: 1=simula senza inviare, 0=invia davvero. Default 0.",
+                    },
+                    "whatsapp_account_id": {
+                        "type": "integer",
+                        "description": (
+                            "outreach_whatsapp Engine A: id del social_accounts row con platform='whatsapp'. "
+                            "Risolvi con list_whatsapp_senders(). Null=pool default."
+                        ),
+                    },
+                    "whatsapp_api_config_id": {
+                        "type": "integer",
+                        "description": (
+                            "outreach_whatsapp Engine B: id della whatsapp_api_config (Meta Cloud API). "
+                            "Risolvi con list_whatsapp_senders()."
+                        ),
+                    },
+                    "recon_mode": {
+                        "type": "string",
+                        "enum": ["url_driven", "exploration", "follower_scrape"],
+                        "description": "recon_social: modalità ricognizione.",
+                    },
+                    "recon_social_account_id": {
+                        "type": "integer",
+                        "description": "recon_social: id del social_account loggato che fa la ricognizione.",
+                    },
+                    "recon_hypothesis": {"type": "string"},
+                    "recon_max_targets_per_day": {"type": "integer"},
+                    "recon_score_threshold": {"type": "integer"},
+                    "seed_queries_friends": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "recon_social: nomi/URL da risolvere contro friend/following list.",
+                    },
+                    "speed_profile": {
+                        "type": "string",
+                        "enum": ["safe", "balanced", "aggressive"],
+                        "description": "recon_social: 'safe'=default, 'balanced'=~40% più veloce, 'aggressive'=~65% più veloce.",
+                    },
                 },
                 "required": ["name", "agent_mode", "objective"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_contact_asset",
+            "description": (
+                "Promuove un contact legacy (asset_id NULL) ad asset di tipo 'contact'. "
+                "Usalo quando search_contacts ritorna un contatto con asset_id NULL e devi "
+                "passarlo come target a outreach_*: il workflow asset-centric della UI mostra "
+                "solo target_asset_ids, quindi promuovere il contact lo rende visibile nella "
+                "UI '🎯 Audience asset' di /tasks/<id>/edit. Ritorna l'asset_id del nuovo asset "
+                "(o quello esistente se il contact era già linkato). Non duplica."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "contact_id": {"type": "integer"},
+                },
+                "required": ["contact_id"],
             },
         },
     },
@@ -511,6 +763,7 @@ CHAT_TOOL_CAPABLE_OLLAMA_MARKERS = (
     "hermes",
     "phi4",
     "deepseek",
+    "gpt-oss",
 )
 CHAT_TEXT_INCAPABLE_MARKERS = (
     "embed",
@@ -902,11 +1155,21 @@ async def orchestrator_chat(
 
 @router.post("/orchestrator/chat/stream")
 async def orchestrator_chat_stream(
+    request: Request,
     message: str = Form(""),
     chat_web_enabled: str = Form(""),
     chat_actions_enabled: str = Form(""),
     attachment: UploadFile | None = File(None),
 ):
+    # Cattura tenant_id/user_id PRIMA dell'event_stream: il middleware li resetta
+    # quando call_next ritorna la StreamingResponse, e il body viene iterato dopo
+    # — quindi i tool db.* dentro lo stream vedrebbero tenant=None (super-admin)
+    # creando asset cross-tenant invisibili dal browser dell'utente. Li ripristiniamo
+    # esplicitamente dentro l'event_stream.
+    _user = getattr(request.state, "current_user", None)
+    _captured_tenant_id = _user.tenant_id if _user else None
+    _captured_user_id = _user.id if _user else None
+
     message = (message or "").strip()
     cfg = _saved_orchestrator_config()
     provider_key = cfg["llm_provider"]
@@ -1006,8 +1269,21 @@ async def orchestrator_chat_stream(
     )
 
     async def event_stream() -> AsyncIterator[str]:
+        # Ripristina i ContextVar tenant/user catturati prima dello stream:
+        # il middleware li resetta al return di call_next, ma noi vogliamo che
+        # i tool db.* dentro al chat girino con la stessa identità della request.
+        _tenant_token = db.set_current_tenant(_captured_tenant_id)
+        _user_token = db.set_current_user(_captured_user_id)
+        try:
+            async for ev in _event_stream_inner(metadata_out_seed={}):
+                yield ev
+        finally:
+            db.reset_current_user(_user_token)
+            db.reset_current_tenant(_tenant_token)
+
+    async def _event_stream_inner(metadata_out_seed: dict) -> AsyncIterator[str]:
         full_text = ""
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, Any] = dict(metadata_out_seed)
         try:
             async for chunk in _stream_chat_reply(
                 user_body,
@@ -1022,7 +1298,14 @@ async def orchestrator_chat_stream(
             ):
                 full_text += chunk
                 yield _chat_stream_event("token", content=chunk)
-            reply = full_text.strip() or "(il modello non ha prodotto risposta)"
+            reply = full_text.strip()
+            if not reply:
+                # Senza fallback streamato l'utente vede solo "Sto pensando..." +
+                # bubble vuota, e la stringa diagnostica appare solo a refresh
+                # dal DB. Streamiamola così è visibile durante la sessione.
+                reply = "(il modello non ha prodotto risposta)"
+                async for chunk in _yield_text_chunks(reply):
+                    yield _chat_stream_event("token", content=chunk)
         except Exception as e:
             reply = (
                 "Non riesco a contattare il modello configurato per l'Orchestrator. "
@@ -1468,10 +1751,34 @@ async def _run_chat_completion_loop(
         r = await client.post(url, json=payload, headers=headers)
         r.raise_for_status()
         data = r.json()
-        message = data.get("choices", [{}])[0].get("message", {}) or {}
+        choice = (data.get("choices") or [{}])[0] or {}
+        message = choice.get("message") or {}
         last_text = (message.get("content") or "").strip()
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
+            if not last_text:
+                # qwen3/gpt-oss/deepseek-r1 a volte ritornano solo `reasoning`
+                # (campo Ollama OAI-compat) + content="". Senza questo fallback
+                # l'utente vede solo "(il modello non ha prodotto risposta)".
+                reasoning = (message.get("reasoning") or "").strip()
+                finish_reason = choice.get("finish_reason") or ""
+                metadata["empty_content"] = {
+                    "finish_reason": finish_reason,
+                    "reasoning_chars": len(reasoning),
+                }
+                if reasoning:
+                    excerpt = reasoning[:800] + ("…" if len(reasoning) > 800 else "")
+                    return (
+                        "(il modello ha prodotto solo reasoning interno, "
+                        f"finish_reason={finish_reason or 'n/a'}). Sintesi del ragionamento:\n\n"
+                        f"{excerpt}"
+                    )
+                if finish_reason == "length":
+                    return (
+                        "(il modello ha esaurito il budget output prima di rispondere — "
+                        "finish_reason=length). Riformula la richiesta in modo più breve "
+                        "o pulisci la cronologia chat."
+                    )
             return last_text
         normalized_calls: list[dict[str, Any]] = []
         for call in tool_calls:
@@ -1501,7 +1808,26 @@ async def _run_chat_completion_loop(
                     "content": tool_output[:12_000],
                 }
             )
-    return last_text or "Ho usato gli strumenti disponibili, ma non ho ricevuto una sintesi finale dal modello."
+    if last_text:
+        return last_text
+    # Cap iterazioni raggiunto senza sintesi finale: invece di un messaggio
+    # vuoto ricostruiamo a mano un riepilogo dai tool_calls effettuati così
+    # l'utente sa cosa è stato fatto (es. quale task #N è stato creato).
+    summary_lines: list[str] = [
+        "Ho usato gli strumenti disponibili (cap di iterazioni raggiunto, "
+        "nessuna sintesi finale dal modello). Tool eseguiti:"
+    ]
+    for call in metadata.get("tool_calls") or []:
+        nm = call.get("name") or "?"
+        # Estrai i 2-3 args più informativi senza dump intero
+        args_snip = ""
+        if isinstance(call.get("args"), dict):
+            keys = ("agent_mode", "name", "task_id", "contact_id", "asset_id", "workflow_id")
+            args_snip = ", ".join(
+                f"{k}={call['args'][k]}" for k in keys if k in call["args"]
+            )
+        summary_lines.append(f"- {nm}({args_snip})" if args_snip else f"- {nm}()")
+    return "\n".join(summary_lines)
 
 
 def _decode_tool_arguments(raw: Any) -> dict[str, Any]:
@@ -1579,6 +1905,14 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
             return _tool_list_site_playbooks(args)
         if name == "delete_site_playbook":
             return _tool_delete_site_playbook(args)
+        if name == "search_contacts":
+            return _tool_search_contacts(args)
+        if name == "create_contact_asset":
+            return _tool_create_contact_asset(args)
+        if name == "list_whatsapp_senders":
+            return _tool_list_whatsapp_senders(args)
+        if name == "list_social_senders":
+            return _tool_list_social_senders(args)
         return f"Tool non supportato: {name}"
     except Exception as e:
         return f"Errore tool {name}: {type(e).__name__}: {e}"
@@ -1879,6 +2213,27 @@ def _tool_execute_plan(args: dict[str, Any]) -> str:
     )
 
 
+_MODEL_PROVIDER_PREFIXES = (
+    "ollama:", "openai:", "anthropic:", "gemini:", "grok:", "custom:",
+)
+
+
+def _normalize_model_name(raw: str | None) -> str:
+    """Strip provider prefix dal model name. Il provider è già in `llm_provider`.
+
+    Es. 'ollama:llama3.1:8b' → 'llama3.1:8b'. Senza questo strip, l'API Ollama
+    OAI-compat rifiuta con 'invalid model name' perché il prefisso non fa parte
+    dell'identificativo registrato."""
+    m = (raw or "").strip()
+    if not m:
+        return ""
+    lower = m.lower()
+    for prefix in _MODEL_PROVIDER_PREFIXES:
+        if lower.startswith(prefix):
+            return m[len(prefix):].strip()
+    return m
+
+
 def _tool_create_task(args: dict[str, Any]) -> str:
     name = str(args.get("name") or "").strip()
     agent_mode = str(args.get("agent_mode") or "").strip()
@@ -1897,7 +2252,7 @@ def _tool_create_task(args: dict[str, Any]) -> str:
             seed_queries=[str(s) for s in (args.get("seed_queries") or [])],
             allowed_domains=[str(s).lower() for s in (args.get("allowed_domains") or [])],
             max_iterations=int(args.get("max_iterations") or 10),
-            model=str(args.get("model") or settings.default_model),
+            model=_normalize_model_name(args.get("model")) or settings.default_model,
             extraction_template=extraction_template,
             extraction_schema=extraction_schema,
             input_artifact_path=args.get("input_artifact_path"),
@@ -1914,6 +2269,87 @@ def _tool_create_task(args: dict[str, Any]) -> str:
             planned_kwargs["crawler_enabled"] = bool(args.get("crawler_enabled"))
         if args.get("crawler_max_depth") is not None:
             planned_kwargs["crawler_max_depth"] = max(1, int(args.get("crawler_max_depth") or 3))
+        # Audience selection (outreach_*)
+        if args.get("target_contact_ids") is not None:
+            planned_kwargs["target_contact_ids"] = [
+                int(x) for x in (args.get("target_contact_ids") or []) if str(x).strip().lstrip("-").isdigit()
+            ]
+        if args.get("target_asset_ids") is not None:
+            planned_kwargs["target_asset_ids"] = [
+                int(x) for x in (args.get("target_asset_ids") or []) if str(x).strip().lstrip("-").isdigit()
+            ]
+        if args.get("outreach_filter_source_task_id") is not None:
+            planned_kwargs["outreach_filter_source_task_id"] = int(args.get("outreach_filter_source_task_id") or 0) or None
+        if args.get("outreach_filter_source_follower_of") is not None:
+            v = str(args.get("outreach_filter_source_follower_of") or "").strip()
+            planned_kwargs["outreach_filter_source_follower_of"] = v or None
+        if args.get("outreach_filter_tags") is not None:
+            tags_in = args.get("outreach_filter_tags") or []
+            tags_out: list[dict] = []
+            for t in tags_in:
+                if isinstance(t, dict) and t.get("key") and t.get("value"):
+                    tags_out.append({"key": str(t["key"]).strip(), "value": str(t["value"]).strip()})
+            planned_kwargs["outreach_filter_tags"] = tags_out
+        if args.get("input_asset_filter") is not None:
+            iaf = args.get("input_asset_filter")
+            planned_kwargs["input_asset_filter"] = iaf if isinstance(iaf, dict) else None
+        if args.get("output_asset_type") is not None:
+            planned_kwargs["output_asset_type"] = str(args.get("output_asset_type") or "").strip().lower() or None
+        # outreach_social
+        if args.get("social_platform") is not None:
+            planned_kwargs["social_platform"] = str(args.get("social_platform") or "").strip().lower() or None
+        if args.get("social_account_id") is not None:
+            planned_kwargs["social_account_id"] = int(args.get("social_account_id") or 0) or None
+        if args.get("outreach_intent") is not None:
+            planned_kwargs["outreach_intent"] = str(args.get("outreach_intent") or "") or None
+        if args.get("message_template_variants") is not None:
+            planned_kwargs["message_template_variants"] = str(args.get("message_template_variants") or "") or None
+        if args.get("max_dms_per_run") is not None:
+            planned_kwargs["max_dms_per_run"] = max(1, min(200, int(args.get("max_dms_per_run") or 30)))
+        if args.get("max_dms_per_session") is not None:
+            planned_kwargs["max_dms_per_session"] = max(1, min(15, int(args.get("max_dms_per_session") or 5)))
+        if args.get("headed") is not None:
+            planned_kwargs["headed"] = 1 if bool(args.get("headed")) else 0
+        if args.get("gap_between_dms_min") is not None:
+            try:
+                planned_kwargs["gap_between_dms_min"] = float(args.get("gap_between_dms_min"))
+            except (TypeError, ValueError):
+                pass
+        if args.get("gap_between_dms_max") is not None:
+            try:
+                planned_kwargs["gap_between_dms_max"] = float(args.get("gap_between_dms_max"))
+            except (TypeError, ValueError):
+                pass
+        # outreach_whatsapp
+        if args.get("whatsapp_engine_preference") is not None:
+            v = str(args.get("whatsapp_engine_preference") or "auto").strip()
+            if v in ("auto", "force_A", "force_B"):
+                planned_kwargs["whatsapp_engine_preference"] = v
+        if args.get("whatsapp_dry_run") is not None:
+            planned_kwargs["whatsapp_dry_run"] = 1 if bool(args.get("whatsapp_dry_run")) else 0
+        if args.get("whatsapp_account_id") is not None:
+            planned_kwargs["whatsapp_account_id"] = int(args.get("whatsapp_account_id") or 0) or None
+        if args.get("whatsapp_api_config_id") is not None:
+            planned_kwargs["whatsapp_api_config_id"] = int(args.get("whatsapp_api_config_id") or 0) or None
+        # recon_social
+        if args.get("recon_mode") is not None:
+            v = str(args.get("recon_mode") or "").strip()
+            if v in ("url_driven", "exploration", "follower_scrape"):
+                planned_kwargs["recon_mode"] = v
+        if args.get("recon_social_account_id") is not None:
+            planned_kwargs["recon_social_account_id"] = int(args.get("recon_social_account_id") or 0) or None
+        if args.get("recon_hypothesis") is not None:
+            planned_kwargs["recon_hypothesis"] = str(args.get("recon_hypothesis") or "") or None
+        if args.get("recon_max_targets_per_day") is not None:
+            planned_kwargs["recon_max_targets_per_day"] = max(1, min(5000, int(args.get("recon_max_targets_per_day") or 50)))
+        if args.get("recon_score_threshold") is not None:
+            planned_kwargs["recon_score_threshold"] = max(0, min(10, int(args.get("recon_score_threshold") or 6)))
+        if args.get("seed_queries_friends") is not None:
+            planned_kwargs["seed_queries_friends"] = [str(s) for s in (args.get("seed_queries_friends") or [])]
+        if args.get("speed_profile") is not None:
+            v = str(args.get("speed_profile") or "safe").strip()
+            if v in ("safe", "balanced", "aggressive"):
+                planned_kwargs["speed_profile"] = v
         planned = PlannedTask(**planned_kwargs)
     except Exception as e:
         return json.dumps({"ok": False, "reason": f"campi task non validi: {type(e).__name__}: {e}"})
@@ -2206,6 +2642,180 @@ def _tool_delete_site_playbook(args: dict[str, Any]) -> str:
     return json.dumps({"ok": True, "playbook_id": pid, "action": "deleted"})
 
 
+def _tool_search_contacts(args: dict[str, Any]) -> str:
+    name = str(args.get("name") or "").strip()
+    channel = (args.get("channel") or None)
+    if channel is not None:
+        channel = str(channel).strip().lower() or None
+    limit = max(1, min(int(args.get("limit") or 10), 50))
+    rows = db.list_contacts(search=name or None, channel=channel, limit=limit)
+    slim = []
+    for r in rows:
+        slim.append({
+            "id": r.get("id"),
+            "asset_id": r.get("asset_id"),  # NULL = contact legacy; usa target_contact_ids
+            "display_name": r.get("display_name"),
+            "email": r.get("email"),
+            "whatsapp": r.get("whatsapp"),
+            "telegram_username": r.get("telegram_username"),
+            "sitoweb": r.get("sitoweb"),
+            "status": r.get("status"),
+            "source_domain": r.get("source_domain"),
+        })
+    return json.dumps(
+        {
+            "count": len(slim),
+            "audience_hint": (
+                "Per outreach_* preferisci target_asset_ids=[<asset_id>] se contact.asset_id "
+                "è valorizzato (la UI mostra solo target_asset_ids). Se asset_id è NULL "
+                "(contact legacy/manuale), usa create_contact_asset(contact_id) per promuoverlo "
+                "ad asset, poi target_asset_ids=[nuovo asset_id]. Solo come ultima risorsa usa "
+                "target_contact_ids (funziona a runtime ma non è visibile nella UI di edit)."
+            ),
+            "results": slim,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def _tool_create_contact_asset(args: dict[str, Any]) -> str:
+    """Promuove un contact legacy (asset_id NULL) ad asset di tipo 'contact'.
+
+    Linka contacts.asset_id all'asset creato così outreach_* può usare
+    target_asset_ids (visibile nella UI) invece di target_contact_ids legacy.
+    """
+    contact_id = int(args.get("contact_id") or 0)
+    if contact_id <= 0:
+        return json.dumps({"ok": False, "reason": "contact_id mancante"})
+    contact = db.get_contact(contact_id)
+    if not contact:
+        return json.dumps({"ok": False, "reason": f"contact #{contact_id} non trovato"})
+    if contact.get("asset_id"):
+        return json.dumps(
+            {
+                "ok": True,
+                "contact_id": contact_id,
+                "asset_id": int(contact["asset_id"]),
+                "action": "already_linked",
+                "note": "Contact già linkato a un asset esistente.",
+            }
+        )
+    title = (contact.get("display_name") or "").strip() or f"Contact #{contact_id}"
+    asset_data = {
+        "asset_type": "contact",
+        "source_url": contact.get("source_url") or None,
+        "source_domain": contact.get("source_domain") or None,
+        "source_task_id": contact.get("source_task_id"),
+        "source_job_id": contact.get("source_job_id"),
+        "title": title,
+        "display_name": contact.get("display_name"),
+        "email": contact.get("email"),
+        "telegram_username": contact.get("telegram_username"),
+        "telegram_chat_id": contact.get("telegram_chat_id"),
+        "whatsapp": contact.get("whatsapp"),
+        "whatsapp_consent": contact.get("whatsapp_consent"),
+        "whatsapp_last_inbound_at": contact.get("whatsapp_last_inbound_at"),
+        "social_json": contact.get("social_json"),
+        "sitoweb": contact.get("sitoweb"),
+        "notes": contact.get("notes"),
+        "status": "qualified",  # promosso direttamente: già selezionabile dai picker
+        "raw_json": json.dumps(
+            {"promoted_from_contact_id": contact_id}, ensure_ascii=False
+        ),
+    }
+    try:
+        asset_id = db.upsert_asset(asset_data)
+        db.update_contact(contact_id, {"asset_id": int(asset_id)})
+    except Exception as e:
+        return json.dumps({"ok": False, "reason": f"{type(e).__name__}: {e}"})
+    return json.dumps(
+        {
+            "ok": True,
+            "contact_id": contact_id,
+            "asset_id": int(asset_id),
+            "action": "created",
+            "asset_type": "contact",
+            "status": "qualified",
+            "next_step": (
+                f"Passa target_asset_ids=[{asset_id}] a create_task — sarà visibile "
+                "nella UI '🎯 Audience asset'."
+            ),
+        }
+    )
+
+
+def _tool_list_whatsapp_senders(args: dict[str, Any]) -> str:
+    # Engine A: social_accounts con platform='whatsapp_browser' (Playwright/QR-login).
+    # NB: la naming convention in social_accounts è 'whatsapp_browser', non 'whatsapp'
+    # (vedi routes/settings_whatsapp.py e runner_outreach_whatsapp.py).
+    engine_a_rows = db.list_social_accounts(platform="whatsapp_browser")
+    engine_a = [
+        {
+            "id": r.get("id"),
+            "label": r.get("username") or r.get("phone_number") or f"wa-{r.get('id')}",
+            "phone_number": r.get("phone_number"),
+            "status": r.get("status"),
+            "owner_email": r.get("owner_email"),
+        }
+        for r in engine_a_rows
+    ]
+    # Engine B: whatsapp_api_config (Meta Cloud API).
+    engine_b_rows = db.list_whatsapp_api_config()
+    engine_b = [
+        {
+            "id": r.get("id"),
+            "label": r.get("label"),
+            "phone_number_id": r.get("phone_number_id"),
+            "status": r.get("status"),
+            "owner_email": r.get("owner_email"),
+        }
+        for r in engine_b_rows
+    ]
+    return json.dumps(
+        {
+            "engine_A_browser": {
+                "count": len(engine_a),
+                "field_to_pass": "whatsapp_account_id",
+                "results": engine_a,
+            },
+            "engine_B_cloud_api": {
+                "count": len(engine_b),
+                "field_to_pass": "whatsapp_api_config_id",
+                "results": engine_b,
+            },
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def _tool_list_social_senders(args: dict[str, Any]) -> str:
+    platform = (args.get("platform") or None)
+    if platform is not None:
+        platform = str(platform).strip().lower() or None
+    status = (args.get("status") or "active")
+    if status is not None:
+        status = str(status).strip().lower() or None
+    rows = db.list_social_accounts(platform=platform, status=status)
+    slim = [
+        {
+            "id": r.get("id"),
+            "platform": r.get("platform"),
+            "username": r.get("username"),
+            "status": r.get("status"),
+            "daily_dm_cap": r.get("daily_dm_cap"),
+            "owner_email": r.get("owner_email"),
+        }
+        for r in rows
+    ]
+    return json.dumps(
+        {"count": len(slim), "field_to_pass": "social_account_id", "results": slim},
+        ensure_ascii=False,
+        default=str,
+    )
+
+
 def _chat_system_prompt(
     *,
     web_enabled: bool,
@@ -2242,7 +2852,11 @@ def _chat_system_prompt(
             "AZIONI ABILITATE per questo turno. Puoi usare i tool di scrittura "
             "(propose_plan, execute_plan, create_task, create_workflow, add_edge, start_job, start_workflow, "
             "update_asset_status, set_site_pattern_status). "
-            "Per outreach/responder serve sempre confirm_risky=true E consenso esplicito dell'utente in chat."
+            "Per outreach*/responder devi passare confirm_risky=true a start_job/start_workflow. "
+            "REGOLA CONSENSO: il consenso può essere già stato dato in un turno precedente "
+            "della stessa chat (es. utente che dice 'sì lancia', 'procedi', 'vai', 'ok manda'). "
+            "Se trovi quel consenso nella history, NON richiederlo di nuovo: passa direttamente "
+            "confirm_risky=true. Se NON c'è consenso, chiedilo una volta sola prima di agire."
         )
     else:
         actions_line = (
@@ -2257,17 +2871,28 @@ def _chat_system_prompt(
         "Sei l'Orchestrator di AgentScraper, il meta-agente che progetta, costruisce, lancia e monitora "
         "altri agenti per conto dell'utente. Italiano, operativo, asciutto: max 4-6 righe salvo richiesta esplicita. "
         "Niente introduzioni, niente riepiloghi ovvi, niente liste lunghe.\n\n"
-        "MODALITA AGENTE DISPONIBILI (8 in totale, per pianificare task):\n"
+        "MODALITA AGENTE DISPONIBILI (11 in totale, per pianificare task):\n"
         "Scraping (5):\n"
         "- react: ricerca web leggera con DDG+HTTP+readability, output report .md/.txt.\n"
         "- bulk_extract: HTTP+readability per URL noti su sito statico, output profiles.jsonl. Supporta crawler BFS dal seed con auto-detect pattern URL.\n"
         "- browser_use: Chromium reale via browser-use, JS/login/scroll/anti-bot, output profiles.jsonl. Lento e costoso (~$5-10 per sito).\n"
         "- auto_extract: profiler + dispatch automatico (bulk_extract / site_explorer / browser_use / skip) per liste eterogenee. Fallback bidirezionale.\n"
         "- site_explorer: Mapping LLM (3-5 step) + Extraction runner-driven deterministico. Tool LLM: fetch_page, enqueue_listings, discover_via_browser, start_extraction. Per siti listing→dettaglio, multi-livello, infinite-scroll.\n"
-        "Pipeline downstream (3):\n"
+        "Recon (1):\n"
+        "- recon_social: ricognizione su social loggato (Instagram/TikTok/Facebook). recon_mode='url_driven'|'follower_scrape'|'exploration'. Richiede recon_social_account_id (list_social_senders). Vedi GUIDA §3.7.\n"
+        "Pipeline downstream (5):\n"
         "- qualifier: legge profiles.jsonl, scora 0-10 via LLM, produce qualified.jsonl + DB contacts.\n"
         "- outreach: invia email/telegram ai qualified. RISCHIOSO.\n"
+        "- outreach_social: invia DM su Instagram/TikTok/Facebook. Richiede social_account_id (list_social_senders) e social_platform. RISCHIOSO. Vedi GUIDA §3.5.\n"
+        "- outreach_whatsapp: invia DM WhatsApp con doppio motore (A=browser, B=Cloud API). Richiede whatsapp_account_id O whatsapp_api_config_id (list_whatsapp_senders) + whatsapp_engine_preference. RISCHIOSO. Vedi GUIDA §3.5.1.\n"
         "- responder: auto-reply inbound (con opt-out detection). RISCHIOSO.\n"
+        "AUDIENCE outreach_*: priorità (1) target_asset_ids esplicito, (2) target_contact_ids esplicito, (3) outreach_filter_* (source_task_id, source_follower_of, tags AND), (4) default 'tutti i qualified con quel canale'. Quando l'utente nomina destinatari ('manda a Sebastiano'): "
+        "(a) search_contacts(name=..., channel='whatsapp'|'email'|...) → trova i contact_id, "
+        "(b) GUARDA `asset_id` nei risultati: se valorizzato → usa target_asset_ids=[asset_id] (visibile nella UI); "
+        "se asset_id è NULL (contact legacy) → chiama create_contact_asset(contact_id) per promuoverlo ad asset, "
+        "poi usa target_asset_ids=[nuovo asset_id]. "
+        "Usa target_contact_ids SOLO come ultima risorsa (il task funziona, ma l'audience non è visibile "
+        "nella UI di edit, e l'utente potrebbe pensare che la config sia vuota).\n"
         "Convenzione artifact: extract*->qualifier passa profiles.jsonl; qualifier->outreach/responder passa qualified.jsonl.\n\n"
         "STRATEGIE SCRAPING (decision tree operativo — sintetizzato dalla GUIDA §3.0.3):\n"
         "A. Sito statico con pattern URL chiaro (cataloghi, e-commerce piccolo, immobili, directory) → bulk_extract con crawler ON (auto-detect pattern via 1 LLM call discovery, poi BFS deterministico).\n"
@@ -2305,8 +2930,11 @@ def _chat_system_prompt(
         "In alternativa, con Azioni ON, usa propose_plan + execute_plan.\n"
         "- Per modifiche puntuali (lancia job 12, crea questo task, mostra stato workflow 4): usa direttamente i tool.\n"
         "- Per stato dei job/agenti usa list_jobs / get_job_status / list_tasks invece di descrivere a vuoto.\n"
-        "- Per outreach/responder: chiedi consenso esplicito all'utente in chat PRIMA di passare confirm_risky=true.\n"
-        "- Quando crei un task site_explorer per un sito infinite-scroll, passa SEMPRE target_cap_per_site=0 nel create_task E componi un objective che contenga una delle keyword-trigger sopra. Senza trigger, l'auto-discovery FORZATA non scatta e perderai i target lazy-loaded.\n\n"
+        "- Per outreach*/responder: serve sempre confirm_risky=true a start_job/start_workflow. Il consenso può "
+        "essere già stato dato in un turno precedente — se trovi 'sì lancia/procedi/vai/ok manda' nella history, "
+        "passa confirm_risky=true senza richiederlo di nuovo.\n"
+        "- Quando crei un task site_explorer per un sito infinite-scroll, passa SEMPRE target_cap_per_site=0 nel create_task E componi un objective che contenga una delle keyword-trigger sopra. Senza trigger, l'auto-discovery FORZATA non scatta e perderai i target lazy-loaded.\n"
+        "- Quando crei un task outreach_whatsapp: (1) list_whatsapp_senders() per trovare il sender (Engine A=browser via whatsapp_account_id, Engine B=Cloud API via whatsapp_api_config_id); (2) search_contacts(name=..., channel='whatsapp') per risolvere i destinatari nominati in chat → per ogni risultato leggi `asset_id`: se valorizzato passa target_asset_ids=[asset_id], se NULL chiama create_contact_asset(contact_id) e usa l'asset_id ritornato; (3) create_task con agent_mode='outreach_whatsapp' passando sender + target_asset_ids + message_template; (4) chiedi consenso/conferma o riusane uno già dato, poi start_job(task_id, confirm_risky=true). Per outreach_social analogo con list_social_senders + channel='instagram'|'tiktok'|'facebook'.\n\n"
         f"CAPACITA CHAT:\n- {web_line}\n- {files_line}\n- {actions_line}\n\n"
         f"SNAPSHOT SISTEMA:\n{snapshot}"
     )

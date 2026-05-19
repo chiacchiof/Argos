@@ -277,7 +277,12 @@ class WhatsAppBrowser(SocialPlatform):
             await asyncio.sleep(min(remaining, 2.0))
 
     async def send_dm(
-        self, page: "Page", username: str, message: str
+        self,
+        page: "Page",
+        username: str,
+        message: str,
+        *,
+        speed_profile: str | None = None,
     ) -> DMResult:
         """Invia un DM al numero `username` con `message`.
 
@@ -314,18 +319,22 @@ class WhatsAppBrowser(SocialPlatform):
             await input_loc.click()
         except Exception:
             pass
-        await reading_pause(text_length=len(message))
+        await reading_pause(text_length=len(message), profile=speed_profile)
 
         # Type: usiamo input_loc.type direttamente (l'editor è contenteditable,
         # human_type da humanize.py si aspetta un selector — qui scriviamo
         # diretto sul locator per evitare ricerche multiple).
+        # Delay range per-char modulato dal profilo (safe 50-180ms,
+        # balanced 20-80ms, aggressive 5-25ms).
+        from .humanize import get_speed_profile
+        char_delay_lo, char_delay_hi = get_speed_profile(speed_profile).get(
+            "char_delay_range", (0.05, 0.18)
+        )
         try:
+            import random
             for ch in message:
                 await input_loc.type(ch, delay=0)
-                # Delay random per-char (50-180ms con bias verso 80-120)
-                import random
-                d = random.uniform(0.05, 0.18)
-                await asyncio.sleep(d)
+                await asyncio.sleep(random.uniform(float(char_delay_lo), float(char_delay_hi)))
         except Exception as e:
             log.warning("[wa] type message failed: %s", e)
             return DMResult(
@@ -335,7 +344,7 @@ class WhatsAppBrowser(SocialPlatform):
                 health=HealthStatus.UNKNOWN,
             )
 
-        await human_wait(0.5, 1.5)
+        await human_wait(0.5, 1.5, profile=speed_profile)
 
         # Invio: preferenza Enter (più naturale) → fallback click send button
         try:

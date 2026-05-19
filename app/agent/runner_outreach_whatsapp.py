@@ -498,7 +498,18 @@ async def _run_engine_a(
         asset_by_phone = {p["phone"]: p["asset"] for p in batch}
         message_by_phone = {p["phone"]: p["message"] for p in batch}
         jlog(f"-> Sessione A: {len(targets_pairs)} DM via WhatsApp Web")
-        warmup_min = random.uniform(0.3, 0.8)  # WA non ha feed; cap 1 min reale lato platform
+        # Warmup WA modulato dal speed_profile del task.
+        # safe: 0.3-0.8 min (anti-ban, comportamento storico).
+        # balanced: 0.1-0.3 min. aggressive: 0 (niente warmup).
+        # WA non ha feed da scrollare quindi il warmup max è già basso.
+        speed_profile = task.get("speed_profile") or None
+        if speed_profile == "balanced":
+            wu_lo, wu_hi = 0.1, 0.3
+        elif speed_profile == "aggressive":
+            wu_lo, wu_hi = 0.0, 0.0
+        else:
+            wu_lo, wu_hi = 0.3, 0.8
+        warmup_min = random.uniform(wu_lo, wu_hi)
         results = await engine.run_session(
             platform_name="whatsapp_browser",
             targets=targets_pairs,
@@ -507,6 +518,7 @@ async def _run_engine_a(
             jlog=jlog,
             gap_min_minutes=task.get("gap_between_dms_min"),
             gap_max_minutes=task.get("gap_between_dms_max"),
+            speed_profile=speed_profile,
         )
         for r in results:
             phone = r.target_username or ""

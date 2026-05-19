@@ -42,6 +42,36 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _account_recently_active(account_uuid: str, *, threshold_minutes: float) -> bool:
+    """True se l'account ha inviato un DM ok nei `threshold_minutes` precedenti.
+
+    Usa la session file timestamp come proxy "sessione viva recente": dopo ogni
+    invio ok save_session() riscrive il file. Niente query DB → zero overhead.
+    Falsi positivi possibili (es. save manuale) ma il costo è solo "skip warmup":
+    se l'account è stale, WA/IG riproporranno login/captcha e il runner fallirà
+    al passo successivo come oggi.
+    """
+    import os
+    import time
+    from pathlib import Path
+
+    from ...config import settings as _app_settings
+
+    base = Path(getattr(_app_settings, "data_dir", "data")) / "sessions" / account_uuid
+    # Cerca un file recente nella session dir (storage_state.json o cookies).
+    if not base.exists():
+        return False
+    try:
+        candidates = [p for p in base.iterdir() if p.is_file()]
+    except OSError:
+        return False
+    if not candidates:
+        return False
+    newest_mtime = max(p.stat().st_mtime for p in candidates)
+    age_s = time.time() - newest_mtime
+    return age_s <= threshold_minutes * 60.0
+
+
 PLATFORMS: dict[str, type[SocialPlatform]] = {
     "instagram": Instagram,
     "tiktok": TikTok,
@@ -183,6 +213,8 @@ class OutreachEngine:
         jlog: "Callable[[str], None] | None" = None,
         gap_min_minutes: float | None = None,
         gap_max_minutes: float | None = None,
+        speed_profile: str | None = None,
+        skip_warmup_if_recent_minutes: float | None = 30.0,
     ) -> list[DMResult]:
         """Una sessione = login → warmup → N DM con gap umani → close.
 
@@ -271,9 +303,26 @@ class OutreachEngine:
                     await save_session(context, rt.account.uuid)
 
                     # Warmup
-                    log.info("[%s/%s] warmup browse %d min", platform_name, rt.account.username, warmup_min)
-                    _say(f"Warmup browse ~{warmup_min:.1f} min...")
-                    await platform.warmup_browse(page, minutes=warmup_min)
+                    # Hot-skip: se l'account ha avuto un DM ok nei `skip_warmup_if_recent_minutes`
+                    # ultimi minuti, la sessione WA/social è già "calda" lato platform
+                    # (account già visto da IG/WA/TT/FB) → salta warmup risparmiando 30-50s.
+                    effective_warmup = warmup_min
+                    if skip_warmup_if_recent_minutes and skip_warmup_if_recent_minutes > 0:
+                        try:
+                            if _account_recently_active(
+                                rt.account.uuid, threshold_minutes=skip_warmup_if_recent_minutes,
+                            ):
+                                effective_warmup = 0.0
+                                _say(
+                                    f"Warmup skipped: account attivo entro "
+                                    f"{int(skip_warmup_if_recent_minutes)} min (hot session)."
+                                )
+                        except Exception as e:
+                            log.debug("hot-skip check failed: %s", e)
+                    if effective_warmup > 0:
+                        log.info("[%s/%s] warmup browse %.2f min", platform_name, rt.account.username, effective_warmup)
+                        _say(f"Warmup browse ~{effective_warmup:.1f} min...")
+                        await platform.warmup_browse(page, minutes=effective_warmup)
 
                     # Loop DM
                     n_to_send = min(len(targets), max_dms_per_session, rt.account.daily_dm_cap - rt.dms_today)
@@ -282,7 +331,7 @@ class OutreachEngine:
                         log.info("[%s/%s] DM %d/%d -> %s",
                                  platform_name, rt.account.username, i + 1, n_to_send, username)
                         _say(f"DM {i+1}/{n_to_send} → @{username}")
-                        result = await platform.send_dm(page, username, message)
+                        result = await platform.send_dm(page, username, message, speed_profile=speed_profile)
                         results.append(result)
                         rt.dms_today += 1 if result.ok else 0
                         if result.ok:

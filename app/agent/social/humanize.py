@@ -26,18 +26,80 @@ if TYPE_CHECKING:
     from playwright.async_api import Page
 
 
+# === Speed profile (anti-ban vs throughput trade-off) ===
+#
+# Profili che modulano le pause "umane" usate da reading_pause, human_type,
+# human_wait e warmup. Selezionabili per-task via TaskIn.speed_profile.
+#
+# - safe:        comportamento storico — paranoia anti-ban max.
+# - balanced:    ~2x throughput, basso rischio incremento (delay dimezzati).
+# - aggressive:  ~4x throughput, niente warmup, char delay quasi-istantaneo.
+#                 Da usare solo su account "caldi" / personali / con bassa
+#                 esposizione al rischio (es. WhatsApp Business proprio).
+#
+# `char_delay_range` è applicato per-char in send_dm. `reading_chars_per_sec`
+# governa la `reading_pause` (200 WPM ≈ 3.3 char/s). `warmup_range_min` è il
+# budget di warmup_browse. `wait_scale` moltiplica i `human_wait` opzionali.
+SPEED_PROFILES: dict[str, dict[str, tuple[float, float] | float]] = {
+    "safe": {
+        "reading_chars_per_sec": (2.5, 4.5),   # ~150-270 WPM
+        "char_delay_range": (0.05, 0.18),       # ms/char (50-180ms)
+        "human_type_delay_ms": (60, 200),
+        "warmup_range_min": (0.3, 0.8),
+        "wait_scale": 1.0,
+    },
+    "balanced": {
+        "reading_chars_per_sec": (6.0, 9.0),    # ~360-540 WPM
+        "char_delay_range": (0.02, 0.08),       # 20-80ms
+        "human_type_delay_ms": (25, 90),
+        "warmup_range_min": (0.1, 0.3),
+        "wait_scale": 0.5,
+    },
+    "aggressive": {
+        "reading_chars_per_sec": (12.0, 18.0),  # ~720-1080 WPM (skim)
+        "char_delay_range": (0.005, 0.025),     # 5-25ms (near-instant)
+        "human_type_delay_ms": (10, 40),
+        "warmup_range_min": (0.0, 0.0),
+        "wait_scale": 0.25,
+    },
+}
+
+
+def get_speed_profile(name: str | None) -> dict:
+    """Risolve il nome del profilo. Fallback a 'safe' se sconosciuto/None."""
+    if not name:
+        return SPEED_PROFILES["safe"]
+    return SPEED_PROFILES.get(str(name).strip().lower(), SPEED_PROFILES["safe"])
+
+
 # === Pause realistiche ===
 
 
-async def human_wait(min_s: float = 1.0, max_s: float = 3.0) -> None:
-    """Pause random tra azioni. Default 1-3s tipica per 'leggere'."""
-    await asyncio.sleep(random.uniform(min_s, max_s))
+async def human_wait(
+    min_s: float = 1.0,
+    max_s: float = 3.0,
+    *,
+    profile: str | None = None,
+) -> None:
+    """Pause random tra azioni. Default 1-3s tipica per 'leggere'.
+
+    Se `profile` è valorizzato, applica il moltiplicatore `wait_scale` del profilo
+    (es. 0.5 per balanced → metà del tempo)."""
+    scale = float(get_speed_profile(profile).get("wait_scale", 1.0))
+    await asyncio.sleep(random.uniform(min_s, max_s) * scale)
 
 
-async def reading_pause(text_length: int = 100) -> None:
-    """Simula lettura di un testo: ~200 WPM = ~3.3 chars/sec, +random."""
-    chars_per_sec = random.uniform(2.5, 4.5)
-    base = max(0.8, text_length / chars_per_sec)
+async def reading_pause(
+    text_length: int = 100,
+    *,
+    profile: str | None = None,
+) -> None:
+    """Simula lettura di un testo. Velocità modulata da `profile`:
+    safe ~200 WPM (3.3 ch/s), balanced ~500 WPM (7 ch/s), aggressive skim ~1000 WPM."""
+    cps_range = get_speed_profile(profile).get("reading_chars_per_sec", (2.5, 4.5))
+    lo, hi = cps_range
+    chars_per_sec = random.uniform(float(lo), float(hi))
+    base = max(0.4, text_length / max(chars_per_sec, 0.1))
     await asyncio.sleep(base + random.uniform(0, 0.5))
 
 
@@ -105,16 +167,29 @@ async def human_click(page: "Page", selector: str) -> None:
     await page.mouse.click(target_x, target_y, delay=random.randint(40, 110))
 
 
-async def human_type(page: "Page", selector: str, text: str) -> None:
-    """Type con delay random per carattere (60-200ms) + pause su punteggiatura."""
+async def human_type(
+    page: "Page",
+    selector: str,
+    text: str,
+    *,
+    profile: str | None = None,
+) -> None:
+    """Type con delay random per carattere + pause su punteggiatura.
+
+    Range del delay modulato da `profile`:
+      safe: 60-200ms, balanced: 25-90ms, aggressive: 10-40ms.
+    """
+    settings = get_speed_profile(profile)
+    delay_ms_range = settings.get("human_type_delay_ms", (60, 200))
+    punct_pause_range = (0.05, 0.15) if profile and profile != "safe" else (0.15, 0.4)
     el = page.locator(selector).first
     await el.click(delay=random.randint(40, 110))
-    await asyncio.sleep(random.uniform(0.2, 0.5))
+    await asyncio.sleep(random.uniform(0.2, 0.5) * float(settings.get("wait_scale", 1.0)))
+    lo_ms, hi_ms = (int(delay_ms_range[0]), int(delay_ms_range[1]))
     for ch in text:
-        await el.press(ch, delay=random.randint(60, 200))
-        # Pause leggermente piu' lunghe dopo punteggiatura
+        await el.press(ch, delay=random.randint(lo_ms, hi_ms))
         if ch in ".!?,;:":
-            await asyncio.sleep(random.uniform(0.15, 0.4))
+            await asyncio.sleep(random.uniform(*punct_pause_range))
 
 
 async def human_scroll(page: "Page", n: int = 3, direction: str = "down") -> None:

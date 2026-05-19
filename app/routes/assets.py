@@ -49,11 +49,13 @@ async def assets_list(
     status: str | None = None,
     tags: str | None = None,
     source_task_id: int | None = None,
+    q: str | None = None,
     page: int = 1,
     per_page: int = _ASSETS_PAGE_SIZE,
 ):
     asset_type = (asset_type or "").strip() or None
     status = (status or "").strip() or None
+    q_clean = (q or "").strip() or None
     tag_filters = _parse_tag_filters(tags)
     # Sanitize paginazione
     per_page = max(10, min(int(per_page or _ASSETS_PAGE_SIZE), 500))
@@ -65,6 +67,7 @@ async def assets_list(
         status=status,
         source_task_id=source_task_id,
         tag_filters=tag_filters or None,
+        search=q_clean,
     )
     total_pages = max(1, (total + per_page - 1) // per_page)
     # Clamp page se l'utente passa un numero oltre la fine
@@ -77,6 +80,7 @@ async def assets_list(
         status=status,
         source_task_id=source_task_id,
         tag_filters=tag_filters or None,
+        search=q_clean,
         limit=per_page,
         offset=offset,
     )
@@ -87,11 +91,13 @@ async def assets_list(
         facet_values[k] = db.list_asset_tag_values(k, asset_type=asset_type, limit=30)
 
     # Querystring base per i link di paginazione (senza page=)
+    from urllib.parse import quote
     qs_parts: list[str] = []
     if asset_type: qs_parts.append(f"asset_type={asset_type}")
     if status: qs_parts.append(f"status={status}")
     if source_task_id is not None: qs_parts.append(f"source_task_id={source_task_id}")
     if tag_filters: qs_parts.append(f"tags={_serialize_tag_filters(tag_filters)}")
+    if q_clean: qs_parts.append(f"q={quote(q_clean)}")
     if per_page != _ASSETS_PAGE_SIZE: qs_parts.append(f"per_page={per_page}")
     qs_base = "&".join(qs_parts)
 
@@ -105,6 +111,7 @@ async def assets_list(
             "filter_tags": tag_filters,
             "filter_tags_str": _serialize_tag_filters(tag_filters),
             "filter_task": source_task_id,
+            "filter_q": q_clean or "",
             "types_in_use": types_in_use,
             "facet_values": facet_values,
             "tag_keys": tag_keys,

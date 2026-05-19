@@ -1284,6 +1284,26 @@ def update_task_target_asset_ids(task_id: int, asset_ids: list[int], tenant_id: 
             )
 
 
+def update_task_target_contact_ids(task_id: int, contact_ids: list[int], tenant_id: Any = _UNSET) -> None:
+    """Patch minimale: aggiorna SOLO `target_contact_ids` (legacy audience).
+    Usato dal handler 'Promuovi a asset' per svuotare i legacy dopo lo split."""
+    tenant_id = _resolve_tenant(tenant_id)
+    clean_ids = [int(x) for x in (contact_ids or []) if str(x).strip().lstrip("-").isdigit()]
+    payload = _dump_list(clean_ids)
+    with connect() as con:
+        if tenant_id is None:
+            con.execute(
+                "UPDATE tasks SET target_contact_ids = %s, updated_at = %s WHERE id = %s",
+                (payload, now_iso(), task_id),
+            )
+        else:
+            con.execute(
+                "UPDATE tasks SET target_contact_ids = %s, updated_at = %s "
+                "WHERE id = %s AND tenant_id = %s",
+                (payload, now_iso(), task_id, tenant_id),
+            )
+
+
 def delete_task(task_id: int, tenant_id: Any = _UNSET) -> None:
     tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
@@ -2254,6 +2274,7 @@ def update_contact(contact_id: int, fields: dict[str, Any]) -> None:
         "whatsapp", "sitoweb", "social_json", "source_url", "source_domain",
         "status", "qualifier_score", "notes", "raw_json",
         "whatsapp_consent", "whatsapp_last_inbound_at",
+        "asset_id",  # link a un asset 'contact' (promote da legacy)
     }
     sets: list[str] = []
     vals: list[Any] = []
@@ -2622,6 +2643,7 @@ def count_assets(
     status: str | None = None,
     source_task_id: int | None = None,
     tag_filters: list[tuple[str, str]] | None = None,
+    search: str | None = None,
     tenant_id: Any = _UNSET,
 ) -> int:
     """Conta gli asset matchando gli stessi filtri di `list_assets`."""
@@ -2646,6 +2668,20 @@ def count_assets(
     if source_task_id is not None:
         sql += " AND a.source_task_id = %s"
         args.append(source_task_id)
+    if search:
+        # LIKE su title + source_url + source_domain + notes (case-insensitive).
+        # Match anche su asset_tags.tag_value via EXISTS (es. "fitness" trova
+        # asset con interests_inferred:fitness).
+        q_like = f"%{search.lower()}%"
+        sql += (
+            " AND (LOWER(COALESCE(a.title, '')) LIKE %s"
+            "  OR LOWER(COALESCE(a.source_url, '')) LIKE %s"
+            "  OR LOWER(COALESCE(a.source_domain, '')) LIKE %s"
+            "  OR LOWER(COALESCE(a.notes, '')) LIKE %s"
+            "  OR EXISTS (SELECT 1 FROM asset_tags st WHERE st.asset_id = a.id"
+            "             AND LOWER(st.tag_value) LIKE %s))"
+        )
+        args.extend([q_like, q_like, q_like, q_like, q_like])
     if tenant_id is not None:
         sql += " AND a.tenant_id = %s"
         args.append(tenant_id)
@@ -2659,6 +2695,7 @@ def list_assets(
     status: str | None = None,
     source_task_id: int | None = None,
     tag_filters: list[tuple[str, str]] | None = None,
+    search: str | None = None,
     limit: int = 200,
     offset: int = 0,
     tenant_id: Any = _UNSET,
@@ -2684,6 +2721,18 @@ def list_assets(
     if source_task_id is not None:
         sql += " AND a.source_task_id = %s"
         args.append(source_task_id)
+    if search:
+        # Stesso pattern di count_assets (LIKE su title/url/domain/notes/tag_value).
+        q_like = f"%{search.lower()}%"
+        sql += (
+            " AND (LOWER(COALESCE(a.title, '')) LIKE %s"
+            "  OR LOWER(COALESCE(a.source_url, '')) LIKE %s"
+            "  OR LOWER(COALESCE(a.source_domain, '')) LIKE %s"
+            "  OR LOWER(COALESCE(a.notes, '')) LIKE %s"
+            "  OR EXISTS (SELECT 1 FROM asset_tags st WHERE st.asset_id = a.id"
+            "             AND LOWER(st.tag_value) LIKE %s))"
+        )
+        args.extend([q_like, q_like, q_like, q_like, q_like])
     if tenant_id is not None:
         sql += " AND a.tenant_id = %s"
         args.append(tenant_id)

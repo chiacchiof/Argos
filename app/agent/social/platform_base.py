@@ -88,7 +88,12 @@ class SocialPlatform(abc.ABC):
 
     @abc.abstractmethod
     async def send_dm(
-        self, page: "Page", username: str, message: str
+        self,
+        page: "Page",
+        username: str,
+        message: str,
+        *,
+        speed_profile: str | None = None,
     ) -> DMResult:
         """Invia un DM a `username`. Ritorna DMResult.
 
@@ -96,9 +101,12 @@ class SocialPlatform(abc.ABC):
         1. Navigare al profilo (riusare goto_profile se utile)
         2. Cliccare bottone messaggi/DM con human_click
         3. Aspettare panel apertura
-        4. Type message con human_type
+        4. Type message con human_type (passandogli `profile=speed_profile`)
         5. Click send con human_click
         6. Verificare delivery (check DOM per messaggio nel chat history)
+
+        `speed_profile`: None|'safe'|'balanced'|'aggressive' — modula i delay
+        umani (reading_pause / human_type / human_wait). Default safe.
         """
         ...
 

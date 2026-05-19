@@ -20,6 +20,7 @@ from ..channels.base import is_enabled as channel_enabled
 from ..config import RESULTS_DIR, settings
 from .llm_providers import get_provider, resolve_api_key, resolve_base_url
 from .ollama import maybe_add_keep_alive
+from .social.message_generator import _looks_like_instructions
 
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,16 @@ async def _generate_reply(
         "specifica, rispondi nel merito; altrimenti ringrazia per la risposta e proponi "
         "di organizzare una breve call la prossima settimana. Mai inventare dati."
     )
+    # Regola anti-instruction-leak: vale anche se l'utente personalizza il prompt.
+    # Necessaria perché i thinking models (qwen3.x, gpt-oss, deepseek-r1) tendono
+    # a rispondere con "Analizza la richiesta / Role: / Task: / Step 1:" invece
+    # del testo del messaggio finale.
+    system_prompt += (
+        "\n\nREGOLA ASSOLUTA: la tua risposta DEVE essere SOLO il testo che "
+        "il destinatario leggera'. Niente 'Analizza la richiesta', 'Role:', "
+        "'Task:', 'Step 1', 'OUTPUT:', niente elenchi numerati o etichette in "
+        "grassetto. Solo il messaggio finito, come se lo stessi scrivendo tu."
+    )
 
     msgs: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for m in history[-10:]:
@@ -86,9 +97,21 @@ async def _generate_reply(
         r.raise_for_status()
         data = r.json()
     try:
-        return (data["choices"][0]["message"]["content"] or "").strip()
+        reply = (data["choices"][0]["message"]["content"] or "").strip()
     except Exception:
         return "(LLM non ha prodotto una risposta valida)"
+    # Guardrail: stesso problema del message_generator. Se il modello ha
+    # emesso ragionamento/etichette invece della reply, sollevo cosi' che
+    # il runner registra il fallimento (insert_message status='failed') e
+    # non spedisce istruzioni al destinatario.
+    is_leak, leak_reason = _looks_like_instructions(reply)
+    if is_leak:
+        raise ValueError(
+            f"LLM ha emesso meta-output invece della reply ({leak_reason}). "
+            "Cambia modello chat (es. qwen2.5:instruct, mistral) o rinforza "
+            "responder_system_prompt. Reply bloccata per non inviare istruzioni."
+        )
+    return reply
 
 
 async def run_agent(task: dict[str, Any], job_id: int) -> str:

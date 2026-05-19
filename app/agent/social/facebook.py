@@ -154,7 +154,14 @@ class Facebook(SocialPlatform):
                     pass
             await human_wait(2.5, 6)
 
-    async def send_dm(self, page: "Page", username: str, message: str) -> DMResult:
+    async def send_dm(
+        self,
+        page: "Page",
+        username: str,
+        message: str,
+        *,
+        speed_profile: str | None = None,
+    ) -> DMResult:
         """Invia DM. Strategia: naviga direttamente a messages/t/<username> che
         e' piu' robusto del click sul bottone Messaggio del profilo."""
         username_clean = (username or "").strip().lstrip("@")
@@ -164,7 +171,7 @@ class Facebook(SocialPlatform):
         target = f"https://www.facebook.com/messages/t/{username_clean}"
         try:
             await page.goto(target, wait_until="domcontentloaded")
-            await human_wait(4, 7)
+            await human_wait(4, 7, profile=speed_profile)
             # Modali da chiudere prima di poter scrivere:
             # 1) "Invia un codice monouso per ripristinare la cronologia delle tue chat"
             #    (FB mostra al primo accesso Messenger su nuovo dispositivo per le
@@ -200,7 +207,7 @@ class Facebook(SocialPlatform):
             for sel in input_sels:
                 try:
                     if await page.locator(sel).first.is_visible(timeout=2500):
-                        await human_type(page, sel, message)
+                        await human_type(page, sel, message, profile=speed_profile)
                         typed = True
                         break
                 except Exception:
@@ -210,7 +217,7 @@ class Facebook(SocialPlatform):
                     ok=False, reason="dm_input_not_found",
                     target_username=username_clean,
                 )
-            await human_wait(1, 3)
+            await human_wait(1, 3, profile=speed_profile)
             # Send: bottone "Invia" / "Send" o Enter
             send_sels = [
                 "[aria-label='Invia']",
@@ -228,7 +235,7 @@ class Facebook(SocialPlatform):
                     continue
             if not sent:
                 await page.keyboard.press("Enter")
-            await human_wait(4, 7)
+            await human_wait(4, 7, profile=speed_profile)
             # Verifica delivery: il primo snippet del messaggio appare nel feed chat
             try:
                 snippet = message[:30]
