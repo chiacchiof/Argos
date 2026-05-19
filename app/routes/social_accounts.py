@@ -20,7 +20,7 @@ import secrets
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .. import db
+from .. import db, db_cloud
 from ..agent.social.crypto_creds import encrypt, is_configured
 from ..templates import templates
 
@@ -29,20 +29,58 @@ log = logging.getLogger(__name__)
 
 
 @router.get("/social/accounts", response_class=HTMLResponse)
-async def social_accounts_list(request: Request):
-    accounts = db.list_social_accounts()
+async def social_accounts_list(request: Request, author: str = ""):
+    """Lista social account. `author`:
+       - `mine` (default per tenant_user): solo account creati dall'utente
+       - `tenant` (default per super_admin): tutti gli account del tenant
+    """
+    current_user = getattr(request.state, "current_user", None)
+    is_super_admin = bool(current_user and current_user.is_super_admin)
+    current_uid = db.current_user_id()
+    default_author = "tenant" if is_super_admin else "mine"
+    author_norm = (author or default_author).strip().lower()
+    if author_norm not in ("mine", "tenant", "all"):
+        author_norm = default_author
+
+    filter_uid = current_uid if (author_norm == "mine" and current_uid is not None) else None
+    accounts = db.list_social_accounts(created_by_user_id=filter_uid)
+    # Conteggio "tutti del tenant" per badge sul toggle (anche se author=mine)
+    total_tenant = (
+        len(db.list_social_accounts()) if author_norm == "mine" else len(accounts)
+    )
     # Arricchisci con dms_today (count da log)
     for a in accounts:
         try:
             a["dms_today"] = db.count_social_dms_today(a["id"])
         except Exception:
             a["dms_today"] = 0
+
+    # Lista utenti del tenant per dropdown "owner" nel form Aggiungi.
+    # Super-admin senza tenant_id corrente vede tutti (puo' assegnare a chiunque).
+    tenant_users: list[dict] = []
+    tenant_id_ctx = db.current_tenant_id()
+    if tenant_id_ctx is not None:
+        try:
+            tenant_users = list(db_cloud.list_users(tenant_id=tenant_id_ctx))
+        except Exception:
+            tenant_users = []
+    elif is_super_admin:
+        try:
+            tenant_users = list(db_cloud.list_users(tenant_id=None))
+        except Exception:
+            tenant_users = []
+
     return templates.TemplateResponse(
         request,
         "social_accounts.html",
         {
             "accounts": accounts,
             "is_secret_configured": is_configured(),
+            "author_filter": author_norm,
+            "total_tenant": total_tenant,
+            "current_user_authenticated": current_uid is not None,
+            "current_user_id": current_uid,
+            "tenant_users": tenant_users,
         },
     )
 
@@ -56,8 +94,15 @@ async def create_social_account(
     daily_dm_cap: int = Form(10),
     proxy_label: str = Form(""),
     notes: str = Form(""),
+    owner_user_id: str = Form(""),
 ):
-    """Aggiunge un nuovo account social. La password viene cifrata in Fernet."""
+    """Aggiunge un nuovo account social. La password viene cifrata in Fernet.
+
+    `owner_user_id`: id dell'utente del tenant che possiede l'account.
+    Se vuoto, default = current_user (audit dell'azione).
+    Tenant_user puo' assegnare solo a se stesso (silently override).
+    Super_admin puo' assegnare a qualunque utente del tenant target.
+    """
     if not is_configured():
         raise HTTPException(
             status_code=400,
@@ -73,20 +118,41 @@ async def create_social_account(
     username = username.strip().lstrip("@")
     if not username or not password:
         raise HTTPException(status_code=400, detail="username e password obbligatori")
+
+    # Owner: tenant_user puo' settare solo se stesso; super_admin puo' altri
+    current_user = getattr(request.state, "current_user", None)
+    is_super_admin = bool(current_user and current_user.is_super_admin)
+    current_uid = db.current_user_id()
+    target_owner_id: int | None = None
+    raw_owner = (owner_user_id or "").strip()
+    if raw_owner.isdigit():
+        target_owner_id = int(raw_owner)
+    if not is_super_admin:
+        # Tenant_user: ignora il form, force = current_uid
+        target_owner_id = current_uid
+    elif target_owner_id is None:
+        target_owner_id = current_uid  # super_admin senza scelta → default self
+
     encrypted = encrypt(password)
     uuid = f"{platform}-{secrets.token_hex(8)}"
     try:
-        account_id = db.create_social_account({
-            "uuid": uuid,
-            "platform": platform,
-            "username": username,
-            "encrypted_password": encrypted,
-            "proxy_label": (proxy_label.strip() or None),
-            "daily_dm_cap": max(1, min(daily_dm_cap, 50)),
-            "status": "warming_up",
-            "notes": notes.strip() or None,
-        })
-        log.info("social account created: id=%s platform=%s username=%s", account_id, platform, username)
+        account_id = db.create_social_account(
+            {
+                "uuid": uuid,
+                "platform": platform,
+                "username": username,
+                "encrypted_password": encrypted,
+                "proxy_label": (proxy_label.strip() or None),
+                "daily_dm_cap": max(1, min(daily_dm_cap, 50)),
+                "status": "warming_up",
+                "notes": notes.strip() or None,
+            },
+            created_by_user_id=target_owner_id,
+        )
+        log.info(
+            "social account created: id=%s platform=%s username=%s owner=%s",
+            account_id, platform, username, target_owner_id,
+        )
     except Exception as e:
         # Probabile UNIQUE constraint (platform, username)
         raise HTTPException(status_code=400, detail=f"Account gia' esistente o errore DB: {e}")

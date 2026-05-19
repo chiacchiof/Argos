@@ -38,7 +38,7 @@
       {%- set qs = [] -%}
       {%- if at and at != 'all' -%}{%- set _ = qs.append('type=' ~ at) -%}{%- endif -%}
       {%- if st -%}{%- set _ = qs.append('status_tag=' ~ st) -%}{%- endif -%}
-      {%- if akey and akey != 'mine' -%}{%- set _ = qs.append('author=' ~ akey) -%}{%- endif -%}
+      {%- if akey -%}{%- set _ = qs.append('author=' ~ akey) -%}{%- endif -%}
       /{% if qs %}?{{ qs|join('&') }}{% endif %}
     {%- endmacro %}
     <a href="{{ author_href('mine') }}"

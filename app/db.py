@@ -4228,18 +4228,31 @@ def create_social_account(
 
 
 def list_social_accounts(
-    platform: str | None = None, status: str | None = None, tenant_id: Any = _UNSET
+    platform: str | None = None,
+    status: str | None = None,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = None,
 ) -> list[dict]:
+    """Lista social_accounts. JOIN users per arricchire con `owner_email`
+    (utile per la UI). Se `created_by_user_id` valorizzato (int), filtra
+    per autore (uso 'I miei account')."""
     tenant_id = _resolve_tenant(tenant_id)
-    sql = "SELECT * FROM social_accounts WHERE 1=1"
+    sql = (
+        "SELECT s.*, u.email AS owner_email "
+        "FROM social_accounts s "
+        "LEFT JOIN users u ON u.id = s.created_by_user_id "
+        "WHERE 1=1"
+    )
     args: list = []
     if platform:
-        sql += " AND platform = %s"; args.append(platform)
+        sql += " AND s.platform = %s"; args.append(platform)
     if status:
-        sql += " AND status = %s"; args.append(status)
+        sql += " AND s.status = %s"; args.append(status)
     if tenant_id is not None:
-        sql += " AND tenant_id = %s"; args.append(tenant_id)
-    sql += " ORDER BY id DESC"
+        sql += " AND s.tenant_id = %s"; args.append(tenant_id)
+    if created_by_user_id is not None:
+        sql += " AND s.created_by_user_id = %s"; args.append(int(created_by_user_id))
+    sql += " ORDER BY s.id DESC"
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]

@@ -20,6 +20,26 @@
   </div>
   {% endif %}
 
+  {# Toggle "I miei account" / "Tutti del tenant" — stesso pattern di /tasks.
+     Entrambi i link passano ?author=... esplicito: tenant_user e super_admin
+     hanno default diversi, quindi senza ?author= il backend potrebbe
+     interpretare differentemente. #}
+  {% set af = author_filter or 'mine' %}
+  {% if current_user_authenticated %}
+  <nav class="author-filter-bar" aria-label="Filtro autore">
+    <a href="/social/accounts?author=mine"
+       class="author-filter-tab {% if af == 'mine' %}author-filter-tab-active{% endif %}"
+       title="Solo gli account che hai creato tu">
+      👤 I miei account
+    </a>
+    <a href="/social/accounts?author=tenant"
+       class="author-filter-tab {% if af != 'mine' %}author-filter-tab-active{% endif %}"
+       title="Tutti gli account social del tenant">
+      🏢 Tutti del tenant <span class="author-filter-count">{{ total_tenant }}</span>
+    </a>
+  </nav>
+  {% endif %}
+
   <details class="optional-block" {% if not accounts %}open{% endif %}>
     <summary>➕ Aggiungi nuovo account</summary>
     <form method="post" action="/social/accounts" class="add-account-form" style="margin-top: 0.8rem;">
@@ -52,6 +72,24 @@
         <textarea name="notes" rows="2" placeholder="Es. account creato 2026-03-15, warmup completato"
                   {% if not is_secret_configured %}disabled{% endif %}></textarea>
       </label>
+      {# Owner dropdown: visibile solo se il tenant ha >= 2 utenti (con 1 solo
+         utente il default current_user va sempre bene). Per tenant_user il
+         dropdown e' disabled (forzato a se stesso lato backend); per
+         super_admin selezionabile. #}
+      {% if tenant_users and tenant_users|length >= 2 %}
+      <label>Owner <span class="hint">(utente del tenant che possiede l'account)</span>
+        <select name="owner_user_id"
+                {% if not is_secret_configured %}disabled{% endif %}
+                {% if not request.state.current_user.is_super_admin %}disabled
+                   title="Solo super-admin possono assegnare l'owner ad un altro utente"{% endif %}>
+          {% for u in tenant_users %}
+            <option value="{{ u.id }}" {% if u.id == current_user_id %}selected{% endif %}>
+              {{ u.email }}{% if u.id == current_user_id %} (tu){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
       <button type="submit" class="btn-primary"
               {% if not is_secret_configured %}disabled{% endif %}>Aggiungi (cifratura attiva)</button>
     </form>
@@ -64,7 +102,9 @@
         <th>#</th><th>Piattaforma</th><th>Username</th><th>Status</th>
         <th title="DM inviati nelle ultime 24h">DMs / 24h</th>
         <th title="Cap giornaliero">Cap</th>
-        <th>Proxy</th><th>Creato</th><th></th>
+        <th>Proxy</th>
+        <th title="Utente del tenant che ha creato l'account">Owner</th>
+        <th>Creato</th><th></th>
       </tr>
     </thead>
     <tbody>
@@ -83,6 +123,16 @@
         <td>{{ a.dms_today }}</td>
         <td>{{ a.daily_dm_cap }}</td>
         <td><small>{{ a.proxy_label or '—' }}</small></td>
+        <td>
+          {% if a.owner_email %}
+            <small {% if a.created_by_user_id == current_user_id %}style="font-weight:600;color:#0969da"{% endif %}
+                   title="user_id={{ a.created_by_user_id }}">
+              {{ a.owner_email }}{% if a.created_by_user_id == current_user_id %} (tu){% endif %}
+            </small>
+          {% else %}
+            <small class="muted">—</small>
+          {% endif %}
+        </td>
         <td><small>{{ a.created_at[:10] if a.created_at else '—' }}</small></td>
         <td class="row-actions">
           <a href="/social/accounts/{{ a.id }}/edit" class="btn-small" title="Modifica username, password, cap, status, note">✏️ edit</a>

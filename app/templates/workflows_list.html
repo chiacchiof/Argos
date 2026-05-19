@@ -13,7 +13,7 @@
   {% set af = author_filter or 'mine' %}
   {% if current_user_authenticated %}
   <nav class="author-filter-bar" aria-label="Filtro autore">
-    <a href="/workflows"
+    <a href="/workflows?author=mine"
        class="author-filter-tab {% if af == 'mine' %}author-filter-tab-active{% endif %}"
        title="Solo i workflow che hai creato tu">
       👤 I miei workflow

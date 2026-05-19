@@ -2593,6 +2593,20 @@ Pre-feature: `/qualified` aveva i bottoni `🚀 Avvia outreach (N)` e `🎯 Rila
 - "Seleziona tutti i N filtrati" non scarica gli IDs in browser — usa il flag che fa ri-fetchare lato server. Limite hard: `_MAX_QUALIFIED_SNAPSHOT = 10000`. Sopra 10k l'utente vedrebbe solo i primi 10k.
 - La selezione non persiste tra pagine: cambiando pagina (paginazione) o filtri, lo stato selection si resetta. Pattern Gmail richiede sessioni stateful — overkill per ora.
 
+### 17.16 Owner sui social accounts (2026-05-19)
+
+`/social/accounts` ora include:
+1. **Colonna Owner** nella tabella: mostra l'email dell'utente del tenant che ha creato l'account. La riga corrente dell'utente loggato è evidenziata in blu con `(tu)`.
+2. **Filtro autore** "Miei / Tutti del tenant" (default `mine` per tenant_user, `tenant` per super_admin) — stesso pattern di `/tasks` e `/workflows`.
+3. **Dropdown Owner** nel form "Aggiungi nuovo account": visibile solo se il tenant ha ≥2 utenti. Selezionabile **solo** dai super_admin; tenant_user vede il dropdown disabilitato e il backend forza comunque `created_by_user_id = current_user_id`.
+
+**Implementazione**:
+- `db.list_social_accounts(created_by_user_id=)` + LEFT JOIN users per `owner_email`.
+- Route legge `?author=`, applica default per role, calcola `total_tenant` per il badge sul toggle.
+- POST `/social/accounts` accetta `owner_user_id`. Tenant_user: ignorato silently → self. Super_admin: rispettato; se vuoto → self.
+
+**Fix consistency** anche su tasks/workflows: i tab "Miei" ora generano sempre `?author=mine` esplicito (prima omesso). Senza fix, super_admin con default=tenant cliccava "Miei" e restava su tenant perché il route ricadeva sul default per role.
+
 ### 17.12 Filtro autore su `/tasks` e `/workflows` (2026-05-18)
 
 Le liste `/` (tasks) e `/workflows` mostrano **di default solo gli elementi creati dall'utente loggato** (`tenant_user`). Toggle per vedere tutto il tenant:
