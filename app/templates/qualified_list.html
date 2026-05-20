@@ -7,15 +7,15 @@
 <section>
   <div class="page-header">
     <div>
-      <h2>✅ Asset qualified</h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="#i-qualified"/></svg> Asset qualified</h2>
       <p class="page-subtitle">
         Audience qualificate dai task qualifier. Scegli un qualifier nella sidebar, raffina con i filtri, poi lancia outreach su questo set.
       </p>
     </div>
     <div class="page-actions">
-      <button type="button" class="btn-secondary"
+      <button type="button" class="btn-link-action"
               onclick="document.getElementById('add-qualified-modal').classList.add('open');">
-        ➕ Aggiungi qualified
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Aggiungi qualified
       </button>
     </div>
   </div>
@@ -541,9 +541,13 @@
                 <a href="/tasks/{{ a.source_task_id }}">task #{{ a.source_task_id }}</a>
                 {% endif %}
               </td>
-              <td style="white-space:nowrap">
-                <a href="/assets/{{ a.id }}" class="btn-small" title="Dettaglio">👁️</a>
-                <a href="/assets/{{ a.id }}/edit" class="btn-small" title="Modifica">✏️</a>
+              <td class="row-actions">
+                <a href="/assets/{{ a.id }}" class="btn-icon" aria-label="Dettaglio asset" title="Dettaglio">
+                  <svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>
+                </a>
+                <a href="/assets/{{ a.id }}/edit" class="btn-icon btn-icon-brand" aria-label="Modifica asset" title="Modifica">
+                  <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+                </a>
               </td>
             </tr>
             {% endfor %}

@@ -36,11 +36,13 @@
   </div>
 
   {% if contact.status != 'optedout' %}
-  <h3>✏️ Rispondi</h3>
+  <h3><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Rispondi</h3>
   <form method="post" action="/inbox/{{ thread.id }}/reply">
     <textarea name="body" rows="6" required placeholder="Scrivi qui la tua risposta..."></textarea>
     <div class="actions">
-      <button type="submit">📤 Invia</button>
+      <button type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg> Invia
+      </button>
     </div>
   </form>
   {% else %}
@@ -49,7 +51,9 @@
 
   {% if contact.status != 'optedout' %}
   <form method="post" action="/inbox/contacts/{{ contact.id }}/optout" class="danger" onsubmit="return confirm('Marcare il contatto come opt-out (niente più messaggi)?');">
-    <button type="submit" class="danger">🚫 Opt-out manuale</button>
+    <button type="submit" class="btn-danger-inline">
+      <svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg> Opt-out manuale
+    </button>
   </form>
   {% else %}
   <form method="post" action="/inbox/contacts/{{ contact.id }}/reset">

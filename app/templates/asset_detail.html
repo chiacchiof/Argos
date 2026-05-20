@@ -17,7 +17,9 @@
         </p>
       </div>
       <div class="summary-actions">
-        <a href="/assets/{{ asset.id }}/edit" class="btn-link-action">✏️ Modifica</a>
+        <a href="/assets/{{ asset.id }}/edit" class="btn-link-action">
+          <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica
+        </a>
         <span class="status status-{{ asset.status }}" style="font-size:0.95rem;padding:0.3rem 0.8rem">{{ asset.status }}</span>
       </div>
     </div>
@@ -145,7 +147,7 @@
             {% if c.sitoweb %}🌐 <a href="{{ c.sitoweb }}" target="_blank">link</a>{% endif %}
             {% if c.social_json %}<small class="muted">social: {{ c.social_json[:80] }}…</small>{% endif %}
           </td>
-          <td><a href="/inbox/contacts/{{ c.id }}/edit" class="btn-small">✏️ edit</a></td>
+          <td class="row-actions"><a href="/inbox/contacts/{{ c.id }}/edit" class="btn-icon btn-icon-brand" aria-label="Modifica contatto" title="Modifica contatto"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></a></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -171,7 +173,9 @@
       <label>Note (opzionali, sovrascrivono le precedenti)
         <input type="text" name="notes" value="{{ asset.notes or '' }}" placeholder="es. 'verificato manualmente'">
       </label>
-      <button type="submit" class="btn-primary">💾 Salva</button>
+      <button type="submit" class="btn-primary">
+        <svg class="icon" aria-hidden="true"><use href="#i-save"/></svg> Salva
+      </button>
     </form>
   </details>
 
@@ -193,7 +197,9 @@
     </p>
     <form method="post" action="/assets/{{ asset.id }}/delete" style="margin-top:0.5rem"
           onsubmit="return confirm('Eliminare asset e relativi contact in cascata? Operazione irreversibile.');">
-      <button type="submit" class="btn-small btn-danger">🗑️ Elimina asset + {{ n_linked }} contact</button>
+      <button type="submit" class="btn-danger">
+        <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Elimina asset + {{ n_linked }} contact
+      </button>
     </form>
   </details>
 </section>

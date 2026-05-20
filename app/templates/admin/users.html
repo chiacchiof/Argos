@@ -126,7 +126,9 @@
                 <hr class="menu-sep">
                 <form method="post" action="/admin/users/{{ u.id }}/delete"
                       onsubmit="return confirm('Eliminare definitivamente {{ u.email }}?');">
-                  <button type="submit" class="menu-danger" role="menuitem">🗑️ Elimina</button>
+                  <button type="submit" class="kebab-danger" role="menuitem">
+                    <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Elimina
+                  </button>
                 </form>
                 {% endif %}
               </div>

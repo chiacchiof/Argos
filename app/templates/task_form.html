@@ -1570,10 +1570,14 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
 
     {# Bottoni del wizard: gestiti da JS. Il submit è abilitato solo all'ultimo step. #}
     <div class="actions wizard-nav">
-      <button type="button" id="wizard-prev" class="btn-secondary">◀ Indietro</button>
+      <button type="button" id="wizard-prev" class="btn-link-action">◀ Indietro</button>
       <button type="button" id="wizard-next">Avanti ▶</button>
       <button type="submit" id="wizard-submit" style="display:none">
-        {% if is_edit %}💾 Salva modifiche{% else %}✓ Crea task{% endif %}
+        {% if is_edit %}
+          <svg class="icon" aria-hidden="true"><use href="#i-save"/></svg> Salva modifiche
+        {% else %}
+          <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Crea task
+        {% endif %}
       </button>
       <a href="{% if is_edit %}/tasks/{{ task.id }}{% else %}/{% endif %}" class="link-cancel">Annulla</a>
     </div>

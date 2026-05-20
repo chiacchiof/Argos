@@ -1,69 +1,289 @@
 <!doctype html>
-<html lang="it">
+<html lang="it" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}AgentScraper{% endblock %}</title>
-  {# Cache-busting: il timestamp di mtime cambia ad ogni modifica della CSS,
-     così i browser scaricano sempre l'ultima versione senza dover hard-reload. #}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Mulish:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/static/style.css?v={{ static_css_mtime() }}">
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 </head>
-<body>
+<body class="app-body">
+  {# Sprite SVG icons (Lucide-inspired). #}
+  <svg width="0" height="0" style="position:absolute;overflow:hidden" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="i-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="9" cy="9" r="4"/><circle cx="15" cy="15" r="4"/>
+        <path d="M11.5 11.5 L12.5 12.5"/>
+      </symbol>
+      <symbol id="i-orchestrator" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>
+        <path d="M12 7v3a3 3 0 0 1-3 3H7"/><path d="M12 7v3a3 3 0 0 0 3 3h2"/>
+        <path d="M5 17v-2"/><path d="M19 17v-2"/>
+      </symbol>
+      <symbol id="i-tasks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 6h2l1 1"/><path d="M9 7h12"/>
+        <path d="M3 12h2l1 1"/><path d="M9 13h12"/>
+        <path d="M3 18h2l1 1"/><path d="M9 19h12"/>
+      </symbol>
+      <symbol id="i-workflows" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/>
+        <circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/>
+        <path d="M8 6h8"/><path d="M6 8v8"/><path d="M18 8v8"/><path d="M8 18h8"/>
+      </symbol>
+      <symbol id="i-assets" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+        <path d="M3.27 6.96 12 12.01l8.73-5.05"/><path d="M12 22.08V12"/>
+      </symbol>
+      <symbol id="i-qualified" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/>
+        <path d="m9 12 2 2 4-4"/>
+      </symbol>
+      <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>
+        <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/>
+      </symbol>
+      <symbol id="i-admin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>
+        <path d="m9 12 2 2 4-4"/>
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </symbol>
+      <symbol id="i-memory" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2a4.5 4.5 0 0 0-4.5 4.5v.5A4 4 0 0 0 5 11v.5a4 4 0 0 0 0 7V19a4 4 0 0 0 4 4 4 4 0 0 0 3-1.34A4 4 0 0 0 15 23a4 4 0 0 0 4-4v-.5a4 4 0 0 0 0-7V11a4 4 0 0 0-2.5-4V6.5A4.5 4.5 0 0 0 12 2Z"/>
+        <path d="M12 2v20"/>
+      </symbol>
+      <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+        <polyline points="16 17 21 12 16 7"/>
+        <line x1="21" y1="12" x2="9" y2="12"/>
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="7"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>
+        <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
+      </symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 20h9"/>
+        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+      </symbol>
+      <symbol id="i-ban" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="m4.93 4.93 14.14 14.14"/>
+      </symbol>
+      <symbol id="i-power" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2v10"/>
+        <path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3 6 5 6 21 6"/>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+        <line x1="10" y1="11" x2="10" y2="17"/>
+        <line x1="14" y1="11" x2="14" y2="17"/>
+      </symbol>
+      <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"/>
+        <line x1="5" y1="12" x2="19" y2="12"/>
+      </symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </symbol>
+      <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </symbol>
+      <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/>
+        <line x1="6" y1="6" x2="18" y2="18"/>
+      </symbol>
+      <symbol id="i-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="16 3 21 3 21 8"/>
+        <line x1="4" y1="20" x2="21" y2="3"/>
+        <polyline points="21 16 21 21 16 21"/>
+        <line x1="15" y1="15" x2="21" y2="21"/>
+        <line x1="4" y1="4" x2="9" y2="9"/>
+      </symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </symbol>
+      <symbol id="i-rotate-ccw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="1 4 1 10 7 10"/>
+        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+      </symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2Z"/>
+      </symbol>
+      <symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/>
+        <polyline points="17 21 17 13 7 13 7 21"/>
+        <polyline points="7 3 7 8 15 8"/>
+      </symbol>
+      <symbol id="i-target" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <circle cx="12" cy="12" r="6"/>
+        <circle cx="12" cy="12" r="2"/>
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="22" y1="2" x2="11" y2="13"/>
+        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+      </symbol>
+      <symbol id="i-play-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <polygon points="10 8 16 12 10 16 10 8"/>
+      </symbol>
+      <symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2Z"/>
+        <polyline points="22 6 12 13 2 6"/>
+      </symbol>
+      <symbol id="i-message" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>
+      </symbol>
+      <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
+        <rect x="9" y="9" width="6" height="6"/>
+        <line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/>
+        <line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/>
+        <line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/>
+        <line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>
+      </symbol>
+    </defs>
+  </svg>
+
   {% set update_info = request.state.update_info if request and request.state else None %}
   {% if update_info %}
   <div class="update-banner">
-    🔔 <strong>Nuova versione {{ update_info.latest }} disponibile</strong>
-    (sei sulla {{ update_info.current }}).
-    <a href="{{ update_info.release_url }}" target="_blank" rel="noopener">Vedi note di rilascio</a>
-    &middot; <a href="/update">Come aggiornare</a>
+    <svg class="icon"><use href="#i-bell"/></svg>
+    <strong>Nuova versione {{ update_info.latest }} disponibile</strong>
+    <span class="muted">(sei sulla {{ update_info.current }}).</span>
+    <a href="{{ update_info.release_url }}" target="_blank" rel="noopener">Release notes</a>
+    <span class="muted">·</span>
+    <a href="/update">Come aggiornare</a>
   </div>
   {% endif %}
-  <header>
-    <h1><a href="/">AgentScraper</a></h1>
-    {% set current_user = request.state.current_user if request and request.state else None %}
-    <nav>
-      <a href="/orchestrator">🎼 Orchestrator</a>
-      <a href="/">📋 Tasks</a>
-      <a href="/workflows">🔗 Workflows</a>
-      <a href="/assets">📦 Assets</a>
-      <a href="/qualified">✅ Qualified</a>
-      <a href="/inbox">📨 Inbox</a>
-      {% if current_user %}
-      {% if current_user.is_super_admin %}<a href="/admin" class="admin-link">🛡️ Admin</a>{% endif %}
-      {# User menu compatto: pill con iniziali + dropdown. Uso <details> per
-         non avere JS framework; click su summary apre/chiude. #}
-      <details class="user-menu">
-        <summary class="user-pill"
-                 title="{{ current_user.email }}{% if current_user.tenant_name %} · {{ current_user.tenant_name }}{% endif %}">
-          {{ current_user.initials }}
-        </summary>
-        <div class="user-menu-dropdown" role="menu">
-          <div class="user-menu-header">
-            <strong>{{ current_user.email }}</strong>
-            {% if current_user.is_super_admin %}
-              <small class="user-role">super-admin</small>
-            {% elif current_user.tenant_name %}
-              <small class="user-tenant">🏢 {{ current_user.tenant_name }}</small>
-            {% endif %}
-          </div>
-          <a href="/settings" role="menuitem">⚙️ Settings</a>
-          <a href="/site_memory" role="menuitem">🧠 Memoria sito</a>
-          <hr class="user-menu-sep">
-          <a href="/logout" role="menuitem" class="user-menu-logout">🚪 Esci</a>
+
+  {% set current_user = request.state.current_user if request and request.state else None %}
+  {% set req_path = request.url.path if request else '/' %}
+
+  <div class="app-shell{% if not current_user %} auth-mode{% endif %}">
+    {% if current_user %}
+    <aside class="app-sidebar" aria-label="Navigazione principale">
+      <a href="/" class="brand">
+        <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></span>
+        <span class="brand-text">
+          <span class="brand-name">AgentScraper</span>
+          <span class="brand-tag">multi-agent system</span>
+        </span>
+      </a>
+      <nav class="sidebar-nav" aria-label="Sezioni">
+        <a href="/orchestrator" class="nav-item {% if req_path.startswith('/orchestrator') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-orchestrator"/></svg><span>Orchestrator</span>
+        </a>
+        <a href="/" class="nav-item {% if req_path == '/' or req_path.startswith('/tasks') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-tasks"/></svg><span>Tasks</span>
+        </a>
+        <a href="/workflows" class="nav-item {% if req_path.startswith('/workflows') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-workflows"/></svg><span>Workflows</span>
+        </a>
+        <a href="/assets" class="nav-item {% if req_path.startswith('/assets') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-assets"/></svg><span>Assets</span>
+        </a>
+        <a href="/qualified" class="nav-item {% if req_path.startswith('/qualified') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-qualified"/></svg><span>Qualified</span>
+        </a>
+        <a href="/inbox" class="nav-item {% if req_path.startswith('/inbox') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-inbox"/></svg><span>Inbox</span>
+        </a>
+        {% if current_user.is_super_admin %}
+        <a href="/admin" class="nav-item is-admin {% if req_path.startswith('/admin') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-admin"/></svg><span>Admin</span>
+        </a>
+        {% endif %}
+      </nav>
+      <div class="sidebar-footer">
+        <a href="/site_memory" class="nav-item nav-item-sm {% if req_path.startswith('/site_memory') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-memory"/></svg><span>Memoria sito</span>
+        </a>
+        <a href="/settings" class="nav-item nav-item-sm {% if req_path.startswith('/settings') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-settings"/></svg><span>Settings</span>
+        </a>
+      </div>
+    </aside>
+    {% endif %}
+
+    <div class="app-main">
+      <header class="app-topbar">
+        {% if current_user %}
+        <div class="topbar-left">
+          <button type="button" class="sidebar-toggle" aria-label="Menu" onclick="document.body.classList.toggle('sidebar-open')">
+            <span></span><span></span><span></span>
+          </button>
+          <form action="/assets" method="get" class="topbar-search" role="search">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <input type="search" name="q" placeholder="Cerca asset, contatti, tag..." autocomplete="off">
+          </form>
         </div>
-      </details>
-      {% endif %}
-    </nav>
-  </header>
-  <main class="{% block main_class %}{% endblock %}">
-    {% block content %}{% endblock %}
-  </main>
-  <footer>
-    <small>Locale &middot; Ollama @ {{ request.app.state if false else "" }}</small>
-  </footer>
+        <div class="topbar-actions">
+          <details class="user-menu">
+            <summary class="user-pill"
+                     title="{{ current_user.email }}{% if current_user.tenant_name %} · {{ current_user.tenant_name }}{% endif %}">
+              {{ current_user.initials }}
+            </summary>
+            <div class="user-menu-dropdown" role="menu">
+              <div class="user-menu-header">
+                <strong>{{ current_user.email }}</strong>
+                {% if current_user.is_super_admin %}
+                  <small class="user-role">super-admin</small>
+                {% elif current_user.tenant_name %}
+                  <small class="user-tenant">{{ current_user.tenant_name }}</small>
+                {% endif %}
+              </div>
+              <a href="/settings" role="menuitem"><svg class="icon"><use href="#i-settings"/></svg> Settings</a>
+              <a href="/site_memory" role="menuitem"><svg class="icon"><use href="#i-memory"/></svg> Memoria sito</a>
+              <hr class="user-menu-sep">
+              <a href="/logout" role="menuitem" class="user-menu-logout"><svg class="icon"><use href="#i-logout"/></svg> Esci</a>
+            </div>
+          </details>
+        </div>
+        {% else %}
+        <a href="/" class="brand">
+          <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></span>
+          <span class="brand-text">
+            <span class="brand-name">AgentScraper</span>
+            <span class="brand-tag">multi-agent system</span>
+          </span>
+        </a>
+        {% endif %}
+      </header>
+
+      <main class="app-content {% block main_class %}{% endblock %}">
+        {% block content %}{% endblock %}
+      </main>
+
+      <footer class="app-footer">
+        <small>AgentScraper · sistema multi-agentico locale{% if current_user %} · powered by Ollama{% endif %}</small>
+      </footer>
+    </div>
+  </div>
+
   <script>
-    // Chiudi dropdown su click fuori (user-menu + kebab-menu generici).
     document.addEventListener('click', function(e) {
       document.querySelectorAll('details.user-menu[open], details.kebab-menu[open]').forEach(function (menu) {
         if (!menu.contains(e.target)) menu.removeAttribute('open');

@@ -22,23 +22,23 @@
 <section>
   <div class="page-header">
     <div>
-      <h2>📦 Assets</h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="#i-assets"/></svg> Assets</h2>
       <p class="page-subtitle">Tutto il materiale estratto dai task (annunci, prodotti, profili, eventi, articoli, ...). Filtra per tipo o tag.</p>
     </div>
     <div class="page-actions">
-      <a href="/assets/new" class="btn-link-action" style="background:#2e7d32;color:#fff;border-color:#2e7d32;font-weight:500">
-        ➕ Nuovo asset
+      <a href="/assets/new" class="btn-link-action">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Nuovo asset
       </a>
-      <a href="/import" class="btn-link-action" style="background:#1565c0;color:#fff;border-color:#1565c0;font-weight:500">
-        📥 Import CSV
+      <a href="/import" class="btn-link-action">
+        <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg> Import CSV
       </a>
       <button type="button" class="btn-link-action"
               onclick="document.getElementById('export-csv-modal').classList.add('open');"
               title="Esporta gli asset filtrati (o selezionati) in CSV">
-        📤 Esporta CSV
+        <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg> Esporta CSV
       </button>
       <a href="/assets/duplicates" class="btn-link-action" title="Conflitti di duplicazione rilevati cross-task">
-        🔀 Duplicati
+        <svg class="icon" aria-hidden="true"><use href="#i-shuffle"/></svg> Duplicati
       </a>
     </div>
   </div>
@@ -206,7 +206,9 @@
         <span class="qbulk-saf-label-on" style="display:none">Tutti i {{ total }} selezionati (annulla)</span>
       </button>
       <span class="bulk-count" data-bulk-count>0 selezionati</span>
-      <button type="submit" class="btn-danger-inline" data-bulk-submit disabled>🗑️ Cancella (<span data-bulk-action-count>0</span>)</button>
+      <button type="submit" class="btn-danger-inline" data-bulk-submit disabled>
+        <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Cancella (<span data-bulk-action-count>0</span>)
+      </button>
     </div>
   <table class="data assets-table">
     <thead>
@@ -247,14 +249,21 @@
           <a href="/tasks/{{ a.source_task_id }}">task #{{ a.source_task_id }}</a>
           {% endif %}
         </td>
-        <td style="white-space:nowrap">
-          <a href="/assets/{{ a.id }}" class="btn-small" title="Dettaglio asset">👁️</a>
-          <a href="/assets/{{ a.id }}/edit" class="btn-small" title="Modifica asset">✏️</a>
+        <td class="row-actions">
+          <a href="/assets/{{ a.id }}" class="btn-icon" aria-label="Dettaglio asset" title="Dettaglio asset">
+            <svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>
+          </a>
+          <a href="/assets/{{ a.id }}/edit" class="btn-icon btn-icon-brand" aria-label="Modifica asset" title="Modifica asset">
+            <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+          </a>
           <button type="submit" formaction="/assets/{{ a.id }}/delete"
-                  class="btn-small btn-danger"
+                  class="btn-icon btn-icon-danger"
                   formnovalidate
+                  aria-label="Elimina asset"
                   title="Elimina asset (CASCADE su contact linkati)"
-                  onclick="return confirm('Cancellare l\'asset #{{ a.id }}?\n\n⚠️ Verranno cancellati anche i contact linkati (CASCADE).');">🗑️</button>
+                  onclick="return confirm('Cancellare l\'asset #{{ a.id }}?\n\n⚠️ Verranno cancellati anche i contact linkati (CASCADE).');">
+            <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
+          </button>
         </td>
       </tr>
       {% endfor %}

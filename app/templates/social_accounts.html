@@ -138,20 +138,28 @@
           <details class="kebab-menu">
             <summary class="kebab-trigger" title="Azioni">⋮</summary>
             <div class="kebab-dropdown" role="menu">
-              <a href="/social/accounts/{{ a.id }}/edit" role="menuitem">✏️ Modifica</a>
+              <a href="/social/accounts/{{ a.id }}/edit" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica
+              </a>
               {% if a.status == 'active' %}
               <form method="post" action="/social/accounts/{{ a.id }}/toggle-status">
-                <button type="submit" role="menuitem">⏸ Quarantine</button>
+                <button type="submit" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg> Quarantine
+                </button>
               </form>
               {% elif a.status in ('quarantine','warming_up') %}
               <form method="post" action="/social/accounts/{{ a.id }}/toggle-status">
-                <button type="submit" role="menuitem">▶ Attiva</button>
+                <button type="submit" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg> Attiva
+                </button>
               </form>
               {% endif %}
               <hr class="menu-sep">
               <form method="post" action="/social/accounts/{{ a.id }}/delete"
                     onsubmit="return confirm('Cancellare account #{{ a.id }} ({{ a.platform }}/{{ a.username }})? Anche i log DM saranno cancellati.');">
-                <button type="submit" class="menu-danger" role="menuitem">🗑️ Elimina</button>
+                <button type="submit" class="kebab-danger" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Elimina
+                </button>
               </form>
             </div>
           </details>

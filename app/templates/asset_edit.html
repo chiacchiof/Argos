@@ -63,7 +63,9 @@
     {% endif %}
 
     <div class="actions" style="margin-top:1rem">
-      <button type="submit" class="btn-primary">💾 Salva modifiche</button>
+      <button type="submit" class="btn-primary">
+        <svg class="icon" aria-hidden="true"><use href="#i-save"/></svg> Salva modifiche
+      </button>
       <a href="/assets/{{ asset.id }}" class="link-cancel">Annulla</a>
     </div>
   </form>

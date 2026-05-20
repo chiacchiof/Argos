@@ -53,29 +53,36 @@
   <div class="actions">
     <button hx-post="/tasks/{{ task.id }}/run"
             hx-target="#job-status" hx-swap="innerHTML">
-      ▶ Esegui ora
+      <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg> Esegui ora
     </button>
-    <a href="/tasks/{{ task.id }}/edit" class="btn-link-action">✏️ Modifica</a>
+    <a href="/tasks/{{ task.id }}/edit" class="btn-link-action">
+      <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica
+    </a>
     <form method="post" action="/tasks/{{ task.id }}/clone">
-      <button type="submit" class="btn-secondary"
+      <button type="submit" class="btn-link-action"
               title="Crea una copia editabile di questo task (utile per pattern '1 task per agente target')">
-        📋 Clona
+        <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg> Clona
       </button>
     </form>
-    <a href="/tasks/{{ task.id }}/results" class="btn-link-action">📂 Risultati salvati</a>
+    <a href="/tasks/{{ task.id }}/results" class="btn-link-action">
+      <svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> Risultati salvati
+    </a>
   </div>
 
   {# Audience snapshot (task outreach con target_asset_ids valorizzato).
      Mostra il count + primi 20 IDs + link a edit per modificare. #}
   {% if task.target_asset_ids %}
   <div class="audience-summary-card">
-    🎯 <strong>Audience snapshot</strong>:
+    <svg class="icon" aria-hidden="true"><use href="#i-target"/></svg>
+    <strong>Audience snapshot</strong>:
     <strong>{{ task.target_asset_ids|length }}</strong> asset selezionati
     <details style="display:inline-block; margin-left:0.6rem">
       <summary class="muted small">primi 20 ID</summary>
       <code style="font-size:0.85rem">{{ task.target_asset_ids[:20] | join(', ') }}{% if task.target_asset_ids|length > 20 %}, …{% endif %}</code>
     </details>
-    <a href="/tasks/{{ task.id }}/edit" class="btn-small" style="margin-left:0.6rem">✏️ Modifica audience</a>
+    <a href="/tasks/{{ task.id }}/edit" class="btn-link-action btn-small" style="margin-left:0.6rem">
+      <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica audience
+    </a>
   </div>
   {% endif %}
 
@@ -86,7 +93,7 @@
         {% include "partials/job_dashboard.html" %}
       {% endwith %}
     {% else %}
-      <p class="muted">Nessuna esecuzione ancora lanciata. Premi "▶ Esegui ora".</p>
+      <p class="muted">Nessuna esecuzione ancora lanciata. Premi "Esegui ora".</p>
     {% endif %}
   </div>
 

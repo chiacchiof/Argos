@@ -15,12 +15,18 @@
 
   <div class="actions">
     <form method="post" action="/workflows/{{ workflow.id }}/run" style="display:inline">
-      <button type="submit">▶ Esegui workflow</button>
+      <button type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg> Esegui workflow
+      </button>
     </form>
-    <a href="/workflows/{{ workflow.id }}/edit" class="btn-link-action">✏️ Modifica nome/descrizione</a>
+    <a href="/workflows/{{ workflow.id }}/edit" class="btn-link-action">
+      <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica nome/descrizione
+    </a>
     <form method="post" action="/workflows/{{ workflow.id }}/delete" style="display:inline"
           onsubmit="return confirm('Eliminare il workflow {{ workflow.name }}? Gli edge saranno cancellati ma i task NO.');">
-      <button type="submit" class="btn-danger-inline">🗑️ Elimina workflow</button>
+      <button type="submit" class="btn-danger-inline">
+        <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Elimina workflow
+      </button>
     </form>
     <small class="muted">
       (Esegui = lancia i task root del DAG. La cascata segue gli edge.)
@@ -98,11 +104,15 @@
         <td>
           <form method="post" action="/workflow_edges/{{ e.id }}/toggle" style="display:inline">
             <input type="hidden" name="redirect_to" value="/workflows/{{ workflow.id }}">
-            <button type="submit" class="btn-small">↩️</button>
+            <button type="submit" class="btn-icon" aria-label="Inverti direzione edge" title="Inverti direzione">
+              <svg class="icon" aria-hidden="true"><use href="#i-rotate-ccw"/></svg>
+            </button>
           </form>
           <form method="post" action="/workflow_edges/{{ e.id }}/delete" style="display:inline" onsubmit="return confirm('Eliminare l\'edge?');">
             <input type="hidden" name="redirect_to" value="/workflows/{{ workflow.id }}">
-            <button type="submit" class="btn-small btn-danger">🗑️</button>
+            <button type="submit" class="btn-icon btn-icon-danger" aria-label="Elimina edge" title="Elimina edge">
+              <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
+            </button>
           </form>
         </td>
       </tr>

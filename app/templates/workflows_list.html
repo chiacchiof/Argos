@@ -2,13 +2,19 @@
 {% block title %}Workflows — AgentScraper{% endblock %}
 {% block content %}
 <section>
-  <h2>🔗 Workflows</h2>
-  <p class="muted">
-    Un <strong>workflow</strong> è un'orchestrazione di <a href="/">tasks</a> in cascata
-    (DAG). Quando un task termina, eventuali task downstream connessi via edge vengono
-    lanciati automaticamente. Ogni task resta comunque lanciabile da solo.
-  </p>
-  <p><a href="/workflows/new">+ Nuovo workflow</a></p>
+  <div class="page-header">
+    <div>
+      <h2><svg class="icon" aria-hidden="true"><use href="#i-workflows"/></svg> Workflows</h2>
+      <p class="page-subtitle">
+        Un <strong>workflow</strong> è un'orchestrazione di <a href="/">tasks</a> in cascata (DAG).
+        Quando un task termina, eventuali task downstream connessi via edge vengono lanciati automaticamente.
+        Ogni task resta comunque lanciabile da solo.
+      </p>
+    </div>
+    <a href="/workflows/new" class="btn-link-action">
+      <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Nuovo workflow
+    </a>
+  </div>
 
   {% set af = author_filter or 'mine' %}
   {% if current_user_authenticated %}
@@ -43,14 +49,20 @@
         <td>{{ w.n_edges }}</td>
         <td><small>{{ w.updated_at }}</small></td>
         <td class="row-actions">
-          <a href="/workflows/{{ w.id }}/edit" class="btn-small btn-link-action" title="Modifica nome/descrizione">✏️ modifica</a>
+          <a href="/workflows/{{ w.id }}/edit" class="btn-icon btn-icon-brand" aria-label="Modifica workflow" title="Modifica nome/descrizione">
+            <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+          </a>
           <form method="post" action="/workflows/{{ w.id }}/toggle-disabled" style="display:inline">
             <input type="hidden" name="redirect_to" value="/workflows">
             {% if w.disabled %}
-              <button type="submit" class="btn-small" title="Riabilita il workflow">✓ abilita</button>
+              <button type="submit" class="btn-icon btn-icon-success" aria-label="Abilita workflow" title="Riabilita il workflow">
+                <svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>
+              </button>
             {% else %}
-              <button type="submit" class="btn-small btn-secondary" title="Disabilita: non potra' essere lanciato"
-                      onclick="return confirm('Disabilitare il workflow #{{ w.id }} \'{{ w.name|e }}\'?');">🚫 disabilita</button>
+              <button type="submit" class="btn-icon btn-icon-danger" aria-label="Disabilita workflow" title="Disabilita: non potra' essere lanciato"
+                      onclick="return confirm('Disabilitare il workflow #{{ w.id }} \'{{ w.name|e }}\'?');">
+                <svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg>
+              </button>
             {% endif %}
           </form>
         </td>
