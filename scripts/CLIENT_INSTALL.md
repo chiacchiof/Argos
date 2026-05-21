@@ -12,7 +12,7 @@ Niente Docker, niente Postgres locale: il DB è centralizzato in cloud (Neon), a
 
 ## Primo install
 
-1. Scarica l'ultima release `agentscraper-vX.Y.Z.zip` dalla pagina GitHub Releases (link nel banner dell'app o ti viene inviato).
+1. Scarica l'ultima release `argos-vX.Y.Z.zip` dalla pagina GitHub Releases (link nel banner dell'app o ti viene inviato). Per installazioni pre-rebrand il file può chiamarsi ancora `agentscraper-vX.Y.Z.zip`.
 2. Estrai il contenuto in una cartella stabile, es. `C:\Apps\Argos\`.
 3. Apri **PowerShell** in quella cartella (Shift + tasto destro nello sfondo della cartella → "Apri finestra PowerShell qui").
 4. **Sblocca gli script** (i file estratti da uno zip scaricato sono marcati da Windows come "provenienti da internet" e PowerShell li rifiuta finché non li sblocchi):
@@ -41,9 +41,9 @@ Niente Docker, niente Postgres locale: il DB è centralizzato in cloud (Neon), a
    In alternativa, da PowerShell:
    ```powershell
    .\.venv\Scripts\Activate.ps1
-   agentscraper
+   argos
    ```
-   (la venv va attivata ogni volta che apri un nuovo terminale — `start.bat` lo fa al posto tuo).
+   (la venv va attivata ogni volta che apri un nuovo terminale — `start.bat` lo fa al posto tuo. Su installazioni pre-rebrand il comando si chiama `agentscraper` ed è ancora installato come alias legacy.)
 
 8. Apri il browser su <http://127.0.0.1:8000> → vedi la pagina di login.
 

@@ -1,0 +1,8 @@
+# Forza CRLF sui file Windows-only così PowerShell 5.1 non si pianta sui parse
+# anche dopo download zip da GitHub (lo zip preserva LF se non specificato).
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Tutti gli altri text restano gestiti da core.autocrlf dell'utente
+*       text=auto

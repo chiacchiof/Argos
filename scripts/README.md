@@ -2,6 +2,36 @@
 
 Toolkit per gestire schema migrations in un workflow dev → prod con branch-per-cambio.
 
+## Eseguire script .ps1 su Windows (importante)
+
+Windows blocca per default l'esecuzione di script PowerShell non firmati ("execution policy" e/o "Mark of the Web" sui file estratti da zip scaricati). Se vedi un errore tipo:
+
+```
+.\deploy_to_neon.ps1 : Impossibile caricare il file ... non è firmato digitalmente.
+... + FullyQualifiedErrorId : UnauthorizedAccess
+```
+
+hai due opzioni (la 1 risolve una sola esecuzione, la 2 sblocca tutti gli script del repo una volta sola):
+
+**Opzione 1 — bypass per una singola invocazione** (raccomandato per chi non vuole toccare policy globali):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\deploy_to_neon.ps1
+```
+
+**Opzione 2 — sblocca tutti gli script** (`Unblock-File` rimuove il flag "Mark of the Web", non cambia policy globale):
+```powershell
+Get-ChildItem -Path .\scripts -Recurse -Include *.ps1 | Unblock-File
+```
+Dopo questo i `.ps1` si lanciano normalmente: `.\scripts\deploy_to_neon.ps1`.
+
+**Opzione 3 — alza la policy a livello user, una tantum** (richiede di averla a `Restricted` ora):
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+Non serve admin. Vale per tutti gli script che lanci come questo utente.
+
+> Gli script `.py` (`db.py`, `migrate_legacy_to_edg.py`, ecc.) non sono toccati dalla policy — si lanciano con `python scripts/<nome>.py`.
+
 ## Convenzione di lavoro
 
 Ogni cambio di schema che NON è additive triviale segue questo flusso:
