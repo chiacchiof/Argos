@@ -61,6 +61,9 @@
   --st-paused:    #4f6bf6;
   --st-cancelled: #52525b;
 
+  /* Component-level */
+  --topbar-bg:    rgba(10,10,12,0.75);
+
   /* Typography */
   --font-display: "Mulish", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-body:    "Inter", "Mulish", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -92,20 +95,25 @@
   --error:        var(--st-error);
 }
 
-/* Light theme (override) — pronto, non default */
+/* Light theme (override) — attivabile col toggle nella topbar */
 [data-theme="light"] {
   --bg-page:      #fafafa;
   --surface-0:    #ffffff;
   --surface-1:    #ffffff;
   --surface-2:    #f4f4f5;
   --surface-3:    #e4e4e7;
+  --surface-tint: rgba(79,107,246,0.06);
   --fg:           #18181b;
   --fg-strong:    #09090b;
   --fg-muted:     #52525b;
   --fg-subtle:    #71717a;
+  --fg-faint:     #a1a1aa;
   --border:       #e4e4e7;
   --border-strong:#d4d4d8;
+  --shadow-sm:    0 1px 2px rgba(0,0,0,0.05);
   --shadow:       0 4px 12px rgba(0,0,0,0.06);
+  --shadow-lg:    0 12px 32px rgba(0,0,0,0.10), 0 1px 0 rgba(0,0,0,0.02) inset;
+  --topbar-bg:    rgba(255,255,255,0.78);
 }
 
 /* ============================================================
@@ -328,7 +336,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   justify-content: space-between;
   gap: 1rem;
   padding: 0.7rem 1.5rem;
-  background: rgba(10,10,12,0.75);
+  background: var(--topbar-bg);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--border);
@@ -375,6 +383,26 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .topbar-search input:focus { border-color: var(--border-focus); background: var(--surface-2); }
 
 .topbar-actions { display: flex; align-items: center; gap: 0.6rem; }
+
+.theme-toggle {
+  width: 36px; height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.theme-toggle:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--fg-strong);
+}
+.theme-toggle .icon { width: 18px; height: 18px; }
+[data-theme="dark"]  .theme-toggle .icon-moon { display: none; }
+[data-theme="light"] .theme-toggle .icon-sun  { display: none; }
 
 /* CONTENT — allineato a sx, si stende fino al bordo destro.
    `.narrow` reintroduce un max-width per form/pagine narrative. */

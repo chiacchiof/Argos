@@ -47,7 +47,7 @@
     </details>
 
     {% if n_linked_contacts and n_linked_contacts > 0 %}
-    <div style="margin-top:1rem;padding:0.6rem 0.8rem;background:#fff3e0;border:1px solid #ffc107;border-radius:4px">
+    <div style="margin-top:1rem;padding:0.6rem 0.8rem;background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);border-radius:4px">
       <strong>📇 {{ n_linked_contacts }} contact{% if n_linked_contacts != 1 %}s{% endif %} linkat{% if n_linked_contacts == 1 %}o{% else %}i{% endif %} a questo asset.</strong>
       <p style="margin:0.3rem 0 0.5rem 0;font-size:0.9rem">
         Per default le modifiche all'asset NON toccano i contact. Spunta sotto se vuoi

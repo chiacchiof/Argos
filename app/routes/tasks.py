@@ -87,6 +87,7 @@ async def index(
     status_tag: str = "",
     type: str = "",
     author: str = "",
+    q: str = "",
 ):
     """Lista task. `author`:
        - `mine` (default per tenant_user): solo task creati dall'utente corrente
@@ -131,6 +132,19 @@ async def index(
     else:
         tasks = base
 
+    q_norm = (q or "").strip().lower()
+    if q_norm:
+        def _match(t):
+            blob = " ".join([
+                str(t.get("name") or ""),
+                str(t.get("objective") or ""),
+                str(t.get("agent_mode") or ""),
+                str(t.get("model") or ""),
+                str(t.get("description") or ""),
+            ]).lower()
+            return q_norm in blob
+        tasks = [t for t in tasks if _match(t)]
+
     from ..dashboard import compute_task_health
     health_by_task = {t["id"]: compute_task_health(t["id"]) for t in tasks}
     return templates.TemplateResponse(
@@ -146,6 +160,7 @@ async def index(
             "author_filter": author_norm,
             "total_tenant": total_tenant,
             "current_user_authenticated": current_uid is not None,
+            "filter_q": q_norm,
         },
     )
 

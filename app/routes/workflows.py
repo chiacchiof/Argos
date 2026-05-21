@@ -17,10 +17,11 @@ router = APIRouter()
 
 
 @router.get("/workflows", response_class=HTMLResponse)
-async def workflows_list(request: Request, author: str = ""):
+async def workflows_list(request: Request, author: str = "", q: str = ""):
     """Lista workflow. `author`:
        - `mine` (default per tenant_user): solo workflow creati dall'utente
        - `tenant` (default per super_admin): tutti i workflow visibili
+    `q`: filtra per match testuale su name + description (case-insensitive).
     """
     current_user = getattr(request.state, "current_user", None)
     is_super_admin = bool(current_user and current_user.is_super_admin)
@@ -32,6 +33,12 @@ async def workflows_list(request: Request, author: str = ""):
     filter_uid = current_uid if (author_norm == "mine" and current_uid is not None) else None
     workflows = db.list_workflows(created_by_user_id=filter_uid)
     total_tenant = len(db.list_workflows()) if author_norm == "mine" else len(workflows)
+    q_norm = (q or "").strip().lower()
+    if q_norm:
+        workflows = [
+            w for w in workflows
+            if q_norm in (str(w.get("name") or "") + " " + str(w.get("description") or "")).lower()
+        ]
     # arricchisci con count di task / edges per workflow
     enriched = []
     for w in workflows:
@@ -48,6 +55,7 @@ async def workflows_list(request: Request, author: str = ""):
             "author_filter": author_norm,
             "total_tenant": total_tenant,
             "current_user_authenticated": current_uid is not None,
+            "filter_q": q_norm,
         },
     )
 

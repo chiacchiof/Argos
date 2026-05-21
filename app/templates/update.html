@@ -28,11 +28,11 @@
   </div>
 
   {% if update_info %}
-  <div class="admin-card-block" style="border-color: #d4a72c; background: #fff8c5;">
+  <div class="admin-card-block" style="border-color: var(--warn-border); background: var(--warn-soft);">
     <h3>🔔 Nuova versione disponibile: {{ update_info.latest }}</h3>
     {% if release and release.body %}
     <h4>Note di rilascio</h4>
-    <pre style="white-space: pre-wrap; background: #fff; padding: 1rem; border-radius: 4px; border: 1px solid #eaeef2;">{{ release.body }}</pre>
+    <pre style="white-space: pre-wrap; background: var(--surface-1); color: var(--fg); padding: 1rem; border-radius: 4px; border: 1px solid var(--border);">{{ release.body }}</pre>
     {% endif %}
   </div>
   {% endif %}
@@ -44,7 +44,7 @@
       <li>Estrai il contenuto sopra la cartella attuale di AgentScraper (sovrascrivi i file).
         <br><small>I file <code>.env</code> e tutta la cartella <code>data/</code> NON vengono toccati.</small></li>
       <li>Apri PowerShell nella cartella del progetto ed esegui:
-        <pre style="background: #f6f8fa; padding: 0.7rem; border-radius: 4px;">.\scripts\update_client.ps1</pre>
+        <pre style="background: var(--surface-2); color: var(--fg); border:1px solid var(--border); padding: 0.7rem; border-radius: 4px;">.\scripts\update_client.ps1</pre>
         Lo script aggiornerà le dipendenze Python, riapplicherà i browser di Playwright se ce ne sono di nuovi, e ti dirà quando è pronto.</li>
       <li>Ferma <code>agentscraper</code> (Ctrl+C nella console dove gira) e rilancia <code>agentscraper</code>.</li>
       <li>Rientra nell'app — la pill di versione in alto a destra deve mostrare la nuova.</li>

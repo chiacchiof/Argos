@@ -949,7 +949,7 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
     <details class="collapsible-section dyn-section" data-modes="outreach_whatsapp">
       <summary>💬 Configurazione outreach WhatsApp <span class="hint">(doppio motore: A browser + B Cloud API)</span></summary>
 
-      <div class="warning-box" style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.6rem 0.8rem;margin-bottom:0.8rem">
+      <div class="warning-box" style="background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);border-radius:4px;padding:0.6rem 0.8rem;margin-bottom:0.8rem">
         ⚠️ <strong>Avviso ToS Meta</strong>: il Motore A (browser su web.whatsapp.com) viola i ToS.
         Rischio ban del numero per uso massivo a contatti senza opt-in. Il Motore B (Meta Cloud API)
         è legale ma limitato a opt-in / 24h-window.
@@ -1089,7 +1089,7 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
     <details class="collapsible-section dyn-section" data-modes="recon_social">
       <summary>🔍 Configurazione recon social <span class="hint">(navigazione READ-ONLY con account loggato)</span></summary>
 
-      <div class="warning-box" style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.6rem 0.8rem;margin-bottom:0.8rem">
+      <div class="warning-box" style="background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);border-radius:4px;padding:0.6rem 0.8rem;margin-bottom:0.8rem">
         ⚠️ <strong>Caveat legale + ToS</strong>: profilare la tua rete social senza consenso esplicito
         può violare GDPR/ePrivacy. Automation viola i ToS di Meta/TikTok (rischio ban). AgentScraper
         fornisce solo lo strumento — conformità e responsabilità sono tue.
@@ -1217,7 +1217,7 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
       {% set ig_contacts = contacts_by_platform.get('instagram', []) %}
       {% set selected_ids_recon = p.get('target_contact_ids') or [] %}
       {% set selected_set_recon = selected_ids_recon if selected_ids_recon is iterable else [] %}
-      <div style="margin-top:1.5rem;padding:0.8rem;border:1px solid #ddd;border-radius:6px;background:#fafafa">
+      <div style="margin-top:1.5rem;padding:0.8rem;border:1px solid var(--border);border-radius:6px;background:var(--surface-1);color:var(--fg)">
         <strong>📇 Target IG da contatti del DB <span class="hint">(per <code>follower_scrape</code>)</span></strong>
         <p class="muted small" style="margin:0.3rem 0 0.6rem 0">
           Spunta i contatti Instagram di cui vuoi scaricare i follower. Per
@@ -1232,7 +1232,7 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
           {# Asset_type distinct nei contatti IG (per popolare il filtro) #}
           {% set ig_asset_types = (ig_contacts | map(attribute='asset_type') | unique | list | sort) %}
 
-          <div class="recon-target-filters" style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:center;margin-bottom:0.6rem;padding:0.5rem;background:#fff;border:1px solid #ddd;border-radius:4px">
+          <div class="recon-target-filters" style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:center;margin-bottom:0.6rem;padding:0.5rem;background:var(--surface-2);color:var(--fg);border:1px solid var(--border);border-radius:4px">
             <label style="margin:0;display:inline-flex;align-items:center;gap:0.3rem">
               <span class="hint">🏷️ Tipo asset:</span>
               <select id="recon-ig-filter-type" style="padding:0.2rem 0.4rem;font-size:0.9rem">
@@ -1257,14 +1257,14 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
             </span>
           </div>
 
-          <div class="contact-targets-grid" id="recon-ig-targets-grid" style="max-height:380px;overflow-y:auto;border:1px solid #eee;padding:0.4rem;background:white">
+          <div class="contact-targets-grid" id="recon-ig-targets-grid" style="max-height:380px;overflow-y:auto;border:1px solid var(--border);padding:0.4rem;background:var(--surface-1);color:var(--fg)">
             {% for c in ig_contacts %}
             {# Index searchable: nome + url + tag values (lowercase) #}
             {% set search_idx = ((c.display_name or '') ~ ' ' ~ (c.url or '') ~ ' ' ~ (c.top_tags | map(attribute=1) | join(' ')))|lower %}
             <label class="contact-target-row recon-ig-row"
                    data-asset-type="{{ c.asset_type }}"
                    data-search="{{ search_idx }}"
-                   style="display:block;padding:0.35rem 0.4rem;border-bottom:1px solid #f5f5f5;cursor:pointer">
+                   style="display:block;padding:0.35rem 0.4rem;border-bottom:1px solid var(--border);cursor:pointer">
               <div style="display:flex;align-items:start;gap:0.5rem">
                 <input type="checkbox" name="target_contact_ids" value="{{ c.id }}"
                        data-target-checkbox="instagram"
@@ -1273,7 +1273,7 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
                 <div style="flex:1;min-width:0">
                   <div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem">
                     <strong>{{ c.display_name or c.url }}</strong>
-                    <span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.75rem;white-space:nowrap"><code>{{ c.asset_type }}</code></span>
+                    <span style="display:inline-block;background:var(--brand-soft);color:var(--brand-2);border:1px solid var(--brand-border);padding:0.1rem 0.4rem;border-radius:3px;font-size:0.75rem;white-space:nowrap"><code>{{ c.asset_type }}</code></span>
                   </div>
                   <small class="muted" style="display:block">
                     #{{ c.id }} ·
@@ -1283,7 +1283,7 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
                   {% if c.top_tags %}
                   <div style="margin-top:0.15rem">
                     {% for tk, tv in c.top_tags %}
-                    <span style="display:inline-block;background:#fff3e0;color:#e65100;padding:0.08rem 0.4rem;border-radius:3px;margin-right:0.25rem;font-size:0.78rem"><strong>{{ tk }}:</strong> {{ tv|truncate(40, true, '…') }}</span>
+                    <span style="display:inline-block;background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);padding:0.08rem 0.4rem;border-radius:3px;margin-right:0.25rem;font-size:0.78rem"><strong>{{ tk }}:</strong> {{ tv|truncate(40, true, '…') }}</span>
                     {% endfor %}
                   </div>
                   {% endif %}

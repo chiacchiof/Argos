@@ -7,7 +7,7 @@
   {% if flash %}<div class="flash-ok">✓ {{ flash }}</div>{% endif %}
   {% if error %}<div class="errors">⚠️ {{ error }}</div>{% endif %}
 
-  <div class="warning-banner" style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.8rem 1rem;margin:1rem 0">
+  <div class="warning-banner" style="background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);border-radius:4px;padding:0.8rem 1rem;margin:1rem 0">
     <strong>⚠️ Avviso ToS WhatsApp</strong><br>
     <p style="margin:0.3rem 0 0 0">
       Il <strong>Motore A</strong> (browser automation su <code>web.whatsapp.com</code>) <strong>viola i Termini di Servizio di Meta</strong>.
@@ -63,7 +63,7 @@
         <td>{{ a.daily_dm_cap }}</td>
         <td>
           {% if a.created_by_user_id %}
-            <small {% if a.created_by_user_id == current_user_id %}style="font-weight:600;color:#0969da"{% endif %}
+            <small {% if a.created_by_user_id == current_user_id %}style="font-weight:600;color:var(--brand-2)"{% endif %}
                    title="{{ a.owner_email }} (user_id={{ a.created_by_user_id }})">
               {{ a | owner_display }}{% if a.created_by_user_id == current_user_id %} (tu){% endif %}
             </small>
@@ -169,7 +169,7 @@
         </td>
         <td>
           {% if c.created_by_user_id %}
-            <small {% if c.created_by_user_id == current_user_id %}style="font-weight:600;color:#0969da"{% endif %}
+            <small {% if c.created_by_user_id == current_user_id %}style="font-weight:600;color:var(--brand-2)"{% endif %}
                    title="{{ c.owner_email }} (user_id={{ c.created_by_user_id }})">
               {{ c | owner_display }}{% if c.created_by_user_id == current_user_id %} (tu){% endif %}
             </small>

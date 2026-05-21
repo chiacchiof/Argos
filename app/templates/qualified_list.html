@@ -119,21 +119,25 @@
     {% endfor %}
   </div>
 
-  {# Form unico: search + filtri avanzati + checkbox sidebar (auto-submit on change). #}
+  <div id="page-list-results">
+  {% if filter_search %}
+  <div class="stats-bar" style="margin-bottom:0.6rem">
+    <span class="stats-pill stats-pill-active">
+      ricerca: <strong>{{ filter_search }}</strong>
+      <a class="pill-close" href="/qualified{% if return_to_task %}?return_to_task={{ return_to_task }}{% endif %}" title="rimuovi">×</a>
+    </span>
+    {% if has_any_filter %}
+    <span class="stats-pill">
+      <a href="/qualified{% if return_to_task %}?return_to_task={{ return_to_task }}{% endif %}" class="muted">Reset tutti i filtri</a>
+    </span>
+    {% endif %}
+  </div>
+  {% endif %}
+  {# Search vive in topbar (base.html). Filtri avanzati nel form sotto. #}
   <form method="get" action="/qualified" id="qualified-form">
-    {# Preserva return_to_task attraverso search/filtri (auto-submit GET): senza
-       questo hidden la querystring perde ?return_to_task=N e il banner sparisce. #}
+    {# Preserva return_to_task + q dalla URL #}
     {% if return_to_task %}<input type="hidden" name="return_to_task" value="{{ return_to_task }}">{% endif %}
-    {# Search bar prominente (sempre visibile, anche quando i filtri sono chiusi) #}
-    <div class="search-row">
-      <input type="search" name="q" value="{{ filter_search }}"
-             placeholder="🔍 Cerca titolo, display_name, email o raw_json…"
-             class="search-input">
-      <button type="submit" class="btn-primary">Cerca</button>
-      {% if has_any_filter %}
-      <a href="/qualified{% if return_to_task %}?return_to_task={{ return_to_task }}{% endif %}" class="btn-link">✕ Reset tutto</a>
-      {% endif %}
-    </div>
+    {% if filter_search %}<input type="hidden" name="q" value="{{ filter_search }}">{% endif %}
 
     {# Filtri avanzati: collapsed di default, aperto se uno è attivo. #}
     {% set adv_count = (extra_tag_filters|length) + (1 if filter_score_min is not none else 0) + (1 if filter_type else 0) + (1 if filter_task else 0) + (selected_qualifiers|length) %}
@@ -233,7 +237,7 @@
       </div>
 
       {% if tag_expr_error %}
-      <div class="error-inline" style="margin-top:0.5rem; padding:0.4rem 0.6rem; background:#fff5f5; border:1px solid #fca5a5; border-radius:4px">
+      <div class="error-inline" style="margin-top:0.5rem; padding:0.4rem 0.6rem; background:var(--danger-soft); color:var(--danger); border:1px solid var(--danger-border); border-radius:4px">
         ⚠️ Espressione tag invalida: {{ tag_expr_error }} — fallback ad AND globale.
       </div>
       {% endif %}
@@ -321,7 +325,7 @@
         <p class="muted small" style="margin-top:0">
           Filtri sugli attributi degli asset (es. <code>city=Catania</code>, <code>interests_inferred=fitness</code>).
           I tag <code>qualifier_*</code> sono esclusi (usa il picker qualifier sopra).
-          {% if filter_type %}<br><span style="color:#0969da">ℹ️ Tag ristretti agli asset di tipo <code>{{ filter_type }}</code>.</span>{% endif %}
+          {% if filter_type %}<br><span style="color:var(--brand-2)">ℹ️ Tag ristretti agli asset di tipo <code>{{ filter_type }}</code>.</span>{% endif %}
         </p>
 
         {# Widget condiviso con /assets: stessa UX, stessa grammatica URL. #}
@@ -609,6 +613,7 @@
         </div>
         {% endif %}
     </div>
+  </div>
 </section>
 
 {# JS: helper per le due modali (qualifier picker + tag filters builder). #}
@@ -882,7 +887,7 @@ function selectAssetForQualifier(assetId) {
 
       {# === Ricerca asset (stesso pattern di /inbox/contacts) === #}
       <details class="optional-block" open
-               style="background:#f0f7ff;border:1px solid #b3d4f5;border-radius:4px;padding:0.4rem 0.6rem;margin-bottom:0.6rem">
+               style="background:var(--brand-soft);border:1px solid var(--brand-border);border-radius:4px;padding:0.4rem 0.6rem;margin-bottom:0.6rem">
         <summary><strong>🔎 Cerca asset</strong> <span class="hint">(per nome / asset_type / valore tag)</span></summary>
         <label style="margin:0.3rem 0;display:block">
           <input type="search" id="qualifier-asset-search-q"
@@ -899,7 +904,7 @@ function selectAssetForQualifier(assetId) {
       </details>
 
       <label>
-        Asset ID <span style="color:#cf222e">*</span>
+        Asset ID <span style="color:var(--danger)">*</span>
         <input type="number" name="asset_id" required min="1" placeholder="es. 1234"
                autocomplete="off"
                hx-get="/assets/preview_inline" hx-trigger="input changed delay:300ms"
@@ -909,7 +914,7 @@ function selectAssetForQualifier(assetId) {
       <div id="asset-preview" class="asset-preview-box">— inserisci un ID per vedere l'anteprima —</div>
 
       <label>
-        Qualifier slug <span style="color:#cf222e">*</span>
+        Qualifier slug <span style="color:var(--danger)">*</span>
         <input type="text" name="qualifier_slug" value="manual" required
                pattern="[a-z0-9_]+" placeholder="manual"
                title="Solo lettere minuscole, numeri e underscore (es. manual, palestra, vip)">
@@ -979,14 +984,14 @@ function selectAssetForQualifier(assetId) {
       {% endfor %}
 
       <label>
-        Nome task <span style="color:#cf222e">*</span>
+        Nome task <span style="color:var(--danger)">*</span>
         <input type="text" name="name" required maxlength="200"
                placeholder="Es. Outreach Sportivi Catania - settimana 21"
                value="Outreach qualified set ({{ total }} asset)">
       </label>
 
       <label>
-        Tipo di outreach <span style="color:#cf222e">*</span>
+        Tipo di outreach <span style="color:var(--danger)">*</span>
         <select name="agent_mode" id="avvia-outreach-mode" required
                 onchange="document.getElementById('avvia-outreach-social-row').style.display = (this.value === 'outreach_social') ? '' : 'none';">
           <option value="outreach">📧 Email / 💬 Telegram</option>
@@ -1051,7 +1056,7 @@ function selectAssetForQualifier(assetId) {
       {% endfor %}
 
       <label>
-        Nome task <span style="color:#cf222e">*</span>
+        Nome task <span style="color:var(--danger)">*</span>
         <input type="text" name="name" required maxlength="200"
                placeholder="Es. Qualifica lead_caldo su sportivi Catania"
                value="Qualifier raffinato ({{ total }} asset)">
@@ -1059,7 +1064,7 @@ function selectAssetForQualifier(assetId) {
       </label>
 
       <label>
-        Objective / criterio di giudizio <span style="color:#cf222e">*</span>
+        Objective / criterio di giudizio <span style="color:var(--danger)">*</span>
         <textarea name="objective" required rows="4"
                   placeholder="Es. Tra gli sportivi qualified, identifica quelli che parlano di nutrizione/integratori e darebbero opt-in a una consulenza. Score: 1-3=non interessante, 4-6=marginale, 7-10=lead caldo."></textarea>
         <small class="muted">Spiega al LLM cosa cercare. Lo score 0-10 e' implicito.</small>

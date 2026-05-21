@@ -16,7 +16,7 @@
   {% if raw_data.get('narrative_summary') %}
   <details open class="collapsible-section">
     <summary>📝 Narrative summary <span class="hint">({{ raw_data.narrative_summary|length }} char)</span></summary>
-    <div style="margin:0.6rem 0;padding:0.8rem;background:#f9f9f9;border-left:3px solid #1565c0;border-radius:4px;line-height:1.55;white-space:pre-wrap">{{ raw_data.narrative_summary }}</div>
+    <div style="margin:0.6rem 0;padding:0.8rem;background:var(--surface-2);color:var(--fg);border-left:3px solid var(--brand-2);border-radius:4px;line-height:1.55;white-space:pre-wrap">{{ raw_data.narrative_summary }}</div>
   </details>
   {% endif %}
 
@@ -42,7 +42,7 @@
       {% if items %}
       <div style="margin:0.5rem 0">
         <strong>{{ lbl }}:</strong>
-        {% for v in items %}<span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:0.2rem 0.5rem;border-radius:3px;margin:0.15rem;font-size:0.85rem">{{ v }}</span>{% endfor %}
+        {% for v in items %}<span style="display:inline-block;background:var(--brand-soft);color:var(--brand-2);border:1px solid var(--brand-border);padding:0.2rem 0.5rem;border-radius:3px;margin:0.15rem;font-size:0.85rem">{{ v }}</span>{% endfor %}
       </div>
       {% endif %}
     {% endfor %}
@@ -52,7 +52,7 @@
   {% if raw_data.get('evidence_quote') %}
   <details class="collapsible-section">
     <summary>💬 Evidence quote</summary>
-    <blockquote style="margin:0.6rem 0;padding:0.6rem 1rem;border-left:3px solid #888;background:#f9f9f9;font-style:italic">{{ raw_data.evidence_quote }}</blockquote>
+    <blockquote style="margin:0.6rem 0;padding:0.6rem 1rem;border-left:3px solid var(--fg-subtle);background:var(--surface-2);color:var(--fg);font-style:italic">{{ raw_data.evidence_quote }}</blockquote>
   </details>
   {% endif %}
 

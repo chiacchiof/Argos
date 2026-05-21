@@ -13,24 +13,24 @@
   </nav>
 
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem;margin:1rem 0">
-    <div style="background:#e8f5e9;padding:0.8rem;border-radius:6px;text-align:center">
+    <div style="background:var(--success-soft);color:var(--success);border:1px solid var(--success-border);padding:0.8rem;border-radius:6px;text-align:center">
       <div style="font-size:1.6rem;font-weight:bold">{{ stats.total }}</div>
       <div class="muted">Righe totali</div>
     </div>
-    <div style="background:#e3f2fd;padding:0.8rem;border-radius:6px;text-align:center">
-      <div style="font-size:1.6rem;font-weight:bold;color:#1565c0">{{ stats.inserted }}</div>
+    <div style="background:var(--brand-soft);color:var(--brand-2);border:1px solid var(--brand-border);padding:0.8rem;border-radius:6px;text-align:center">
+      <div style="font-size:1.6rem;font-weight:bold">{{ stats.inserted }}</div>
       <div class="muted">Nuovi (insert)</div>
     </div>
-    <div style="background:#fff3e0;padding:0.8rem;border-radius:6px;text-align:center">
-      <div style="font-size:1.6rem;font-weight:bold;color:#e65100">{{ stats.updated }}</div>
+    <div style="background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);padding:0.8rem;border-radius:6px;text-align:center">
+      <div style="font-size:1.6rem;font-weight:bold">{{ stats.updated }}</div>
       <div class="muted">Esistenti (update)</div>
     </div>
-    <div style="background:#fce4ec;padding:0.8rem;border-radius:6px;text-align:center">
-      <div style="font-size:1.6rem;font-weight:bold;color:#c2185b">{{ stats.skipped }}</div>
+    <div style="background:var(--surface-2);color:var(--fg-muted);border:1px solid var(--border);padding:0.8rem;border-radius:6px;text-align:center">
+      <div style="font-size:1.6rem;font-weight:bold">{{ stats.skipped }}</div>
       <div class="muted">Skippati</div>
     </div>
-    <div style="background:#ffebee;padding:0.8rem;border-radius:6px;text-align:center">
-      <div style="font-size:1.6rem;font-weight:bold;color:#b71c1c">{{ stats.errors }}</div>
+    <div style="background:var(--danger-soft);color:var(--danger);border:1px solid var(--danger-border);padding:0.8rem;border-radius:6px;text-align:center">
+      <div style="font-size:1.6rem;font-weight:bold">{{ stats.errors }}</div>
       <div class="muted">Errori</div>
     </div>
   </div>
@@ -51,40 +51,40 @@
     <div style="overflow-x:auto;margin-top:0.6rem">
       <table style="border-collapse:collapse;font-size:0.85rem;min-width:100%">
         <thead>
-          <tr style="background:#f5f5f5">
-            <th style="border:1px solid #ddd;padding:0.4rem">Riga</th>
-            <th style="border:1px solid #ddd;padding:0.4rem">Azione</th>
-            <th style="border:1px solid #ddd;padding:0.4rem">Title</th>
-            <th style="border:1px solid #ddd;padding:0.4rem">source_url</th>
-            <th style="border:1px solid #ddd;padding:0.4rem">Tags</th>
-            <th style="border:1px solid #ddd;padding:0.4rem">Contact?</th>
-            <th style="border:1px solid #ddd;padding:0.4rem">Reason</th>
+          <tr style="background:var(--surface-2)">
+            <th style="border:1px solid var(--border);padding:0.4rem">Riga</th>
+            <th style="border:1px solid var(--border);padding:0.4rem">Azione</th>
+            <th style="border:1px solid var(--border);padding:0.4rem">Title</th>
+            <th style="border:1px solid var(--border);padding:0.4rem">source_url</th>
+            <th style="border:1px solid var(--border);padding:0.4rem">Tags</th>
+            <th style="border:1px solid var(--border);padding:0.4rem">Contact?</th>
+            <th style="border:1px solid var(--border);padding:0.4rem">Reason</th>
           </tr>
         </thead>
         <tbody>
           {% for r in stats.sample_rows %}
           <tr>
-            <td style="border:1px solid #ddd;padding:0.4rem;color:#888">{{ r.row_index }}</td>
-            <td style="border:1px solid #ddd;padding:0.4rem">
+            <td style="border:1px solid var(--border);padding:0.4rem;color:var(--fg-subtle)">{{ r.row_index }}</td>
+            <td style="border:1px solid var(--border);padding:0.4rem">
               {% if r.action == 'insert' %}
-                <span style="color:#1565c0">+ insert</span>
+                <span style="color:var(--brand-2)">+ insert</span>
               {% elif r.action == 'update' %}
-                <span style="color:#e65100">~ update</span>
+                <span style="color:var(--warn)">~ update</span>
               {% else %}
-                <span style="color:#c2185b">⊘ skip</span>
+                <span style="color:var(--danger)">⊘ skip</span>
               {% endif %}
             </td>
-            <td style="border:1px solid #ddd;padding:0.4rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.asset_data.get('title') or '—' }}</td>
-            <td style="border:1px solid #ddd;padding:0.4rem;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><code style="font-size:0.75rem">{{ r.asset_data.get('source_url') or '—' }}</code></td>
-            <td style="border:1px solid #ddd;padding:0.4rem;font-size:0.8rem">
+            <td style="border:1px solid var(--border);padding:0.4rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.asset_data.get('title') or '—' }}</td>
+            <td style="border:1px solid var(--border);padding:0.4rem;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><code style="font-size:0.75rem">{{ r.asset_data.get('source_url') or '—' }}</code></td>
+            <td style="border:1px solid var(--border);padding:0.4rem;font-size:0.8rem">
               {% if r.asset_tags %}
                 {% for k, vs in r.asset_tags.items() %}
                   <div><strong>{{ k }}:</strong> {{ vs|join(', ') }}</div>
                 {% endfor %}
               {% else %}—{% endif %}
             </td>
-            <td style="border:1px solid #ddd;padding:0.4rem">{% if r.contact_data %}✓{% else %}—{% endif %}</td>
-            <td style="border:1px solid #ddd;padding:0.4rem;color:#c2185b;font-size:0.8rem">{{ r.reason or '' }}</td>
+            <td style="border:1px solid var(--border);padding:0.4rem">{% if r.contact_data %}✓{% else %}—{% endif %}</td>
+            <td style="border:1px solid var(--border);padding:0.4rem;color:var(--danger);font-size:0.8rem">{{ r.reason or '' }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -100,8 +100,8 @@
     <input type="hidden" name="mapping_json" value="{{ mapping_json }}">
 
     <div style="display:flex;gap:0.8rem;align-items:center">
-      <a href="/import" style="padding:0.6rem 1.2rem;text-decoration:none;background:#eee;color:#333;border-radius:4px">← Ricomincia</a>
-      <button type="submit" style="padding:0.7rem 1.4rem;font-size:1rem;background:#2e7d32;color:white;border:none;border-radius:4px;cursor:pointer">
+      <a href="/import" style="padding:0.6rem 1.2rem;text-decoration:none;background:var(--surface-2);color:var(--fg);border:1px solid var(--border);border-radius:4px">← Ricomincia</a>
+      <button type="submit" style="padding:0.7rem 1.4rem;font-size:1rem;background:var(--success);color:#04250c;border:none;border-radius:4px;cursor:pointer;font-weight:600">
         ✅ Conferma e importa ({{ stats.inserted + stats.updated }} record)
       </button>
       <span class="muted">Il file CSV temporaneo verrà cancellato dopo l'import.</span>

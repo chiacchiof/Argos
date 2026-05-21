@@ -17,6 +17,7 @@
     </a>
   </div>
 
+  <div id="page-list-results">
   {# Tab orizzontali per tipo task. `type` in querystring; preserva status_tag + author. #}
   {% set st = active_status_tag or '' %}
   {% set at = active_type or 'all' %}
@@ -134,12 +135,15 @@
   </table>
   {% else %}
   <p class="empty">
-    {% if active_status_tag or (active_type and active_type != 'all') %}
+    {% if filter_q %}
+      Nessun task corrisponde a "<strong>{{ filter_q }}</strong>".
+    {% elif active_status_tag or (active_type and active_type != 'all') %}
       Nessun task con questo filtro. <a href="/">Mostra tutti</a>.
     {% else %}
       Nessun task. <a href="/tasks/new">Creane uno</a>.
     {% endif %}
   </p>
   {% endif %}
+  </div>
 </section>
 {% endblock %}

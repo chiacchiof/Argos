@@ -50,37 +50,14 @@
   <div class="flash-ok">✅ Import completato: <strong>{{ request.query_params.get('imported') }}</strong> record processati.</div>
   {% endif %}
 
-  {# Live search bar — filtra man mano che l'utente scrive (debounce 300ms). #}
-  {# Match su title, source_url, source_domain, notes, e tag_value (asset_tags). #}
-  <div class="search-row" style="margin:0.6rem 0">
-    <input type="search"
-           name="q"
-           value="{{ filter_q }}"
-           placeholder="🔍 Cerca per titolo, URL, dominio, tag (es. 'Catania', 'fitness', 'instagram.com')..."
-           class="search-input"
-           autocomplete="off"
-           hx-get="/assets"
-           hx-trigger="keyup changed delay:300ms, search, input changed delay:300ms"
-           hx-target="#assets-results"
-           hx-select="#assets-results"
-           hx-swap="outerHTML"
-           hx-push-url="true"
-           hx-include="[name='asset_type'], [name='status'], [name='tags'], [name='source_task_id']"
-           hx-indicator="#search-spinner">
-    <span id="search-spinner" class="htmx-indicator muted small" style="white-space:nowrap">⏳ cerco...</span>
-    {% if filter_q %}
-    <a href="?{% if filter_type %}asset_type={{ filter_type }}&{% endif %}{% if filter_status %}status={{ filter_status }}&{% endif %}{% if filter_tags_str %}tags={{ filter_tags_str }}{% endif %}"
-       class="btn-link" title="Pulisci ricerca">✕</a>
-    {% endif %}
-  </div>
-
-  {# Hidden inputs per propagare i filtri non-search via hx-include #}
+  {# Hidden inputs per propagare i filtri non-search via topbar hx-include.
+     La search vera vive in topbar (base.html) ed e' contestuale alla pagina corrente. #}
   <input type="hidden" name="asset_type" value="{{ filter_type }}">
   <input type="hidden" name="status" value="{{ filter_status }}">
   <input type="hidden" name="tags" value="{{ filter_tags_str }}">
   {% if filter_task %}<input type="hidden" name="source_task_id" value="{{ filter_task }}">{% endif %}
 
-  <div id="assets-results">
+  <div id="page-list-results">
   <div class="stats-bar">
     <span class="stats-pill"><strong>{{ total }}</strong> asset {% if filter_type or filter_status or filter_tags_str or filter_q %}filtrati{% else %}totali{% endif %}</span>
     {% if filter_q %}<span class="stats-pill stats-pill-active">🔍 ricerca: <strong>{{ filter_q }}</strong></span>{% endif %}
@@ -443,11 +420,11 @@ window.exportToggleGroup = function (btn, on) {
 <style>
 .pagination { display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; flex-wrap: wrap; gap: 0.5rem; }
 .pager { display: inline-flex; gap: 0.3rem; align-items: center; }
-.pager a, .pager strong, .pager span { padding: 0.25rem 0.6rem; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; font-size: 0.9em; }
-.pager a:hover { background: #f0f0f0; }
-.pager-current { background: #333; color: #fff; border-color: #333 !important; }
-.pager-disabled { color: #aaa; cursor: not-allowed; }
-.pager-ellipsis { border: 0 !important; color: #888; }
+.pager a, .pager strong, .pager span { padding: 0.25rem 0.6rem; border: 1px solid var(--border); border-radius: 4px; text-decoration: none; font-size: 0.9em; color: var(--fg); }
+.pager a:hover { background: var(--surface-2); border-color: var(--border-strong); }
+.pager-current { background: var(--brand-2); color: #fff; border-color: var(--brand-2) !important; }
+.pager-disabled { color: var(--fg-faint); cursor: not-allowed; }
+.pager-ellipsis { border: 0 !important; color: var(--fg-subtle); }
 </style>
 
 <script>

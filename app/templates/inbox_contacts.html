@@ -36,9 +36,9 @@
 
   {% if contact_tag_filters and contact_tag_filters|length > 0 %}
   {# Snippet pronto per copy-paste in outreach_filter_tags #}
-  <details class="panel-card" style="margin:0.5rem 0;background:#eff6ff;border-color:#bfdbfe">
+  <details class="panel-card" style="margin:0.5rem 0;background:var(--brand-soft);border-color:var(--brand-border)">
     <summary style="cursor:pointer"><strong>📋 Snippet outreach_filter_tags</strong> <span class="muted small">(usa questi tag in un task outreach per contattare esattamente questi {{ total }} contatti)</span></summary>
-    <pre style="background:#fff;padding:0.5rem 0.7rem;border:1px solid #d1d5db;border-radius:4px;font-size:0.85rem;margin:0.5rem 0;white-space:pre-wrap">outreach_filter_tags = [
+    <pre style="background:var(--surface-2);color:var(--fg);padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:4px;font-size:0.85rem;margin:0.5rem 0;white-space:pre-wrap">outreach_filter_tags = [
 {%- for tk, tv in contact_tag_filters %}
   {"key": "{{ tk }}", "value": "{{ tv }}"}{% if not loop.last %},{% endif %}
 {%- endfor %}
@@ -49,16 +49,16 @@
   </details>
   {% endif %}
 
-  {# Search bar + filtri avanzati #}
-  <form method="get" class="contacts-search">
-    <div class="search-row">
-      <input type="search" name="q" value="{{ filter_q }}" placeholder="🔍 Cerca nome, email, telegram, dominio, note…" class="search-input">
-      <button type="submit" class="btn-primary">Cerca</button>
-      {% if has_filters %}
-      <a href="/inbox/contacts{% if filter_status %}?status={{ filter_status }}{% endif %}" class="btn-link">✕ Reset filtri</a>
-      {% endif %}
-    </div>
-  </form>
+  {# Search vive in topbar (base.html), contestuale alla pagina. #}
+  <div id="page-list-results">
+  {% if filter_q %}
+  <div class="stats-bar">
+    <span class="stats-pill stats-pill-active">
+      ricerca: <strong>{{ filter_q }}</strong>
+      <a class="pill-close" href="/inbox/contacts{% if filter_status %}?status={{ filter_status }}{% endif %}" title="rimuovi">×</a>
+    </span>
+  </div>
+  {% endif %}
 
   <details class="filter-panel" {% if has_filters or filter_status %}open{% endif %}>
     <summary>🔧 Filtri avanzati</summary>
@@ -245,7 +245,7 @@
       <form method="post" action="/inbox/contacts/add" class="add-contact-form" id="add-contact-form">
 
         {# === Importa da asset (opzionale) === #}
-        <details class="optional-block" style="background:#f0f7ff;border:1px solid #b3d4f5;border-radius:4px;padding:0.4rem 0.6rem;margin-bottom:0.5rem">
+        <details class="optional-block" style="background:var(--brand-soft);border:1px solid var(--brand-border);border-radius:4px;padding:0.4rem 0.6rem;margin-bottom:0.5rem">
           <summary><strong>🔗 Importa da asset esistente</strong> <span class="hint">(opzionale — pre-popola i campi sotto)</span></summary>
           <p class="muted small" style="margin:0.3rem 0">
             Cerca un asset (palestra, ig_profile, ecc.) per nome / asset_type / valore tag.
@@ -265,7 +265,7 @@
                    style="width:100%">
           </label>
           <div id="asset-search-results"></div>
-          <div id="imported-from-asset" style="display:none;margin-top:0.4rem;padding:0.3rem 0.5rem;background:#e8f5e9;border-radius:3px;font-size:0.85rem">
+          <div id="imported-from-asset" style="display:none;margin-top:0.4rem;padding:0.3rem 0.5rem;background:var(--success-soft);color:var(--success);border:1px solid var(--success-border);border-radius:3px;font-size:0.85rem">
             ✅ Importato da: <strong id="imported-asset-name"></strong>
             <a id="imported-asset-link" href="" target="_blank" style="margin-left:0.3rem"><small>vedi asset →</small></a>
             <button type="button" onclick="clearAssetImport()" class="btn-link" style="float:right">✕ rimuovi link</button>
@@ -553,7 +553,9 @@
     <span class="empty-icon">👥</span>
     <div class="empty-title">Nessun contatto trovato</div>
     <p class="empty-hint">
-      {% if has_filters or filter_status %}
+      {% if filter_q %}
+        Nessun contatto corrisponde a "<strong>{{ filter_q }}</strong>".
+      {% elif has_filters or filter_status %}
         Prova a rimuovere alcuni filtri, oppure <a href="/inbox/contacts">resetta tutto</a>.
       {% else %}
         Crea il primo contatto manualmente con <strong>➕ Aggiungi contatto</strong>, oppure lancia un task di tipo <code>qualifier</code> o <code>outreach</code>.
@@ -561,16 +563,17 @@
     </p>
   </div>
   {% endif %}
+  </div>
 </section>
 
 <style>
 .pagination { display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; flex-wrap: wrap; gap: 0.5rem; }
 .pager { display: inline-flex; gap: 0.3rem; align-items: center; }
-.pager a, .pager strong, .pager span { padding: 0.25rem 0.6rem; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; font-size: 0.9em; }
-.pager a:hover { background: #f0f0f0; }
-.pager-current { background: #333; color: #fff; border-color: #333 !important; }
-.pager-disabled { color: #aaa; cursor: not-allowed; }
-.pager-ellipsis { border: 0 !important; color: #888; }
+.pager a, .pager strong, .pager span { padding: 0.25rem 0.6rem; border: 1px solid var(--border); border-radius: 4px; text-decoration: none; font-size: 0.9em; color: var(--fg); }
+.pager a:hover { background: var(--surface-2); border-color: var(--border-strong); }
+.pager-current { background: var(--brand-2); color: #fff; border-color: var(--brand-2) !important; }
+.pager-disabled { color: var(--fg-faint); cursor: not-allowed; }
+.pager-ellipsis { border: 0 !important; color: var(--fg-subtle); }
 </style>
 
 <script>

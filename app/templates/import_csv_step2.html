@@ -19,15 +19,15 @@
       <li>
         <strong>Asset type:</strong> <code>{{ asset_type }}</code>
         {% if type_is_new %}
-          <span style="display:inline-block;background:#e8f5e9;color:#2e7d32;padding:0.15rem 0.5rem;border-radius:3px;font-size:0.82rem;margin-left:0.4rem">🆕 NUOVO — verrà creato</span>
+          <span style="display:inline-block;background:var(--success-soft);color:var(--success);border:1px solid var(--success-border);padding:0.15rem 0.5rem;border-radius:3px;font-size:0.82rem;margin-left:0.4rem">🆕 NUOVO — verrà creato</span>
         {% else %}
-          <span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:0.15rem 0.5rem;border-radius:3px;font-size:0.82rem;margin-left:0.4rem">📂 ESISTENTE — {{ type_existing_count }} record presenti</span>
+          <span style="display:inline-block;background:var(--brand-soft);color:var(--brand-2);border:1px solid var(--brand-border);padding:0.15rem 0.5rem;border-radius:3px;font-size:0.82rem;margin-left:0.4rem">📂 ESISTENTE — {{ type_existing_count }} record presenti</span>
         {% endif %}
       </li>
       {% if known_tag_keys %}
       <li>
         <strong>Attributi (tag) già noti per <code>{{ asset_type }}</code>:</strong>
-        {% for k in known_tag_keys %}<code style="background:#e3f2fd;padding:0.1rem 0.4rem;border-radius:3px;margin:0.1rem;font-size:0.85rem">{{ k }}</code>{% endfor %}
+        {% for k in known_tag_keys %}<code style="background:var(--brand-soft);color:var(--brand-2);border:1px solid var(--brand-border);padding:0.1rem 0.4rem;border-radius:3px;margin:0.1rem;font-size:0.85rem">{{ k }}</code>{% endfor %}
         <br><small class="muted">Riusa questi nomi nei "Tag key" sotto per mantenere coerenza con i record esistenti.</small>
       </li>
       {% elif not type_is_new %}
@@ -43,7 +43,7 @@
   </datalist>
 
   {% if warnings %}
-  <div class="warning-box" style="background:#fff3cd;border:1px solid #ffc107;padding:0.6rem;margin:1rem 0;border-radius:4px">
+  <div class="warning-box" style="background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);padding:0.6rem;margin:1rem 0;border-radius:4px">
     <strong>⚠️ Avvisi parsing:</strong>
     <ul style="margin:0.4rem 0">
       {% for w in warnings %}<li>{{ w }}</li>{% endfor %}
@@ -56,9 +56,9 @@
     <div style="overflow-x:auto;margin-top:0.6rem">
       <table style="border-collapse:collapse;font-size:0.85rem;min-width:100%">
         <thead>
-          <tr style="background:#f5f5f5">
+          <tr style="background:var(--surface-2)">
             {% for h in headers %}
-              <th style="border:1px solid #ddd;padding:0.4rem;text-align:left;white-space:nowrap">{{ h }}</th>
+              <th style="border:1px solid var(--border);padding:0.4rem;text-align:left;white-space:nowrap">{{ h }}</th>
             {% endfor %}
           </tr>
         </thead>
@@ -66,7 +66,7 @@
           {% for row in preview_rows %}
           <tr>
             {% for cell in row %}
-              <td style="border:1px solid #ddd;padding:0.4rem;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ cell }}">{{ cell }}</td>
+              <td style="border:1px solid var(--border);padding:0.4rem;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ cell }}">{{ cell }}</td>
             {% endfor %}
           </tr>
           {% endfor %}
@@ -90,12 +90,12 @@
 
     <table style="border-collapse:collapse;width:100%;font-size:0.9rem">
       <thead>
-        <tr style="background:#f5f5f5">
-          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">#</th>
-          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Colonna CSV</th>
-          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Esempio (riga 1)</th>
-          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Target</th>
-          <th style="border:1px solid #ddd;padding:0.4rem;text-align:left">Tag key <span class="hint">(se "Tag")</span></th>
+        <tr style="background:var(--surface-2)">
+          <th style="border:1px solid var(--border);padding:0.4rem;text-align:left">#</th>
+          <th style="border:1px solid var(--border);padding:0.4rem;text-align:left">Colonna CSV</th>
+          <th style="border:1px solid var(--border);padding:0.4rem;text-align:left">Esempio (riga 1)</th>
+          <th style="border:1px solid var(--border);padding:0.4rem;text-align:left">Target</th>
+          <th style="border:1px solid var(--border);padding:0.4rem;text-align:left">Tag key <span class="hint">(se "Tag")</span></th>
         </tr>
       </thead>
       <tbody>
@@ -106,10 +106,10 @@
         {% set sug_target = sug[0] %}
         {% set sug_tagkey = sug[1] %}
         <tr>
-          <td style="border:1px solid #ddd;padding:0.4rem;color:#888">{{ i }}</td>
-          <td style="border:1px solid #ddd;padding:0.4rem"><code>{{ h }}</code></td>
-          <td style="border:1px solid #ddd;padding:0.4rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ sample }}">{{ sample[:60] }}{% if sample|length > 60 %}…{% endif %}</td>
-          <td style="border:1px solid #ddd;padding:0.4rem">
+          <td style="border:1px solid var(--border);padding:0.4rem;color:var(--fg-subtle)">{{ i }}</td>
+          <td style="border:1px solid var(--border);padding:0.4rem"><code>{{ h }}</code></td>
+          <td style="border:1px solid var(--border);padding:0.4rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ sample }}">{{ sample[:60] }}{% if sample|length > 60 %}…{% endif %}</td>
+          <td style="border:1px solid var(--border);padding:0.4rem">
             <select name="map__{{ i }}" style="width:100%">
               {% for kind, field, label in target_fields %}
                 {% set value = kind if kind in ('tag','ignore') else kind ~ '.' ~ field %}
@@ -117,7 +117,7 @@
               {% endfor %}
             </select>
           </td>
-          <td style="border:1px solid #ddd;padding:0.4rem">
+          <td style="border:1px solid var(--border);padding:0.4rem">
             <input type="text" name="tag_key__{{ i }}" value="{{ sug_tagkey }}"
                    placeholder="es. municipality" style="width:100%"
                    pattern="[a-z][a-z0-9_\-]{0,49}" maxlength="50"
@@ -129,7 +129,7 @@
     </table>
 
     <div style="margin-top:1.5rem;display:flex;gap:0.8rem">
-      <a href="/import" style="padding:0.6rem 1.2rem;text-decoration:none;background:#eee;color:#333;border-radius:4px">← Indietro</a>
+      <a href="/import" style="padding:0.6rem 1.2rem;text-decoration:none;background:var(--surface-2);color:var(--fg);border:1px solid var(--border);border-radius:4px">← Indietro</a>
       <button type="submit" style="padding:0.6rem 1.2rem;font-size:1rem">
         Anteprima import (dry-run) →
       </button>
