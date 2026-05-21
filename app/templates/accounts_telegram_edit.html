@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}{% if bot %}Modifica{% else %}Aggiungi{% endif %} Telegram Bot — AgentScraper{% endblock %}
+{% block content %}
+<section style="max-width: 720px;">
+  <p><a href="/accounts/messaging?tab=telegram">← Telegram bots</a></p>
+
+  {% if bot %}
+    <h2>🤖 Modifica Telegram bot #{{ bot.id }}</h2>
+  {% else %}
+    <h2>🤖 Aggiungi Telegram bot</h2>
+    <div class="panel-card" style="margin-bottom: 1rem;">
+      <p style="margin: 0;">
+        <strong>Come ottenere un token bot</strong>:
+        chatta con <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>,
+        invia <code>/newbot</code>, scegli un nome e uno username (deve finire con <code>_bot</code>),
+        copia il token che ti viene restituito (formato <code>123456:ABC-DEF...</code>) e incollalo qui sotto.
+      </p>
+    </div>
+  {% endif %}
+
+  {% if not is_secret_configured %}
+  <div class="warning-box">
+    ⚠️ <strong>AGENTSCRAPER_SECRET non configurata</strong>. Salva è disabilitato finché non aggiungi
+    <code>AGENTSCRAPER_SECRET</code> al file <code>.env</code>.
+  </div>
+  {% endif %}
+
+  <form method="post"
+        action="{% if bot %}/accounts/messaging/telegram/{{ bot.id }}/edit{% else %}/accounts/messaging/telegram/new{% endif %}"
+        class="settings-form">
+
+    <label>Label <span class="hint">(nome interno, es. "EDG support", "marketing IT")</span>
+      <input name="label" required maxlength="100"
+             value="{{ bot.label if bot else '' }}"
+             placeholder="es. EDG support">
+    </label>
+
+    <label>Bot token
+      <input name="bot_token" type="password" autocomplete="new-password"
+             {% if not bot %}required{% endif %}
+             placeholder="{% if bot %}lascia vuoto per non cambiare{% else %}123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11{% endif %}">
+      <span class="hint">
+        {% if bot %}Vuoto = mantieni il token attuale. Inserisci nuovo token per sostituirlo (cifrato Fernet).
+        {% else %}Cifrato Fernet (AES128 + HMAC-SHA256) prima del save. Niente plaintext in DB.{% endif %}
+      </span>
+    </label>
+
+    <label>Bot username <span class="hint">(opzionale, auto-detect con Test /getMe)</span>
+      <input name="bot_username" maxlength="100"
+             value="{{ bot.bot_username or '' if bot else '' }}"
+             placeholder="@MioBotName (senza @)">
+    </label>
+
+    <div class="row">
+      <label>Daily message cap <span class="hint">(msg/24h)</span>
+        <input name="daily_msg_cap" type="number" min="1" max="10000"
+               value="{{ bot.daily_msg_cap if bot else 500 }}">
+      </label>
+      <label>Poll interval <span class="hint">(secondi tra getUpdates)</span>
+        <input name="poll_interval_seconds" type="number" min="5" max="3600"
+               value="{{ bot.poll_interval_seconds if bot else 30 }}">
+      </label>
+      {% if bot %}
+      <label>Status
+        <select name="status">
+          <option value="active"     {% if bot.status == 'active'     %}selected{% endif %}>active</option>
+          <option value="quarantine" {% if bot.status == 'quarantine' %}selected{% endif %}>quarantine</option>
+          <option value="banned"     {% if bot.status == 'banned'     %}selected{% endif %}>banned</option>
+        </select>
+      </label>
+      {% endif %}
+    </div>
+
+    <label>Note
+      <textarea name="notes" rows="2"
+                placeholder="Es. Bot per landing page support, attivo dal 2026-05-15">{{ bot.notes or '' if bot else '' }}</textarea>
+    </label>
+
+    {% if not bot and tenant_users %}
+    <label>Tenant Owner <span class="hint">(utente del tenant che possiede il bot)</span>
+      <select name="owner_user_id"
+              {% if not request.state.current_user.is_super_admin %}disabled
+                 title="Solo super-admin possono assegnare l'owner ad un altro utente"{% endif %}>
+        {% for u in tenant_users %}
+          {% set _label = ((u.first_name or '') ~ ' ' ~ (u.last_name or '')) | trim %}
+          <option value="{{ u.id }}" {% if u.id == request.state.current_user.id %}selected{% endif %}>
+            {% if _label %}{{ _label }} &lt;{{ u.email }}&gt;{% else %}{{ u.email }}{% endif %}{% if u.id == request.state.current_user.id %} (tu){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endif %}
+
+    <div style="margin-top: 1.2rem; display: flex; gap: 0.6rem;">
+      <button type="submit" class="btn-primary"
+              {% if not is_secret_configured %}disabled{% endif %}>
+        💾 {% if bot %}Salva modifiche{% else %}Aggiungi bot{% endif %}
+      </button>
+      <a href="/accounts/messaging?tab=telegram" class="btn-link">Annulla</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

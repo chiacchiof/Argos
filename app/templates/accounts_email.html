@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Email Accounts — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <div class="section-header">
+    <div>
+      <h2 style="margin:0">✉️ Email Accounts (SMTP / IMAP)</h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        Account email multi-mittente per outreach via SMTP. Le credenziali sono cifrate Fernet
+        (AES128 + HMAC-SHA256). Usa <strong>app password</strong> dedicate (Gmail / Outlook /
+        provider con 2FA), non la password personale dell'account.
+      </p>
+    </div>
+    <div>
+      <a href="/accounts/email/new" class="btn-primary">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Aggiungi account
+      </a>
+    </div>
+  </div>
+
+  {% if flash %}<div class="flash-ok">✓ {{ flash | replace('+', ' ') }}</div>{% endif %}
+  {% if error %}<div class="errors">⚠️ {{ error | replace('+', ' ') }}</div>{% endif %}
+
+  {% if not is_secret_configured %}
+  <div class="warning-box">
+    ⚠️ <strong>AGENTSCRAPER_SECRET non configurata</strong>. Aggiungi al file <code>.env</code>:
+    <pre style="margin: 0.4rem 0; background: var(--surface-2); color: var(--fg); border:1px solid var(--border); padding: 0.4rem; border-radius: 3px;">AGENTSCRAPER_SECRET=cambia-questa-chiave-segreta-lunga-30+-caratteri</pre>
+    Senza questa chiave le credenziali non possono essere cifrate. Aggiungere account è disabilitato.
+  </div>
+  {% endif %}
+
+  {% set af = author_filter or 'mine' %}
+  {% if current_user_authenticated %}
+  <nav class="author-filter-bar" aria-label="Filtro autore">
+    <a href="/accounts/email?author=mine"
+       class="author-filter-tab {% if af == 'mine' %}author-filter-tab-active{% endif %}"
+       title="Solo gli account che hai creato tu">
+      👤 I miei account
+    </a>
+    <a href="/accounts/email?author=tenant"
+       class="author-filter-tab {% if af != 'mine' %}author-filter-tab-active{% endif %}"
+       title="Tutti gli account del tenant">
+      🏢 Tutti del tenant <span class="author-filter-count">{{ total_tenant }}</span>
+    </a>
+  </nav>
+  {% endif %}
+
+  {% if accounts %}
+  <table class="data" style="margin-top: 1.5rem;">
+    <thead>
+      <tr>
+        <th>#</th><th>Label</th><th>Mittente</th><th>SMTP host</th><th>Status</th>
+        <th title="Cap giornaliero invii">Cap/24h</th>
+        <th title="IMAP per leggere risposte">IMAP</th>
+        <th>Tenant Owner</th>
+        <th>Creato</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in accounts %}
+      <tr {% if a.status in ('quarantine','banned') %}class="row-disabled"{% endif %}>
+        <td>{{ a.id }}</td>
+        <td><strong>{{ a.label }}</strong></td>
+        <td><code>{{ a.from_address }}</code></td>
+        <td><small>{{ a.smtp_host }}:{{ a.smtp_port }}</small></td>
+        <td>
+          {% if a.status == 'active' %}<span class="status status-qualified">active</span>
+          {% elif a.status == 'quarantine' %}<span class="status status-rejected">quarantine</span>
+          {% elif a.status == 'banned' %}<span class="status status-rejected">banned</span>
+          {% else %}<span class="status">{{ a.status }}</span>{% endif %}
+        </td>
+        <td>{{ a.daily_send_cap }}</td>
+        <td>{% if a.imap_host %}<small>{{ a.imap_host }}</small>{% else %}<small class="muted">—</small>{% endif %}</td>
+        <td>
+          {% if a.created_by_user_id %}
+            <small {% if a.created_by_user_id == current_user_id %}style="font-weight:600;color:var(--brand-2)"{% endif %}
+                   title="{{ a.owner_email }} (user_id={{ a.created_by_user_id }})">
+              {{ a | owner_display }}{% if a.created_by_user_id == current_user_id %} (tu){% endif %}
+            </small>
+          {% else %}
+            <small class="muted">—</small>
+          {% endif %}
+        </td>
+        <td><small>{{ a.created_at[:10] if a.created_at else '—' }}</small></td>
+        <td class="row-actions">
+          <details class="kebab-menu">
+            <summary class="kebab-trigger" title="Azioni">⋮</summary>
+            <div class="kebab-dropdown" role="menu">
+              <a href="/accounts/email/{{ a.id }}/edit" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica
+              </a>
+              <form method="post" action="/accounts/email/{{ a.id }}/test">
+                <button type="submit" role="menuitem" title="Invia email di test a {{ a.from_address }}">
+                  <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg> Test SMTP
+                </button>
+              </form>
+              {% if a.status == 'active' %}
+              <form method="post" action="/accounts/email/{{ a.id }}/toggle-status">
+                <button type="submit" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg> Quarantine
+                </button>
+              </form>
+              {% else %}
+              <form method="post" action="/accounts/email/{{ a.id }}/toggle-status">
+                <button type="submit" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg> Attiva
+                </button>
+              </form>
+              {% endif %}
+              <hr class="menu-sep">
+              <form method="post" action="/accounts/email/{{ a.id }}/delete"
+                    onsubmit="return confirm('Cancellare account email #{{ a.id }} ({{ a.from_address }})? I task che lo referenziano avranno email_account_id = NULL (fallback a default).');">
+                <button type="submit" class="kebab-danger" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Elimina
+                </button>
+              </form>
+            </div>
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-top: 1.5rem;">
+    Nessun email account ancora. <a href="/accounts/email/new">Aggiungine uno</a> per iniziare outreach via email.
+  </p>
+  {% endif %}
+
+  <details class="optional-block" style="margin-top: 1.5rem;">
+    <summary>📖 Come funziona</summary>
+    <ol>
+      <li><strong>App password</strong>: per Gmail abilita 2FA → impostazioni → "App passwords" → genera per "Mail". Stesso pattern per Outlook/Yahoo/iCloud.</li>
+      <li>SMTP (invio): host es. <code>smtp.gmail.com</code>:<code>587</code> con STARTTLS. IMAP (lettura risposte, opzionale): es. <code>imap.gmail.com</code>:<code>993</code>.</li>
+      <li>Quando crei un task <code>outreach</code> con canale <code>email</code>, puoi scegliere quale account usare (default: primo <code>active</code> del tenant).</li>
+      <li><code>daily_send_cap</code> limita gli invii/24h per account: utile per evitare spam-flag dei provider.</li>
+      <li>Status <code>quarantine</code> sospende temporaneamente l'account (escluso dal pool).</li>
+    </ol>
+  </details>
+</section>
+{% endblock %}

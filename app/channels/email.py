@@ -1,21 +1,13 @@
 """Canale email: SMTP send (async) + IMAP fetch (in thread executor).
 
-Configurazione via tabella channel_config (channel='email'). Schema config:
-{
-  "smtp_host": "smtp.gmail.com",
-  "smtp_port": 587,
-  "smtp_user": "...",
-  "smtp_password": "..."  # opzionale, env SMTP_PASSWORD ha priorità
-  "smtp_use_tls": true,
-  "imap_host": "imap.gmail.com",
-  "imap_port": 993,
-  "imap_user": "...",
-  "imap_password": "..."  # opzionale, env IMAP_PASSWORD ha priorità
-  "imap_folder": "INBOX",
-  "from_address": "...",
-  "reply_to": null,
-  "rate_limit_per_minute": 10
-}
+Due fonti di config supportate:
+  1) Multi-account (preferito): tabella `email_accounts` con Fernet-encrypted
+     password. Il runner passa `account=db.get_email_account(id)` o un dict
+     analogo. Le funzioni `_account_to_cfg()` lo convertono in una `cfg`
+     compatibile con il vecchio shape — il resto del codice non cambia.
+  2) Legacy singleton: tabella `channel_config` channel='email' (back-compat).
+     Usata se nessun `account` viene passato (fallback per task che non hanno
+     ancora `email_account_id`).
 """
 from __future__ import annotations
 
@@ -42,20 +34,51 @@ def _imap_password(cfg: dict[str, Any]) -> str | None:
     return resolve_secret("IMAP_PASSWORD", cfg.get("imap_password"))
 
 
+def _account_to_cfg(account: dict[str, Any]) -> dict[str, Any]:
+    """Converte una row `email_accounts` (con `encrypted_smtp_password` BYTEA) in
+    un dict cfg compatibile con il vecchio shape `channel_config`. Decifra
+    Fernet inline."""
+    from ..agent.social.crypto_creds import decrypt
+
+    smtp_pwd = decrypt(account["encrypted_smtp_password"]) if account.get("encrypted_smtp_password") else None
+    imap_pwd = decrypt(account["encrypted_imap_password"]) if account.get("encrypted_imap_password") else None
+    return {
+        "smtp_host": account.get("smtp_host"),
+        "smtp_port": account.get("smtp_port") or 587,
+        "smtp_user": account.get("smtp_user"),
+        "smtp_password": smtp_pwd,
+        "smtp_use_tls": bool(account.get("smtp_use_tls", 1)),
+        "imap_host": account.get("imap_host"),
+        "imap_port": account.get("imap_port") or 993,
+        "imap_user": account.get("imap_user") or account.get("smtp_user"),
+        "imap_password": imap_pwd,
+        "imap_folder": account.get("imap_folder") or "INBOX",
+        "from_address": account.get("from_address"),
+        "reply_to": account.get("reply_to"),
+        "rate_limit_per_minute": account.get("rate_limit_per_minute") or 10,
+    }
+
+
 async def send_email(
     to_address: str,
     subject: str,
     body: str,
     in_reply_to: str | None = None,
     references: str | None = None,
+    account: dict[str, Any] | None = None,
 ) -> str:
     """Invia un'email tramite SMTP. Ritorna il Message-ID generato.
 
+    Se `account` è passato (row di email_accounts), usa quelle credenziali
+    (Fernet-decifrate). Altrimenti fallback a `channel_config` legacy.
     Solleva RuntimeError se la config non è completa.
     """
-    cfg = get_config("email")
+    if account is not None:
+        cfg = _account_to_cfg(account)
+    else:
+        cfg = get_config("email")
     if not cfg:
-        raise RuntimeError("Canale email non configurato (vai su /settings).")
+        raise RuntimeError("Canale email non configurato (vai su /accounts/email).")
 
     host = cfg.get("smtp_host")
     port = int(cfg.get("smtp_port") or 587)
@@ -101,12 +124,17 @@ async def send_email(
     return message_id
 
 
-async def send_test_email(to_address: str, subject: str = "AgentScraper test") -> str:
+async def send_test_email(
+    to_address: str,
+    subject: str = "AgentScraper test",
+    account: dict[str, Any] | None = None,
+) -> str:
     return await send_email(
         to_address,
         subject,
         "Questa è una email di test inviata da AgentScraper.\n\n"
         "Se l'hai ricevuta, la configurazione SMTP funziona.",
+        account=account,
     )
 
 
@@ -154,9 +182,19 @@ def _fetch_inbound_sync(cfg: dict[str, Any], limit: int = 50) -> list[InboundMes
     return out
 
 
-async def fetch_inbound(limit: int = 50) -> list[InboundMessage]:
-    """Polling IMAP — ritorna nuove email come InboundMessage."""
-    cfg = get_config("email")
+async def fetch_inbound(
+    limit: int = 50,
+    account: dict[str, Any] | None = None,
+) -> list[InboundMessage]:
+    """Polling IMAP — ritorna nuove email come InboundMessage.
+
+    Se `account` è passato (row email_accounts), polla quella mailbox.
+    Altrimenti fallback al singleton `channel_config` legacy.
+    """
+    if account is not None:
+        cfg = _account_to_cfg(account)
+    else:
+        cfg = get_config("email")
     if not cfg:
         return []
     try:

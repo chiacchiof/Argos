@@ -22,6 +22,8 @@ from .routes import jobs as jobs_routes
 from .routes import orchestrator as orchestrator_routes
 from .routes import results as results_routes
 from .routes import settings as settings_routes
+from .routes import accounts_email as accounts_email_routes
+from .routes import accounts_messaging as accounts_messaging_routes
 from .routes import settings_whatsapp as settings_whatsapp_routes
 from .routes import site_memory as site_memory_routes
 from .routes import social_accounts as social_accounts_routes
@@ -187,6 +189,8 @@ app.include_router(assets_routes.router)
 app.include_router(import_csv_routes.router)
 app.include_router(site_memory_routes.router)
 app.include_router(social_accounts_routes.router)
+app.include_router(accounts_email_routes.router)
+app.include_router(accounts_messaging_routes.router)
 app.include_router(update_routes.router)
 
 

@@ -661,6 +661,9 @@ def _form_to_dict(
     whatsapp_account_id: str = "",
     whatsapp_api_config_id: str = "",
     social_account_id: str = "",
+    # Campi outreach email/telegram multi-account (aggiunti 2026-05-21)
+    email_account_id: str = "",
+    telegram_bot_id: str = "",
     # Campi recon_social (R1)
     recon_mode: str = "",
     recon_social_account_id: str = "",
@@ -733,6 +736,9 @@ def _form_to_dict(
         "whatsapp_account_id": int(whatsapp_account_id) if str(whatsapp_account_id).strip().isdigit() else None,
         "whatsapp_api_config_id": int(whatsapp_api_config_id) if str(whatsapp_api_config_id).strip().isdigit() else None,
         "social_account_id": int(social_account_id) if str(social_account_id).strip().isdigit() else None,
+        # outreach email/telegram multi-account
+        "email_account_id": int(email_account_id) if str(email_account_id).strip().isdigit() else None,
+        "telegram_bot_id": int(telegram_bot_id) if str(telegram_bot_id).strip().isdigit() else None,
         # recon_social
         "recon_mode": (recon_mode or "").strip() or None,
         "recon_social_account_id": int(recon_social_account_id) if str(recon_social_account_id).strip().isdigit() else None,
@@ -910,6 +916,18 @@ def _form_extra_context() -> dict:
     except Exception:
         social_accounts_by_platform = {"instagram": [], "tiktok": [], "facebook": []}
 
+    # Email accounts + Telegram bots per outreach mode email/telegram multi-account.
+    # Filtra solo `active`: l'utente vede solo gli account utilizzabili. Quelli
+    # disabilitati (quarantine/banned) restano gestibili da /accounts/email|messaging.
+    try:
+        email_accounts_for_form = db.list_email_accounts(status="active")
+    except Exception:
+        email_accounts_for_form = []
+    try:
+        telegram_bots_for_form = db.list_telegram_bots(status="active")
+    except Exception:
+        telegram_bots_for_form = []
+
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
@@ -927,6 +945,8 @@ def _form_extra_context() -> dict:
         "email_channel_config": email_channel_config,
         "telegram_channel_config": telegram_channel_config,
         "social_accounts_by_platform": social_accounts_by_platform,
+        "email_accounts_for_form": email_accounts_for_form,
+        "telegram_bots_for_form": telegram_bots_for_form,
     }
 
 
@@ -986,6 +1006,8 @@ async def create_task(
     whatsapp_account_id: str = Form(""),
     whatsapp_api_config_id: str = Form(""),
     social_account_id: str = Form(""),
+    email_account_id: str = Form(""),
+    telegram_bot_id: str = Form(""),
     recon_mode: str = Form(""),
     recon_social_account_id: str = Form(""),
     recon_hypothesis: str = Form(""),
@@ -1048,6 +1070,8 @@ async def create_task(
         whatsapp_account_id=whatsapp_account_id,
         whatsapp_api_config_id=whatsapp_api_config_id,
         social_account_id=social_account_id,
+        email_account_id=email_account_id,
+        telegram_bot_id=telegram_bot_id,
         recon_mode=recon_mode,
         recon_social_account_id=recon_social_account_id,
         recon_hypothesis=recon_hypothesis,
@@ -1142,6 +1166,8 @@ async def update_task(
     whatsapp_account_id: str = Form(""),
     whatsapp_api_config_id: str = Form(""),
     social_account_id: str = Form(""),
+    email_account_id: str = Form(""),
+    telegram_bot_id: str = Form(""),
     recon_mode: str = Form(""),
     recon_social_account_id: str = Form(""),
     recon_hypothesis: str = Form(""),
@@ -1229,6 +1255,8 @@ async def update_task(
         whatsapp_account_id=whatsapp_account_id,
         whatsapp_api_config_id=whatsapp_api_config_id,
         social_account_id=social_account_id,
+        email_account_id=email_account_id,
+        telegram_bot_id=telegram_bot_id,
         recon_mode=recon_mode,
         recon_social_account_id=recon_social_account_id,
         recon_hypothesis=recon_hypothesis,

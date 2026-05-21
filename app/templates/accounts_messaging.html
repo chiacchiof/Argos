@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Messaging Accounts — AgentScraper{% endblock %}
+{% block content %}
+<section>
+  <div class="section-header">
+    <div>
+      <h2 style="margin:0">💬 Messaging Accounts</h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        Account per messaggistica: WhatsApp (browser e Cloud API) e Telegram (Bot API).
+        Per outreach via DM su Instagram/TikTok/Facebook usa invece <a href="/social/accounts">Social Accounts</a>.
+      </p>
+    </div>
+  </div>
+
+  {% if flash %}<div class="flash-ok">✓ {{ flash | replace('+', ' ') }}</div>{% endif %}
+  {% if error %}<div class="errors">⚠️ {{ error | replace('+', ' ') }}</div>{% endif %}
+
+  {# Tab nav server-side (link con ?tab=...) #}
+  <nav class="tab-nav" aria-label="Messaging tabs" style="display:flex; gap:0.4rem; margin: 1rem 0; border-bottom: 1px solid var(--border);">
+    <a href="/accounts/messaging?tab=browser"
+       class="tab-link {% if tab == 'browser' %}tab-link-active{% endif %}">
+      📱 WhatsApp Browser
+    </a>
+    <a href="/accounts/messaging?tab=api"
+       class="tab-link {% if tab == 'api' %}tab-link-active{% endif %}">
+      ☁️ WhatsApp Cloud API
+    </a>
+    <a href="/accounts/messaging?tab=telegram"
+       class="tab-link {% if tab == 'telegram' %}tab-link-active{% endif %}">
+      🤖 Telegram Bots
+    </a>
+  </nav>
+
+  {# === Tab WhatsApp Browser (placeholder — refactor in PR 5) === #}
+  {% if tab == 'browser' %}
+  <div class="panel-card">
+    <h3>📱 WhatsApp Browser (Motore A)</h3>
+    <p>
+      La gestione degli account WhatsApp browser-based vive ancora a
+      <a href="/settings/whatsapp"><code>/settings/whatsapp</code></a>.
+      Verrà migrata qui in una prossima iterazione. Per ora clicca sul link sopra
+      per gestire login QR, sessioni, e cap giornalieri.
+    </p>
+    <p class="muted small">
+      ⚠️ <strong>Avviso ToS</strong>: l'automazione browser di <code>web.whatsapp.com</code>
+      viola i ToS di Meta. Usa account dedicati, mai personali. Rischio ban del numero
+      per uso massivo cold outreach.
+    </p>
+  </div>
+
+  {# === Tab WhatsApp Cloud API (placeholder) === #}
+  {% elif tab == 'api' %}
+  <div class="panel-card">
+    <h3>☁️ WhatsApp Cloud API (Motore B)</h3>
+    <p>
+      La gestione delle config Meta Cloud API (token, phone_number_id, template) vive
+      ancora a <a href="/settings/whatsapp"><code>/settings/whatsapp</code></a> sezione
+      "Motore B". Verrà migrata qui in una prossima iterazione.
+    </p>
+    <p class="muted small">
+      Il Motore B è il canale <em>legale</em> per WhatsApp (no ToS violation), ma richiede
+      opt-in dei contatti e template approvati. Non adatto al cold outreach.
+    </p>
+  </div>
+
+  {# === Tab Telegram Bots (greenfield) === #}
+  {% else %}
+  <div class="panel-card">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap;">
+      <div>
+        <h3 style="margin:0">🤖 Telegram Bots</h3>
+        <p class="muted small" style="margin: 0.3rem 0 0 0">
+          Bot API per outreach via Telegram. Token cifrato Fernet. Multi-bot per tenant.
+          <br>
+          ⚠️ <strong>Limite Telegram</strong>: i bot possono inviare messaggi <strong>solo a chi li ha
+          contattati per primo</strong> (regola Telegram ToS, non aggirabile). Per outreach attivo
+          serve che il contatto cerchi il bot e lo apra. Tipico flow: l'utente clicca
+          un link <code>t.me/MioBotName</code> da una landing → da quel momento il bot può
+          rispondere o iniziare conversazioni.
+        </p>
+      </div>
+      <a href="/accounts/messaging/telegram/new" class="btn-primary">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Aggiungi bot
+      </a>
+    </div>
+
+    {% if not is_secret_configured %}
+    <div class="warning-box" style="margin-top: 0.8rem;">
+      ⚠️ <strong>AGENTSCRAPER_SECRET non configurata</strong>. Aggiungi al file <code>.env</code>
+      prima di poter creare bot (i token devono essere cifrati).
+    </div>
+    {% endif %}
+
+    {% set af = author_filter or 'mine' %}
+    {% if current_user_authenticated %}
+    <nav class="author-filter-bar" aria-label="Filtro autore" style="margin-top: 0.8rem;">
+      <a href="/accounts/messaging?tab=telegram&author=mine"
+         class="author-filter-tab {% if af == 'mine' %}author-filter-tab-active{% endif %}">
+        👤 I miei bot
+      </a>
+      <a href="/accounts/messaging?tab=telegram&author=tenant"
+         class="author-filter-tab {% if af != 'mine' %}author-filter-tab-active{% endif %}">
+        🏢 Tutti del tenant <span class="author-filter-count">{{ total_tenant_telegram }}</span>
+      </a>
+    </nav>
+    {% endif %}
+
+    {% if telegram_bots %}
+    <table class="data" style="margin-top: 1rem;">
+      <thead>
+        <tr>
+          <th>#</th><th>Label</th><th>Username</th><th>Status</th>
+          <th>Cap/24h</th><th>Poll int.</th>
+          <th>Tenant Owner</th>
+          <th>Creato</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in telegram_bots %}
+        <tr {% if b.status in ('quarantine','banned') %}class="row-disabled"{% endif %}>
+          <td>{{ b.id }}</td>
+          <td><strong>{{ b.label }}</strong></td>
+          <td>{% if b.bot_username %}<code>@{{ b.bot_username }}</code>{% else %}<small class="muted">—</small>{% endif %}</td>
+          <td>
+            {% if b.status == 'active' %}<span class="status status-qualified">active</span>
+            {% elif b.status == 'quarantine' %}<span class="status status-rejected">quarantine</span>
+            {% elif b.status == 'banned' %}<span class="status status-rejected">banned</span>
+            {% else %}<span class="status">{{ b.status }}</span>{% endif %}
+          </td>
+          <td>{{ b.daily_msg_cap }}</td>
+          <td>{{ b.poll_interval_seconds }}s</td>
+          <td>
+            {% if b.created_by_user_id %}
+              <small {% if b.created_by_user_id == current_user_id %}style="font-weight:600;color:var(--brand-2)"{% endif %}
+                     title="{{ b.owner_email }} (user_id={{ b.created_by_user_id }})">
+                {{ b | owner_display }}{% if b.created_by_user_id == current_user_id %} (tu){% endif %}
+              </small>
+            {% else %}
+              <small class="muted">—</small>
+            {% endif %}
+          </td>
+          <td><small>{{ b.created_at[:10] if b.created_at else '—' }}</small></td>
+          <td class="row-actions">
+            <details class="kebab-menu">
+              <summary class="kebab-trigger" title="Azioni">⋮</summary>
+              <div class="kebab-dropdown" role="menu">
+                <a href="/accounts/messaging/telegram/{{ b.id }}/edit" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica
+                </a>
+                <form method="post" action="/accounts/messaging/telegram/{{ b.id }}/test">
+                  <button type="submit" role="menuitem" title="Chiama /getMe via Bot API">
+                    <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg> Test /getMe
+                  </button>
+                </form>
+                {% if b.status == 'active' %}
+                <form method="post" action="/accounts/messaging/telegram/{{ b.id }}/toggle-status">
+                  <button type="submit" role="menuitem">
+                    <svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg> Quarantine
+                  </button>
+                </form>
+                {% else %}
+                <form method="post" action="/accounts/messaging/telegram/{{ b.id }}/toggle-status">
+                  <button type="submit" role="menuitem">
+                    <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg> Attiva
+                  </button>
+                </form>
+                {% endif %}
+                <hr class="menu-sep">
+                <form method="post" action="/accounts/messaging/telegram/{{ b.id }}/delete"
+                      onsubmit="return confirm('Cancellare bot #{{ b.id }} ({{ b.label }})? I task con telegram_bot_id={{ b.id }} avranno il campo a NULL.');">
+                  <button type="submit" class="kebab-danger" role="menuitem">
+                    <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Elimina
+                  </button>
+                </form>
+              </div>
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted" style="margin-top: 1rem;">
+      Nessun bot Telegram ancora. <a href="/accounts/messaging/telegram/new">Aggiungine uno</a>.
+      Per crearlo: chatta con <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>,
+      <code>/newbot</code>, segui i passi, copia il token che ti dà.
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<style>
+.tab-link {
+  padding: 0.6rem 1rem;
+  text-decoration: none;
+  color: var(--fg-muted);
+  border-bottom: 2px solid transparent;
+  font-weight: 500;
+  font-size: 0.95rem;
+}
+.tab-link:hover { color: var(--fg); }
+.tab-link-active {
+  color: var(--brand-2);
+  border-bottom-color: var(--brand-2);
+}
+</style>
+{% endblock %}

@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}{% if account %}Modifica{% else %}Aggiungi{% endif %} Email Account — AgentScraper{% endblock %}
+{% block content %}
+<section style="max-width: 880px;">
+  <p><a href="/accounts/email">← Email accounts</a></p>
+
+  {% if account %}
+    <h2>✉️ Modifica email account #{{ account.id }}</h2>
+  {% else %}
+    <h2>✉️ Aggiungi email account</h2>
+  {% endif %}
+
+  {% if not is_secret_configured %}
+  <div class="warning-box">
+    ⚠️ <strong>AGENTSCRAPER_SECRET non configurata</strong>. Le password non possono essere cifrate.
+    Salva è disabilitato finché non aggiungi <code>AGENTSCRAPER_SECRET</code> al file <code>.env</code>.
+  </div>
+  {% endif %}
+
+  <form method="post"
+        action="{% if account %}/accounts/email/{{ account.id }}/edit{% else %}/accounts/email/new{% endif %}"
+        class="settings-form">
+
+    <h3>📋 Identità mittente</h3>
+
+    <label>Label <span class="hint">(nome interno, es. "EDG marketing", "Anna outreach")</span>
+      <input name="label" required maxlength="100"
+             value="{{ account.label if account else '' }}"
+             placeholder="es. EDG marketing">
+    </label>
+
+    <div class="row">
+      <label>From address <span class="hint">(verrà mostrato come mittente)</span>
+        <input name="from_address" type="email" required maxlength="200"
+               value="{{ account.from_address if account else '' }}"
+               placeholder="marketing@edg.example">
+      </label>
+      <label>Reply-To <span class="hint">(opzionale, dove arriveranno le risposte)</span>
+        <input name="reply_to" type="email" maxlength="200"
+               value="{{ account.reply_to or '' if account else '' }}"
+               placeholder="lascia vuoto = usa from_address">
+      </label>
+    </div>
+
+    <h3 style="margin-top: 1.5rem;">📤 SMTP (invio)</h3>
+
+    <div class="row">
+      <label>SMTP host
+        <input name="smtp_host" required
+               value="{{ account.smtp_host if account else '' }}"
+               placeholder="smtp.gmail.com">
+      </label>
+      <label>Porta
+        <input name="smtp_port" type="number" required min="1" max="65535"
+               value="{{ account.smtp_port if account else 587 }}">
+      </label>
+      <label style="display:inline-flex; align-items:center; gap:0.4rem;">
+        <input type="checkbox" name="smtp_use_tls" value="1"
+               {% if not account or account.smtp_use_tls %}checked{% endif %}>
+        STARTTLS
+      </label>
+    </div>
+
+    <label>SMTP user
+      <input name="smtp_user" required
+             value="{{ account.smtp_user if account else '' }}"
+             placeholder="spesso uguale a from_address">
+    </label>
+
+    <label>SMTP password
+      <input name="smtp_password" type="password" autocomplete="new-password"
+             {% if not account %}required{% endif %}
+             placeholder="{% if account %}lascia vuoto per non cambiare{% else %}app password (NO password personale){% endif %}">
+      <span class="hint">
+        {% if account %}Vuoto = mantieni la password attuale. Inserisci nuovo valore per sostituirla (cifrata Fernet).
+        {% else %}Cifrata via Fernet (AES128 + HMAC-SHA256) prima del save. Niente plaintext in DB.{% endif %}
+      </span>
+    </label>
+
+    <h3 style="margin-top: 1.5rem;">📥 IMAP (lettura risposte, opzionale)</h3>
+    <p class="muted small">
+      Se vuoi che AgentScraper monitori le risposte ricevute (es. per il modulo responder),
+      configura anche IMAP. Altrimenti lascia vuoto: l'account funzionerà solo per invio.
+    </p>
+
+    <div class="row">
+      <label>IMAP host
+        <input name="imap_host"
+               value="{{ account.imap_host or '' if account else '' }}"
+               placeholder="imap.gmail.com (vuoto = no fetch inbound)">
+      </label>
+      <label>Porta
+        <input name="imap_port" type="number" min="1" max="65535"
+               value="{{ account.imap_port if account and account.imap_port else 993 }}">
+      </label>
+      <label>Folder
+        <input name="imap_folder"
+               value="{{ account.imap_folder if account else 'INBOX' }}"
+               placeholder="INBOX">
+      </label>
+    </div>
+
+    <label>IMAP user
+      <input name="imap_user"
+             value="{{ account.imap_user or '' if account else '' }}"
+             placeholder="spesso uguale a SMTP user">
+    </label>
+
+    <label>IMAP password
+      <input name="imap_password" type="password" autocomplete="new-password"
+             placeholder="{% if account and account.encrypted_imap_password %}lascia vuoto per non cambiare, 'CLEAR' per rimuovere{% else %}app password IMAP (può essere uguale a SMTP){% endif %}">
+      <span class="hint">
+        Vuoto = mantieni. <code>CLEAR</code> (maiuscolo) = rimuovi credenziali IMAP.
+      </span>
+    </label>
+
+    <h3 style="margin-top: 1.5rem;">⚙️ Limiti e stato</h3>
+
+    <div class="row">
+      <label>Daily send cap <span class="hint">(invii/24h)</span>
+        <input name="daily_send_cap" type="number" min="1" max="5000"
+               value="{{ account.daily_send_cap if account else 200 }}">
+      </label>
+      <label>Rate limit <span class="hint">(invii/minuto)</span>
+        <input name="rate_limit_per_minute" type="number" min="1" max="60"
+               value="{{ account.rate_limit_per_minute if account else 10 }}">
+      </label>
+      {% if account %}
+      <label>Status
+        <select name="status">
+          <option value="active"     {% if account.status == 'active'     %}selected{% endif %}>active</option>
+          <option value="quarantine" {% if account.status == 'quarantine' %}selected{% endif %}>quarantine</option>
+          <option value="banned"     {% if account.status == 'banned'     %}selected{% endif %}>banned</option>
+        </select>
+      </label>
+      {% endif %}
+    </div>
+
+    <label>Note
+      <textarea name="notes" rows="2"
+                placeholder="Es. Account dedicato outreach Q2 2026, daily cap aumentato dopo warm-up">{{ account.notes or '' if account else '' }}</textarea>
+    </label>
+
+    {% if not account and tenant_users %}
+    <label>Tenant Owner <span class="hint">(utente del tenant che possiede l'account)</span>
+      <select name="owner_user_id"
+              {% if not request.state.current_user.is_super_admin %}disabled
+                 title="Solo super-admin possono assegnare l'owner ad un altro utente"{% endif %}>
+        {% for u in tenant_users %}
+          {% set _label = ((u.first_name or '') ~ ' ' ~ (u.last_name or '')) | trim %}
+          <option value="{{ u.id }}" {% if u.id == request.state.current_user.id %}selected{% endif %}>
+            {% if _label %}{{ _label }} &lt;{{ u.email }}&gt;{% else %}{{ u.email }}{% endif %}{% if u.id == request.state.current_user.id %} (tu){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endif %}
+
+    <div style="margin-top: 1.2rem; display: flex; gap: 0.6rem;">
+      <button type="submit" class="btn-primary"
+              {% if not is_secret_configured %}disabled{% endif %}>
+        💾 {% if account %}Salva modifiche{% else %}Aggiungi account{% endif %}
+      </button>
+      <a href="/accounts/email" class="btn-link">Annulla</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

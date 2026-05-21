@@ -158,6 +158,53 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         raise RuntimeError(msg)
     jlog(f"Canali attivi: {active_channels}")
 
+    # 1b. risoluzione sender per-account (email_account_id / telegram_bot_id).
+    # Pattern fail-fast identico a outreach_social/outreach_whatsapp:
+    #   - id specificato → caricalo, errore se non trovato o disabled
+    #   - id NULL        → primo account active del tenant; se 0 active e c'è
+    #                       channel_config legacy → fallback al singleton.
+    email_account: dict[str, Any] | None = None
+    telegram_bot: dict[str, Any] | None = None
+    if "email" in active_channels:
+        eaid = task.get("email_account_id")
+        if eaid:
+            email_account = db.get_email_account(int(eaid))
+            if not email_account:
+                msg = f"email_account_id={eaid} non trovato. Aborto."
+                jlog(msg); db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+                raise RuntimeError(msg)
+            if email_account.get("status") != "active":
+                msg = f"email account #{eaid} status={email_account.get('status')}, fail-fast."
+                jlog(msg); db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+                raise RuntimeError(msg)
+            jlog(f"📧 Email sender: #{email_account['id']} {email_account['from_address']}")
+        else:
+            email_account = db.get_default_email_account()
+            if email_account:
+                jlog(f"📧 Email sender (default): #{email_account['id']} {email_account['from_address']}")
+            else:
+                # nessun email_accounts → fallback singleton legacy (channel_config)
+                jlog("📧 Email sender: nessun account multi-account, uso channel_config legacy.")
+    if "telegram" in active_channels:
+        tbid = task.get("telegram_bot_id")
+        if tbid:
+            telegram_bot = db.get_telegram_bot(int(tbid))
+            if not telegram_bot:
+                msg = f"telegram_bot_id={tbid} non trovato. Aborto."
+                jlog(msg); db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+                raise RuntimeError(msg)
+            if telegram_bot.get("status") != "active":
+                msg = f"telegram bot #{tbid} status={telegram_bot.get('status')}, fail-fast."
+                jlog(msg); db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
+                raise RuntimeError(msg)
+            jlog(f"💬 Telegram bot: #{telegram_bot['id']} @{telegram_bot.get('bot_username') or '?'}")
+        else:
+            telegram_bot = db.get_default_telegram_bot()
+            if telegram_bot:
+                jlog(f"💬 Telegram bot (default): #{telegram_bot['id']} @{telegram_bot.get('bot_username') or '?'}")
+            else:
+                jlog("💬 Telegram bot: nessun bot multi-account, uso channel_config legacy.")
+
     # 2. run dir
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = RESULTS_DIR / str(task["id"]) / ts
@@ -261,9 +308,12 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     if not candidates:
         jlog("Nessun asset da contattare. Verifica input_artifact_path, snapshot o filtri.")
 
-    # 5. setup rate limit
-    email_cfg = db.get_channel_config("email") or {}
-    rate_per_min = int((email_cfg.get("config") or {}).get("rate_limit_per_minute") or DEFAULT_RATE_LIMIT)
+    # 5. setup rate limit (priorità: email_account → channel_config singleton → default)
+    if email_account is not None:
+        rate_per_min = int(email_account.get("rate_limit_per_minute") or DEFAULT_RATE_LIMIT)
+    else:
+        email_cfg = db.get_channel_config("email") or {}
+        rate_per_min = int((email_cfg.get("config") or {}).get("rate_limit_per_minute") or DEFAULT_RATE_LIMIT)
     sleep_between = 60.0 / max(1, rate_per_min)
 
     # 6. invio
@@ -323,7 +373,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                             subject=subject, task_id=task["id"],
                         )
                         msg_id = await ch_email.send_email(
-                            asset["email"], subject, body
+                            asset["email"], subject, body, account=email_account
                         )
                         db.insert_message(
                             thread_id, "out", body, llm_generated=False,
@@ -355,7 +405,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                             asset_id=asset["id"], channel="telegram",
                             external_id=str(chat_id), task_id=task["id"],
                         )
-                        msg_id = await ch_telegram.send_message(chat_id, body)
+                        msg_id = await ch_telegram.send_message(chat_id, body, bot=telegram_bot)
                         db.insert_message(
                             thread_id, "out", body, llm_generated=False,
                             external_id=msg_id, status="sent", sent_at=db.now_iso(),

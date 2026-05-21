@@ -650,40 +650,55 @@
     <details class="collapsible-section dyn-section" data-modes="outreach">
       <summary>Configurazione outreach</summary>
 
-      {# Sender (read-only): mostra quale account email/telegram verra' usato.
-         Email/TG hanno una sola config in /settings/* — non un pool — quindi
-         mostriamo il valore corrente senza selettore. #}
+      {# Sender single-select per email/telegram. Pattern identico a
+         outreach_social (social_account_id) e outreach_whatsapp.
+         Vuoto = pool default (primo account active del tenant). #}
       <fieldset class="sender-fieldset">
         <legend>📨 Account che invieranno per questo task</legend>
-        <div class="row" style="gap:1rem">
-          <div class="sender-readonly">
-            <strong>✉️ Email</strong>
-            {% if email_channel_config and email_channel_config.config.get('username') %}
-              <div><code>{{ email_channel_config.config.get('username') }}</code></div>
-              <div class="muted small">
-                via {{ email_channel_config.config.get('smtp_host') or 'host non configurato' }}
-                {% if email_channel_config.config.get('rate_limit_per_minute') %}· rate {{ email_channel_config.config.get('rate_limit_per_minute') }}/min{% endif %}
-              </div>
-            {% else %}
-              <div class="muted">⚠️ non configurato — <a href="/settings/email" target="_blank">/settings/email</a></div>
-            {% endif %}
-          </div>
-          <div class="sender-readonly">
-            <strong>💬 Telegram</strong>
-            {% if telegram_channel_config and telegram_channel_config.config.get('bot_token') %}
-              <div><code>bot configurato</code></div>
-              <div class="muted small">
-                {% if telegram_channel_config.config.get('bot_username') %}@{{ telegram_channel_config.config.get('bot_username') }}{% else %}(nome bot non rilevato){% endif %}
-              </div>
-            {% else %}
-              <div class="muted">⚠️ non configurato — <a href="/settings/telegram" target="_blank">/settings/telegram</a></div>
-            {% endif %}
-          </div>
-        </div>
-        <p class="muted small" style="margin:0.3rem 0 0 0">
-          ℹ️ Email/Telegram hanno un singolo account di sistema (non multi-account come WhatsApp/Social).
-          Modificalo da <a href="/settings" target="_blank">/settings</a>.
-        </p>
+
+        <label>✉️ Email mittente
+          <select name="email_account_id">
+            <option value="">— default (primo account active del tenant) —</option>
+            {% for a in email_accounts_for_form %}
+              <option value="{{ a.id }}" {% if p.get('email_account_id') and p.get('email_account_id')|int == a.id %}selected{% endif %}>
+                #{{ a.id }} · {{ a.label }} · {{ a.from_address }}
+              </option>
+            {% endfor %}
+          </select>
+          {% if not email_accounts_for_form %}
+            <span class="hint">
+              ⚠️ Nessun email account configurato.
+              {% if email_channel_config and email_channel_config.config.get('username') %}
+                Fallback singleton legacy: <code>{{ email_channel_config.config.get('username') }}</code>.
+              {% endif %}
+              Aggiungine uno da <a href="/accounts/email" target="_blank">/accounts/email</a>.
+            </span>
+          {% else %}
+            <span class="hint">Cifrato Fernet. Gestisci da <a href="/accounts/email" target="_blank">/accounts/email</a>.</span>
+          {% endif %}
+        </label>
+
+        <label>💬 Bot Telegram
+          <select name="telegram_bot_id">
+            <option value="">— default (primo bot active del tenant) —</option>
+            {% for b in telegram_bots_for_form %}
+              <option value="{{ b.id }}" {% if p.get('telegram_bot_id') and p.get('telegram_bot_id')|int == b.id %}selected{% endif %}>
+                #{{ b.id }} · {{ b.label }}{% if b.bot_username %} · @{{ b.bot_username }}{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+          {% if not telegram_bots_for_form %}
+            <span class="hint">
+              ⚠️ Nessun bot Telegram configurato.
+              {% if telegram_channel_config and telegram_channel_config.config.get('bot_token') %}
+                Fallback singleton legacy attivo.
+              {% endif %}
+              Aggiungine uno da <a href="/accounts/messaging?tab=telegram" target="_blank">/accounts/messaging</a>.
+            </span>
+          {% else %}
+            <span class="hint">⚠️ I bot Telegram possono solo rispondere a chi li ha contattati per primi (regola ToS).</span>
+          {% endif %}
+        </label>
       </fieldset>
 
       <label>Subject email <span class="hint">Placeholder: <code>{display_name}</code>, <code>{source_domain}</code>, <code>{source_url}</code>, <code>{email}</code></span>

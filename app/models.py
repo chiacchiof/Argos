@@ -87,6 +87,11 @@ class TaskIn(BaseModel):
     # - id   = SOLO quel sender; fail-fast se è banned/disabled
     whatsapp_account_id: int | None = None
     whatsapp_api_config_id: int | None = None
+    # Sender single-select per outreach mode 'outreach' (email/telegram).
+    # NULL = primo account active del tenant (vedi db.get_default_email_account /
+    # db.get_default_telegram_bot). Pattern fail-fast se account disabled.
+    email_account_id: int | None = None
+    telegram_bot_id: int | None = None
     # Recon social (R1 url_driven, follower_scrape; R2/R3 nel backlog)
     recon_mode: Literal["url_driven", "exploration", "follower_scrape"] | None = None
     recon_social_account_id: int | None = None

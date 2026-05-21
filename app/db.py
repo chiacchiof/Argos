@@ -281,6 +281,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   whatsapp_account_id BIGINT,
   whatsapp_api_config_id BIGINT,
   social_account_id BIGINT,
+  email_account_id BIGINT,
+  telegram_bot_id BIGINT,
   recon_mode TEXT,
   recon_social_account_id BIGINT,
   recon_hypothesis TEXT,
@@ -457,6 +459,53 @@ CREATE TABLE IF NOT EXISTS whatsapp_api_config (
   notes TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+-- ============================================================
+-- Email accounts (SMTP/IMAP multi-account)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS email_accounts (
+  id BIGSERIAL PRIMARY KEY,
+  uuid TEXT UNIQUE NOT NULL,
+  label TEXT NOT NULL,
+  from_address TEXT NOT NULL,
+  reply_to TEXT,
+  smtp_host TEXT NOT NULL,
+  smtp_port INTEGER NOT NULL DEFAULT 587,
+  smtp_user TEXT NOT NULL,
+  encrypted_smtp_password BYTEA NOT NULL,
+  smtp_use_tls INTEGER NOT NULL DEFAULT 1,
+  imap_host TEXT,
+  imap_port INTEGER DEFAULT 993,
+  imap_user TEXT,
+  encrypted_imap_password BYTEA,
+  imap_folder TEXT NOT NULL DEFAULT 'INBOX',
+  status TEXT NOT NULL DEFAULT 'active',
+  daily_send_cap INTEGER NOT NULL DEFAULT 200,
+  rate_limit_per_minute INTEGER NOT NULL DEFAULT 10,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (from_address)
+);
+
+-- ============================================================
+-- Telegram bots (Bot API multi-bot)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS telegram_bots (
+  id BIGSERIAL PRIMARY KEY,
+  uuid TEXT UNIQUE NOT NULL,
+  label TEXT NOT NULL,
+  bot_username TEXT,
+  encrypted_bot_token BYTEA NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  daily_msg_cap INTEGER NOT NULL DEFAULT 500,
+  poll_interval_seconds INTEGER NOT NULL DEFAULT 30,
+  last_update_id BIGINT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (bot_username)
 );
 
 -- ============================================================
@@ -680,6 +729,7 @@ _TENANT_AWARE_TABLES = (
     "assets", "asset_tags", "contacts", "threads", "messages",
     "orchestrator_messages", "social_accounts", "social_dm_log",
     "whatsapp_api_config", "channel_config",
+    "email_accounts", "telegram_bots",
     "recon_runs", "recon_checkpoints", "recon_visited",
 )
 
@@ -688,6 +738,7 @@ _TENANT_AWARE_TABLES = (
 _USER_OWNERSHIP_TABLES = (
     "tasks", "jobs", "workflows", "assets", "contacts",
     "social_accounts", "whatsapp_api_config",
+    "email_accounts", "telegram_bots",
 )
 
 
@@ -721,6 +772,8 @@ def _apply_multitenant_columns(conn) -> None:
         ("idx_social_accounts_tenant", "social_accounts(tenant_id, status)"),
         ("idx_social_dm_log_tenant", "social_dm_log(tenant_id, sent_at DESC)"),
         ("idx_whatsapp_api_tenant", "whatsapp_api_config(tenant_id, status)"),
+        ("idx_email_accounts_tenant", "email_accounts(tenant_id, status)"),
+        ("idx_telegram_bots_tenant", "telegram_bots(tenant_id, status)"),
         ("idx_recon_runs_tenant", "recon_runs(tenant_id, status)"),
     ]
     for name, definition in tenant_indices:
@@ -735,6 +788,14 @@ def _apply_multitenant_columns(conn) -> None:
     # NULL = pool default (tutti gli account active per quella platform).
     conn.execute(
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS social_account_id BIGINT"
+    )
+    # Sender single-select per outreach mode email/telegram. NULL = primo account
+    # active del tenant (vedi get_default_email_account / get_default_telegram_bot).
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS email_account_id BIGINT"
+    )
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS telegram_bot_id BIGINT"
     )
     # Gap anti-ban tra DM consecutivi (B-011).
     # NULL = usa default per-platform da humanize.default_gap_range_min().
@@ -1055,6 +1116,7 @@ def create_task(
                                   whatsapp_engine_preference, whatsapp_dry_run,
                                   whatsapp_account_id, whatsapp_api_config_id,
                                   social_account_id,
+                                  email_account_id, telegram_bot_id,
                                   recon_mode, recon_social_account_id, recon_hypothesis,
                                   recon_max_targets_per_day, recon_score_threshold,
                                   seed_queries_friends,
@@ -1067,7 +1129,7 @@ def create_task(
                                   gap_between_dms_min, gap_between_dms_max,
                                   tenant_id, created_by_user_id,
                                   created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 data["name"],
@@ -1123,6 +1185,8 @@ def create_task(
                 int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
                 int(data["whatsapp_api_config_id"]) if data.get("whatsapp_api_config_id") else None,
                 int(data["social_account_id"]) if data.get("social_account_id") else None,
+                int(data["email_account_id"]) if data.get("email_account_id") else None,
+                int(data["telegram_bot_id"]) if data.get("telegram_bot_id") else None,
                 (data.get("recon_mode") or None),
                 int(data["recon_social_account_id"]) if data.get("recon_social_account_id") else None,
                 (data.get("recon_hypothesis") or "").strip() or None,
@@ -1173,6 +1237,7 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 whatsapp_engine_preference = %s, whatsapp_dry_run = %s,
                 whatsapp_account_id = %s, whatsapp_api_config_id = %s,
                 social_account_id = %s,
+                email_account_id = %s, telegram_bot_id = %s,
                 recon_mode = %s, recon_social_account_id = %s, recon_hypothesis = %s,
                 recon_max_targets_per_day = %s, recon_score_threshold = %s,
                 seed_queries_friends = %s,
@@ -1242,6 +1307,8 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 int(data["whatsapp_account_id"]) if data.get("whatsapp_account_id") else None,
                 int(data["whatsapp_api_config_id"]) if data.get("whatsapp_api_config_id") else None,
                 int(data["social_account_id"]) if data.get("social_account_id") else None,
+                int(data["email_account_id"]) if data.get("email_account_id") else None,
+                int(data["telegram_bot_id"]) if data.get("telegram_bot_id") else None,
                 (data.get("recon_mode") or None),
                 int(data["recon_social_account_id"]) if data.get("recon_social_account_id") else None,
                 (data.get("recon_hypothesis") or "").strip() or None,
@@ -4558,6 +4625,287 @@ def count_whatsapp_api_msgs_today(api_config_id: int) -> int:
     if not r:
         return 0
     return int(r["count"] if isinstance(r, dict) else r[0])
+
+
+# ===========================================================================
+# Email accounts (SMTP/IMAP multi-account)
+# ===========================================================================
+
+def insert_email_account(
+    data: dict, *, tenant_id: Any = _UNSET, created_by_user_id: Any = _UNSET
+) -> int:
+    """Crea un nuovo email account. `encrypted_smtp_password` e
+    `encrypted_imap_password` devono essere già cifrati via crypto_creds.encrypt.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
+    ts = now_iso()
+    with connect() as con:
+        cur = con.execute(
+            """INSERT INTO email_accounts
+            (uuid, label, from_address, reply_to,
+             smtp_host, smtp_port, smtp_user, encrypted_smtp_password, smtp_use_tls,
+             imap_host, imap_port, imap_user, encrypted_imap_password, imap_folder,
+             status, daily_send_cap, rate_limit_per_minute, notes,
+             tenant_id, created_by_user_id, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id""",
+            (
+                data["uuid"],
+                data["label"],
+                data["from_address"],
+                data.get("reply_to"),
+                data["smtp_host"],
+                int(data.get("smtp_port", 587)),
+                data["smtp_user"],
+                data["encrypted_smtp_password"],
+                1 if data.get("smtp_use_tls", True) else 0,
+                data.get("imap_host"),
+                int(data.get("imap_port", 993)) if data.get("imap_port") else None,
+                data.get("imap_user"),
+                data.get("encrypted_imap_password"),
+                data.get("imap_folder", "INBOX"),
+                data.get("status", "active"),
+                int(data.get("daily_send_cap", 200)),
+                int(data.get("rate_limit_per_minute", 10)),
+                data.get("notes"),
+                tenant_id, created_by_user_id,
+                ts, ts,
+            ),
+        )
+        return int(cur.fetchone()['id'])
+
+
+def list_email_accounts(
+    status: str | None = None,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = None,
+) -> list[dict]:
+    """Lista email_accounts + owner_email via LEFT JOIN users."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = (
+        "SELECT e.*, u.email AS owner_email, "
+        "       u.first_name AS owner_first_name, u.last_name AS owner_last_name "
+        "FROM email_accounts e "
+        "LEFT JOIN users u ON u.id = e.created_by_user_id "
+        "WHERE 1=1"
+    )
+    args: list = []
+    if status:
+        sql += " AND e.status = %s"; args.append(status)
+    if tenant_id is not None:
+        sql += " AND e.tenant_id = %s"; args.append(tenant_id)
+    if created_by_user_id is not None:
+        sql += " AND e.created_by_user_id = %s"; args.append(int(created_by_user_id))
+    sql += " ORDER BY e.id DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_email_account(account_id: int, tenant_id: Any = _UNSET) -> dict | None:
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            r = con.execute(
+                "SELECT * FROM email_accounts WHERE id = %s", (account_id,)
+            ).fetchone()
+        else:
+            r = con.execute(
+                "SELECT * FROM email_accounts WHERE id = %s AND tenant_id = %s",
+                (account_id, tenant_id),
+            ).fetchone()
+    return dict(r) if r else None
+
+
+def get_default_email_account(tenant_id: Any = _UNSET) -> dict | None:
+    """Primo email account con status='active' nel tenant. Usato come fallback
+    quando un task outreach NON specifica `email_account_id`."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            r = con.execute(
+                "SELECT * FROM email_accounts WHERE status = 'active' "
+                "ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+        else:
+            r = con.execute(
+                "SELECT * FROM email_accounts WHERE status = 'active' AND tenant_id = %s "
+                "ORDER BY id ASC LIMIT 1",
+                (tenant_id,),
+            ).fetchone()
+    return dict(r) if r else None
+
+
+def update_email_account(account_id: int, *, tenant_id: Any = _UNSET, **fields) -> None:
+    if not fields:
+        return
+    tenant_id = _resolve_tenant(tenant_id)
+    sets = [f"{k} = %s" for k in fields]
+    if tenant_id is None:
+        sql = f"UPDATE email_accounts SET {', '.join(sets)}, updated_at = %s WHERE id = %s"
+        params = (*fields.values(), now_iso(), account_id)
+    else:
+        sql = (
+            f"UPDATE email_accounts SET {', '.join(sets)}, updated_at = %s "
+            f"WHERE id = %s AND tenant_id = %s"
+        )
+        params = (*fields.values(), now_iso(), account_id, tenant_id)
+    with connect() as con:
+        con.execute(sql, params)
+
+
+def delete_email_account(account_id: int, tenant_id: Any = _UNSET) -> None:
+    """Elimina email account. Setta a NULL `tasks.email_account_id` orfani prima
+    della DELETE (no FK CASCADE dichiarato per audit/lifecycle).
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        con.execute(
+            "UPDATE tasks SET email_account_id = NULL WHERE email_account_id = %s",
+            (account_id,),
+        )
+        if tenant_id is None:
+            con.execute("DELETE FROM email_accounts WHERE id = %s", (account_id,))
+        else:
+            con.execute(
+                "DELETE FROM email_accounts WHERE id = %s AND tenant_id = %s",
+                (account_id, tenant_id),
+            )
+
+
+# ===========================================================================
+# Telegram bots (Bot API multi-bot)
+# ===========================================================================
+
+def insert_telegram_bot(
+    data: dict, *, tenant_id: Any = _UNSET, created_by_user_id: Any = _UNSET
+) -> int:
+    """Crea un nuovo bot Telegram. `encrypted_bot_token` deve essere già cifrato
+    via crypto_creds.encrypt."""
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
+    ts = now_iso()
+    with connect() as con:
+        cur = con.execute(
+            """INSERT INTO telegram_bots
+            (uuid, label, bot_username, encrypted_bot_token,
+             status, daily_msg_cap, poll_interval_seconds, last_update_id, notes,
+             tenant_id, created_by_user_id, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id""",
+            (
+                data["uuid"],
+                data["label"],
+                data.get("bot_username"),
+                data["encrypted_bot_token"],
+                data.get("status", "active"),
+                int(data.get("daily_msg_cap", 500)),
+                int(data.get("poll_interval_seconds", 30)),
+                data.get("last_update_id"),
+                data.get("notes"),
+                tenant_id, created_by_user_id,
+                ts, ts,
+            ),
+        )
+        return int(cur.fetchone()['id'])
+
+
+def list_telegram_bots(
+    status: str | None = None,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = None,
+) -> list[dict]:
+    """Lista telegram_bots + owner_email via LEFT JOIN users."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = (
+        "SELECT b.*, u.email AS owner_email, "
+        "       u.first_name AS owner_first_name, u.last_name AS owner_last_name "
+        "FROM telegram_bots b "
+        "LEFT JOIN users u ON u.id = b.created_by_user_id "
+        "WHERE 1=1"
+    )
+    args: list = []
+    if status:
+        sql += " AND b.status = %s"; args.append(status)
+    if tenant_id is not None:
+        sql += " AND b.tenant_id = %s"; args.append(tenant_id)
+    if created_by_user_id is not None:
+        sql += " AND b.created_by_user_id = %s"; args.append(int(created_by_user_id))
+    sql += " ORDER BY b.id DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_telegram_bot(bot_id: int, tenant_id: Any = _UNSET) -> dict | None:
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            r = con.execute(
+                "SELECT * FROM telegram_bots WHERE id = %s", (bot_id,)
+            ).fetchone()
+        else:
+            r = con.execute(
+                "SELECT * FROM telegram_bots WHERE id = %s AND tenant_id = %s",
+                (bot_id, tenant_id),
+            ).fetchone()
+    return dict(r) if r else None
+
+
+def get_default_telegram_bot(tenant_id: Any = _UNSET) -> dict | None:
+    """Primo bot Telegram con status='active' nel tenant. Usato come fallback
+    quando un task outreach NON specifica `telegram_bot_id`."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            r = con.execute(
+                "SELECT * FROM telegram_bots WHERE status = 'active' "
+                "ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+        else:
+            r = con.execute(
+                "SELECT * FROM telegram_bots WHERE status = 'active' AND tenant_id = %s "
+                "ORDER BY id ASC LIMIT 1",
+                (tenant_id,),
+            ).fetchone()
+    return dict(r) if r else None
+
+
+def update_telegram_bot(bot_id: int, *, tenant_id: Any = _UNSET, **fields) -> None:
+    if not fields:
+        return
+    tenant_id = _resolve_tenant(tenant_id)
+    sets = [f"{k} = %s" for k in fields]
+    if tenant_id is None:
+        sql = f"UPDATE telegram_bots SET {', '.join(sets)}, updated_at = %s WHERE id = %s"
+        params = (*fields.values(), now_iso(), bot_id)
+    else:
+        sql = (
+            f"UPDATE telegram_bots SET {', '.join(sets)}, updated_at = %s "
+            f"WHERE id = %s AND tenant_id = %s"
+        )
+        params = (*fields.values(), now_iso(), bot_id, tenant_id)
+    with connect() as con:
+        con.execute(sql, params)
+
+
+def delete_telegram_bot(bot_id: int, tenant_id: Any = _UNSET) -> None:
+    """Elimina bot Telegram. Setta a NULL `tasks.telegram_bot_id` orfani prima
+    della DELETE (no FK CASCADE)."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        con.execute(
+            "UPDATE tasks SET telegram_bot_id = NULL WHERE telegram_bot_id = %s",
+            (bot_id,),
+        )
+        if tenant_id is None:
+            con.execute("DELETE FROM telegram_bots WHERE id = %s", (bot_id,))
+        else:
+            con.execute(
+                "DELETE FROM telegram_bots WHERE id = %s AND tenant_id = %s",
+                (bot_id, tenant_id),
+            )
 
 
 # ===========================================================================

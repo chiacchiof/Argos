@@ -289,6 +289,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   border-top: 1px solid var(--border);
 }
 
+.nav-section-title {
+  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--fg-subtle); padding: 0.5rem 0.75rem 0.25rem;
+  font-weight: 600;
+}
+.nav-section-sep {
+  height: 1px; background: var(--border);
+  margin: 0.5rem 0.5rem;
+}
+
 .nav-item {
   display: flex;
   align-items: center;

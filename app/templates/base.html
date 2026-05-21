@@ -238,10 +238,21 @@
         {% endif %}
       </nav>
       <div class="sidebar-footer">
+        <div class="nav-section-title">Accounts</div>
+        <a href="/social/accounts" class="nav-item nav-item-sm {% if req_path.startswith('/social/accounts') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-assets"/></svg><span>Social</span>
+        </a>
+        <a href="/accounts/messaging" class="nav-item nav-item-sm {% if req_path.startswith('/accounts/messaging') or req_path.startswith('/settings/whatsapp') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-message"/></svg><span>Messaging</span>
+        </a>
+        <a href="/accounts/email" class="nav-item nav-item-sm {% if req_path.startswith('/accounts/email') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-mail"/></svg><span>Email</span>
+        </a>
+        <div class="nav-section-sep"></div>
         <a href="/site_memory" class="nav-item nav-item-sm {% if req_path.startswith('/site_memory') %}is-active{% endif %}">
           <svg class="icon"><use href="#i-memory"/></svg><span>Memoria sito</span>
         </a>
-        <a href="/settings" class="nav-item nav-item-sm {% if req_path.startswith('/settings') %}is-active{% endif %}">
+        <a href="/settings" class="nav-item nav-item-sm {% if req_path == '/settings' or (req_path.startswith('/settings/') and not req_path.startswith('/settings/whatsapp')) %}is-active{% endif %}">
           <svg class="icon"><use href="#i-settings"/></svg><span>Settings</span>
         </a>
       </div>
