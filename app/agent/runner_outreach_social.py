@@ -1,7 +1,7 @@
 """Runner outreach_social: invio DM via browser automation (Instagram/TikTok).
 
 Agent mode: `outreach_social`. Pipeline:
-  1. Verifica AGENTSCRAPER_SECRET (cifratura credenziali)
+  1. Verifica ARGOS_SECRET (cifratura credenziali)
   2. Carica account social attivi dal DB
   3. Carica contacts qualified con social[platform] popolato
   4. Genera messaggi personalizzati via LLM (Qwen locale, $0)
@@ -14,7 +14,7 @@ e `social/tiktok.py` vanno tenuti aggiornati. Aspettati manutenzione ogni 1-2 me
 
 Sicurezza: NON viene mai loggata la password in chiaro. Le sessioni Playwright
 sono salvate in data/sessions/<uuid>.json (cookies + storage). Ricaricare
-manualmente AGENTSCRAPER_SECRET in .env per cambiare la chiave di cifratura.
+manualmente ARGOS_SECRET in .env per cambiare la chiave di cifratura.
 """
 from __future__ import annotations
 
@@ -190,7 +190,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     # ---- 1. Validazioni ----
     if not is_configured():
         msg = (
-            "AGENTSCRAPER_SECRET non settata in .env: cifratura credenziali "
+            "ARGOS_SECRET non settata in .env: cifratura credenziali "
             "disattivata, niente outreach. Abort."
         )
         jlog(f"❌ {msg}")
@@ -270,7 +270,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         ))
         account_id_by_uuid[r["uuid"]] = r["id"]
     if not accounts:
-        msg = "Nessun account decifrabile (chiave AGENTSCRAPER_SECRET mismatched?)."
+        msg = "Nessun account decifrabile (chiave ARGOS_SECRET mismatched?)."
         jlog(f"❌ {msg}")
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
         return ""

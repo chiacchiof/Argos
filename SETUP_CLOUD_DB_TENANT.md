@@ -1,4 +1,4 @@
-# Piano — Migrazione AgentScraper a multi-tenant (DB cloud + app locale)
+# Piano — Migrazione Argos a multi-tenant (DB cloud + app locale)
 
 ## Stato implementazione
 
@@ -37,7 +37,7 @@
 
 ## Context
 
-Oggi AgentScraper è un'app single-user locale: SQLite single-file (`data/agentscraper.db`), zero auth, FastAPI + Jinja2 + HTMX, scheduler APScheduler in-process, Ollama su `localhost:11434`. L'utente vuole distribuirla ai colleghi: ogni collega installa l'app sul proprio PC, ma tutti scrivono su un **DB Postgres condiviso in cloud** (Supabase/Neon). Servono **tenant** isolati a livello dato, un **super-admin** che crea tenant e utenti, e gli utenti di un tenant vedono/modificano tutti gli asset/task/workflow del proprio tenant (per-user filtering è future work). I file (report, profili browser, sessioni WhatsApp) restano locali al PC che li genera — cloud storage è step incrementale futuro.
+Oggi Argos è un'app single-user locale: SQLite single-file (`data/agentscraper.db`), zero auth, FastAPI + Jinja2 + HTMX, scheduler APScheduler in-process, Ollama su `localhost:11434`. L'utente vuole distribuirla ai colleghi: ogni collega installa l'app sul proprio PC, ma tutti scrivono su un **DB Postgres condiviso in cloud** (Supabase/Neon). Servono **tenant** isolati a livello dato, un **super-admin** che crea tenant e utenti, e gli utenti di un tenant vedono/modificano tutti gli asset/task/workflow del proprio tenant (per-user filtering è future work). I file (report, profili browser, sessioni WhatsApp) restano locali al PC che li genera — cloud storage è step incrementale futuro.
 
 Decisioni dell'utente raccolte in fase di planning:
 - **Backend**: locale (FastAPI gira sul PC del collega). **DB**: Postgres in cloud.
@@ -71,7 +71,7 @@ Strategia a due step: **Neon** come provider primario per pilot/sviluppo (già c
 
 Se in futuro il numero di connessioni supera ~100 (es. 20 PC × 10 conn) → passare al pooled endpoint (host con `-pooler`) e settare `prepare_threshold=None` nel pool psycopg3.
 
-**`.env` di ogni PC** (file `c:\Progetti\AgentScraper\.env`):
+**`.env` di ogni PC** (file `c:\Progetti\Argos\.env`):
 ```ini
 DATABASE_URL=postgresql://neondb_owner:<PASSWORD>@ep-delicate-leaf-alnrwlji.c-3.eu-central-1.aws.neon.tech/neondb?sslmode=require
 SESSION_SECRET_KEY=<32 byte random urlsafe, generato una sola volta e condiviso fra tutti i PC>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{% if task and task.id %}Modifica{% else %}Nuovo{% endif %} task — AgentScraper{% endblock %}
+{% block title %}{% if task and task.id %}Modifica{% else %}Nuovo{% endif %} task — Argos{% endblock %}
 {% block content %}
 {% set is_edit = task and task.get("id") %}
 <section>
@@ -847,7 +847,7 @@
       <div class="warning-box">
         ⚠️ <strong>Prerequisiti</strong>: account social dedicati (mai personali!),
         warmup 4-6 settimane, proxy residenziali consigliati,
-        <code>AGENTSCRAPER_SECRET</code> in <code>.env</code> per cifratura credenziali.
+        <code>ARGOS_SECRET</code> in <code>.env</code> per cifratura credenziali.
         Vai a <a href="/social/accounts" target="_blank">/social/accounts</a> per gestire gli account.
       </div>
 
@@ -1106,7 +1106,7 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
 
       <div class="warning-box" style="background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);border-radius:4px;padding:0.6rem 0.8rem;margin-bottom:0.8rem">
         ⚠️ <strong>Caveat legale + ToS</strong>: profilare la tua rete social senza consenso esplicito
-        può violare GDPR/ePrivacy. Automation viola i ToS di Meta/TikTok (rischio ban). AgentScraper
+        può violare GDPR/ePrivacy. Automation viola i ToS di Meta/TikTok (rischio ban). Argos
         fornisce solo lo strumento — conformità e responsabilità sono tue.
       </div>
 

@@ -11,7 +11,7 @@
 
 ## 1. Contesto e scelte già fatte
 
-Aggiungere a AgentScraper la modalità `recon_social` per **esplorare social
+Aggiungere a Argos la modalità `recon_social` per **esplorare social
 network con un account loggato** (Facebook, Instagram, TikTok) e:
 
 - **R1 — URL-driven**: dato un set di URL profilo, navigali con sessione loggata,
@@ -44,7 +44,7 @@ network con un account loggato** (Facebook, Instagram, TikTok) e:
   ban dell'account, perdita rete personale.
 - **Etica**: stai osservando amici reali in modo che non hanno autorizzato.
 
-AgentScraper fornisce solo lo strumento; la conformità legale e l'etica
+Argos fornisce solo lo strumento; la conformità legale e l'etica
 sono responsabilità dell'utente. Disclaimer prominente in `/settings/social/accounts`
 + alert ad ogni run di `recon_social`.
 

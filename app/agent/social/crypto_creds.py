@@ -1,8 +1,9 @@
 """Cifratura simmetrica per credenziali social account.
 
 Usa Fernet (cryptography lib) — AES128-CBC + HMAC-SHA256, derivata da master
-key in env `AGENTSCRAPER_SECRET`. Senza la chiave, niente decryption: anche
-con accesso al DB, le credenziali restano illeggibili.
+key in env `ARGOS_SECRET` (con fallback retrocompatibile `AGENTSCRAPER_SECRET`).
+Senza la chiave, niente decryption: anche con accesso al DB, le credenziali
+restano illeggibili.
 
 Razionale: le credenziali social (Instagram/TikTok) sono target di alto
 valore. Salvarle in plaintext nel DB e' un rischio inaccettabile. Anche se
@@ -25,7 +26,23 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 _FERNET: Final[Fernet | None] = None  # populated lazy
-_ENV_KEY: Final[str] = "AGENTSCRAPER_SECRET"
+# Env var primaria + alias retrocompatibile. Il rebrand AgentScraper→Argos del
+# 2026-05-21 ha rinominato `AGENTSCRAPER_SECRET` in `ARGOS_SECRET`: i deploy
+# esistenti continuano a funzionare leggendo il vecchio nome come fallback.
+_ENV_KEY: Final[str] = "ARGOS_SECRET"
+_ENV_KEY_LEGACY: Final[str] = "AGENTSCRAPER_SECRET"
+
+
+def _read_master() -> tuple[str, str]:
+    """Legge la master key dalle env: prima `ARGOS_SECRET`, poi
+    `AGENTSCRAPER_SECRET`. Ritorna (key_value, env_name_used) per log/errori."""
+    val = os.environ.get(_ENV_KEY, "").strip()
+    if val:
+        return val, _ENV_KEY
+    val = os.environ.get(_ENV_KEY_LEGACY, "").strip()
+    if val:
+        return val, _ENV_KEY_LEGACY
+    return "", _ENV_KEY
 
 
 def _derive_key(master: str) -> bytes:
@@ -39,12 +56,12 @@ def _get_fernet() -> Fernet:
     global _FERNET  # noqa: PLW0603
     if _FERNET is not None:
         return _FERNET
-    master = os.environ.get(_ENV_KEY, "").strip()
+    master, _used = _read_master()
     if not master:
         raise RuntimeError(
-            f"Variabile d'ambiente {_ENV_KEY} non impostata. Le credenziali social "
-            f"non possono essere cifrate/decifrate. Aggiungi al file .env: "
-            f"{_ENV_KEY}=<stringa-segreta-lunga-30+-caratteri>"
+            f"Variabile d'ambiente {_ENV_KEY} non impostata (alias legacy: "
+            f"{_ENV_KEY_LEGACY}). Le credenziali non possono essere cifrate/decifrate. "
+            f"Aggiungi al file .env: {_ENV_KEY}=<stringa-segreta-lunga-30+-caratteri>"
         )
     if len(master) < 16:
         raise RuntimeError(
@@ -72,7 +89,7 @@ def decrypt(ciphertext: bytes | str) -> str:
     except InvalidToken:
         raise RuntimeError(
             "Decryption fallita: la chiave master non corrisponde a quella usata "
-            "per cifrare. Hai cambiato AGENTSCRAPER_SECRET?"
+            f"per cifrare. Hai cambiato {_ENV_KEY} (o l'alias legacy {_ENV_KEY_LEGACY})?"
         )
 
 

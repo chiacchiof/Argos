@@ -1,7 +1,7 @@
 """Runner outreach_whatsapp — invio DM WhatsApp con doppio motore.
 
 Agent mode: `outreach_whatsapp`. Pipeline:
-  1. Validazioni (AGENTSCRAPER_SECRET, almeno un engine configurato)
+  1. Validazioni (ARGOS_SECRET, almeno un engine configurato)
   2. Engine selector PER ogni contatto:
        - whatsapp_consent='opt_in' OR inbound recente (24h) → Motore B (API)
        - default (cold)                                     → Motore A (browser)
@@ -110,7 +110,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     # ---- 1. Validazioni ----
     if not is_configured():
-        msg = "AGENTSCRAPER_SECRET non settata in .env. Abort."
+        msg = "ARGOS_SECRET non settata in .env. Abort."
         jlog(f"❌ {msg}")
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
         return ""

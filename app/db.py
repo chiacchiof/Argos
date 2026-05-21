@@ -70,11 +70,11 @@ _UNSET: Any = _UnsetSentinel()
 
 
 _current_tenant_id_var: contextvars.ContextVar[int | None] = contextvars.ContextVar(
-    "agentscraper_current_tenant_id", default=None
+    "argos_current_tenant_id", default=None
 )
 
 _current_user_id_var: contextvars.ContextVar[int | None] = contextvars.ContextVar(
-    "agentscraper_current_user_id", default=None
+    "argos_current_user_id", default=None
 )
 
 

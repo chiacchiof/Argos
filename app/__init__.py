@@ -1,4 +1,4 @@
-"""AgentScraper — package init.
+"""Argos — package init.
 
 Esporta `__version__` come single source of truth della versione del prodotto.
 Usato da:

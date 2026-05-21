@@ -1,4 +1,4 @@
-# TEST_PLAN.md — Copertura funzionale AgentScraper
+# TEST_PLAN.md — Copertura funzionale Argos
 
 Documento operativo: traccia di test funzionali end-to-end che dimostrino la copertura del progetto. Ordinato per **uso reale previsto** (cosa l'utente effettivamente vuole far girare in produzione), non per importanza teorica.
 

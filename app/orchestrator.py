@@ -112,7 +112,7 @@ PLANNER_TOOLS_SPEC: list[dict[str, Any]] = [
 
 
 _PLANNER_MANUAL = """\
-MANUALE OPERATIVO AGENTSCRAPER (per pianificare task e workflow)
+MANUALE OPERATIVO ARGOS (per pianificare task e workflow)
 
 == Le 8 modalita di agente ==
 
@@ -1006,7 +1006,7 @@ async def _build_llm_plan(
         {
             "role": "system",
             "content": (
-                "Sei il Planner di AgentScraper. Progetti task e workflow usando solo le modalita esistenti. "
+                "Sei il Planner di Argos. Progetti task e workflow usando solo le modalita esistenti. "
                 "Quando hai abbastanza contesto rispondi SOLO con il JSON del piano (niente prosa, niente markdown)."
             ),
         },

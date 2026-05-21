@@ -3,9 +3,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agentscraper"
+# Rebrand 2026-05-21: AgentScraper → Argos ("i cento occhi sui tuoi lead").
+# Il pkg name "argos" e' gia' preso su PyPI (HDF5 data inspector) — qui usiamo
+# "argos-edg" per un eventuale publish; per `pip install -e .` locale e' indifferente.
+name = "argos-edg"
 version = "1.0.0"
-description = "Local web app per scraper agentici basati su Ollama"
+description = "Argos — multi-agent intelligence system per lead discovery & outreach (Etna Digital Growth)"
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
@@ -37,7 +40,7 @@ dependencies = [
   # rilevati (vedi app/agent/social/).
   "patchright>=1.59",
   # Cifratura credenziali social account (Fernet symmetric encryption) salvate
-  # in DB. Chiave master in .env (AGENTSCRAPER_SECRET).
+  # in DB. Chiave master in .env (ARGOS_SECRET, con fallback AGENTSCRAPER_SECRET).
   "cryptography>=43.0",
   # Multi-tenant cloud DB (vedi SETUP_CLOUD_DB_TENANT.md). Driver Postgres sync
   # con pool, password hashing per il login (bcrypt direct, no passlib),
@@ -54,7 +57,8 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
 
 [project.scripts]
-agentscraper = "app.main:run"
+argos = "app.main:run"
+agentscraper = "app.main:run"  # alias legacy retrocompat con installazioni esistenti
 
 [tool.setuptools.packages.find]
 include = ["app*"]

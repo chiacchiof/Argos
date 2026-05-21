@@ -84,7 +84,7 @@ async def send_test_message(
 ) -> str:
     return await send_message(
         chat_id,
-        "🤖 Questo è un messaggio di test da AgentScraper.\n"
+        "🤖 Questo è un messaggio di test da Argos.\n"
         "Se lo leggi, la configurazione del bot Telegram funziona.",
         bot=bot,
     )

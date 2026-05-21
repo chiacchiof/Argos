@@ -1,7 +1,7 @@
 """Check non-bloccante della release più recente su GitHub.
 
 Logica:
-- Configurato via env `GITHUB_REPO=owner/repo` (es. `chifer81/AgentScraper`).
+- Configurato via env `GITHUB_REPO=owner/repo` (es. `chiacchiof/Argos`).
   Se vuota → check disabilitato (nessuna chiamata HTTP, nessun banner).
 - Opzionale `GITHUB_TOKEN` per repo privati (PAT classic con `repo` scope o
   fine-grained con `Contents: Read`).

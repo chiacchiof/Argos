@@ -82,7 +82,7 @@ async def whatsapp_account_new(
     """
     if not crypto_creds.is_configured():
         return RedirectResponse(
-            "/settings/whatsapp?error=AGENTSCRAPER_SECRET+non+configurata+in+.env",
+            "/settings/whatsapp?error=ARGOS_SECRET+non+configurata+in+.env",
             status_code=303,
         )
 
@@ -305,7 +305,7 @@ async def whatsapp_api_new(
 ):
     if not crypto_creds.is_configured():
         return RedirectResponse(
-            "/settings/whatsapp?error=AGENTSCRAPER_SECRET+non+configurata+in+.env",
+            "/settings/whatsapp?error=ARGOS_SECRET+non+configurata+in+.env",
             status_code=303,
         )
     try:

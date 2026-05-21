@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}WhatsApp — Settings — AgentScraper{% endblock %}
+{% block title %}WhatsApp — Settings — Argos{% endblock %}
 {% block content %}
 <section>
   <h2>💬 WhatsApp — Settings</h2>
@@ -11,7 +11,7 @@
     <strong>⚠️ Avviso ToS WhatsApp</strong><br>
     <p style="margin:0.3rem 0 0 0">
       Il <strong>Motore A</strong> (browser automation su <code>web.whatsapp.com</code>) <strong>viola i Termini di Servizio di Meta</strong>.
-      L'uso massivo per cold outreach può comportare <strong>ban del numero</strong>. AgentScraper non ti protegge da queste conseguenze.
+      L'uso massivo per cold outreach può comportare <strong>ban del numero</strong>. Argos non ti protegge da queste conseguenze.
       Procedi a tuo rischio. Il <strong>Motore B</strong> (Meta Cloud API ufficiale) è legale ma richiede opt-in dei contatti e
       template pre-approvati: <strong>non è adatto al cold outreach</strong>.
     </p>
@@ -19,7 +19,7 @@
 
   {% if not secret_configured %}
   <div class="errors">
-    <strong>AGENTSCRAPER_SECRET non configurata</strong> in <code>.env</code>. Senza questa variabile non si possono cifrare i token. Aggiungila prima di proseguire.
+    <strong>ARGOS_SECRET non configurata</strong> in <code>.env</code>. Senza questa variabile non si possono cifrare i token. Aggiungila prima di proseguire.
   </div>
   {% endif %}
 
@@ -231,7 +231,7 @@
           <input name="business_account_id" required placeholder="222222222222222">
         </label>
       </div>
-      <label>Access Token <span class="hint">(verrà cifrato con AGENTSCRAPER_SECRET prima del salvataggio)</span>
+      <label>Access Token <span class="hint">(verrà cifrato con ARGOS_SECRET prima del salvataggio)</span>
         <input type="password" name="access_token" required placeholder="EAAxxxxx..." autocomplete="off" data-lpignore="true">
       </label>
       <div class="row">

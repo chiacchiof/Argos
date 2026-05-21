@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{% if bot %}Modifica{% else %}Aggiungi{% endif %} Telegram Bot — AgentScraper{% endblock %}
+{% block title %}{% if bot %}Modifica{% else %}Aggiungi{% endif %} Telegram Bot — Argos{% endblock %}
 {% block content %}
 <section style="max-width: 720px;">
   <p><a href="/accounts/messaging?tab=telegram">← Telegram bots</a></p>
@@ -20,8 +20,8 @@
 
   {% if not is_secret_configured %}
   <div class="warning-box">
-    ⚠️ <strong>AGENTSCRAPER_SECRET non configurata</strong>. Salva è disabilitato finché non aggiungi
-    <code>AGENTSCRAPER_SECRET</code> al file <code>.env</code>.
+    ⚠️ <strong>ARGOS_SECRET non configurata</strong>. Salva è disabilitato finché non aggiungi
+    <code>ARGOS_SECRET</code> al file <code>.env</code>.
   </div>
   {% endif %}
 

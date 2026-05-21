@@ -11,7 +11,7 @@ def test_boot_and_crud(authed_client):
     # lista vuota
     r = client.get("/")
     assert r.status_code == 200
-    assert "AgentScraper" in r.text
+    assert "Argos" in r.text
 
     # form nuovo (potrebbe fallire la list_models se Ollama non è up: tolleriamo)
     r = client.get("/tasks/new")

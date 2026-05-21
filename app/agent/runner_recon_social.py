@@ -568,7 +568,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         return ""
 
     if not is_configured():
-        msg = "AGENTSCRAPER_SECRET non settata: niente decifratura credenziali. Abort."
+        msg = "ARGOS_SECRET non settata: niente decifratura credenziali. Abort."
         jlog(f"❌ {msg}")
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
         return ""

@@ -130,8 +130,8 @@ async def email_account_create(
         raise HTTPException(
             status_code=400,
             detail=(
-                "AGENTSCRAPER_SECRET non impostata in .env. Aggiungi: "
-                "AGENTSCRAPER_SECRET=<stringa-segreta-30+-caratteri>"
+                "ARGOS_SECRET non impostata in .env. Aggiungi: "
+                "ARGOS_SECRET=<stringa-segreta-30+-caratteri>"
             ),
         )
 
@@ -267,7 +267,7 @@ async def email_account_update(
         if not is_configured():
             raise HTTPException(
                 status_code=400,
-                detail="AGENTSCRAPER_SECRET non impostata: impossibile cifrare la nuova password.",
+                detail="ARGOS_SECRET non impostata: impossibile cifrare la nuova password.",
             )
         fields["encrypted_smtp_password"] = encrypt(smtp_pwd)
     imap_pwd = (imap_password or "").strip()
@@ -278,7 +278,7 @@ async def email_account_update(
             if not is_configured():
                 raise HTTPException(
                     status_code=400,
-                    detail="AGENTSCRAPER_SECRET non impostata.",
+                    detail="ARGOS_SECRET non impostata.",
                 )
             fields["encrypted_imap_password"] = encrypt(imap_pwd)
 
@@ -332,7 +332,7 @@ async def email_account_test(account_id: int):
         msg = EmailMessage()
         msg["From"] = a["from_address"]
         msg["To"] = a["from_address"]
-        msg["Subject"] = f"AgentScraper · test connessione account #{account_id}"
+        msg["Subject"] = f"Argos · test connessione account #{account_id}"
         msg.set_content(
             f"Test connessione SMTP per account #{account_id} ({a['label']}). "
             "Se ricevi questa email, le credenziali sono corrette."

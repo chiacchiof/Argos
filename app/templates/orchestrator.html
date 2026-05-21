@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Orchestrator - AgentScraper{% endblock %}
+{% block title %}Orchestrator - Argos{% endblock %}
 {% block content %}
 <section class="orchestrator-page">
   <div class="orchestrator-head">
@@ -275,8 +275,18 @@
     const toggles = form.querySelectorAll("[data-chat-toggle]");
     toggles.forEach((toggle) => {
       if (toggle.disabled) return;
-      const key = `agentscraper.orchestrator.${modelKey}.${toggle.dataset.chatToggle}`;
-      toggle.checked = localStorage.getItem(key) === "on";
+      const key = `argos.orchestrator.${modelKey}.${toggle.dataset.chatToggle}`;
+      const legacyKey = `agentscraper.orchestrator.${modelKey}.${toggle.dataset.chatToggle}`;
+      let stored = localStorage.getItem(key);
+      if (stored === null) {
+        const legacy = localStorage.getItem(legacyKey);
+        if (legacy !== null) {
+          stored = legacy;
+          localStorage.setItem(key, legacy);
+          localStorage.removeItem(legacyKey);
+        }
+      }
+      toggle.checked = stored === "on";
       toggle.addEventListener("change", () => {
         localStorage.setItem(key, toggle.checked ? "on" : "off");
       });

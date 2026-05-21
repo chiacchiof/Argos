@@ -97,7 +97,7 @@ class WhatsAppAPI:
             raise RuntimeError(
                 f"Impossibile decifrare access_token Meta per config "
                 f"#{self.config_id} ({self.label}): {e}. "
-                "Verifica AGENTSCRAPER_SECRET in .env."
+                "Verifica ARGOS_SECRET in .env."
             ) from e
 
         self._base_url = f"{META_GRAPH_BASE}/{self.phone_number_id}"

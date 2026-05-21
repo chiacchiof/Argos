@@ -13,8 +13,14 @@ def ollama_keep_alive() -> str:
     """Valore di `keep_alive` per i payload Ollama (durata permanenza modello
     in VRAM dopo la risposta). Default 30m (vs 5m hard-coded di Ollama) per
     ridurre cold-start fra job consecutivi. Override via env var
-    `AGENTSCRAPER_OLLAMA_KEEP_ALIVE` — formato Ollama: "30m", "1h", "-1"=forever, "0"=eject subito."""
-    return os.environ.get("AGENTSCRAPER_OLLAMA_KEEP_ALIVE", "30m").strip() or "30m"
+    `ARGOS_OLLAMA_KEEP_ALIVE` (con fallback `AGENTSCRAPER_OLLAMA_KEEP_ALIVE` pre-rebrand 2026-05-21).
+    Formato Ollama: "30m", "1h", "-1"=forever, "0"=eject subito."""
+    val = (
+        os.environ.get("ARGOS_OLLAMA_KEEP_ALIVE")
+        or os.environ.get("AGENTSCRAPER_OLLAMA_KEEP_ALIVE")
+        or "30m"
+    )
+    return val.strip() or "30m"
 
 
 async def chat(

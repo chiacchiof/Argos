@@ -107,7 +107,7 @@ MAX_SITEMAP_URLS = 5000  # cap difensivo per non saturare memoria
 PROBE_CONCURRENCY = 4    # max richieste in parallelo (alcuni siti rate-limitano)
 
 # UA browser-like: molti siti (cloudflare, vercel, app server) rate-limitano o
-# bloccano UA "bot-like" come "AgentScraper/1.0". Usiamo Mozilla/Firefox default.
+# bloccano UA "bot-like" come "Argos/1.0". Usiamo Mozilla/Firefox default.
 DEFAULT_BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) "
     "Gecko/20100101 Firefox/120.0"

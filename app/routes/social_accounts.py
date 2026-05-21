@@ -9,7 +9,7 @@ Endpoint:
 
 Sicurezza:
 - Le password sono cifrate via Fernet (`app.agent.social.crypto_creds`) prima
-  del salvataggio. La master key vive in env `AGENTSCRAPER_SECRET`.
+  del salvataggio. La master key vive in env `ARGOS_SECRET`.
 - Le credenziali in chiaro non vengono MAI loggate ne' rimandate al template.
 """
 from __future__ import annotations
@@ -107,9 +107,9 @@ async def create_social_account(
         raise HTTPException(
             status_code=400,
             detail=(
-                "AGENTSCRAPER_SECRET non impostata in .env. Le credenziali non "
+                "ARGOS_SECRET non impostata in .env. Le credenziali non "
                 "possono essere cifrate. Aggiungi al file .env: "
-                "AGENTSCRAPER_SECRET=<stringa-segreta-30+-caratteri>"
+                "ARGOS_SECRET=<stringa-segreta-30+-caratteri>"
             ),
         )
     platform = platform.strip().lower()
@@ -236,7 +236,7 @@ async def update_social_account(
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        "AGENTSCRAPER_SECRET non impostata: impossibile cifrare la "
+                        "ARGOS_SECRET non impostata: impossibile cifrare la "
                         "nuova password. Lascia il campo vuoto per preservare la "
                         "password esistente."
                     ),

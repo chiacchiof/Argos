@@ -10,7 +10,7 @@
 
 ## 1. Contesto e scelte già fatte
 
-Aggiungere a AgentScraper la modalità `outreach_whatsapp` per inviare DM via
+Aggiungere a Argos la modalità `outreach_whatsapp` per inviare DM via
 WhatsApp ai contatti `qualified` in tabella `contacts`. WhatsApp ha vincoli
 unici che lo distinguono da email/telegram/social esistenti:
 
@@ -478,7 +478,7 @@ Banner permanente nel form `outreach_whatsapp` (e anche nel pannello Settings):
 
 > ⚠️ **WhatsApp Web automation (Motore A) viola i ToS Meta.**
 > L'uso massivo per cold outreach può comportare **ban del numero**. Per
-> uso intensivo a contatti senza opt-in il rischio è alto. AgentScraper non
+> uso intensivo a contatti senza opt-in il rischio è alto. Argos non
 > ti protegge da queste conseguenze. Procedi a tuo rischio.
 >
 > Il Motore B (API ufficiale) richiede opt-in dei contatti ed è limitato a
@@ -578,7 +578,7 @@ In ordine cronologico:
 - **Gruppi WhatsApp**: solo DM 1-a-1
 - **Media (immagini, audio, doc)**: solo testo. Media in Fase 2.
 - **Multi-device sync issues**: WhatsApp ha bug noti con multi-device,
-  AgentScraper assume un solo telefono pairing per account
+  Argos assume un solo telefono pairing per account
 - **Verifica numero esistente prima dell'invio**: WhatsApp non espone API
   pubblica per "is this number on WhatsApp?". Il check lo fa il browser
   navigando a `wa.me/<num>` e leggendo l'errore (Motore A) o tentando

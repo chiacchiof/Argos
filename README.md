@@ -1,4 +1,4 @@
-# AgentScraper
+# Argos
 
 Web app locale per definire e lanciare **scraper agentici** di informazioni dal web, alimentati da [Ollama](https://ollama.com) in locale.
 
@@ -62,7 +62,7 @@ Sono inclusi test smoke che verificano boot dell'app, CRUD progetti e gestione e
 | `DEFAULT_MODEL` | `qwen3.5:latest` | Modello preselezionato nel form di creazione |
 | `HOST` | `127.0.0.1` | Bind del server |
 | `PORT` | `8000` | Porta del server |
-| `HTTP_USER_AGENT` | `AgentScraper/0.1 (+local research bot)` | UA usato dai fetch HTTP |
+| `HTTP_USER_AGENT` | `Argos/0.1 (+local research bot)` | UA usato dai fetch HTTP |
 | `HTTP_TIMEOUT` | `20` | Timeout richieste HTTP (secondi) |
 | `DEFAULT_MAX_ITERATIONS` | `10` | Cap di sicurezza sul loop ReAct |
 
@@ -71,7 +71,7 @@ Sono inclusi test smoke che verificano boot dell'app, CRUD progetti e gestione e
 ## Struttura del repo
 
 ```
-AgentScraper/
+Argos/
 ├── app/
 │   ├── main.py             entry FastAPI + lifespan (init DB, scheduler)
 │   ├── config.py           Settings da .env (pydantic-settings)
@@ -126,7 +126,7 @@ Un **progetto** rappresenta una ricerca riutilizzabile. Campi:
 
 ### Multi-agent + canali (Email / Telegram) + pipeline DAG
 
-AgentScraper supporta **5 tipi di agent**, combinabili in pipeline:
+Argos supporta **5 tipi di agent**, combinabili in pipeline:
 
 | `agent_mode` | Cosa fa |
 |---|---|

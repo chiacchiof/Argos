@@ -1,12 +1,12 @@
-# Guida utente — AgentScraper
+# Guida utente — Argos
 
 > Come funziona l'app, cosa c'è dentro, come usarla. Con esempi reali.
 
 ---
 
-## 1. Cos'è AgentScraper
+## 1. Cos'è Argos
 
-AgentScraper è una **piattaforma locale single-user** per costruire pipeline agentiche di:
+Argos è una **piattaforma locale single-user** per costruire pipeline agentiche di:
 
 1. **Estrazione** dati da pagine web (singole o cataloghi),
 2. **Qualificazione** dei contatti raccolti tramite LLM,
@@ -85,7 +85,7 @@ Un file `.jsonl` ("**JSON Lines**", o NDJSON) è un formato testuale dove **ogni
 - **Append-friendly**: aggiungi una riga in fondo senza riparsare il file
 - **Resiliente**: se una riga è corrotta, le altre restano valide
 
-In AgentScraper i `.jsonl` sono il **"currency" interno tra task**:
+In Argos i `.jsonl` sono il **"currency" interno tra task**:
 - task scraping (`bulk_extract`/`browser_use`/`auto_extract`) **producono** `profiles.jsonl`
 - task downstream (`qualifier`/`outreach`/`responder`) **consumano** un `.jsonl` (e magari ne producono uno qualificato `qualified.jsonl`)
 
@@ -1051,7 +1051,7 @@ E due regole anti-fallimento osservate sul campo:
 1. **Motore A — account browser**: clicca "➕ Aggiungi account", inserisci label + numero. Status iniziale `pending_login`. Poi "📱 Avvia QR login" → si apre Chromium headed sul tuo desktop, scansioni il QR col telefono, status diventa `active`. Sessione salvata in `data/whatsapp_sessions/<uuid>/`, valida ~14 giorni.
 2. **Motore B — API config**: clicca "➕ Aggiungi config Meta Cloud API", inserisci `phone_number_id`, `business_account_id`, `access_token` (preso da Meta for Developers → la tua App → WhatsApp → API Setup). Click "🧪 Test" verifica le credenziali. Il token viene cifrato con `AGENTSCRAPER_SECRET`.
 
-⚠️ **Avviso ToS prominente**: il Motore A viola i ToS di Meta. Per uso massivo (>30 DM/giorno per account, contatti senza consenso), il numero viene bannato. AgentScraper rate-limita di default (30/ora, pause 30-180s) ma il rischio resta. Considerati gli aspetti legali di GDPR/ePrivacy per cold outreach via WhatsApp a consumer.
+⚠️ **Avviso ToS prominente**: il Motore A viola i ToS di Meta. Per uso massivo (>30 DM/giorno per account, contatti senza consenso), il numero viene bannato. Argos rate-limita di default (30/ora, pause 30-180s) ma il rischio resta. Considerati gli aspetti legali di GDPR/ePrivacy per cold outreach via WhatsApp a consumer.
 
 **Output**:
 - `social_dm_log` (tabella DB) con riga per ogni invio: `engine='A_browser'` o `'B_api'`, `api_config_id` per B, `account_id` per A, `ok`, `reason`, `message_id`.
@@ -1338,7 +1338,7 @@ Configurabili in `/settings`. Le credenziali sensibili vanno preferibilmente in 
 1. Apri Telegram, scrivi a [@BotFather](https://t.me/BotFather) → `/newbot` → segui le istruzioni → ottieni il **token** (formato `12345:ABCdef...`)
 2. Mettilo in `.env` come `TELEGRAM_BOT_TOKEN`
 3. Su `/settings` → sezione 💬 Telegram → spunta "Canale abilitato" → salva
-4. Click "Test invio" → inserisci il **chat_id** del tuo account (lo ottieni scrivendo prima al bot e poi guardando i log inbound di AgentScraper).
+4. Click "Test invio" → inserisci il **chat_id** del tuo account (lo ottieni scrivendo prima al bot e poi guardando i log inbound di Argos).
 
 **Polling**: ogni 30s `getUpdates` Telegram → ogni messaggio inbound diventa un `contact` (con `telegram_chat_id` salvato) + thread + message.
 
@@ -1952,7 +1952,7 @@ In alternativa: rilanciare il task. Con `refresh_policy_days>0` (default 7) gli 
 
 ## 13. Considerazioni etiche e legali
 
-⚠️ **AgentScraper è dual-use**. È legittimo per content audit, monitoraggio competitor, ricerca, lead generation B2B. È invece **rischioso** per:
+⚠️ **Argos è dual-use**. È legittimo per content audit, monitoraggio competitor, ricerca, lead generation B2B. È invece **rischioso** per:
 
 - **Scraping di dati personali identificabili** senza base giuridica (GDPR art. 6). Il Garante italiano ha emesso un provvedimento specifico nel 2024 sul web scraping. Anche dati pubblicamente visibili richiedono interesse legittimo documentato per essere raccolti sistematicamente.
 - **Outreach commerciale automatizzato** verso contatti scrappati. CAN-SPAM (US) richiede unsubscribe; ePrivacy (UE) richiede consenso preventivo per consumer e legitimate interest documentato per B2B.

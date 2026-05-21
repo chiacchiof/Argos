@@ -269,8 +269,8 @@ def test_login_success_sets_session(client, super_admin):
     assert r.status_code == 303
     assert r.headers["location"] == "/"
     # Cookie session presente
-    assert "agentscraper_session" in r.headers.get("set-cookie", "").lower() or \
-           any("agentscraper_session" in str(v).lower() for v in r.cookies)
+    assert "argos_session" in r.headers.get("set-cookie", "").lower() or \
+           any("argos_session" in str(v).lower() for v in r.cookies)
 
 
 def test_login_case_insensitive_email(client, super_admin):

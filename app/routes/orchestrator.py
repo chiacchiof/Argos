@@ -200,7 +200,7 @@ CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
                 "Lista tutte le sezioni della guida ufficiale del progetto (GUIDA.md). "
                 "Usalo PRIMA di rispondere a domande tipo 'come configuro X', 'qual e' la "
                 "differenza fra Y e Z', 'quale modello usare per W' — la guida contiene "
-                "best practice e dettagli operativi specifici di AgentScraper. "
+                "best practice e dettagli operativi specifici di Argos. "
                 "Ritorna [{id, level, title}] di tutte le sezioni."
             ),
             "parameters": {"type": "object", "properties": {}},
@@ -2868,7 +2868,7 @@ def _chat_system_prompt(
         )
 
     return (
-        "Sei l'Orchestrator di AgentScraper, il meta-agente che progetta, costruisce, lancia e monitora "
+        "Sei l'Orchestrator di Argos, il meta-agente che progetta, costruisce, lancia e monitora "
         "altri agenti per conto dell'utente. Italiano, operativo, asciutto: max 4-6 righe salvo richiesta esplicita. "
         "Niente introduzioni, niente riepiloghi ovvi, niente liste lunghe.\n\n"
         "MODALITA AGENTE DISPONIBILI (11 in totale, per pianificare task):\n"

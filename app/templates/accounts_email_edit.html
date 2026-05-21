@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{% if account %}Modifica{% else %}Aggiungi{% endif %} Email Account — AgentScraper{% endblock %}
+{% block title %}{% if account %}Modifica{% else %}Aggiungi{% endif %} Email Account — Argos{% endblock %}
 {% block content %}
 <section style="max-width: 880px;">
   <p><a href="/accounts/email">← Email accounts</a></p>
@@ -12,8 +12,8 @@
 
   {% if not is_secret_configured %}
   <div class="warning-box">
-    ⚠️ <strong>AGENTSCRAPER_SECRET non configurata</strong>. Le password non possono essere cifrate.
-    Salva è disabilitato finché non aggiungi <code>AGENTSCRAPER_SECRET</code> al file <code>.env</code>.
+    ⚠️ <strong>ARGOS_SECRET non configurata</strong>. Le password non possono essere cifrate.
+    Salva è disabilitato finché non aggiungi <code>ARGOS_SECRET</code> al file <code>.env</code>.
   </div>
   {% endif %}
 
@@ -79,7 +79,7 @@
 
     <h3 style="margin-top: 1.5rem;">📥 IMAP (lettura risposte, opzionale)</h3>
     <p class="muted small">
-      Se vuoi che AgentScraper monitori le risposte ricevute (es. per il modulo responder),
+      Se vuoi che Argos monitori le risposte ricevute (es. per il modulo responder),
       configura anche IMAP. Altrimenti lascia vuoto: l'account funzionerà solo per invio.
     </p>
 

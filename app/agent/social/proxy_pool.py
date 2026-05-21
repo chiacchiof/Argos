@@ -41,13 +41,14 @@ class ProxyConfig:
 
 
 def _load_pool_from_env() -> list[ProxyConfig]:
-    raw = os.environ.get("AGENTSCRAPER_PROXIES", "").strip()
+    # ARGOS_PROXIES (preferito) con fallback AGENTSCRAPER_PROXIES per back-compat.
+    raw = (os.environ.get("ARGOS_PROXIES") or os.environ.get("AGENTSCRAPER_PROXIES") or "").strip()
     if not raw:
         return []
     try:
         items = json.loads(raw)
     except json.JSONDecodeError as e:
-        log.error("AGENTSCRAPER_PROXIES non e' JSON valido: %s", e)
+        log.error("ARGOS_PROXIES / AGENTSCRAPER_PROXIES non e' JSON valido: %s", e)
         return []
     out = []
     for item in items:

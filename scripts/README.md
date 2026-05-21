@@ -12,11 +12,13 @@ Ogni cambio di schema che NON è additive triviale segue questo flusso:
 3. edita upgrade()/downgrade()   alembic/versions/XXXX_*.py
 4. applica + testa locale         python scripts/db.py migrate
 5. (review code + commit)
-6. promote a prod (Neon)          python scripts/db.py promote
+6. promote a prod (Neon)          pwsh scripts/deploy_to_neon.ps1
 7. merge branch su main
 ```
 
 La revision file `alembic/versions/XXXX_*.py` viaggia col branch git: è parte del commit. Quando un altro PC fa `git pull`, riceve la migration; basta che esegua `python scripts/db.py migrate` per applicarla sul suo locale.
+
+**Per il deploy in prod usa `deploy_to_neon.ps1`** (wrapper PowerShell sicuro su `db.py promote`) invece di chiamare `db.py promote` direttamente. Lo wrapper gestisce automaticamente il bypass dell'override locale `data/db_config.enc` — vedi nota nella sezione "DSN Neon" più sotto.
 
 ## Comandi
 
@@ -121,6 +123,8 @@ Fallback chain:
 
 Se nessuna fonte trova la DSN → errore esplicito.
 
+⚠️ **Caveat in setup dev**: il fallback `db_config.enc` ha PRIORITÀ MASSIMA. Sul PC dev tipico l'override punta al **locale** (label "Locale dev" per lavorare offline). In quel caso `db.py promote` finisce per applicare la migration sul locale invece che su Neon — silenziosamente, perché lo script vede una DSN valida e parte. Usa sempre `deploy_to_neon.ps1` che nasconde temporaneamente `db_config.enc` (Move-Item in `.bak`, ripristino in `finally`) prima di chiamare `db.py promote`, così il fallback cade su `c:/tmp/neon_url.txt` che è la DSN Neon vera.
+
 ## Esempio end-to-end completo
 
 Scenario: aggiungere colonna `priority INTEGER DEFAULT 0` a `tasks`.
@@ -149,21 +153,56 @@ python scripts/db.py migrate
 git add alembic/versions/0002_*.py app/models.py app/routes/tasks.py
 git commit -m "schema: task priority + UI ordering"
 
-# 6. quando soddisfatto, promote in prod
-python scripts/db.py promote
-# → conferma y → "PROMOTE COMPLETATO. Locale e Neon entrambi a 0002."
+# 6. quando soddisfatto, promote in prod (wrapper sicuro)
+pwsh scripts/deploy_to_neon.ps1
+# → nasconde db_config.enc → "scripts/db.py status" → conferma → "scripts/db.py promote"
+# → opz. dry-run backfill + conferma + apply → ripristina db_config.enc
+# Senza backfill: pwsh scripts/deploy_to_neon.ps1 -SkipBackfill
 
 # 7. merge su main
 git checkout main && git merge feature/task-priority && git push
 ```
 
+> Volendo si può chiamare `python scripts/db.py promote` direttamente, ma SOLO se sei sicuro che la DSN risolta sia davvero quella di Neon (vedi caveat nella sezione "DSN Neon").
+
 ## Altri script in questa cartella
 
-- **`install_client.ps1`** — installer PowerShell per primo deploy su PC nuovo (Python check, venv, pip, Playwright, .env scaffolding, prompt DSN). Vedi `CLIENT_INSTALL.md`.
+### Deployment (PowerShell wrapper su `db.py`)
+
+- **`deploy_to_neon.ps1`** — wrapper "sicuro" per applicare schema + dati su Neon prod. Per ogni esecuzione:
+  1. nasconde `data/db_config.enc` in `.bak` (se presente) — così `db.py promote` cade sulla DSN Neon vera
+  2. setta `$env:NEON_DATABASE_URL` dal file `c:/tmp/neon_url.txt`
+  3. mostra `db.py status` (locale vs Neon)
+  4. chiede conferma esplicita → `db.py promote`
+  5. (opzionale) dry-run + conferma + apply `backfill_contacts_to_assets.py`
+  6. `finally` ripristina `db_config.enc` e unsetta `NEON_DATABASE_URL` — anche su crash o Ctrl+C
+  
+  Flag: `-SkipBackfill` per fare solo lo schema promote (release schema-only).
+  È il punto d'ingresso consigliato per ogni deploy di prod.
+
+- **`restore_dev_from_neon.ps1`** — pipeline `pg_dump` da Neon + `pg_restore` su locale `agentscraper_dev`. Usa il container `agentscraper-postgres-dev` come "client" pg_dump/pg_restore (così non serve installare Postgres tools su Windows). Quando serve:
+  - Hai appena creato/ricreato il container Postgres dev e il locale è schema-only
+  - Vuoi una copia fresca dei dati prod per testare offline
+  - Hai sporcato il locale con test distruttivi e vuoi ripartire da una baseline pulita
+  
+  Flag: `-KeepDump` per non cancellare `/tmp/neon_backup.dump` nel container (utile per restore ripetuti). Pre-check: rileva mismatch versione pg_dump↔server Neon e propone l'upgrade del container.
+  
+  ⚠️ Caveat noto: `pg_restore --clean` non fa CASCADE → se sul locale ci sono tabelle nuove (con FK in entrata verso `users`/`tenants`) che ancora non esistono su Neon, il restore fallisce a metà lasciando dati incoerenti. Soluzione: `DROP SCHEMA public CASCADE; CREATE SCHEMA public;` a mano nel container, poi rerun.
+
+### Install / update lato cliente
+
+- **`install_client.ps1`** — installer PowerShell per primo deploy su PC nuovo (Python check, venv, pip, Playwright, `.env` scaffolding, prompt DSN, generazione `ARGOS_SECRET` e `SESSION_SECRET_KEY`). Vedi `CLIENT_INSTALL.md`.
 - **`update_client.ps1`** — updater PowerShell per applicare un nuovo zip release dopo estrazione.
 - **`CLIENT_INSTALL.md`** — guida cliente completa Windows (primo install, banner update, troubleshooting, sezione developer release).
+
+### Migration one-shot (scaffolding storico)
+
 - **`migrate_legacy_to_edg.py`** — one-shot: legge l'SQLite legacy `data/agentscraper.db` e lo migra su Postgres sotto tenant EDG. Già eseguito durante la Fase 2 del piano (40331 righe migrate, 657 duplicati skippati). Lo lasciamo come riferimento, non va più rieseguito.
-- **`migrate_to_cloud.py`** — scaffolding originale del piano di Fase 5 (più generico). Soppiantato da `migrate_legacy_to_edg.py`; tieni come template per future migrazioni one-shot ad-hoc.
+- **`migrate_to_cloud.py`** — scaffolding originale del piano di Fase 5 (più generico). Soppiantato da `migrate_legacy_to_edg.py`; tieni come template per future migrazioni one-shot ad-hoc. **NON usare per propagare schema changes dev → prod** — quello è compito di `deploy_to_neon.ps1` + Alembic.
+- **`backfill_contacts_to_assets.py`** — backfill Fase 2B: per ogni `contacts` row, copia i canali (email/telegram/whatsapp/social) sull'`assets` linkato (`asset_id`) o crea uno "shadow asset" `asset_type='contact_legacy'` se orfano. COALESCE-safe (non sovrascrive valori già presenti). Idempotente. Invocato automaticamente da `deploy_to_neon.ps1` (con dry-run + conferma) — invocazione diretta `--dry-run` / `--limit N` solo per testing.
+
+### Altri
+
 - **`watchdog_workflow.py`** — non correlato al DB, monitora workflow runs (pre-esistente).
 
 ## Banner di aggiornamento in-app (release check GitHub)
@@ -171,7 +210,7 @@ git checkout main && git merge feature/task-priority && git push
 Per attivare il banner che avvisa i client quando esce una nuova versione, setta in `.env` (lato dev E lato ogni client):
 
 ```ini
-GITHUB_REPO=owner/repo          # es. chifer81/AgentScraper
+GITHUB_REPO=owner/repo          # es. chiacchiof/Argos
 # Solo se il repo è privato:
 GITHUB_TOKEN=ghp_xxxxxxx        # PAT classic con scope `repo` o fine-grained `Contents: Read`
 ```
@@ -183,6 +222,17 @@ Senza queste variabili il banner è disabilitato (zero chiamate HTTP). Quando at
 - Se diversi → banner giallo in `base.html` con link a release notes + pagina `/update` con istruzioni.
 
 Per il workflow di rilascio (dev): bump `app/__init__.py` + `pyproject.toml`, tag git, GitHub Release con zip allegato. Dettagli in `CLIENT_INSTALL.md` sezione "Per il developer".
+
+## Nota rebrand 2026-05-21 (AgentScraper → Argos)
+
+Dopo il rebrand alcuni nomi "interni" sono stati **preservati come legacy** per non rompere installazioni esistenti:
+
+- DB Postgres locale dev: `agentscraper_dev` (mantenuto — corrisponde al container `agentscraper-postgres-dev` e al volume bind-mount `data/postgres-dev/`. Cambiarlo richiederebbe ricreare container + volume + dump/restore).
+- SQLite legacy (modalità single-user pre-multi-tenant): `data/agentscraper.db` (mantenuto — gitignored, già migrato via `migrate_legacy_to_edg.py`).
+- Master key env var: `ARGOS_SECRET` primaria con fallback `AGENTSCRAPER_SECRET` (gestito in `app/_runtime_db_override.py` + `app/agent/social/crypto_creds.py`). Rinominare nel `.env` locale preservando il VALORE — cambiare valore renderebbe indecifrabili i credentials cifrati.
+- Proxy list: `ARGOS_PROXIES` primaria con fallback `AGENTSCRAPER_PROXIES`.
+
+I percorsi user-facing nuovi (entry point, cookie session, ContextVar, prompt LLM) usano tutti il prefisso `argos`. L'entry point `agentscraper.exe` è ancora installato come alias legacy via `pyproject.toml::[project.scripts]`.
 
 ## Note Postgres / Alembic
 

@@ -27,11 +27,22 @@ log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG_FILE = _PROJECT_ROOT / "data" / "db_config.enc"
-_SECRET_ENV = "AGENTSCRAPER_SECRET"
+# ARGOS_SECRET (preferito) con fallback AGENTSCRAPER_SECRET per back-compat
+# post-rebrand 2026-05-21. Stesso pattern in app/agent/social/crypto_creds.py.
+_SECRET_ENV = "ARGOS_SECRET"
+_SECRET_ENV_LEGACY = "AGENTSCRAPER_SECRET"
+
+
+def _read_secret() -> str | None:
+    return (
+        os.environ.get(_SECRET_ENV)
+        or os.environ.get(_SECRET_ENV_LEGACY)
+        or None
+    )
 
 
 def _derive_fernet_key(secret: str) -> bytes:
-    """AGENTSCRAPER_SECRET può non essere già in formato Fernet (32-byte b64).
+    """ARGOS_SECRET può non essere già in formato Fernet (32-byte b64).
     Lo derivamo via SHA-256 + base64 urlsafe per ottenere una chiave valida.
     """
     return base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
@@ -40,11 +51,11 @@ def _derive_fernet_key(secret: str) -> bytes:
 def _get_fernet():
     from cryptography.fernet import Fernet
 
-    secret = os.environ.get(_SECRET_ENV)
+    secret = _read_secret()
     if not secret:
         raise RuntimeError(
-            f"{_SECRET_ENV} non impostata: impossibile cifrare/decifrare la DSN. "
-            "Settala in .env (vedi .env.example)."
+            f"{_SECRET_ENV} non impostata (alias legacy: {_SECRET_ENV_LEGACY}): "
+            "impossibile cifrare/decifrare la DSN. Settala in .env (vedi .env.example)."
         )
     return Fernet(_derive_fernet_key(secret))
 

@@ -80,7 +80,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     jlog(f"Avvio outreach_social per task #{task['id']} \"{task['name']}\"")
 
     if not is_configured():
-        msg = "AGENTSCRAPER_SECRET non settata in .env: niente cifratura credenziali → abort"
+        msg = "ARGOS_SECRET non settata in .env: niente cifratura credenziali → abort"
         jlog(f"❌ {msg}")
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
         return ""

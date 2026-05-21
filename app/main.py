@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
 
     # Versione corrente + check release (non bloccante, fa fetch in background)
     from . import __version__, release_check
-    log.info(f"[VERSION] AgentScraper v{__version__}")
+    log.info(f"[VERSION] Argos v{__version__}")
     if release_check.is_enabled():
         import asyncio
         async def _bg_check():
@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
         db_cloud.close_pool()
 
 
-app = FastAPI(title="AgentScraper", lifespan=lifespan)
+app = FastAPI(title="Argos", lifespan=lifespan)
 
 
 # NOTA SULL'ORDINE DEI MIDDLEWARE:
@@ -163,7 +163,7 @@ if not _session_key:
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_key,
-    session_cookie="agentscraper_session",
+    session_cookie="argos_session",
     same_site="lax",
     https_only=False,  # In dev su http://127.0.0.1 il cookie deve essere inviato anche senza HTTPS.
     max_age=60 * 60 * 24 * 7,  # 7 giorni
@@ -195,11 +195,11 @@ app.include_router(update_routes.router)
 
 
 def run() -> None:
-    """Entry point per lo script `agentscraper`. Reload attivo su modifiche di app/ e static/.
+    """Entry point per lo script `argos` (alias legacy `agentscraper`). Reload attivo su modifiche di app/ e static/.
 
     Forza line-buffering su stdout/stderr e PYTHONUNBUFFERED nell'env del child di reload,
     così i log uvicorn appaiono in console immediatamente anche su Windows
-    (lo script `agentscraper.exe` non passa il flag -u).
+    (lo script `argos.exe` non passa il flag -u).
     """
     import os
     import sys

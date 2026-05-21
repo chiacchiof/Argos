@@ -3,11 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}AgentScraper{% endblock %}</title>
+  <title>{% block title %}Argos{% endblock %}</title>
   <script>
     (function () {
       try {
-        var t = localStorage.getItem('agentscraper-theme');
+        var t = localStorage.getItem('argos-theme');
+        if (t !== 'light' && t !== 'dark') {
+          var legacy = localStorage.getItem('agentscraper-theme');
+          if (legacy === 'light' || legacy === 'dark') {
+            t = legacy;
+            localStorage.setItem('argos-theme', t);
+            localStorage.removeItem('agentscraper-theme');
+          }
+        }
         if (t === 'light' || t === 'dark') {
           document.documentElement.setAttribute('data-theme', t);
         }
@@ -208,8 +216,8 @@
       <a href="/" class="brand">
         <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></span>
         <span class="brand-text">
-          <span class="brand-name">AgentScraper</span>
-          <span class="brand-tag">multi-agent system</span>
+          <span class="brand-name">Argos</span>
+          <span class="brand-tag">i cento occhi sui tuoi lead</span>
         </span>
       </a>
       <nav class="sidebar-nav" aria-label="Sezioni">
@@ -312,8 +320,8 @@
         <a href="/" class="brand">
           <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></span>
           <span class="brand-text">
-            <span class="brand-name">AgentScraper</span>
-            <span class="brand-tag">multi-agent system</span>
+            <span class="brand-name">Argos</span>
+            <span class="brand-tag">i cento occhi sui tuoi lead</span>
           </span>
         </a>
         {% endif %}
@@ -324,7 +332,7 @@
       </main>
 
       <footer class="app-footer">
-        <small>AgentScraper · sistema multi-agentico locale{% if current_user %} · powered by Ollama{% endif %}</small>
+        <small>Argos · i cento occhi sui tuoi lead{% if current_user %} · powered by Ollama{% endif %}</small>
       </footer>
     </div>
   </div>
@@ -342,7 +350,7 @@
       var html = document.documentElement;
       var next = (html.getAttribute('data-theme') === 'light') ? 'dark' : 'light';
       html.setAttribute('data-theme', next);
-      try { localStorage.setItem('agentscraper-theme', next); } catch (err) {}
+      try { localStorage.setItem('argos-theme', next); } catch (err) {}
     });
 
     // Sincronizza i filtri attuali della URL in hidden input dentro la topbar

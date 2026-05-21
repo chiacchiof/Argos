@@ -99,7 +99,7 @@ async def send_email(
     msg["Subject"] = subject
     if cfg.get("reply_to"):
         msg["Reply-To"] = cfg["reply_to"]
-    message_id = make_msgid(domain=from_addr.split("@", 1)[-1] if "@" in from_addr else "agentscraper.local")
+    message_id = make_msgid(domain=from_addr.split("@", 1)[-1] if "@" in from_addr else "argos.local")
     msg["Message-ID"] = message_id
     if in_reply_to:
         msg["In-Reply-To"] = in_reply_to
@@ -126,13 +126,13 @@ async def send_email(
 
 async def send_test_email(
     to_address: str,
-    subject: str = "AgentScraper test",
+    subject: str = "Argos test",
     account: dict[str, Any] | None = None,
 ) -> str:
     return await send_email(
         to_address,
         subject,
-        "Questa è una email di test inviata da AgentScraper.\n\n"
+        "Questa è una email di test inviata da Argos.\n\n"
         "Se l'hai ricevuta, la configurazione SMTP funziona.",
         account=account,
     )

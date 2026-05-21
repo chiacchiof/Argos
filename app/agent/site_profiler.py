@@ -230,7 +230,7 @@ async def profile_site(
     llm_base_url: str,
     llm_api_key: str,
     llm_model: str,
-    user_agent: str = "AgentScraper/1.0",
+    user_agent: str = "Argos/1.0",
     timeout: int = 30,
 ) -> dict[str, Any]:
     """Classifica un sito e suggerisce la strategia di scraping ottimale.

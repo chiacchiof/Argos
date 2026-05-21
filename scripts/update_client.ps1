@@ -1,4 +1,4 @@
-# update_client.ps1 — aggiornamento incrementale di AgentScraper.
+# update_client.ps1 — aggiornamento incrementale di Argos.
 #
 # Assume che hai già estratto/sovrascritto il nuovo zip nella cartella corrente.
 # Il file .env e la cartella data\ vengono preservati (non li tocchiamo).
@@ -30,14 +30,14 @@ if (-not (Test-Path ".\pyproject.toml")) {
     exit 1
 }
 if (-not (Test-Path ".\.venv")) {
-    Write-Err ".venv non trovata. Forse questa non e' un'installazione di AgentScraper, o e' la primissima volta."
+    Write-Err ".venv non trovata. Forse questa non e' un'installazione di Argos, o e' la primissima volta."
     Write-Host "  In quel caso usa: .\scripts\install_client.ps1" -ForegroundColor Yellow
     exit 1
 }
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  AgentScraper - Update client" -ForegroundColor Cyan
+Write-Host "  Argos - Update client" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
 # -------- Step 1: backup --------
@@ -84,7 +84,7 @@ Write-Ok "Chromium aggiornato (se necessario)."
 # -------- Step 4: version check --------
 Write-Step 4 $TOTAL "Versione installata"
 $ver = python -c "from app import __version__; print(__version__)" 2>&1
-Write-Host "  AgentScraper v$ver" -ForegroundColor Green
+Write-Host "  Argos v$ver" -ForegroundColor Green
 
 # -------- Step 5: restart prompt --------
 Write-Step 5 $TOTAL "Update completato"
@@ -93,8 +93,8 @@ Write-Host "============================================================" -Foreg
 Write-Host "  IMPORTANTE: riavvia l'app per applicare le modifiche" -ForegroundColor Yellow
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  1. Vai nel terminale dove gira `agentscraper` e premi Ctrl+C"
-Write-Host "  2. Rilancia `agentscraper`"
+Write-Host "  1. Vai nel terminale dove gira `argos` e premi Ctrl+C"
+Write-Host "  2. Rilancia `argos` (oppure l'alias legacy `agentscraper`)"
 Write-Host ""
 Write-Host "Apri http://127.0.0.1:8000 e verifica che il banner di update sia"
 Write-Host "scomparso (significa che ora hai la versione piu' recente)."

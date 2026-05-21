@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
-    http_user_agent: str = "AgentScraper/0.1 (+local research bot)"
+    http_user_agent: str = "Argos/0.1 (+local research bot)"
     http_timeout: int = 20
 
     default_max_iterations: int = 10

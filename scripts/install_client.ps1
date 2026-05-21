@@ -1,4 +1,4 @@
-# install_client.ps1 — primo install di AgentScraper su un PC nuovo (Windows).
+# install_client.ps1 — primo install di Argos su un PC nuovo (Windows).
 #
 # Eseguilo dalla cartella radice del progetto (dove c'è pyproject.toml):
 #   .\scripts\install_client.ps1
@@ -29,13 +29,13 @@ $TOTAL = 9
 $root = (Get-Item -Path ".\").FullName
 
 if (-not (Test-Path ".\pyproject.toml")) {
-    Write-Err "Esegui questo script dalla cartella radice del progetto AgentScraper (quella che contiene pyproject.toml)."
+    Write-Err "Esegui questo script dalla cartella radice del progetto Argos (quella che contiene pyproject.toml)."
     exit 1
 }
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  AgentScraper - Installazione client" -ForegroundColor Cyan
+Write-Host "  Argos - Installazione client" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Cartella: $root"
 
@@ -109,7 +109,7 @@ if (-not (Test-Path ".\.env")) {
 }
 
 # -------- Step 6: secrets --------
-Write-Step 6 $TOTAL "Generazione chiavi di sicurezza (SESSION_SECRET_KEY, AGENTSCRAPER_SECRET)"
+Write-Step 6 $TOTAL "Generazione chiavi di sicurezza (SESSION_SECRET_KEY, ARGOS_SECRET)"
 $envContent = Get-Content ".\.env" -Raw
 
 function Ensure-Secret($name, $envText) {
@@ -124,7 +124,14 @@ function Ensure-Secret($name, $envText) {
     }
 }
 Ensure-Secret "SESSION_SECRET_KEY" $envContent | Out-Null
-Ensure-Secret "AGENTSCRAPER_SECRET" $envContent | Out-Null
+# Rebrand 2026-05-21: genera ARGOS_SECRET. Se l'utente ha ancora AGENTSCRAPER_SECRET
+# da una install pre-rebrand, il codice runtime la legge come fallback (vedi
+# app/agent/social/crypto_creds.py) — non serve rigenerarla.
+if ($envContent -match "(?m)^\s*AGENTSCRAPER_SECRET\s*=\s*\S") {
+    Write-Warn "AGENTSCRAPER_SECRET (legacy pre-rebrand) presente in .env: il codice la legge come fallback. Per pulire, rinominala manualmente in ARGOS_SECRET con lo STESSO valore (cambiare valore renderebbe indecifrabili i dati esistenti)."
+} else {
+    Ensure-Secret "ARGOS_SECRET" $envContent | Out-Null
+}
 
 # -------- Step 7: DATABASE_URL --------
 Write-Step 7 $TOTAL "Configurazione connessione DB (Postgres / Neon)"
@@ -177,13 +184,14 @@ Write-Host "Per avviare l'app (modo consigliato):" -ForegroundColor Green
 Write-Host "  Doppio click su start.bat nella cartella del progetto." -ForegroundColor White
 Write-Host ""
 Write-Host "  In alternativa da PowerShell (con venv da attivare ogni volta):" -ForegroundColor Gray
-Write-Host "    .\.venv\Scripts\Activate.ps1; agentscraper" -ForegroundColor Gray
+Write-Host "    .\.venv\Scripts\Activate.ps1; argos" -ForegroundColor Gray
+Write-Host "    (alias legacy 'agentscraper' funziona ancora per installazioni esistenti)" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "Poi apri http://127.0.0.1:8000 nel browser." -ForegroundColor Green
 Write-Host ""
 Write-Host "Se è la prima installazione del cluster (= devi creare i tenant/utenti):" -ForegroundColor Cyan
 Write-Host "  1. Aggiungi BOOTSTRAP_SUPER_ADMIN_EMAIL e _PASSWORD a .env" -ForegroundColor Gray
-Write-Host "  2. Avvia agentscraper, login come super-admin"
+Write-Host "  2. Avvia argos, login come super-admin"
 Write-Host "  3. Crea tenant + utenti via /admin"
 Write-Host "  4. Rimuovi le BOOTSTRAP_* da .env per sicurezza"
 Write-Host ""

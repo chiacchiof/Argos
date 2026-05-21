@@ -135,7 +135,7 @@ async def telegram_bot_create(
     if not is_configured():
         raise HTTPException(
             status_code=400,
-            detail="AGENTSCRAPER_SECRET non impostata. Aggiungi a .env per cifrare il bot token.",
+            detail="ARGOS_SECRET non impostata. Aggiungi a .env per cifrare il bot token.",
         )
 
     label = label.strip()
@@ -224,7 +224,7 @@ async def telegram_bot_update(
         if not is_configured():
             raise HTTPException(
                 status_code=400,
-                detail="AGENTSCRAPER_SECRET non impostata: impossibile cifrare il nuovo token.",
+                detail="ARGOS_SECRET non impostata: impossibile cifrare il nuovo token.",
             )
         fields["encrypted_bot_token"] = encrypt(token)
 

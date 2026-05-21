@@ -1,4 +1,4 @@
-# AgentScraper — installazione e aggiornamento client (Windows)
+# Argos — installazione e aggiornamento client (Windows)
 
 Guida per chi riceve l'app da Ferdinando (sviluppatore) e deve installarla / aggiornarla sul proprio PC.
 
@@ -13,7 +13,7 @@ Niente Docker, niente Postgres locale: il DB è centralizzato in cloud (Neon), a
 ## Primo install
 
 1. Scarica l'ultima release `agentscraper-vX.Y.Z.zip` dalla pagina GitHub Releases (link nel banner dell'app o ti viene inviato).
-2. Estrai il contenuto in una cartella stabile, es. `C:\Apps\AgentScraper\`.
+2. Estrai il contenuto in una cartella stabile, es. `C:\Apps\Argos\`.
 3. Apri **PowerShell** in quella cartella (Shift + tasto destro nello sfondo della cartella → "Apri finestra PowerShell qui").
 4. **Sblocca gli script** (i file estratti da uno zip scaricato sono marcati da Windows come "provenienti da internet" e PowerShell li rifiuta finché non li sblocchi):
    ```powershell
@@ -47,7 +47,7 @@ Niente Docker, niente Postgres locale: il DB è centralizzato in cloud (Neon), a
 
 8. Apri il browser su <http://127.0.0.1:8000> → vedi la pagina di login.
 
-> **Suggerimento**: crea un collegamento di `start.bat` sul desktop (tasto destro → "Crea collegamento" → trascina sul desktop) così avvii AgentScraper come una normale app Windows.
+> **Suggerimento**: crea un collegamento di `start.bat` sul desktop (tasto destro → "Crea collegamento" → trascina sul desktop) così avvii Argos come una normale app Windows.
 
 ### Credenziali
 
@@ -107,7 +107,7 @@ python -c "import psycopg, os; from dotenv import load_dotenv; load_dotenv(); pr
 ### "Non vedo il banner di update"
 Il check è disabilitato di default. Per attivarlo aggiungi a `.env`:
 ```
-GITHUB_REPO=owner/agentscraper
+GITHUB_REPO=chiacchiof/Argos
 # opzionale per repo privato:
 GITHUB_TOKEN=ghp_xxxxxxx
 ```
@@ -130,7 +130,7 @@ Cancella `.venv\` e rilancia `install_client.ps1`. La cartella `data\` e `.env` 
 3. Commit + tag: `git tag v1.0.1 && git push --tags`.
 4. Vai su GitHub → Releases → "Draft a new release":
    - Tag: `v1.0.1`
-   - Title: `AgentScraper v1.0.1`
+   - Title: `Argos v1.0.1`
    - Body: changelog markdown (verrà mostrato nella pagina `/update` dei client)
    - Allega lo zip della repo (escludendo `.venv\`, `data\`, `__pycache__`).
 5. Click "Publish release".

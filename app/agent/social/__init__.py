@@ -17,7 +17,7 @@ Modulo organizzato per separazione di concerns:
 
 Sicurezza:
 - Le credenziali account sono salvate in DB CIFRATE con chiave master in env
-  (`AGENTSCRAPER_SECRET`). Se la chiave non e' settata, il modulo rifiuta di
+  (`ARGOS_SECRET`). Se la chiave non e' settata, il modulo rifiuta di
   funzionare.
 - Le session_state Playwright sono salvate in `data/sessions/<account_id>.json`
   con permessi user-only (Windows ACL su Linux 600).
