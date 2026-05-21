@@ -1,4 +1,4 @@
-# update_client.ps1 — aggiornamento incrementale di Argos.
+﻿# update_client.ps1 — aggiornamento incrementale di Argos.
 #
 # Assume che hai già estratto/sovrascritto il nuovo zip nella cartella corrente.
 # Il file .env e la cartella data\ vengono preservati (non li tocchiamo).

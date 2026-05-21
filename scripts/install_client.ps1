@@ -1,4 +1,4 @@
-# install_client.ps1 — primo install di Argos su un PC nuovo (Windows).
+﻿# install_client.ps1 — primo install di Argos su un PC nuovo (Windows).
 #
 # Eseguilo dalla cartella radice del progetto (dove c'è pyproject.toml):
 #   .\scripts\install_client.ps1

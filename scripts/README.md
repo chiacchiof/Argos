@@ -2,35 +2,39 @@
 
 Toolkit per gestire schema migrations in un workflow dev → prod con branch-per-cambio.
 
-## Eseguire script .ps1 su Windows (importante)
+## Eseguire script .ps1 su Windows
 
-Windows blocca per default l'esecuzione di script PowerShell non firmati ("execution policy" e/o "Mark of the Web" sui file estratti da zip scaricati). Se vedi un errore tipo:
+Windows blocca per default l'esecuzione di script `.ps1` non firmati. Tre opzioni:
 
-```
-.\deploy_to_neon.ps1 : Impossibile caricare il file ... non è firmato digitalmente.
-... + FullyQualifiedErrorId : UnauthorizedAccess
-```
-
-hai due opzioni (la 1 risolve una sola esecuzione, la 2 sblocca tutti gli script del repo una volta sola):
-
-**Opzione 1 — bypass per una singola invocazione** (raccomandato per chi non vuole toccare policy globali):
+**Opzione 1 — bypass singola invocazione** (raccomandato, non tocca policy globali):
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\deploy_to_neon.ps1
 ```
 
-**Opzione 2 — sblocca tutti gli script** (`Unblock-File` rimuove il flag "Mark of the Web", non cambia policy globale):
+**Opzione 2 — sblocca tutti gli script del repo** (`Unblock-File` rimuove il "Mark of the Web" sui file estratti da zip):
 ```powershell
 Get-ChildItem -Path .\scripts -Recurse -Include *.ps1 | Unblock-File
 ```
 Dopo questo i `.ps1` si lanciano normalmente: `.\scripts\deploy_to_neon.ps1`.
 
-**Opzione 3 — alza la policy a livello user, una tantum** (richiede di averla a `Restricted` ora):
+**Opzione 3 — alza la policy a livello user, una tantum**:
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
-Non serve admin. Vale per tutti gli script che lanci come questo utente.
+Non serve admin. Vale per tutti gli script di questo utente.
 
-> Gli script `.py` (`db.py`, `migrate_legacy_to_edg.py`, ecc.) non sono toccati dalla policy — si lanciano con `python scripts/<nome>.py`.
+### Encoding degli script (importante per chi modifica i `.ps1`)
+
+PowerShell **5.1** su Windows ha un bug noto: se legge un file `.ps1` **senza BOM**, lo interpreta come system default encoding (Windows-1252 in locale IT). I caratteri italiani accentati (es. `già`, `può`) finiscono in mojibake e il parser produce errori falsi del tipo "Argomento mancante" / "Nome di proprietà mancante" su righe che sembrano OK ma in realtà sono cascade di un misparsing decine di righe sopra.
+
+**Regola**: tutti i `.ps1` di questo repo sono salvati con **UTF-8 BOM + CRLF**. Se modifichi uno script con un editor che lo risalva senza BOM (es. notepad++ "UTF-8 no BOM", o `Set-Content -Encoding UTF8` di PS 5.1) → l'install_client si rompe sui PC dei clienti.
+
+Comando one-shot per ri-applicare BOM a uno script `.ps1` se hai dubbi:
+```powershell
+$f="scripts\install_client.ps1"; [System.IO.File]::WriteAllText((Resolve-Path $f), [System.IO.File]::ReadAllText((Resolve-Path $f), [System.Text.Encoding]::UTF8), (New-Object System.Text.UTF8Encoding $true))
+```
+
+> Gli script `.py` (`db.py`, `migrate_legacy_to_edg.py`, ecc.) non sono toccati dalla policy né dal bug encoding — si lanciano con `python scripts/<nome>.py`.
 
 ## Convenzione di lavoro
 

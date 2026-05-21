@@ -12,26 +12,21 @@ Niente Docker, niente Postgres locale: il DB è centralizzato in cloud (Neon), a
 
 ## Primo install
 
-1. Scarica l'ultima release `argos-vX.Y.Z.zip` dalla pagina GitHub Releases (link nel banner dell'app o ti viene inviato). Per installazioni pre-rebrand il file può chiamarsi ancora `agentscraper-vX.Y.Z.zip`.
+1. Scarica l'ultima release `argos-vX.Y.Z.zip` dalla pagina GitHub Releases (link nel banner dell'app o ti viene inviato).
 2. Estrai il contenuto in una cartella stabile, es. `C:\Apps\Argos\`.
-3. Apri **PowerShell** in quella cartella (Shift + tasto destro nello sfondo della cartella → "Apri finestra PowerShell qui").
-4. **Sblocca gli script** (i file estratti da uno zip scaricato sono marcati da Windows come "provenienti da internet" e PowerShell li rifiuta finché non li sblocchi):
+3. Apri **PowerShell** in quella cartella (Shift + tasto destro nello sfondo → "Apri finestra PowerShell qui").
+4. **Sblocca gli script** (Windows marca i file estratti da uno zip scaricato come "provenienti da internet"):
    ```powershell
    Get-ChildItem -Path .\scripts\ -Recurse | Unblock-File
    ```
-   > **Nota**: se è anche la prima volta in assoluto che esegui script `.ps1` su questo PC, esegui PRIMA questo comando una tantum (poi non serve più):
-   > ```powershell
-   > Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-   > ```
-5. Esegui l'installer:
+   Se è la prima volta in assoluto che esegui `.ps1` su questo PC, una tantum:
    ```powershell
-   .\scripts\install_client.ps1
+   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
    ```
-
-   > **In alternativa**, se non vuoi modificare permessi: lancialo bypassando la policy solo per quella invocazione:
-   > ```powershell
-   > powershell -ExecutionPolicy Bypass -File .\scripts\install_client.ps1
-   > ```
+5. Lancia l'installer:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\install_client.ps1
+   ```
 6. Lo script ti chiederà la **DATABASE_URL** (la connection string Postgres / Neon). Te la fornisce Ferdinando. Esempio:
    ```
    postgresql://neondb_owner:la-tua-password@ep-xxx.aws.neon.tech/neondb?sslmode=require

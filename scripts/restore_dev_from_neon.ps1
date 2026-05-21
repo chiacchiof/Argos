@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Ripristina il DB locale `agentscraper_dev` da un dump fresco di Neon prod.
 

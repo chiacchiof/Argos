@@ -32,6 +32,9 @@ htmlcov/
 # Playwright
 .ms-playwright/
 
+# Presentazioni (screenshot, asset locali)
+presentations/
+
 # IDE
 .idea/
 .vscode/
