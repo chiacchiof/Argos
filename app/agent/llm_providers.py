@@ -4,14 +4,21 @@ Tutti i provider esposti qui parlano l'API OpenAI-compatible (Anthropic, xAI Gro
 Google Gemini hanno tutti un endpoint compat). Browser-use usa ChatOpenAI come
 client, quindi basta swappare base_url + api_key.
 
-Le API key vengono lette SEMPRE da variabili d'ambiente (mai dal DB).
+Le API key si risolvono in priorita':
+1. credential_id passato al runner (lookup in llm_api_keys, decrypt Fernet)
+2. project_key salvato direttamente sul task (legacy, plaintext)
+3. variabile d'ambiente del provider
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import TypedDict
 
 from ..config import settings
+
+
+log = logging.getLogger(__name__)
 
 
 class ProviderModel(TypedDict):
@@ -174,3 +181,60 @@ def resolve_api_key(provider_key: str, project_key: str | None = None) -> str:
             f"variabile d'ambiente {env_var} nel file .env."
         )
     return "no-key"
+
+
+def resolve_credential(
+    credential_id: int | None,
+    provider_key: str,
+    *,
+    project_key: str | None = None,
+    custom_base_url: str | None = None,
+) -> tuple[str, str, int | None]:
+    """Risolve api_key + base_url per una chiamata LLM, partendo da un eventuale
+    credential_id (FK a llm_api_keys). Fallback a project_key/env var come prima.
+
+    Ritorna: (api_key, base_url, resolved_credential_id).
+    `resolved_credential_id` e' l'id usato (utile per il billing log); None
+    se non e' stato risolto da DB ma da env/legacy.
+    """
+    # Import lazy per evitare cicli (db.py importa modelli che potrebbero
+    # indirettamente importare llm_providers).
+    from .. import db
+    from .social.crypto_creds import decrypt
+
+    cred = None
+    if credential_id:
+        try:
+            cred = db.get_llm_api_key(int(credential_id))
+        except Exception:
+            log.exception("resolve_credential: lookup credential_id=%s failed", credential_id)
+            cred = None
+
+    if cred:
+        cred_provider = (cred.get("provider") or "").lower()
+        if cred_provider and cred_provider != provider_key:
+            log.warning(
+                "resolve_credential: credential #%s e' per provider '%s' ma il "
+                "task chiede '%s' — uso la chiave comunque",
+                cred.get("id"), cred_provider, provider_key,
+            )
+        enc = cred.get("encrypted_api_key")
+        api_key = ""
+        if enc:
+            try:
+                api_key = decrypt(enc)
+            except Exception:
+                log.exception("resolve_credential: decrypt failed for credential #%s", cred.get("id"))
+                api_key = ""
+        base_url_override = (cred.get("base_url") or "").strip().rstrip("/") or None
+        base_url = resolve_base_url(provider_key, base_url_override or custom_base_url)
+        # Se la chiave decifrata e' vuota ma il provider non la richiede (ollama),
+        # va bene; altrimenti fallback alla env var prima di arrendersi.
+        if not api_key:
+            api_key = resolve_api_key(provider_key, project_key)
+        return api_key, base_url, int(cred["id"])
+
+    # Nessuna credenziale: fallback path legacy.
+    api_key = resolve_api_key(provider_key, project_key)
+    base_url = resolve_base_url(provider_key, custom_base_url)
+    return api_key, base_url, None

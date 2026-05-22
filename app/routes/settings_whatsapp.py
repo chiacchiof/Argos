@@ -45,24 +45,17 @@ def _wa_sessions_dir() -> Path:
 # Vista principale
 # ===========================================================================
 
-@router.get("/settings/whatsapp", response_class=HTMLResponse)
+@router.get("/settings/whatsapp")
 async def whatsapp_settings_page(request: Request):
-    accounts = db.list_social_accounts(platform="whatsapp_browser")
-    api_configs = db.list_whatsapp_api_config()
-    flash = request.query_params.get("flash")
-    error = request.query_params.get("error")
-    return templates.TemplateResponse(
-        request,
-        "settings_whatsapp.html",
-        {
-            "accounts": accounts,
-            "api_configs": api_configs,
-            "flash": flash,
-            "error": error,
-            "secret_configured": crypto_creds.is_configured(),
-            "current_user_id": db.current_user_id(),
-        },
-    )
+    """Redirect verso il nuovo hub messaging (le sezioni WA sono state inline-ate
+    in /accounts/messaging dal 2026-05-22).
+    Manteniamo il path GET per compat dei bookmark; i path POST sotto
+    /settings/whatsapp/* restano attivi e redirigono anch'essi al nuovo hub."""
+    qs = request.url.query
+    target = "/accounts/messaging?tab=browser"
+    if qs:
+        target += "&" + qs
+    return RedirectResponse(target, status_code=307)
 
 
 # ===========================================================================
@@ -82,7 +75,7 @@ async def whatsapp_account_new(
     """
     if not crypto_creds.is_configured():
         return RedirectResponse(
-            "/settings/whatsapp?error=ARGOS_SECRET+non+configurata+in+.env",
+            "/accounts/messaging?tab=browser&error=ARGOS_SECRET+non+configurata+in+.env",
             status_code=303,
         )
 
@@ -90,7 +83,7 @@ async def whatsapp_account_new(
     phone = phone_number.strip()
     if not label:
         return RedirectResponse(
-            "/settings/whatsapp?error=label+obbligatoria", status_code=303
+            "/accounts/messaging?tab=browser&error=label+obbligatoria", status_code=303
         )
 
     acc_uuid = str(uuid.uuid4())
@@ -112,7 +105,7 @@ async def whatsapp_account_new(
         })
     except Exception as e:
         return RedirectResponse(
-            f"/settings/whatsapp?error=DB+error:+{e}", status_code=303
+            f"/accounts/messaging?tab=browser&error=DB+error:+{e}", status_code=303
         )
 
     # Salva phone_number + session_dir (post-insert update)
@@ -128,7 +121,7 @@ async def whatsapp_account_new(
         )
 
     return RedirectResponse(
-        f"/settings/whatsapp?flash=Account+{label}+creato.+Clicca+'Avvia+QR+login'+per+scansionare.",
+        f"/accounts/messaging?tab=browser&flash=Account+{label}+creato.+Clicca+'Avvia+QR+login'+per+scansionare.",
         status_code=303,
     )
 
@@ -154,7 +147,7 @@ async def whatsapp_account_login(account_id: int):
         )
     )
     return RedirectResponse(
-        f"/settings/whatsapp?flash=Finestra+Chromium+in+apertura+per+account+{acc.get('username')}."
+        f"/accounts/messaging?tab=browser&flash=Finestra+Chromium+in+apertura+per+account+{acc.get('username')}."
         f"+Scansiona+il+QR+col+telefono.+Refresh+questa+pagina+dopo+lo+scan.",
         status_code=303,
     )
@@ -236,7 +229,7 @@ async def whatsapp_account_edit_submit(
     label = label.strip()
     if not label:
         return RedirectResponse(
-            "/settings/whatsapp?error=label+obbligatoria", status_code=303
+            "/accounts/messaging?tab=browser&error=label+obbligatoria", status_code=303
         )
     # Status valido: active | disabled | banned | pending_login
     st = (status or "").strip()
@@ -252,7 +245,7 @@ async def whatsapp_account_edit_submit(
         notes=(notes or "").strip() or None,
     )
     return RedirectResponse(
-        f"/settings/whatsapp?flash=Account+%23{account_id}+aggiornato",
+        f"/accounts/messaging?tab=browser&flash=Account+%23{account_id}+aggiornato",
         status_code=303,
     )
 
@@ -261,7 +254,7 @@ async def whatsapp_account_edit_submit(
 async def whatsapp_account_delete(account_id: int):
     acc = db.get_social_account(account_id)
     if not acc:
-        return RedirectResponse("/settings/whatsapp?error=non+trovato", status_code=303)
+        return RedirectResponse("/accounts/messaging?tab=browser&error=non+trovato", status_code=303)
     # Rimuove anche la session_dir su disco
     sess_dir = acc.get("session_dir")
     if sess_dir:
@@ -272,20 +265,20 @@ async def whatsapp_account_delete(account_id: int):
             log.warning("rmtree fail per %s: %s", sess_dir, e)
     db.delete_social_account(account_id)
     return RedirectResponse(
-        f"/settings/whatsapp?flash=Account+eliminato", status_code=303
+        f"/accounts/messaging?tab=browser&flash=Account+eliminato", status_code=303
     )
 
 
 @router.post("/settings/whatsapp/account/{account_id}/disable")
 async def whatsapp_account_disable(account_id: int):
     db.update_social_account(account_id, status="disabled")
-    return RedirectResponse("/settings/whatsapp?flash=Account+disabilitato", status_code=303)
+    return RedirectResponse("/accounts/messaging?tab=browser&flash=Account+disabilitato", status_code=303)
 
 
 @router.post("/settings/whatsapp/account/{account_id}/enable")
 async def whatsapp_account_enable(account_id: int):
     db.update_social_account(account_id, status="active")
-    return RedirectResponse("/settings/whatsapp?flash=Account+riattivato", status_code=303)
+    return RedirectResponse("/accounts/messaging?tab=browser&flash=Account+riattivato", status_code=303)
 
 
 # ===========================================================================
@@ -305,14 +298,14 @@ async def whatsapp_api_new(
 ):
     if not crypto_creds.is_configured():
         return RedirectResponse(
-            "/settings/whatsapp?error=ARGOS_SECRET+non+configurata+in+.env",
+            "/accounts/messaging?tab=browser&error=ARGOS_SECRET+non+configurata+in+.env",
             status_code=303,
         )
     try:
         enc = crypto_creds.encrypt(access_token.strip())
     except Exception as e:
         return RedirectResponse(
-            f"/settings/whatsapp?error=Cifratura+fallita:+{e}", status_code=303
+            f"/accounts/messaging?tab=api&error=Cifratura+fallita:+{e}", status_code=303
         )
     try:
         cfg_id = db.insert_whatsapp_api_config({
@@ -327,10 +320,10 @@ async def whatsapp_api_new(
         })
     except Exception as e:
         return RedirectResponse(
-            f"/settings/whatsapp?error=DB+error:+{e}", status_code=303
+            f"/accounts/messaging?tab=api&error=DB+error:+{e}", status_code=303
         )
     return RedirectResponse(
-        f"/settings/whatsapp?flash=Config+API+#{cfg_id}+creata", status_code=303
+        f"/accounts/messaging?tab=api&flash=Config+API+#{cfg_id}+creata", status_code=303
     )
 
 
@@ -399,13 +392,13 @@ async def whatsapp_api_edit_submit(
             fields["encrypted_access_token"] = crypto_creds.encrypt(tok)
         except Exception as e:
             return RedirectResponse(
-                f"/settings/whatsapp?error=Cifratura+nuovo+token+fallita:+{e}",
+                f"/accounts/messaging?tab=api&error=Cifratura+nuovo+token+fallita:+{e}",
                 status_code=303,
             )
 
     db.update_whatsapp_api_config(config_id, **fields)
     return RedirectResponse(
-        f"/settings/whatsapp?flash=Config+API+%23{config_id}+aggiornata",
+        f"/accounts/messaging?tab=api&flash=Config+API+%23{config_id}+aggiornata",
         status_code=303,
     )
 
@@ -414,17 +407,17 @@ async def whatsapp_api_edit_submit(
 async def whatsapp_api_delete(config_id: int):
     db.delete_whatsapp_api_config(config_id)
     return RedirectResponse(
-        "/settings/whatsapp?flash=Config+API+eliminata", status_code=303
+        "/accounts/messaging?tab=api&flash=Config+API+eliminata", status_code=303
     )
 
 
 @router.post("/settings/whatsapp/api/{config_id}/disable")
 async def whatsapp_api_disable(config_id: int):
     db.update_whatsapp_api_config(config_id, status="disabled")
-    return RedirectResponse("/settings/whatsapp?flash=Config+API+disabilitata", status_code=303)
+    return RedirectResponse("/accounts/messaging?tab=api&flash=Config+API+disabilitata", status_code=303)
 
 
 @router.post("/settings/whatsapp/api/{config_id}/enable")
 async def whatsapp_api_enable(config_id: int):
     db.update_whatsapp_api_config(config_id, status="active")
-    return RedirectResponse("/settings/whatsapp?flash=Config+API+riattivata", status_code=303)
+    return RedirectResponse("/accounts/messaging?tab=api&flash=Config+API+riattivata", status_code=303)

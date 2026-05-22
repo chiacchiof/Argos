@@ -1,5 +1,5 @@
-"""Route per gestione account social (Instagram/TikTok) usati dal runner
-outreach_social.
+"""Route per gestione account social (Instagram/TikTok/Facebook) usati dal
+runner outreach_social.
 
 Endpoint:
 - GET  /social/accounts                    — lista account + stato
@@ -11,6 +11,10 @@ Sicurezza:
 - Le password sono cifrate via Fernet (`app.agent.social.crypto_creds`) prima
   del salvataggio. La master key vive in env `ARGOS_SECRET`.
 - Le credenziali in chiaro non vengono MAI loggate ne' rimandate al template.
+
+Nota: WhatsApp browser usa la stessa tabella `social_accounts` (con
+`platform='whatsapp_browser'`) ma vive concettualmente nei canali messaging.
+Lo filtriamo dalla lista qui — si gestisce da /accounts/messaging?tab=browser.
 """
 from __future__ import annotations
 
@@ -26,6 +30,11 @@ from ..templates import templates
 
 router = APIRouter()
 log = logging.getLogger(__name__)
+
+# Piattaforme di outreach social vere (instagram/tiktok/facebook).
+# `whatsapp_browser` vive in social_accounts per riuso schema ma e' messaging:
+# si gestisce da /accounts/messaging?tab=browser.
+SOCIAL_PLATFORMS = ("instagram", "tiktok", "facebook")
 
 
 @router.get("/social/accounts", response_class=HTMLResponse)
@@ -43,10 +52,14 @@ async def social_accounts_list(request: Request, author: str = ""):
         author_norm = default_author
 
     filter_uid = current_uid if (author_norm == "mine" and current_uid is not None) else None
-    accounts = db.list_social_accounts(created_by_user_id=filter_uid)
+    accounts = [
+        a for a in db.list_social_accounts(created_by_user_id=filter_uid)
+        if a.get("platform") in SOCIAL_PLATFORMS
+    ]
     # Conteggio "tutti del tenant" per badge sul toggle (anche se author=mine)
     total_tenant = (
-        len(db.list_social_accounts()) if author_norm == "mine" else len(accounts)
+        len([a for a in db.list_social_accounts() if a.get("platform") in SOCIAL_PLATFORMS])
+        if author_norm == "mine" else len(accounts)
     )
     # Arricchisci con dms_today (count da log)
     for a in accounts:
@@ -113,7 +126,7 @@ async def create_social_account(
             ),
         )
     platform = platform.strip().lower()
-    if platform not in ("instagram", "tiktok", "facebook"):
+    if platform not in SOCIAL_PLATFORMS:
         raise HTTPException(status_code=400, detail="platform non supportata")
     username = username.strip().lstrip("@")
     if not username or not password:

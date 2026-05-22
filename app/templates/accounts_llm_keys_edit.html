@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}{% if key %}Modifica{% else %}Aggiungi{% endif %} Chiave LLM — Argos{% endblock %}
+{% block content %}
+<section style="max-width: 760px;">
+  <p><a href="/accounts/llm-keys">← Chiavi LLM</a></p>
+
+  {% if key %}
+    <h2>🔑 Modifica chiave LLM #{{ key.id }}</h2>
+  {% else %}
+    <h2>🔑 Aggiungi chiave LLM</h2>
+  {% endif %}
+
+  {% if not is_secret_configured %}
+  <div class="warning-box">
+    ⚠️ <strong>ARGOS_SECRET non configurata</strong>. Le chiavi non possono essere cifrate.
+    Salva è disabilitato finché non aggiungi <code>ARGOS_SECRET</code> al file <code>.env</code>.
+  </div>
+  {% endif %}
+
+  <form method="post"
+        action="{% if key %}/accounts/llm-keys/{{ key.id }}/edit{% else %}/accounts/llm-keys/new{% endif %}"
+        class="settings-form">
+
+    <label>Label <span class="hint">(nome simbolico, es. "OpenAI prod", "Claude dev", "Cliente X")</span>
+      <input name="label" required maxlength="120"
+             value="{{ key.label if key else '' }}"
+             placeholder="es. OpenAI prod">
+    </label>
+
+    <label>Provider
+      <select name="provider" id="provider_select" required>
+        {% for p in providers %}
+          <option value="{{ p.key }}"
+                  data-needs-key="{{ '1' if p.needs_key else '0' }}"
+                  data-hint="{{ p.hint }}"
+                  {% if key and key.provider == p.key %}selected{% elif not key and p.key == 'openai' %}selected{% endif %}>
+            {{ p.name }}{% if not p.needs_key %} (no key richiesta){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+      <small id="provider_hint" class="muted"></small>
+    </label>
+
+    <label>API key
+      <input name="api_key" type="password" autocomplete="new-password"
+             {% if not key %}placeholder="incolla qui la chiave (cifrata Fernet prima del save)"{% else %}placeholder="lascia vuoto per mantenere — o digita CLEAR per rimuoverla"{% endif %}
+             data-lpignore="true">
+      <span class="hint">
+        {% if key and key.encrypted_api_key %}
+          ✓ Una chiave è già salvata (cifrata). Vuoto = mantieni. <code>CLEAR</code> = rimuovi.
+        {% elif key %}
+          Nessuna chiave salvata. Per provider come Ollama locale non serve.
+        {% else %}
+          Per provider <em>cloud</em> (OpenAI, Anthropic, ...) la chiave è obbligatoria.
+          Per Ollama locale può restare vuoto.
+        {% endif %}
+      </span>
+    </label>
+
+    <label>Base URL <span class="hint">(opzionale, sovrascrive l'endpoint di default del provider)</span>
+      <input name="base_url" type="url" maxlength="500"
+             value="{{ key.base_url or '' if key else '' }}"
+             placeholder="vuoto = endpoint default del provider"
+             autocomplete="off">
+      <span class="hint">
+        Compila SOLO per provider <code>custom</code> o per Ollama remoto
+        (es. <code>http://gpu-server:11434/v1</code>).
+      </span>
+    </label>
+
+    {% if key %}
+    <label>Status
+      <select name="status">
+        <option value="active"     {% if key.status == 'active'     %}selected{% endif %}>active</option>
+        <option value="quarantine" {% if key.status == 'quarantine' %}selected{% endif %}>quarantine</option>
+        <option value="banned"     {% if key.status == 'banned'     %}selected{% endif %}>banned</option>
+      </select>
+    </label>
+    {% endif %}
+
+    <label>Note
+      <textarea name="notes" rows="2"
+                placeholder="Es. Chiave pagata da EDG, scadenza Q3 2026, ratelimit 10k req/min">{{ key.notes or '' if key else '' }}</textarea>
+    </label>
+
+    <div style="margin-top: 1.2rem; display: flex; gap: 0.6rem;">
+      <button type="submit" class="btn-primary"
+              {% if not is_secret_configured %}disabled{% endif %}>
+        💾 {% if key %}Salva modifiche{% else %}Aggiungi chiave{% endif %}
+      </button>
+      <a href="/accounts/llm-keys" class="btn-link">Annulla</a>
+    </div>
+  </form>
+
+  <script>
+    (function() {
+      var sel = document.getElementById('provider_select');
+      var hint = document.getElementById('provider_hint');
+      function update() {
+        var opt = sel.options[sel.selectedIndex];
+        hint.textContent = opt ? (opt.dataset.hint || '') : '';
+      }
+      sel.addEventListener('change', update);
+      update();
+    })();
+  </script>
+</section>
+{% endblock %}

@@ -383,6 +383,10 @@ def test_orchestrator_plan_and_execute(authed_client, monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator_route, "_stream_chat_reply", fake_stream_reply)
 
     client = authed_client
+    # La chiave API non si manda piu' in plaintext: l'orchestrator legge
+    # llm_credential_id che punta a una riga di llm_api_keys (cifrata Fernet).
+    # Qui testiamo solo il save della config orchestrator senza credenziale,
+    # ovvero il caso "ollama locale" o "custom con env var fallback".
     r = client.post(
         "/settings/orchestrator",
         data={
@@ -390,7 +394,6 @@ def test_orchestrator_plan_and_execute(authed_client, monkeypatch, tmp_path):
             "llm_provider": "custom",
             "planner_model": "planner-test",
             "llm_base_url": "https://llm.example/v1",
-            "llm_api_key": "secret-test",
         },
         follow_redirects=False,
     )
@@ -398,7 +401,7 @@ def test_orchestrator_plan_and_execute(authed_client, monkeypatch, tmp_path):
     saved = db.get_channel_config("orchestrator")
     assert saved["enabled"] == 1
     assert saved["config"]["llm_provider"] == "custom"
-    assert saved["config"]["llm_api_key"] == "secret-test"
+    assert saved["config"]["llm_base_url"] == "https://llm.example/v1"
     assert "chat_web_enabled" not in saved["config"]
     assert "chat_actions_enabled" not in saved["config"]
 

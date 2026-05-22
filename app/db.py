@@ -646,6 +646,49 @@ CREATE TABLE IF NOT EXISTS telegram_bots (
 );
 
 -- ============================================================
+-- LLM API keys (chiavi cloud per OpenAI/Anthropic/Gemini/Grok/custom/ollama-remoto)
+-- Multi-tenant, cifrate Fernet via crypto_creds. L'utente assegna a ogni chiave
+-- una `label` simbolica ("prod", "dev", "cliente X") e la riusa nei task tramite
+-- llm_credential_id. tenant_id=NULL = chiave globale gestita dal super-admin
+-- (i tenant possono selezionarla senza vederne il segreto).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS llm_api_keys (
+  id BIGSERIAL PRIMARY KEY,
+  uuid TEXT UNIQUE NOT NULL,
+  label TEXT NOT NULL,
+  provider TEXT NOT NULL,        -- 'openai'|'anthropic'|'grok'|'gemini'|'custom'|'ollama'
+  encrypted_api_key BYTEA,       -- nullable: ollama locale non richiede chiave
+  base_url TEXT,                 -- override (per custom o ollama remoto); NULL = default provider
+  status TEXT NOT NULL DEFAULT 'active',
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- ============================================================
+-- LLM usage log (billing scaffold)
+-- Una riga per ogni chiamata LLM con token usage + costo (cost_usd NULL finche'
+-- non viene impostata una tabella prezzi). Collegata al task/job che l'ha
+-- generata e alla credenziale usata (per fatturazione cross-tenant).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS llm_usage (
+  id BIGSERIAL PRIMARY KEY,
+  task_id BIGINT,
+  job_id BIGINT,
+  credential_id BIGINT,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  total_tokens INTEGER,
+  cost_usd NUMERIC(12, 6),
+  latency_ms INTEGER,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_task ON llm_usage(task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_credential ON llm_usage(credential_id, created_at DESC);
+
+-- ============================================================
 -- Contacts (legacy + asset-linked)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS contacts (
@@ -867,6 +910,7 @@ _TENANT_AWARE_TABLES = (
     "orchestrator_messages", "social_accounts", "social_dm_log",
     "whatsapp_api_config", "channel_config",
     "email_accounts", "telegram_bots",
+    "llm_api_keys", "llm_usage",
     "recon_runs", "recon_checkpoints", "recon_visited",
 )
 
@@ -876,6 +920,7 @@ _USER_OWNERSHIP_TABLES = (
     "tasks", "jobs", "workflows", "assets", "contacts",
     "social_accounts", "whatsapp_api_config",
     "email_accounts", "telegram_bots",
+    "llm_api_keys", "llm_usage",
 )
 
 
@@ -911,6 +956,8 @@ def _apply_multitenant_columns(conn) -> None:
         ("idx_whatsapp_api_tenant", "whatsapp_api_config(tenant_id, status)"),
         ("idx_email_accounts_tenant", "email_accounts(tenant_id, status)"),
         ("idx_telegram_bots_tenant", "telegram_bots(tenant_id, status)"),
+        ("idx_llm_api_keys_tenant", "llm_api_keys(tenant_id, provider, status)"),
+        ("idx_llm_usage_tenant", "llm_usage(tenant_id, created_at DESC)"),
         ("idx_recon_runs_tenant", "recon_runs(tenant_id, status)"),
     ]
     for name, definition in tenant_indices:
@@ -951,6 +998,29 @@ def _apply_multitenant_columns(conn) -> None:
         "ALTER TABLE assets ADD COLUMN IF NOT EXISTS dedup_canonical_id BIGINT"
     )
 
+    # LLM credential reference: nuovo flusso sostituisce i campi llm_api_key
+    # plaintext con FK alla tabella `llm_api_keys` (cifrata, tenant-scoped).
+    # Tre slot: main (runner principale), discovery (crawler URL), browser
+    # (browser-use). I vecchi campi llm_api_key restano come fallback retrocompat
+    # finche' i task non sono migrati.
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_credential_id BIGINT "
+        "REFERENCES llm_api_keys(id) ON DELETE SET NULL"
+    )
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS discovery_llm_credential_id BIGINT "
+        "REFERENCES llm_api_keys(id) ON DELETE SET NULL"
+    )
+    conn.execute(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS browser_llm_credential_id BIGINT "
+        "REFERENCES llm_api_keys(id) ON DELETE SET NULL"
+    )
+    # Stesso meccanismo per il config singleton dell'orchestrator.
+    conn.execute(
+        "ALTER TABLE channel_config ADD COLUMN IF NOT EXISTS llm_credential_id BIGINT "
+        "REFERENCES llm_api_keys(id) ON DELETE SET NULL"
+    )
+
 
 def init_db() -> None:
     """Crea (idempotente) tutte le tabelle business + indici + colonne multi-tenant.
@@ -967,6 +1037,94 @@ def init_db() -> None:
         _apply_multitenant_columns(conn)
         conn.commit()
     log.info("DB business schema applicato (init_db) + colonne multi-tenant.")
+
+
+def migrate_legacy_channels_to_accounts() -> None:
+    """One-time migration (idempotente): legacy `channel_config('email'|'telegram')`
+    e relative env vars (`SMTP_PASSWORD`, `IMAP_PASSWORD`, `TELEGRAM_BOT_TOKEN`)
+    → tabelle multi-account `email_accounts` / `telegram_bots`.
+
+    Marca le righe migrate con `label='legacy-default'`. Sicuro da chiamare a
+    ogni boot: se il label esiste gia' non rifa' niente. Se ARGOS_SECRET non e'
+    configurato fa skip (la cifratura serve per encrypted_*_password/token).
+    """
+    import os
+    import secrets
+
+    from .agent.social.crypto_creds import encrypt, is_configured
+
+    if not is_configured():
+        log.info("migrate_legacy_channels: ARGOS_SECRET assente, skip.")
+        return
+
+    # --- Email ---
+    row = get_channel_config("email")
+    if row:
+        cfg = (row.get("config") or {})
+        smtp_host = (cfg.get("smtp_host") or "").strip()
+        smtp_user = (cfg.get("smtp_user") or "").strip()
+        if smtp_host and smtp_user:
+            already = any(
+                (a.get("label") or "").lower() == "legacy-default"
+                for a in list_email_accounts()
+            )
+            if not already:
+                smtp_pwd = (cfg.get("smtp_password") or os.environ.get("SMTP_PASSWORD") or "").strip()
+                imap_pwd = (cfg.get("imap_password") or os.environ.get("IMAP_PASSWORD") or smtp_pwd or "").strip()
+                if smtp_pwd:
+                    try:
+                        new_id = insert_email_account({
+                            "uuid": f"emailacc-{secrets.token_hex(8)}",
+                            "label": "legacy-default",
+                            "from_address": cfg.get("from_address") or smtp_user,
+                            "reply_to": cfg.get("reply_to"),
+                            "smtp_host": smtp_host,
+                            "smtp_port": int(cfg.get("smtp_port") or 587),
+                            "smtp_user": smtp_user,
+                            "encrypted_smtp_password": encrypt(smtp_pwd),
+                            "smtp_use_tls": cfg.get("smtp_use_tls", True),
+                            "imap_host": cfg.get("imap_host"),
+                            "imap_port": int(cfg.get("imap_port") or 993) if cfg.get("imap_port") else None,
+                            "imap_user": cfg.get("imap_user") or smtp_user,
+                            "encrypted_imap_password": encrypt(imap_pwd) if imap_pwd else None,
+                            "imap_folder": cfg.get("imap_folder") or "INBOX",
+                            "status": "active",
+                            "rate_limit_per_minute": int(cfg.get("rate_limit_per_minute") or 10),
+                            "notes": "Migrato da channel_config legacy.",
+                        })
+                        log.info(
+                            "[migrate] channel_config('email') -> email_accounts id=%s (label=legacy-default).",
+                            new_id,
+                        )
+                    except Exception as e:
+                        log.warning("[migrate] email channel_config fallita: %s", e)
+
+    # --- Telegram ---
+    row = get_channel_config("telegram")
+    if row:
+        cfg = (row.get("config") or {})
+        token = (cfg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+        if token:
+            already = any(
+                (b.get("label") or "").lower() == "legacy-default"
+                for b in list_telegram_bots()
+            )
+            if not already:
+                try:
+                    new_id = insert_telegram_bot({
+                        "uuid": f"tgbot-{secrets.token_hex(8)}",
+                        "label": "legacy-default",
+                        "encrypted_bot_token": encrypt(token),
+                        "status": "active",
+                        "last_update_id": cfg.get("polling_offset"),
+                        "notes": "Migrato da channel_config legacy.",
+                    })
+                    log.info(
+                        "[migrate] channel_config('telegram') -> telegram_bots id=%s (label=legacy-default).",
+                        new_id,
+                    )
+                except Exception as e:
+                    log.warning("[migrate] telegram channel_config fallita: %s", e)
 
 
 def _dump_list(value: list[str] | None) -> str | None:
@@ -1286,9 +1444,10 @@ def create_task(
                                   outreach_filter_source_follower_of,
                                   outreach_filter_tags,
                                   gap_between_dms_min, gap_between_dms_max,
+                                  llm_credential_id, discovery_llm_credential_id, browser_llm_credential_id,
                                   tenant_id, created_by_user_id,
                                   created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 data["name"],
@@ -1360,6 +1519,9 @@ def create_task(
                 _serialize_outreach_filter_tags(data.get("outreach_filter_tags")),
                 _coerce_gap_minutes(data.get("gap_between_dms_min")),
                 _coerce_gap_minutes(data.get("gap_between_dms_max")),
+                int(data["llm_credential_id"]) if data.get("llm_credential_id") else None,
+                int(data["discovery_llm_credential_id"]) if data.get("discovery_llm_credential_id") else None,
+                int(data["browser_llm_credential_id"]) if data.get("browser_llm_credential_id") else None,
                 tenant_id,
                 created_by_user_id,
                 ts,
@@ -1408,6 +1570,9 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 outreach_filter_tags = %s,
                 gap_between_dms_min = %s,
                 gap_between_dms_max = %s,
+                llm_credential_id = %s,
+                discovery_llm_credential_id = %s,
+                browser_llm_credential_id = %s,
                 updated_at = %s
             WHERE id = %s
               AND (%s::bigint IS NULL OR tenant_id = %s)
@@ -1482,6 +1647,9 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 _serialize_outreach_filter_tags(data.get("outreach_filter_tags")),
                 _coerce_gap_minutes(data.get("gap_between_dms_min")),
                 _coerce_gap_minutes(data.get("gap_between_dms_max")),
+                int(data["llm_credential_id"]) if data.get("llm_credential_id") else None,
+                int(data["discovery_llm_credential_id"]) if data.get("discovery_llm_credential_id") else None,
+                int(data["browser_llm_credential_id"]) if data.get("browser_llm_credential_id") else None,
                 now_iso(),
                 task_id,
                 tenant_id,
@@ -5126,6 +5294,229 @@ def delete_telegram_bot(bot_id: int, tenant_id: Any = _UNSET) -> None:
                 "DELETE FROM telegram_bots WHERE id = %s AND tenant_id = %s",
                 (bot_id, tenant_id),
             )
+
+
+# ===========================================================================
+# LLM API keys (cifrate Fernet, tenant-scoped + opzionale globale super-admin)
+# ===========================================================================
+
+def insert_llm_api_key(
+    data: dict, *, tenant_id: Any = _UNSET, created_by_user_id: Any = _UNSET
+) -> int:
+    """Crea una nuova chiave API LLM. `encrypted_api_key` deve essere gia' cifrato
+    via crypto_creds.encrypt (oppure None per ollama locale senza chiave)."""
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
+    ts = now_iso()
+    with connect() as con:
+        cur = con.execute(
+            """INSERT INTO llm_api_keys
+            (uuid, label, provider, encrypted_api_key, base_url,
+             status, notes, tenant_id, created_by_user_id, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id""",
+            (
+                data["uuid"],
+                data["label"],
+                data["provider"],
+                data.get("encrypted_api_key"),
+                data.get("base_url"),
+                data.get("status", "active"),
+                data.get("notes"),
+                tenant_id, created_by_user_id,
+                ts, ts,
+            ),
+        )
+        return int(cur.fetchone()["id"])
+
+
+def list_llm_api_keys(
+    provider: str | None = None,
+    status: str | None = None,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = None,
+    include_global: bool = True,
+) -> list[dict]:
+    """Lista chiavi LLM + owner_email via LEFT JOIN users.
+
+    Se `include_global=True` (default) e tenant_id e' specifico, ritorna anche le
+    chiavi globali (tenant_id IS NULL) gestite dal super-admin. Per l'admin che
+    vuole vedere SOLO le proprie chiavi tenant: passare include_global=False.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = (
+        "SELECT k.*, u.email AS owner_email, "
+        "       u.first_name AS owner_first_name, u.last_name AS owner_last_name "
+        "FROM llm_api_keys k "
+        "LEFT JOIN users u ON u.id = k.created_by_user_id "
+        "WHERE 1=1"
+    )
+    args: list = []
+    if provider:
+        sql += " AND k.provider = %s"; args.append(provider)
+    if status:
+        sql += " AND k.status = %s"; args.append(status)
+    if tenant_id is not None:
+        if include_global:
+            sql += " AND (k.tenant_id = %s OR k.tenant_id IS NULL)"
+            args.append(tenant_id)
+        else:
+            sql += " AND k.tenant_id = %s"
+            args.append(tenant_id)
+    if created_by_user_id is not None:
+        sql += " AND k.created_by_user_id = %s"; args.append(int(created_by_user_id))
+    sql += " ORDER BY (k.tenant_id IS NULL) ASC, k.id DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_llm_api_key(key_id: int, tenant_id: Any = _UNSET) -> dict | None:
+    """Carica una singola chiave. Accetta sia chiavi del tenant corrente sia
+    chiavi globali (tenant_id IS NULL) — utile perche' il runner deve poter
+    decifrare una chiave globale assegnata al task dal super-admin."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            r = con.execute(
+                "SELECT * FROM llm_api_keys WHERE id = %s", (key_id,)
+            ).fetchone()
+        else:
+            r = con.execute(
+                "SELECT * FROM llm_api_keys WHERE id = %s "
+                "AND (tenant_id = %s OR tenant_id IS NULL)",
+                (key_id, tenant_id),
+            ).fetchone()
+    return dict(r) if r else None
+
+
+def update_llm_api_key(key_id: int, *, tenant_id: Any = _UNSET, **fields) -> None:
+    if not fields:
+        return
+    tenant_id = _resolve_tenant(tenant_id)
+    sets = [f"{k} = %s" for k in fields]
+    if tenant_id is None:
+        sql = f"UPDATE llm_api_keys SET {', '.join(sets)}, updated_at = %s WHERE id = %s"
+        params = (*fields.values(), now_iso(), key_id)
+    else:
+        # Update SOLO se la chiave appartiene al tenant: una chiave globale
+        # non puo' essere modificata da un tenant_user (richiede super-admin
+        # che chiamera' con tenant_id=None esplicito).
+        sql = (
+            f"UPDATE llm_api_keys SET {', '.join(sets)}, updated_at = %s "
+            f"WHERE id = %s AND tenant_id = %s"
+        )
+        params = (*fields.values(), now_iso(), key_id, tenant_id)
+    with connect() as con:
+        con.execute(sql, params)
+
+
+def delete_llm_api_key(key_id: int, tenant_id: Any = _UNSET) -> None:
+    """Elimina chiave LLM. Setta a NULL i FK su tasks (le task referenti
+    cadranno in fallback env var). Stesso vincolo tenant di update."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        con.execute(
+            "UPDATE tasks SET llm_credential_id = NULL WHERE llm_credential_id = %s",
+            (key_id,),
+        )
+        con.execute(
+            "UPDATE tasks SET discovery_llm_credential_id = NULL "
+            "WHERE discovery_llm_credential_id = %s",
+            (key_id,),
+        )
+        con.execute(
+            "UPDATE tasks SET browser_llm_credential_id = NULL "
+            "WHERE browser_llm_credential_id = %s",
+            (key_id,),
+        )
+        con.execute(
+            "UPDATE channel_config SET llm_credential_id = NULL "
+            "WHERE llm_credential_id = %s",
+            (key_id,),
+        )
+        if tenant_id is None:
+            con.execute("DELETE FROM llm_api_keys WHERE id = %s", (key_id,))
+        else:
+            con.execute(
+                "DELETE FROM llm_api_keys WHERE id = %s AND tenant_id = %s",
+                (key_id, tenant_id),
+            )
+
+
+# ===========================================================================
+# LLM usage logging (billing scaffold)
+# ===========================================================================
+
+def insert_llm_usage(
+    *,
+    provider: str,
+    model: str,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+    cost_usd: float | None = None,
+    latency_ms: int | None = None,
+    task_id: int | None = None,
+    job_id: int | None = None,
+    credential_id: int | None = None,
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = _UNSET,
+) -> int:
+    """Logga una chiamata LLM. Tutti i campi tranne provider/model sono opzionali
+    (alcuni provider non ritornano usage; cost_usd richiede una pricing table
+    futura). Non solleva su errori — il logging non deve mai bloccare il runner.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
+    ts = now_iso()
+    try:
+        with connect() as con:
+            cur = con.execute(
+                """INSERT INTO llm_usage
+                (task_id, job_id, credential_id, provider, model,
+                 prompt_tokens, completion_tokens, total_tokens,
+                 cost_usd, latency_ms,
+                 tenant_id, created_by_user_id, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id""",
+                (
+                    task_id, job_id, credential_id, provider, model,
+                    prompt_tokens, completion_tokens, total_tokens,
+                    cost_usd, latency_ms,
+                    tenant_id, created_by_user_id, ts,
+                ),
+            )
+            return int(cur.fetchone()["id"])
+    except Exception:
+        log.exception("insert_llm_usage failed (non-fatal)")
+        return 0
+
+
+def list_llm_usage(
+    tenant_id: Any = _UNSET,
+    task_id: int | None = None,
+    credential_id: int | None = None,
+    since: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """Lista record di utilizzo LLM (per dashboard billing futuro)."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM llm_usage WHERE 1=1"
+    args: list = []
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"; args.append(tenant_id)
+    if task_id is not None:
+        sql += " AND task_id = %s"; args.append(int(task_id))
+    if credential_id is not None:
+        sql += " AND credential_id = %s"; args.append(int(credential_id))
+    if since:
+        sql += " AND created_at >= %s"; args.append(since)
+    sql += " ORDER BY id DESC LIMIT %s"
+    args.append(int(limit))
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ===========================================================================

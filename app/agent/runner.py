@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from .. import db
 from ..storage import write_result
-from .llm_providers import resolve_api_key, resolve_base_url
+from .llm_providers import resolve_credential
 from .ollama import chat, chat_openai_compat
 from .prompts import SYSTEM_PROMPT, TOOLS_SPEC, build_user_prompt
 from .tools.fetch_http import fetch_http
@@ -27,14 +27,30 @@ async def _llm_chat(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     temperature: float = 0.2,
+    *,
+    job_id: int | None = None,
 ) -> dict[str, Any]:
-    """Dispatch sul provider LLM scelto nel progetto."""
+    """Dispatch sul provider LLM scelto nel task. Risolve la chiave da
+    llm_credential_id (preferito) o dai campi legacy plaintext + env var."""
     provider = (task.get("llm_provider") or "ollama").lower()
     model = task["model"]
+    api_key, base_url, cred_id = resolve_credential(
+        task.get("llm_credential_id"),
+        provider,
+        project_key=task.get("llm_api_key"),
+        custom_base_url=task.get("llm_base_url"),
+    )
+    usage_ctx = {
+        "task_id": task.get("id"),
+        "job_id": job_id,
+        "credential_id": cred_id,
+        "provider": provider,
+    }
     if provider == "ollama":
-        return await chat(model=model, messages=messages, tools=tools, temperature=temperature)
-    base_url = resolve_base_url(provider, task.get("llm_base_url"))
-    api_key = resolve_api_key(provider, task.get("llm_api_key"))
+        return await chat(
+            model=model, messages=messages, tools=tools,
+            temperature=temperature, usage_ctx=usage_ctx,
+        )
     return await chat_openai_compat(
         base_url=base_url,
         api_key=api_key,
@@ -42,6 +58,7 @@ async def _llm_chat(
         messages=messages,
         tools=tools,
         temperature=temperature,
+        usage_ctx=usage_ctx,
     )
 
 
@@ -155,7 +172,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     for step in range(1, max_iter + 1):
         log(f"--- step {step}/{max_iter} ---")
         try:
-            msg = await _llm_chat(task, messages, tools=TOOLS_SPEC)
+            msg = await _llm_chat(task, messages, tools=TOOLS_SPEC, job_id=job_id)
         except Exception as e:
             log(f"Errore LLM ({provider}): {e}")
             raise
@@ -197,7 +214,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             break
     else:
         log("Raggiunto max_iterations senza finalize. Forzo riassunto.")
-        final_report = await _force_summary(task, messages, log)
+        final_report = await _force_summary(task, messages, log, job_id=job_id)
 
     if not final_report:
         final_report = "(nessun report prodotto)"
@@ -209,7 +226,13 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     return path
 
 
-async def _force_summary(task: dict[str, Any], messages: list[dict[str, Any]], log: LogFn) -> str:
+async def _force_summary(
+    task: dict[str, Any],
+    messages: list[dict[str, Any]],
+    log: LogFn,
+    *,
+    job_id: int | None = None,
+) -> str:
     """Se il modello non chiama finalize entro max_iterations, gli chiediamo un report con la sola cronologia."""
     log("Richiedo riassunto forzato (no tool).")
     closing = messages + [
@@ -220,7 +243,7 @@ async def _force_summary(task: dict[str, Any], messages: list[dict[str, Any]], l
         }
     ]
     try:
-        msg = await _llm_chat(task, closing, tools=None, temperature=0.2)
+        msg = await _llm_chat(task, closing, tools=None, temperature=0.2, job_id=job_id)
         return (msg.get("content") or "").strip() or "(nessun output)"
     except Exception as e:
         log(f"Errore nel riassunto forzato: {e}")

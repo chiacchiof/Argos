@@ -488,17 +488,26 @@ button:disabled, .btn:disabled, button[disabled] {
 button.danger, .btn-danger { background: var(--danger); border-color: var(--danger); }
 button.danger:hover, .btn-danger:hover { background: #dc2626; border-color: #dc2626; }
 
-.btn-primary {
-  background: var(--brand-2);
-  border-color: var(--brand-2);
-  color: #fff;
-  font-weight: 600;
-  box-shadow: 0 2px 8px rgba(79,107,246,0.28);
+.btn-primary, a.btn-primary {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.45rem 0.9rem;
+  background: var(--surface-1);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  text-decoration: none;
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+  box-shadow: none;
 }
-.btn-primary:hover {
-  background: var(--brand-hover);
-  border-color: var(--brand-hover);
-  box-shadow: 0 4px 14px rgba(79,107,246,0.42);
+.btn-primary:hover, a.btn-primary:hover {
+  background: var(--surface-2);
+  border-color: var(--brand-2);
+  color: var(--fg-strong);
+  box-shadow: none;
 }
 
 .btn-secondary {
@@ -514,6 +523,7 @@ button.danger:hover, .btn-danger:hover { background: #dc2626; border-color: #dc2
 }
 /* icone dentro i CTA non-primary prendono l'accent (sobrio + leggibile) */
 .btn-secondary .icon,
+.btn-primary .icon,
 .btn-link-action .icon { color: var(--brand-2); }
 
 .btn-small {
@@ -691,6 +701,11 @@ table.data th, .admin-table th, .llm-roles th {
 table.data tbody tr, .admin-table tbody tr { transition: background 0.12s; }
 table.data tbody tr:hover, .admin-table tbody tr:hover { background: var(--surface-2); }
 table.data tbody tr:last-child td { border-bottom: none; }
+table.data:has(.kebab-menu[open]), .admin-table:has(.kebab-menu[open]) { overflow: visible; }
+table.data td:has(> .kebab-menu[open]), .admin-table td:has(> .kebab-menu[open]) {
+  position: relative;
+  z-index: 80;
+}
 
 .row-disabled, .admin-table tr.row-disabled td { opacity: 0.55; }
 .row-disabled a, .admin-table tr.row-disabled a { color: var(--fg-subtle); }
@@ -1325,6 +1340,7 @@ a.tag-chip-mini:hover { background: var(--brand-soft); border-color: var(--brand
 
 /* Kebab menu (⋮) */
 .kebab-menu { display: inline-block; position: relative; }
+.kebab-menu[open] { z-index: 80; }
 .kebab-menu > summary { display: inline-block; cursor: pointer; user-select: none; list-style: none; }
 .kebab-menu > summary::-webkit-details-marker { display: none; }
 .kebab-menu > summary::marker { content: ''; }
@@ -1350,6 +1366,7 @@ a.tag-chip-mini:hover { background: var(--brand-soft); border-color: var(--brand
   padding: 0.3rem 0;
   z-index: 50;
 }
+.kebab-dropdown .icon { width: 16px; height: 16px; flex: 0 0 auto; color: var(--brand-2); }
 .kebab-dropdown a, .kebab-dropdown button {
   display: flex; align-items: center; gap: 0.5rem;
   width: 100%;
@@ -1364,8 +1381,17 @@ a.tag-chip-mini:hover { background: var(--brand-soft); border-color: var(--brand
 .kebab-dropdown a:hover, .kebab-dropdown button:hover { background: var(--surface-2); color: var(--fg-strong); }
 .kebab-dropdown form { margin: 0; display: block; }
 .kebab-dropdown form button { width: 100%; justify-content: flex-start; }
-.kebab-dropdown .kebab-danger, .kebab-dropdown form button.kebab-danger { color: var(--danger); }
-.kebab-dropdown .kebab-danger:hover { background: var(--danger-soft); color: var(--danger); }
+.kebab-dropdown .menu-sep {
+  margin: 0.3rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.kebab-dropdown .kebab-danger,
+.kebab-dropdown .menu-danger,
+.kebab-dropdown form button.kebab-danger,
+.kebab-dropdown form button.menu-danger { color: var(--danger); }
+.kebab-dropdown .kebab-danger:hover,
+.kebab-dropdown .menu-danger:hover { background: var(--danger-soft); color: var(--danger); }
 
 /* ============================================================
    12. UPDATE BANNER / FLASH / ERRORS / EMPTY

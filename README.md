@@ -138,9 +138,9 @@ Argos supporta **5 tipi di agent**, combinabili in pipeline:
 
 **Pipeline DAG**: dal menu `🔗 Workflow` puoi collegare progetti A→B→C; quando A finisce, B viene lanciato automaticamente, e l'artifact (es. `profiles.jsonl`) viene passato a B come input.
 
-**Canali messaggistica** (configurazione in `⚙️ Settings`):
-- **Email**: SMTP send + IMAP polling ogni 60s. Configura host/user/password (Gmail richiede App Password). Le password vanno meglio in env: `SMTP_PASSWORD`, `IMAP_PASSWORD`.
-- **Telegram**: Bot Token (da @BotFather, env `TELEGRAM_BOT_TOKEN`). Polling getUpdates ogni 30s. **Vincolo**: il bot riceve solo da utenti che gli hanno scritto per primi.
+**Canali messaggistica** (configurazione in `⚙️ Settings` o nelle pagine multi-account `/accounts/email` e `/accounts/messaging`):
+- **Email**: SMTP send + IMAP polling ogni 60s. Configura host/user/password dall'UI (Gmail richiede App Password). Password cifrate nel DB con `ARGOS_SECRET`.
+- **Telegram**: Bot Token (da @BotFather), aggiunto dall'UI. Polling getUpdates ogni 30s. **Vincolo**: il bot riceve solo da utenti che gli hanno scritto per primi.
 
 **Inbox** (`📨 Inbox`): vede tutti i thread, dettaglio messaggi, reply manuale, opt-out. I messaggi inbound auto-aggiornano contatti e thread.
 
@@ -152,16 +152,16 @@ Argos supporta **5 tipi di agent**, combinabili in pipeline:
 
 Browser-use può usare qualsiasi LLM che parli protocollo OpenAI-compatible. Il progetto supporta sei provider preset:
 
-| Provider | Base URL | Env var | Modelli consigliati |
-|---|---|---|---|
-| `ollama` (default) | `http://localhost:11434/v1` | — | `qwen3-coder:30b`, `gpt-oss:20b` |
-| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-4o-mini`, `gpt-4o` |
-| `anthropic` | `https://api.anthropic.com/v1/` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5`, `claude-sonnet-4-6` |
-| `grok` | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-2-latest` |
-| `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `GEMINI_API_KEY` | `gemini-2.5-flash`, `gemini-2.5-pro` |
-| `custom` | URL libero (campo nel progetto) | `CUSTOM_API_KEY` | qualsiasi |
+| Provider | Base URL | Modelli consigliati |
+|---|---|---|
+| `ollama` (default) | `http://localhost:11434/v1` | `qwen3-coder:30b`, `gpt-oss:20b` |
+| `openai` | `https://api.openai.com/v1` | `gpt-4o-mini`, `gpt-4o` |
+| `anthropic` | `https://api.anthropic.com/v1/` | `claude-haiku-4-5`, `claude-sonnet-4-6` |
+| `grok` | `https://api.x.ai/v1` | `grok-2-latest` |
+| `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.5-flash`, `gemini-2.5-pro` |
+| `custom` | URL libero (campo nel progetto) | qualsiasi |
 
-**Setup:** copia `.env.example` in `.env` e decommenta le righe delle API key che vuoi usare. Il selettore "Provider LLM" nel form di progetto mostra inline se la chiave è impostata (✓) o mancante (⚠️). Le chiavi non vengono mai salvate nel DB — solo in `.env` (gitignorato).
+**Setup:** vai su **/accounts/llm-keys** e aggiungi una chiave per provider con un label simbolico (es. "prod", "dev"). Le chiavi sono cifrate Fernet con `ARGOS_SECRET`, scoped al tenant, con status (active/quarantine/banned) e audit di chi le ha create. Nel form del task il dropdown "Provider LLM" mostra solo i provider per i quali hai almeno una chiave attiva.
 
 **Quando usare cosa:**
 - **Per task agentici complessi (browser-use)** i modelli frontier remoti (gpt-4o, sonnet 4.6, gemini 2.5 pro) producono JSON tool-call affidabile e sono 5-10× più veloci dei locali sotto 20B parametri. Costo tipico per run: $0.05-1.00.

@@ -23,6 +23,7 @@ from .routes import orchestrator as orchestrator_routes
 from .routes import results as results_routes
 from .routes import settings as settings_routes
 from .routes import accounts_email as accounts_email_routes
+from .routes import accounts_llm_keys as accounts_llm_keys_routes
 from .routes import accounts_messaging as accounts_messaging_routes
 from .routes import settings_whatsapp as settings_whatsapp_routes
 from .routes import site_memory as site_memory_routes
@@ -62,6 +63,10 @@ async def lifespan(app: FastAPI):
     # FK tenant_id/created_by_user_id alle tabelle business).
     db_cloud.init_db()
     db.init_db()
+    # Migration one-shot idempotente: channel_config('email'|'telegram') legacy
+    # -> email_accounts / telegram_bots. Da quando le route /settings/email|telegram
+    # sono state rimosse (2026-05-22) la fonte canonica e' la tabella multi-account.
+    db.migrate_legacy_channels_to_accounts()
     # Riconcilia job orfani (server riavviato mentre stavano girando)
     jobs.reconcile_orphan_jobs()
     jobs.start_scheduler()
@@ -195,6 +200,7 @@ app.include_router(site_memory_routes.router)
 app.include_router(social_accounts_routes.router)
 app.include_router(accounts_email_routes.router)
 app.include_router(accounts_messaging_routes.router)
+app.include_router(accounts_llm_keys_routes.router)
 app.include_router(update_routes.router)
 
 

@@ -786,7 +786,10 @@ def _saved_orchestrator_config() -> dict:
         "llm_provider": cfg.get("llm_provider") or "ollama",
         "planner_model": cfg.get("planner_model") or "",
         "llm_base_url": cfg.get("llm_base_url") or "",
+        # Legacy plaintext (verra' rimosso): nuovi flussi usano llm_credential_id
+        # che punta a una chiave cifrata in /accounts/llm-keys.
         "llm_api_key": cfg.get("llm_api_key") or "",
+        "llm_credential_id": cfg.get("llm_credential_id"),
     }
 
 
@@ -881,6 +884,21 @@ async def _context(
     effective_model = planner_model or saved["planner_model"] or (models[0] if models else settings.default_model)
     chat_capabilities = _chat_model_capabilities(llm_provider, effective_model)
     planner_model_warning = _planner_model_warning(effective_model)
+
+    # Mostra solo provider con almeno una chiave attiva in DB, oppure senza
+    # bisogno di chiave (ollama, custom), oppure con env var settata (legacy).
+    try:
+        _providers_with_creds = {
+            k["provider"] for k in db.list_llm_api_keys(status="active")
+        }
+    except Exception:
+        _providers_with_creds = set()
+    _eks = env_key_status()
+    visible_providers = [
+        p for p in list_providers()
+        if not p["needs_key"] or p["key"] in _providers_with_creds or _eks.get(p["key"])
+    ]
+
     return {
         "brief": brief,
         "autonomy_level": autonomy_level,
@@ -890,8 +908,8 @@ async def _context(
         "planner_model": effective_model,
         "llm_base_url": llm_base_url,
         "use_llm": use_llm,
-        "llm_providers": list_providers(),
-        "env_key_status": env_key_status(),
+        "llm_providers": visible_providers,
+        "env_key_status": _eks,
         "models": models,
         "orchestrator_cfg": saved,
         "chat_capabilities": chat_capabilities,

@@ -174,6 +174,13 @@
       <symbol id="i-message" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>
       </symbol>
+      <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m21 2-9.6 9.6"/>
+        <circle cx="7.5" cy="15.5" r="5.5"/>
+        <path d="m21 2-3 3"/>
+        <path d="m17 6 3 3"/>
+        <path d="m14 9 3 3"/>
+      </symbol>
       <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
         <rect x="9" y="9" width="6" height="6"/>
@@ -255,6 +262,9 @@
         </a>
         <a href="/accounts/email" class="nav-item nav-item-sm {% if req_path.startswith('/accounts/email') %}is-active{% endif %}">
           <svg class="icon"><use href="#i-mail"/></svg><span>Email</span>
+        </a>
+        <a href="/accounts/llm-keys" class="nav-item nav-item-sm {% if req_path.startswith('/accounts/llm-keys') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-key"/></svg><span>Chiavi LLM</span>
         </a>
         <div class="nav-section-sep"></div>
         <a href="/site_memory" class="nav-item nav-item-sm {% if req_path.startswith('/site_memory') %}is-active{% endif %}">

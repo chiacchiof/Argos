@@ -55,11 +55,15 @@ async def messaging_hub(
 
     filter_uid = current_uid if (author_norm == "mine" and current_uid is not None) else None
 
-    # Per ora solo i Telegram bots sono live. Le tab WA sono placeholder.
     telegram_bots = db.list_telegram_bots(created_by_user_id=filter_uid)
     total_tenant_telegram = (
         len(db.list_telegram_bots()) if author_norm == "mine" else len(telegram_bots)
     )
+    # WhatsApp Browser (Motore A) e WhatsApp Cloud API (Motore B): list inline.
+    # Pre-2026-05-22 vivevano a /settings/whatsapp ma le tabelle sottostanti sono
+    # social_accounts (platform='whatsapp_browser') e whatsapp_api_config.
+    wa_browser_accounts = db.list_social_accounts(platform="whatsapp_browser")
+    wa_api_configs = db.list_whatsapp_api_config()
 
     tenant_users: list[dict] = []
     tenant_id_ctx = db.current_tenant_id()
@@ -81,6 +85,8 @@ async def messaging_hub(
             "tab": tab,
             "telegram_bots": telegram_bots,
             "total_tenant_telegram": total_tenant_telegram,
+            "wa_browser_accounts": wa_browser_accounts,
+            "wa_api_configs": wa_api_configs,
             "is_secret_configured": is_configured(),
             "author_filter": author_norm,
             "current_user_authenticated": current_uid is not None,

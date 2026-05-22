@@ -32,7 +32,10 @@ class TaskIn(BaseModel):
     extraction_schema: str | None = None
     llm_provider: str = "ollama"
     llm_base_url: str | None = None
-    llm_api_key: str | None = None
+    llm_api_key: str | None = None  # legacy (plaintext) — sostituito da llm_credential_id
+    # Riferimento alla chiave salvata in `llm_api_keys` (cifrata, gestita
+    # da /accounts/llm-keys). NULL = fallback a env var del provider.
+    llm_credential_id: int | None = None
     input_artifact_path: str | None = None
     message_template: str | None = None
     message_subject: str | None = None
@@ -49,11 +52,13 @@ class TaskIn(BaseModel):
     crawler_max_depth: int = Field(default=3, ge=1, le=10)
     discovery_llm_provider: str | None = None
     discovery_llm_model: str | None = None
-    discovery_llm_api_key: str | None = None
+    discovery_llm_api_key: str | None = None  # legacy — sostituito da discovery_llm_credential_id
+    discovery_llm_credential_id: int | None = None
     max_discovery_retries: int = Field(default=3, ge=0, le=10)
     browser_llm_provider: str | None = None
     browser_llm_model: str | None = None
-    browser_llm_api_key: str | None = None
+    browser_llm_api_key: str | None = None  # legacy — sostituito da browser_llm_credential_id
+    browser_llm_credential_id: int | None = None
     rating: int | None = Field(default=None, ge=1, le=5)
     notes: str | None = None
     status_tag: StatusTag | None = None

@@ -232,7 +232,7 @@ Vedi anche §3.0.3 per la sintesi operativa dei 5 casi tipici con keyword-trigge
 | `qualifier` | `profiles.jsonl` da scraping | tabella `contacts` con score 0-10 + status `qualified`/`rejected` | 1 chiamata LLM per profilo |
 | `outreach` | `contacts` con `status='qualified'` | thread + messaggi inviati via email/telegram | Usa template; messaggio finale generato via LLM se richiesto |
 | **`outreach_social`** | `contacts` con `social[platform]` popolato (instagram/tiktok) | DM inviato via browser automation (headed Chromium + stealth) | Pool di account social cifrati con `AGENTSCRAPER_SECRET`; humanize delays; selettori CSS fragili per design |
-| **`outreach_whatsapp`** | `contacts` con `whatsapp` populato (E.164) | DM WhatsApp: doppio motore A (browser, cold) + B (Meta Cloud API, opt-in) | Engine selector per contatto. Setup in `/settings/whatsapp`. Viola ToS Meta su Motore A. |
+| **`outreach_whatsapp`** | `contacts` con `whatsapp` populato (E.164) | DM WhatsApp: doppio motore A (browser, cold) + B (Meta Cloud API, opt-in) | Engine selector per contatto. Setup in `/accounts/messaging` (tab Browser/API). Viola ToS Meta su Motore A. |
 | `responder` | inbox email/telegram | reply auto-generata e inviata | Auto-detect opt-out (STOP, unsubscribe) |
 
 #### Famiglia "Recon social"
@@ -493,7 +493,7 @@ Confronta con tutto OpenAI: $0.30. Risparmio: 99.97%.
 4. Compila i 3 campi "Discovery — ..." SOLO se vuoi splittare:
    - **Discovery — Provider LLM**: es. `openai`
    - **Discovery — Modello**: es. `gpt-4o-mini`
-   - **Discovery — API key** (campo password): solo se il provider scelto richiede chiave **e** non l'hai messa in env var. Se la metti in env (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ecc.) puoi lasciare vuoto. Se la compili qui, viene salvata nel DB del task (gitignorato).
+   - **Discovery — Chiave API**: seleziona la chiave dal dropdown. Le chiavi si gestiscono da **/accounts/llm-keys** (cifrate Fernet, scoped al tenant). Se lasci vuoto, viene usata la chiave del task principale.
 
    Se lasci tutti e 3 vuoti, il modello principale fa entrambe le cose.
 
@@ -1046,7 +1046,7 @@ E due regole anti-fallimento osservate sul campo:
 - **Max DM per sessione browser**: solo Motore A, default 5
 - **🧪 Dry-run**: se spuntato, simula gli invii (log con `reason="dry_run"`) senza inviare DM reale
 
-**Setup preliminare** (una tantum, in `/settings/whatsapp`):
+**Setup preliminare** (una tantum, in `/accounts/messaging`):
 
 1. **Motore A — account browser**: clicca "➕ Aggiungi account", inserisci label + numero. Status iniziale `pending_login`. Poi "📱 Avvia QR login" → si apre Chromium headed sul tuo desktop, scansioni il QR col telefono, status diventa `active`. Sessione salvata in `data/whatsapp_sessions/<uuid>/`, valida ~14 giorni.
 2. **Motore B — API config**: clicca "➕ Aggiungi config Meta Cloud API", inserisci `phone_number_id`, `business_account_id`, `access_token` (preso da Meta for Developers → la tua App → WhatsApp → API Setup). Click "🧪 Test" verifica le credenziali. Il token viene cifrato con `AGENTSCRAPER_SECRET`.
@@ -1061,7 +1061,7 @@ E due regole anti-fallimento osservate sul campo:
 **Esempio**:
 ```
 1. Setup:
-   - /settings/whatsapp → "➕ Aggiungi account" label="WA principale", phone="+393331234567"
+   - /accounts/messaging?tab=browser → "➕ Aggiungi account" label="WA principale", phone="+393331234567"
    - "📱 Avvia QR login" → Chromium si apre, scansiono col telefono, status=active
 
 2. Task outreach_whatsapp:
@@ -1233,13 +1233,7 @@ Selezionabili per task dal selettore "Provider LLM" nel form. Le API key vanno i
 - **Ragionamento aperto / sintesi prosaica** (chat orchestrator senza Azioni, `react`, `responder`): preferisci modelli **chat generalisti**.
 - **Estrazione strutturata one-shot** (`bulk_extract` extraction, `qualifier` judging): qualunque modello ragionevole va bene, evita il thinking-mode.
 
-**Setup chiavi** (in `.env`):
-```
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-XAI_API_KEY=xai-...
-GEMINI_API_KEY=AIzaSy...
-```
+**Setup chiavi**: vai su **/accounts/llm-keys** dall'UI e aggiungi una chiave per ogni provider che vuoi usare. Le chiavi sono cifrate Fernet con `ARGOS_SECRET`, scoped al tenant, con label simbolico e status (active/quarantine/banned). NIENTE chiavi in `.env`.
 
 ### 4.1 I 3 ruoli LLM in un task: Main / Discovery / Browser
 
@@ -1258,7 +1252,7 @@ Per `bulk_extract` e `auto_extract` un task può avere **fino a 3 LLM separati**
 - Discovery: `openai/gpt-4o-mini` (per la scelta del pattern URL — 1 chiamata, capable)
 - Browser: `openai/gpt-4o-mini` (per i siti che richiedono Playwright)
 
-**API key**: ogni slot ha il proprio campo password nel form. Se compili, viene salvata nel DB del task; altrimenti viene letta dall'env var del provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ecc.).
+**API key**: ogni slot ha il proprio dropdown "Chiave API" nel form, popolato con le chiavi gestite da **/accounts/llm-keys** filtrate per provider. Se lasci vuoto uno slot Discovery/Browser, viene usata la chiave del Main.
 
 ---
 
@@ -1323,10 +1317,10 @@ Configurabili in `/settings`. Le credenziali sensibili vanno preferibilmente in 
 ### Email
 
 **Setup**:
-1. Su `/settings` → sezione 📧 Email
+1. Su `/settings` → sezione 📧 Email (oppure `/accounts/email` per multi-account)
 2. SMTP host (es. `smtp.gmail.com`), port (587 con STARTTLS o 465 con SSL), user, From address
-3. **Password**: in `.env` come `SMTP_PASSWORD`. Per Gmail: NON la password Google ma una **App Password** dedicata ([qui](https://myaccount.google.com/apppasswords))
-4. IMAP host/user simili (per Gmail: `imap.gmail.com:993`); password in `IMAP_PASSWORD` (spesso uguale a SMTP)
+3. **Password**: salvata cifrata nel DB. Per Gmail: NON la password Google ma una **App Password** dedicata ([qui](https://myaccount.google.com/apppasswords))
+4. IMAP host/user simili (per Gmail: `imap.gmail.com:993`); password salvata via UI (spesso uguale a SMTP)
 5. Spunta "Canale abilitato"
 6. Click "Test invio SMTP" → se arriva la mail di test sei a posto.
 
@@ -1336,9 +1330,8 @@ Configurabili in `/settings`. Le credenziali sensibili vanno preferibilmente in 
 
 **Setup**:
 1. Apri Telegram, scrivi a [@BotFather](https://t.me/BotFather) → `/newbot` → segui le istruzioni → ottieni il **token** (formato `12345:ABCdef...`)
-2. Mettilo in `.env` come `TELEGRAM_BOT_TOKEN`
-3. Su `/settings` → sezione 💬 Telegram → spunta "Canale abilitato" → salva
-4. Click "Test invio" → inserisci il **chat_id** del tuo account (lo ottieni scrivendo prima al bot e poi guardando i log inbound di Argos).
+2. Su `/settings` → sezione 💬 Telegram → incolla il token (viene salvato cifrato nel DB) → spunta "Canale abilitato" → salva. Per multi-bot vedi `/accounts/messaging`.
+3. Click "Test invio" → inserisci il **chat_id** del tuo account (lo ottieni scrivendo prima al bot e poi guardando i log inbound di Argos).
 
 **Polling**: ogni 30s `getUpdates` Telegram → ogni messaggio inbound diventa un `contact` (con `telegram_chat_id` salvato) + thread + message.
 
@@ -1882,7 +1875,7 @@ URL principali:
 
 **SMTP test fallisce con "auth"**
 - Per Gmail/Outlook NON usare la password normale. Crea una **App Password** dedicata.
-- Verifica che `SMTP_PASSWORD` in `.env` sia stata letta (riavvia uvicorn dopo modifiche a `.env`).
+- Verifica di aver salvato la password dalla UI (`/settings` o `/accounts/email`) e che `ARGOS_SECRET` sia coerente con quella usata al momento del salvataggio (altrimenti la decrypt fallisce).
 
 **Telegram bot non riceve messaggi**
 - Hai scritto al bot per primo? È un vincolo di Telegram.

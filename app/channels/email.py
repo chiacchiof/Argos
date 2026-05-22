@@ -1,13 +1,16 @@
 """Canale email: SMTP send (async) + IMAP fetch (in thread executor).
 
-Due fonti di config supportate:
-  1) Multi-account (preferito): tabella `email_accounts` con Fernet-encrypted
-     password. Il runner passa `account=db.get_email_account(id)` o un dict
-     analogo. Le funzioni `_account_to_cfg()` lo convertono in una `cfg`
-     compatibile con il vecchio shape — il resto del codice non cambia.
-  2) Legacy singleton: tabella `channel_config` channel='email' (back-compat).
-     Usata se nessun `account` viene passato (fallback per task che non hanno
-     ancora `email_account_id`).
+Fonte unica di config: tabella `email_accounts` (multi-account, tenant-scoped,
+password cifrata Fernet con ARGOS_SECRET). Gestita da /accounts/email.
+
+Le funzioni accettano un parametro opzionale `account`:
+ - se passato (row di email_accounts) la usa direttamente
+ - se None fa lookup del primo account `active` del tenant corrente
+
+Pre-2026-05-22 esisteva una fallback `channel_config('email')` (singleton legacy)
+con env vars `SMTP_PASSWORD` / `IMAP_PASSWORD`. Rimosso — la migration al boot
+(`db.migrate_legacy_channels_to_accounts`) ha gia' creato un account
+`legacy-default` per chi aveva quella config.
 """
 from __future__ import annotations
 
@@ -20,24 +23,29 @@ from typing import Any
 
 import aiosmtplib
 
-from .base import InboundMessage, get_config, resolve_secret
+from .. import db
+from .base import InboundMessage
 
 
 log = logging.getLogger(__name__)
 
 
-def _smtp_password(cfg: dict[str, Any]) -> str | None:
-    return resolve_secret("SMTP_PASSWORD", cfg.get("smtp_password"))
-
-
-def _imap_password(cfg: dict[str, Any]) -> str | None:
-    return resolve_secret("IMAP_PASSWORD", cfg.get("imap_password"))
+def _resolve_account(account: dict[str, Any] | None) -> dict[str, Any]:
+    """Ritorna l'account passato o il primo `active` del tenant. RuntimeError se
+    nessun account configurato."""
+    if account is not None:
+        return account
+    accounts = db.list_email_accounts(status="active")
+    if not accounts:
+        raise RuntimeError(
+            "Nessun email account configurato. Aggiungi un account su /accounts/email."
+        )
+    return accounts[0]
 
 
 def _account_to_cfg(account: dict[str, Any]) -> dict[str, Any]:
     """Converte una row `email_accounts` (con `encrypted_smtp_password` BYTEA) in
-    un dict cfg compatibile con il vecchio shape `channel_config`. Decifra
-    Fernet inline."""
+    un dict cfg con password Fernet-decifrate inline."""
     from ..agent.social.crypto_creds import decrypt
 
     smtp_pwd = decrypt(account["encrypted_smtp_password"]) if account.get("encrypted_smtp_password") else None
@@ -69,28 +77,21 @@ async def send_email(
 ) -> str:
     """Invia un'email tramite SMTP. Ritorna il Message-ID generato.
 
-    Se `account` è passato (row di email_accounts), usa quelle credenziali
-    (Fernet-decifrate). Altrimenti fallback a `channel_config` legacy.
-    Solleva RuntimeError se la config non è completa.
+    Se `account` non viene passato usa il primo email_account attivo del tenant.
     """
-    if account is not None:
-        cfg = _account_to_cfg(account)
-    else:
-        cfg = get_config("email")
-    if not cfg:
-        raise RuntimeError("Canale email non configurato (vai su /accounts/email).")
+    cfg = _account_to_cfg(_resolve_account(account))
 
     host = cfg.get("smtp_host")
     port = int(cfg.get("smtp_port") or 587)
     user = cfg.get("smtp_user")
-    password = _smtp_password(cfg)
+    password = cfg.get("smtp_password")
     from_addr = cfg.get("from_address") or user
     use_tls = bool(cfg.get("smtp_use_tls", True))
 
     if not (host and user and password and from_addr):
         raise RuntimeError(
-            "Config email incompleta: serve smtp_host, smtp_user, smtp_password (o "
-            "SMTP_PASSWORD env), from_address."
+            "Config email account incompleta: smtp_host, smtp_user, "
+            "smtp_password e from_address sono richiesti. Modifica su /accounts/email."
         )
 
     msg = EmailMessage()
@@ -151,7 +152,7 @@ def _fetch_inbound_sync(cfg: dict[str, Any], limit: int = 50) -> list[InboundMes
     host = cfg.get("imap_host")
     port = int(cfg.get("imap_port") or 993)
     user = cfg.get("imap_user") or cfg.get("smtp_user")
-    password = _imap_password(cfg) or _smtp_password(cfg)
+    password = cfg.get("imap_password") or cfg.get("smtp_password")
     folder = cfg.get("imap_folder") or "INBOX"
 
     if not (host and user and password):
@@ -186,17 +187,16 @@ async def fetch_inbound(
     limit: int = 50,
     account: dict[str, Any] | None = None,
 ) -> list[InboundMessage]:
-    """Polling IMAP — ritorna nuove email come InboundMessage.
-
-    Se `account` è passato (row email_accounts), polla quella mailbox.
-    Altrimenti fallback al singleton `channel_config` legacy.
+    """Polling IMAP — ritorna nuove email come InboundMessage. Se `account` non
+    viene passato usa il primo email_account attivo del tenant (o ritorna []
+    se non ce ne sono).
     """
-    if account is not None:
-        cfg = _account_to_cfg(account)
-    else:
-        cfg = get_config("email")
-    if not cfg:
-        return []
+    if account is None:
+        accounts = db.list_email_accounts(status="active")
+        if not accounts:
+            return []
+        account = accounts[0]
+    cfg = _account_to_cfg(account)
     try:
         return await asyncio.to_thread(_fetch_inbound_sync, cfg, limit)
     except Exception as e:  # pragma: no cover

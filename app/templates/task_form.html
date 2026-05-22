@@ -668,9 +668,6 @@
           {% if not email_accounts_for_form %}
             <span class="hint">
               ⚠️ Nessun email account configurato.
-              {% if email_channel_config and email_channel_config.config.get('username') %}
-                Fallback singleton legacy: <code>{{ email_channel_config.config.get('username') }}</code>.
-              {% endif %}
               Aggiungine uno da <a href="/accounts/email" target="_blank">/accounts/email</a>.
             </span>
           {% else %}
@@ -690,9 +687,6 @@
           {% if not telegram_bots_for_form %}
             <span class="hint">
               ⚠️ Nessun bot Telegram configurato.
-              {% if telegram_channel_config and telegram_channel_config.config.get('bot_token') %}
-                Fallback singleton legacy attivo.
-              {% endif %}
               Aggiungine uno da <a href="/accounts/messaging?tab=telegram" target="_blank">/accounts/messaging</a>.
             </span>
           {% else %}
@@ -803,7 +797,7 @@
                 hx-include="this">
           {% for prov in llm_providers %}
             <option value="{{ prov.key }}" {% if prov.key == selected_provider %}selected{% endif %}>
-              {{ prov.name }}{% if prov.needs_key and not env_key_status[prov.key] %} ⚠️{% endif %}
+              {{ prov.name }}
             </option>
           {% endfor %}
         </select>
@@ -825,7 +819,8 @@
            default_model = (suggested_models[0].id if suggested_models else ''),
            current_model = p.get('model') or '',
            current_base_url = p.get('llm_base_url') or '',
-           current_api_key = p.get('llm_api_key') or '',
+           credentials_for_provider = (credentials_by_provider or {}).get(selected_provider, []),
+           current_credential_id = p.get('llm_credential_id'),
            env_key_set = env_key_status[selected_provider]
         %}
           {% include "partials/provider_model_field.html" %}
@@ -968,7 +963,7 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
         ⚠️ <strong>Avviso ToS Meta</strong>: il Motore A (browser su web.whatsapp.com) viola i ToS.
         Rischio ban del numero per uso massivo a contatti senza opt-in. Il Motore B (Meta Cloud API)
         è legale ma limitato a opt-in / 24h-window.
-        Configura account/API in <a href="/settings/whatsapp" target="_blank">/settings/whatsapp</a>.
+        Configura account/API in <a href="/accounts/messaging?tab=browser" target="_blank">Messaging Accounts</a>.
       </div>
 
       {# Sender (subito dopo l'avviso ToS): chi invia per questo task. #}
@@ -1014,7 +1009,7 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
         {% if not wa_accounts and not wa_api_configs %}
         <p class="muted small">
           ⚠️ Nessun account WhatsApp configurato. Vai a
-          <a href="/settings/whatsapp" target="_blank">/settings/whatsapp</a> per aggiungerne.
+          <a href="/accounts/messaging?tab=browser" target="_blank">Messaging Accounts</a> per aggiungerne.
         </p>
         {% endif %}
       </fieldset>
@@ -1386,12 +1381,18 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
 
         <div class="row">
           <label>Discovery — Provider LLM <span class="hint">(opzionale)</span>
-            <select name="discovery_llm_provider">
+            <select name="discovery_llm_provider"
+                    hx-get="/providers/credential-field"
+                    hx-vals='{"slot": "discovery"}'
+                    hx-trigger="change"
+                    hx-target="#credential-block-discovery"
+                    hx-swap="outerHTML"
+                    hx-include="this">
               <option value="" {% if not p.get('discovery_llm_provider') %}selected{% endif %}>— stesso del task (default) —</option>
               {% for prov in llm_providers %}
                 <option value="{{ prov.key }}"
                         {% if prov.key == p.get('discovery_llm_provider') %}selected{% endif %}>
-                  {{ prov.name }}{% if prov.needs_key and not env_key_status[prov.key] %} ⚠️{% endif %}
+                  {{ prov.name }}
                 </option>
               {% endfor %}
             </select>
@@ -1422,24 +1423,22 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
           </label>
         </div>
 
-        <label>Discovery — API key
-          <span class="hint">
-            Necessaria solo se il <strong>Provider LLM Discovery</strong> richiede una chiave
-            (es. openai, anthropic, grok, gemini) ed è <em>diverso</em> dal provider principale.
-            Lascia vuoto per usare la variabile d'ambiente del provider scelto
-            (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, ecc.).
-            Se compilata, viene salvata nel DB del progetto.
-          </span>
-          {% if p.get('discovery_llm_api_key') %}
-            <span class="badge badge-ok"
-                  title="Una chiave è già stata salvata. Lascia il campo vuoto per mantenerla, scrivi una nuova per sovrascriverla. Per cancellarla, scrivi 'CLEAR' nel campo.">
-              ✓ chiave già salvata in DB ({{ p.get('discovery_llm_api_key')|length }} caratteri) — lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per rimuoverla
-            </span>
-          {% endif %}
-          <input type="password" name="discovery_llm_api_key" value=""
-                 placeholder="{% if p.get('discovery_llm_api_key') %}lascia vuoto per mantenere — o digita CLEAR per cancellarla{% else %}lascia vuoto per usare l'env var del provider{% endif %}"
-                 autocomplete="off" data-lpignore="true">
-        </label>
+        {# Chiave API Discovery: dropdown dalla tabella llm_api_keys, filtrato per
+           provider scelto. Lasciare vuoto = usa la chiave del task principale
+           (oppure env var se anche quella e' vuota). #}
+        {% set _disc_prov = p.get('discovery_llm_provider') or '' %}
+        {% set _disc_info = (llm_providers | selectattr("key", "equalto", _disc_prov) | list | first) %}
+        {% with
+           field_name = "discovery_llm_credential_id",
+           slot = "discovery",
+           provider = _disc_prov,
+           needs_key = (_disc_info.needs_key if _disc_info else False),
+           env_key = (_disc_info.env_key if _disc_info else None),
+           keys = (credentials_by_provider or {}).get(_disc_prov, []),
+           selected_id = p.get('discovery_llm_credential_id')
+        %}
+          {% include "partials/credential_field.html" %}
+        {% endwith %}
       </details>
     </details>
 
@@ -1460,12 +1459,18 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
 
         <div class="row">
           <label>Browser — Provider LLM
-            <select name="browser_llm_provider">
+            <select name="browser_llm_provider"
+                    hx-get="/providers/credential-field"
+                    hx-vals='{"slot": "browser"}'
+                    hx-trigger="change"
+                    hx-target="#credential-block-browser"
+                    hx-swap="outerHTML"
+                    hx-include="this">
               <option value="" {% if not p.get('browser_llm_provider') %}selected{% endif %}>— stesso del task (default) —</option>
               {% for prov in llm_providers %}
                 <option value="{{ prov.key }}"
                         {% if prov.key == p.get('browser_llm_provider') %}selected{% endif %}>
-                  {{ prov.name }}{% if prov.needs_key and not env_key_status[prov.key] %} ⚠️{% endif %}
+                  {{ prov.name }}
                 </option>
               {% endfor %}
             </select>
@@ -1496,21 +1501,20 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
           </label>
         </div>
 
-        <label>Browser — API key
-          <span class="hint">
-            (opzionale — se vuoto viene letta dalla variabile d'ambiente del provider scelto;
-            se compilata viene <strong>salvata nel DB</strong>)
-          </span>
-          {% if p.get('browser_llm_api_key') %}
-            <span class="badge badge-ok"
-                  title="Una chiave è già stata salvata nel DB del task. Lascia il campo vuoto per mantenerla. Scrivi una nuova chiave per sovrascriverla. Per cancellarla, scrivi 'CLEAR' nel campo.">
-              ✓ chiave già salvata in DB ({{ p.get('browser_llm_api_key')|length }} caratteri) — lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per rimuoverla
-            </span>
-          {% endif %}
-          <input type="password" name="browser_llm_api_key" value=""
-                 placeholder="{% if p.get('browser_llm_api_key') %}lascia vuoto per mantenere — o digita CLEAR per cancellarla{% else %}lascia vuoto per usare l'env var del provider{% endif %}"
-                 autocomplete="off" data-lpignore="true">
-        </label>
+        {# Chiave API Browser: dropdown dalla tabella llm_api_keys. #}
+        {% set _br_prov = p.get('browser_llm_provider') or '' %}
+        {% set _br_info = (llm_providers | selectattr("key", "equalto", _br_prov) | list | first) %}
+        {% with
+           field_name = "browser_llm_credential_id",
+           slot = "browser",
+           provider = _br_prov,
+           needs_key = (_br_info.needs_key if _br_info else False),
+           env_key = (_br_info.env_key if _br_info else None),
+           keys = (credentials_by_provider or {}).get(_br_prov, []),
+           selected_id = p.get('browser_llm_credential_id')
+        %}
+          {% include "partials/credential_field.html" %}
+        {% endwith %}
       </details>
     </details>
 

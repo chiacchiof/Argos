@@ -1,15 +1,20 @@
 """Canale Telegram: send + getUpdates polling tramite Bot API REST.
 
-Due fonti di config supportate:
-  1) Multi-bot (preferito): tabella `telegram_bots` con Fernet-encrypted token.
-     Passa `bot=db.get_telegram_bot(id)` (o dict analogo). `last_update_id` per
-     polling è memorizzato per-bot.
-  2) Legacy singleton: tabella `channel_config` channel='telegram' (back-compat).
-     Usato se nessun `bot` viene passato.
+Fonte unica di config: tabella `telegram_bots` (multi-bot, tenant-scoped, token
+cifrato Fernet con ARGOS_SECRET). Gestita da /accounts/messaging.
+
+Le funzioni accettano un parametro opzionale `bot`:
+ - se passato (row di telegram_bots) la usa direttamente
+ - se None fa lookup del primo bot `active` del tenant corrente
 
 Vincolo Telegram: il bot riceve messaggi SOLO da utenti che gli hanno scritto
 per primi (tramite link t.me/<botname>). Outreach proattivo non è possibile
 senza che il contatto avvii la conversazione.
+
+Pre-2026-05-22 esisteva una fallback `channel_config('telegram')` (singleton
+legacy) con env var `TELEGRAM_BOT_TOKEN`. Rimosso — la migration al boot
+(`db.migrate_legacy_channels_to_accounts`) ha gia' creato un bot
+`legacy-default` per chi aveva quella config.
 """
 from __future__ import annotations
 
@@ -19,46 +24,39 @@ from typing import Any
 import httpx
 
 from .. import db
-from .base import InboundMessage, get_config, resolve_secret
+from .base import InboundMessage
 
 
 log = logging.getLogger(__name__)
 API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
-def _bot_token_from_dict(bot: dict[str, Any]) -> str:
+def _resolve_bot(bot: dict[str, Any] | None) -> dict[str, Any]:
+    """Ritorna il bot passato o il primo `active` del tenant. RuntimeError se
+    nessun bot configurato."""
+    if bot is not None:
+        return bot
+    bots = db.list_telegram_bots(status="active")
+    if not bots:
+        raise RuntimeError(
+            "Nessun bot Telegram configurato. Aggiungine uno su /accounts/messaging."
+        )
+    return bots[0]
+
+
+def _bot_token(bot: dict[str, Any]) -> str:
     """Decifra `encrypted_bot_token` di una row telegram_bots."""
     from ..agent.social.crypto_creds import decrypt
-    return decrypt(bot["encrypted_bot_token"])
-
-
-def _legacy_bot_token(cfg: dict[str, Any] | None = None) -> str | None:
-    cfg = cfg or get_config("telegram")
-    if not cfg:
-        return None
-    return resolve_secret("TELEGRAM_BOT_TOKEN", cfg.get("bot_token"))
-
-
-def _resolve_token(bot: dict[str, Any] | None) -> str:
-    """Restituisce il token: bot dict ha priorità, fallback al singleton."""
-    if bot is not None:
-        token = _bot_token_from_dict(bot)
-        if not token:
-            raise RuntimeError(
-                f"telegram_bot id={bot.get('id')} ha token vuoto/non decifrabile."
-            )
-        return token
-    token = _legacy_bot_token()
+    token = decrypt(bot["encrypted_bot_token"]) if bot.get("encrypted_bot_token") else None
     if not token:
         raise RuntimeError(
-            "Bot token Telegram mancante: configura un bot in /accounts/messaging "
-            "oppure imposta TELEGRAM_BOT_TOKEN nell'env."
+            f"telegram_bot id={bot.get('id')} ha token vuoto/non decifrabile."
         )
     return token
 
 
 async def _call(method: str, *, bot: dict[str, Any] | None = None, **params: Any) -> dict[str, Any]:
-    token = _resolve_token(bot)
+    token = _bot_token(_resolve_bot(bot))
     url = API_BASE.format(token=token, method=method)
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(url, json=params)
@@ -99,25 +97,18 @@ async def fetch_inbound(
     limit: int = 100,
     bot: dict[str, Any] | None = None,
 ) -> list[InboundMessage]:
-    """Polling getUpdates. Aggiorna `last_update_id` (per-bot) o `polling_offset`
-    (singleton legacy).
+    """Polling getUpdates. Aggiorna `last_update_id` per-bot.
 
-    Ritorna SOLO messaggi nuovi (incrementali via offset).
+    Ritorna SOLO messaggi nuovi (incrementali via offset). Se nessun bot
+    attivo, ritorna [].
     """
-    if bot is not None:
-        offset = int(bot.get("last_update_id") or 0)
-        token_ok = True
-    else:
-        cfg = get_config("telegram")
-        if not cfg:
+    if bot is None:
+        bots = db.list_telegram_bots(status="active")
+        if not bots:
             return []
-        if not _legacy_bot_token(cfg):
-            return []
-        offset = int(cfg.get("polling_offset") or 0)
-        token_ok = True
+        bot = bots[0]
 
-    if not token_ok:
-        return []
+    offset = int(bot.get("last_update_id") or 0)
 
     try:
         updates = await _call("getUpdates", bot=bot, offset=offset, timeout=0, limit=limit)
@@ -153,17 +144,11 @@ async def fetch_inbound(
             )
         )
 
-    # persisti il nuovo offset
+    # persisti il nuovo offset per-bot
     if max_update_id != offset:
-        if bot is not None:
-            try:
-                db.update_telegram_bot(int(bot["id"]), last_update_id=max_update_id)
-            except Exception as e:
-                log.warning("update_telegram_bot.last_update_id failed: %s", e)
-        else:
-            cfg = get_config("telegram") or {}
-            cfg_clean = {k: v for k, v in cfg.items() if not k.startswith("_")}
-            cfg_clean["polling_offset"] = max_update_id
-            db.save_channel_config("telegram", cfg_clean, enabled=True)
+        try:
+            db.update_telegram_bot(int(bot["id"]), last_update_id=max_update_id)
+        except Exception as e:
+            log.warning("update_telegram_bot.last_update_id failed: %s", e)
 
     return out

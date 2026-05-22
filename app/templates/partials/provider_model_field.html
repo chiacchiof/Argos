@@ -1,16 +1,5 @@
 <div id="provider-model-block" class="provider-block-inner">
   <div class="provider-status">
-    {% if provider.needs_key %}
-      {% if env_key_set %}
-        <span class="badge badge-ok" title="Variabile {{ provider.env_key }} trovata in .env">
-          ✓ {{ provider.env_key }} configurata
-        </span>
-      {% else %}
-        <span class="badge badge-warn" title="Imposta {{ provider.env_key }} in .env oppure compila il campo 'API key' qui sotto">
-          ⚠️ {{ provider.env_key }} non in .env
-        </span>
-      {% endif %}
-    {% endif %}
     {% if provider.hint %}<small class="muted">{{ provider.hint }}</small>{% endif %}
     {% if provider.docs_url %}
       <small><a href="{{ provider.docs_url }}" target="_blank" rel="noopener">📖 docs</a></small>
@@ -43,25 +32,20 @@
     <input type="hidden" name="llm_base_url" value="{{ current_base_url }}">
   {% endif %}
 
-  {% if provider.needs_key or provider_key == "custom" %}
-  <label>API key
-    <span class="hint">
-      (opzionale — se la lasci vuota viene letta dalla variabile d'ambiente
-      {% if provider.env_key %}<code>{{ provider.env_key }}</code>{% endif %}.
-      Se la compili viene <strong>salvata nel DB del progetto</strong>: il file
-      <code>data/agentscraper.db</code> è gitignorato ma comunque accessibile a chi
-      ha file system access alla macchina.)
-    </span>
-    {% if current_api_key %}
-      <span class="badge badge-ok"
-            title="Una chiave è già stata salvata nel DB del task. Lascia il campo vuoto per mantenerla. Scrivi una nuova chiave per sovrascriverla. Per cancellarla, scrivi 'CLEAR' nel campo.">
-        ✓ chiave già salvata in DB ({{ current_api_key|length }} caratteri) — lascia vuoto per mantenerla, oppure scrivi <code>CLEAR</code> per rimuoverla
-      </span>
-    {% endif %}
-    <input type="password" name="llm_api_key" value=""
-           placeholder="{% if current_api_key %}lascia vuoto per mantenere — o digita CLEAR per cancellarla{% else %}lascia vuoto per usare {{ provider.env_key or 'env var' }}{% endif %}"
-           autocomplete="off"
-           data-lpignore="true">
-  </label>
-  {% endif %}
+  {# Credenziale: select popolato dal pannello /accounts/llm-keys filtrato per provider.
+     Lo serviamo gia' pronto qui (no HTMX round-trip) e l'endpoint HTMX
+     /providers/credential-field e' usato solo quando l'utente cambia provider. #}
+  {% set _needs_key = provider.needs_key %}
+  {% set _env_key = provider.env_key %}
+  {% with
+     field_name = "llm_credential_id",
+     slot = "main",
+     provider = provider_key,
+     needs_key = _needs_key,
+     env_key = _env_key,
+     keys = credentials_for_provider or [],
+     selected_id = current_credential_id
+  %}
+    {% include "partials/credential_field.html" %}
+  {% endwith %}
 </div>

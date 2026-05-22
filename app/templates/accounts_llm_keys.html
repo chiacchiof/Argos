@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Chiavi LLM — Argos{% endblock %}
+{% block content %}
+<section>
+  <div class="section-header">
+    <div>
+      <h2 style="margin:0">🔑 Chiavi API LLM</h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        Salva qui le tue API key per OpenAI, Anthropic, Gemini, Grok o endpoint custom.
+        Le chiavi sono cifrate Fernet (AES128 + HMAC-SHA256) e riusabili nei task:
+        in fase di creazione task scegli il <em>provider</em> e poi la chiave dal
+        dropdown per <em>label</em> simbolico ("prod", "dev", "cliente X").
+      </p>
+    </div>
+    <div>
+      <a href="/accounts/llm-keys/new" class="btn-primary">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Aggiungi chiave
+      </a>
+    </div>
+  </div>
+
+  {% if flash %}<div class="flash-ok">✓ {{ flash | replace('+', ' ') }}</div>{% endif %}
+  {% if error %}<div class="errors">⚠️ {{ error | replace('+', ' ') }}</div>{% endif %}
+
+  {% if not is_secret_configured %}
+  <div class="warning-box">
+    ⚠️ <strong>ARGOS_SECRET non configurata</strong>. Aggiungi al file <code>.env</code>:
+    <pre style="margin: 0.4rem 0; background: var(--surface-2); color: var(--fg); border:1px solid var(--border); padding: 0.4rem; border-radius: 3px;">ARGOS_SECRET=cambia-questa-chiave-segreta-lunga-30+-caratteri</pre>
+    Senza questa chiave le API key non possono essere cifrate. Aggiungere chiavi è disabilitato.
+  </div>
+  {% endif %}
+
+  {% set af = author_filter or 'mine' %}
+  {% if current_user_authenticated %}
+  <nav class="author-filter-bar" aria-label="Filtro autore">
+    <a href="/accounts/llm-keys?author=mine"
+       class="author-filter-tab {% if af == 'mine' %}author-filter-tab-active{% endif %}"
+       title="Solo le chiavi che hai creato tu">
+      👤 Le mie chiavi
+    </a>
+    <a href="/accounts/llm-keys?author=tenant"
+       class="author-filter-tab {% if af != 'mine' %}author-filter-tab-active{% endif %}"
+       title="Tutte le chiavi del tenant + chiavi globali">
+      🏢 Tutte del tenant <span class="author-filter-count">{{ total_tenant }}</span>
+    </a>
+  </nav>
+  {% endif %}
+
+  {% if keys %}
+  <table class="data" style="margin-top: 1.5rem;">
+    <thead>
+      <tr>
+        <th>#</th><th>Label</th><th>Provider</th><th>Base URL</th><th>Status</th>
+        <th>Owner</th><th>Creata</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for k in keys %}
+      <tr {% if k.status in ('quarantine','banned') %}class="row-disabled"{% endif %}>
+        <td>{{ k.id }}</td>
+        <td>
+          <strong>{{ k.label }}</strong>
+          {% if k.tenant_id is none %}
+            <span class="status" title="Chiave globale gestita dal super-admin">🌐 global</span>
+          {% endif %}
+          {% if not k.encrypted_api_key %}
+            <span class="muted small" title="Nessuna chiave salvata (es. ollama locale)">— no key</span>
+          {% endif %}
+        </td>
+        <td><code>{{ k.provider }}</code></td>
+        <td>{% if k.base_url %}<small>{{ k.base_url }}</small>{% else %}<small class="muted">default</small>{% endif %}</td>
+        <td>
+          {% if k.status == 'active' %}<span class="status status-qualified">active</span>
+          {% elif k.status == 'quarantine' %}<span class="status status-rejected">quarantine</span>
+          {% elif k.status == 'banned' %}<span class="status status-rejected">banned</span>
+          {% else %}<span class="status">{{ k.status }}</span>{% endif %}
+        </td>
+        <td>
+          {% if k.created_by_user_id %}
+            <small {% if k.created_by_user_id == current_user_id %}style="font-weight:600;color:var(--brand-2)"{% endif %}
+                   title="{{ k.owner_email }} (user_id={{ k.created_by_user_id }})">
+              {{ k | owner_display }}{% if k.created_by_user_id == current_user_id %} (tu){% endif %}
+            </small>
+          {% else %}
+            <small class="muted">—</small>
+          {% endif %}
+        </td>
+        <td><small>{{ k.created_at[:10] if k.created_at else '—' }}</small></td>
+        <td class="row-actions">
+          <details class="kebab-menu">
+            <summary class="kebab-trigger" title="Azioni">⋮</summary>
+            <div class="kebab-dropdown" role="menu">
+              <a href="/accounts/llm-keys/{{ k.id }}/edit" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica
+              </a>
+              <form method="post" action="/accounts/llm-keys/{{ k.id }}/test">
+                <button type="submit" role="menuitem" title="Smoke test: chiama /models del provider">
+                  <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg> Test
+                </button>
+              </form>
+              {% if k.status == 'active' %}
+              <form method="post" action="/accounts/llm-keys/{{ k.id }}/toggle-status">
+                <button type="submit" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg> Quarantine
+                </button>
+              </form>
+              {% else %}
+              <form method="post" action="/accounts/llm-keys/{{ k.id }}/toggle-status">
+                <button type="submit" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg> Attiva
+                </button>
+              </form>
+              {% endif %}
+              <hr class="menu-sep">
+              <form method="post" action="/accounts/llm-keys/{{ k.id }}/delete"
+                    onsubmit="return confirm('Cancellare la chiave #{{ k.id }} ({{ k.label }})? I task che la referenziano avranno llm_credential_id = NULL (fallback a env var).');">
+                <button type="submit" class="kebab-danger" role="menuitem">
+                  <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Elimina
+                </button>
+              </form>
+            </div>
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-top: 1.5rem;">
+    Nessuna chiave LLM ancora.
+    <a href="/accounts/llm-keys/new">Aggiungine una</a>
+    per poter selezionarla nel form di creazione task.
+  </p>
+  {% endif %}
+
+  <details class="optional-block" style="margin-top: 1.5rem;">
+    <summary>📖 Come funziona</summary>
+    <ol>
+      <li><strong>Aggiungi</strong> una chiave per ogni provider che vuoi usare (OpenAI, Anthropic, ...). Puoi averne piu' d'una per provider — tipica configurazione: "prod" e "dev".</li>
+      <li>Il <strong>label</strong> e' il nome che vedrai nel dropdown del task form: scegli qualcosa di parlante ("OpenAI prod cliente X", "Claude personal").</li>
+      <li>La chiave e' <strong>cifrata Fernet</strong>: nemmeno con accesso al DB si puo' leggerla senza <code>ARGOS_SECRET</code>.</li>
+      <li>Per Ollama locale non serve API key — basta crearla (con campo chiave vuoto) per poterla selezionare nei task.</li>
+      <li>In modifica, il campo chiave puo' restare vuoto = mantieni la chiave attuale. Scrivi <code>CLEAR</code> (maiuscolo) per cancellarla.</li>
+    </ol>
+  </details>
+</section>
+{% endblock %}

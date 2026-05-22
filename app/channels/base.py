@@ -1,9 +1,7 @@
 """Tipi e helper comuni per i canali di messaggistica."""
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from typing import Any
 
 from .. import db
 
@@ -21,28 +19,24 @@ class InboundMessage:
     in_reply_to: str | None = None  # solo email: header In-Reply-To
 
 
-def get_config(channel: str) -> dict[str, Any]:
-    """Carica la config del canale dal DB; ritorna {} se non c'è.
-
-    Le credenziali sensibili (password, token) seguono il pattern env-first:
-    se la env var corrispondente è impostata, ha priorità sul valore in DB.
-    """
-    row = db.get_channel_config(channel)
-    if not row:
-        return {}
-    cfg = row.get("config") or {}
-    cfg["_enabled"] = bool(row.get("enabled"))
-    return cfg
-
-
 def is_enabled(channel: str) -> bool:
-    cfg = get_config(channel)
-    return bool(cfg.get("_enabled"))
+    """True se il canale ha almeno un account/bot `active` per il tenant.
 
-
-def resolve_secret(env_var: str, db_value: str | None) -> str | None:
-    """env var prima, valore DB come fallback."""
-    val = os.environ.get(env_var)
-    if val:
-        return val
-    return db_value or None
+    Per `email` controlla `email_accounts`, per `telegram` controlla
+    `telegram_bots`. Pre-2026-05-22 leggeva `channel_config(channel).enabled`;
+    da quando la fonte canonica e' la tabella multi-account quel campo non
+    serve piu' (vedi `db.migrate_legacy_channels_to_accounts`).
+    """
+    if channel == "email":
+        try:
+            return len(db.list_email_accounts(status="active")) > 0
+        except Exception:
+            return False
+    if channel == "telegram":
+        try:
+            return len(db.list_telegram_bots(status="active")) > 0
+        except Exception:
+            return False
+    # Altri canali (es. orchestrator) restano su channel_config
+    row = db.get_channel_config(channel)
+    return bool(row and row.get("enabled"))

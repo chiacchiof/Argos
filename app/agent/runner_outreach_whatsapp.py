@@ -224,8 +224,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
     if not (has_engine_a or has_engine_b):
         msg = (
-            "Nessun engine WhatsApp configurato. Vai su /settings/whatsapp e "
-            "aggiungi almeno un account browser (Motore A) o una config API (Motore B)."
+            "Nessun engine WhatsApp configurato. Vai su /accounts/messaging?tab=browser "
+            "e aggiungi almeno un account browser (Motore A) o una config API (Motore B)."
         )
         jlog(f"❌ {msg}")
         db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())

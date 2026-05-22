@@ -677,6 +677,11 @@ def _form_to_dict(
     outreach_filter_source_task_id: str = "",
     outreach_filter_source_follower_of: str = "",
     outreach_filter_tags: list | None = None,
+    # Selezione chiave LLM dal pannello /accounts/llm-keys (sostituiscono i
+    # campi *_api_key legacy plaintext: il runner risolve la chiave dal DB).
+    llm_credential_id: str = "",
+    discovery_llm_credential_id: str = "",
+    browser_llm_credential_id: str = "",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -758,6 +763,16 @@ def _form_to_dict(
         ),
         "outreach_filter_source_follower_of": (outreach_filter_source_follower_of or "").strip() or None,
         "outreach_filter_tags": list(outreach_filter_tags or []),
+        # LLM credential refs (vedi /accounts/llm-keys)
+        "llm_credential_id": (
+            int(llm_credential_id) if str(llm_credential_id).strip().isdigit() else None
+        ),
+        "discovery_llm_credential_id": (
+            int(discovery_llm_credential_id) if str(discovery_llm_credential_id).strip().isdigit() else None
+        ),
+        "browser_llm_credential_id": (
+            int(browser_llm_credential_id) if str(browser_llm_credential_id).strip().isdigit() else None
+        ),
     }
 
 
@@ -890,16 +905,6 @@ def _form_extra_context() -> dict:
     except Exception:
         outreach_tag_keys = []
 
-    # Channel config (email + telegram) — singolo account di sistema (no pool).
-    # Mostrato read-only nella sezione outreach del form per chiarire "chi invia".
-    try:
-        email_channel_config = db.get_channel_config("email")
-    except Exception:
-        email_channel_config = None
-    try:
-        telegram_channel_config = db.get_channel_config("telegram")
-    except Exception:
-        telegram_channel_config = None
     # Account social per outreach_social (single-select per platform).
     social_accounts_by_platform: dict[str, list[dict]] = {}
     try:
@@ -927,12 +932,30 @@ def _form_extra_context() -> dict:
         telegram_bots_for_form = db.list_telegram_bots(status="active")
     except Exception:
         telegram_bots_for_form = []
+    # Chiavi LLM raggruppate per provider: il template le legge come
+    # `credentials_by_provider[provider_key]` per popolare i 3 dropdown LLM.
+    credentials_by_provider: dict[str, list[dict]] = {}
+    try:
+        for k in db.list_llm_api_keys(status="active"):
+            credentials_by_provider.setdefault(k["provider"], []).append(k)
+    except Exception:
+        credentials_by_provider = {}
+
+    # Mostra solo provider con almeno una chiave attiva in DB, oppure senza
+    # bisogno di chiave (ollama, custom), oppure con env var settata (legacy).
+    _eks = env_key_status()
+    _providers_with_creds = set(credentials_by_provider.keys())
+    visible_providers = [
+        p for p in list_providers()
+        if not p["needs_key"] or _providers_with_creds.issuperset({p["key"]}) or _eks.get(p["key"])
+    ]
 
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
-        "llm_providers": list_providers(),
-        "env_key_status": env_key_status(),
+        "llm_providers": visible_providers,
+        "env_key_status": _eks,
+        "credentials_by_provider": credentials_by_provider,
         "contacts_by_platform": contacts_by_platform,
         "contacts_with_whatsapp": contacts_with_whatsapp,
         "wa_accounts": wa_accounts,
@@ -942,8 +965,6 @@ def _form_extra_context() -> dict:
         "outreach_source_tasks": outreach_source_tasks,
         "outreach_source_followers": outreach_source_followers,
         "outreach_tag_keys": outreach_tag_keys,
-        "email_channel_config": email_channel_config,
-        "telegram_channel_config": telegram_channel_config,
         "social_accounts_by_platform": social_accounts_by_platform,
         "email_accounts_for_form": email_accounts_for_form,
         "telegram_bots_for_form": telegram_bots_for_form,
@@ -969,6 +990,7 @@ async def create_task(
     llm_provider: str = Form("ollama"),
     llm_base_url: str = Form(""),
     llm_api_key: str = Form(""),
+    llm_credential_id: str = Form(""),
     input_artifact_path: str = Form(""),
     message_template: str = Form(""),
     message_subject: str = Form(""),
@@ -986,10 +1008,12 @@ async def create_task(
     discovery_llm_provider: str = Form(""),
     discovery_llm_model: str = Form(""),
     discovery_llm_api_key: str = Form(""),
+    discovery_llm_credential_id: str = Form(""),
     max_discovery_retries: int = Form(3),
     browser_llm_provider: str = Form(""),
     browser_llm_model: str = Form(""),
     browser_llm_api_key: str = Form(""),
+    browser_llm_credential_id: str = Form(""),
     rating: str = Form(""),
     notes: str = Form(""),
     status_tag: str = Form(""),
@@ -1084,6 +1108,9 @@ async def create_task(
         outreach_filter_source_task_id=outreach_filter_source_task_id,
         outreach_filter_source_follower_of=outreach_filter_source_follower_of,
         outreach_filter_tags=outreach_filter_tags_raw,
+        llm_credential_id=llm_credential_id,
+        discovery_llm_credential_id=discovery_llm_credential_id,
+        browser_llm_credential_id=browser_llm_credential_id,
     )
     try:
         validated = TaskIn(**payload)
@@ -1129,6 +1156,7 @@ async def update_task(
     llm_provider: str = Form("ollama"),
     llm_base_url: str = Form(""),
     llm_api_key: str = Form(""),
+    llm_credential_id: str = Form(""),
     input_artifact_path: str = Form(""),
     message_template: str = Form(""),
     message_subject: str = Form(""),
@@ -1146,10 +1174,12 @@ async def update_task(
     discovery_llm_provider: str = Form(""),
     discovery_llm_model: str = Form(""),
     discovery_llm_api_key: str = Form(""),
+    discovery_llm_credential_id: str = Form(""),
     max_discovery_retries: int = Form(3),
     browser_llm_provider: str = Form(""),
     browser_llm_model: str = Form(""),
     browser_llm_api_key: str = Form(""),
+    browser_llm_credential_id: str = Form(""),
     rating: str = Form(""),
     notes: str = Form(""),
     status_tag: str = Form(""),
@@ -1269,6 +1299,9 @@ async def update_task(
         outreach_filter_source_task_id=outreach_filter_source_task_id,
         outreach_filter_source_follower_of=outreach_filter_source_follower_of,
         outreach_filter_tags=outreach_filter_tags_raw,
+        llm_credential_id=llm_credential_id,
+        discovery_llm_credential_id=discovery_llm_credential_id,
+        browser_llm_credential_id=browser_llm_credential_id,
     )
     try:
         validated = TaskIn(**payload)
@@ -1355,8 +1388,13 @@ async def toggle_task_disabled(task_id: int, redirect_to: str = Form("/")):
 async def provider_model_field(
     request: Request,
     llm_provider: str = "ollama",
+    current_credential_id: str = "",
 ):
-    """Endpoint HTMX: ritorna il blocco con dropdown modelli + base URL + API key per il provider."""
+    """Endpoint HTMX: ritorna il blocco con dropdown modelli + base URL +
+    selettore credenziale per il provider scelto.
+    `current_credential_id` viene passato come query string per preservare
+    la selezione corrente quando l'utente cambia provider e torna indietro.
+    """
     info = get_provider(llm_provider)
     suggested = list(info.get("suggested_models") or [])
     if llm_provider == "ollama":
@@ -1368,6 +1406,14 @@ async def provider_model_field(
             {"id": m, "desc": "(installato in locale)"} for m in ollama_models
         ] + suggested
     default_model = suggested[0]["id"] if suggested else ""
+    try:
+        credentials = db.list_llm_api_keys(provider=llm_provider, status="active")
+    except Exception:
+        credentials = []
+    try:
+        sel_id = int(current_credential_id) if str(current_credential_id).strip().isdigit() else None
+    except (TypeError, ValueError):
+        sel_id = None
     return templates.TemplateResponse(
         request,
         "partials/provider_model_field.html",
@@ -1378,7 +1424,8 @@ async def provider_model_field(
             "default_model": default_model,
             "current_model": "",
             "current_base_url": "",
-            "current_api_key": "",
+            "credentials_for_provider": credentials,
+            "current_credential_id": sel_id,
             "env_key_set": env_key_status().get(llm_provider, False),
         },
     )

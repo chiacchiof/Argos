@@ -7,7 +7,7 @@
   <p class="muted">
     Modifica i metadati dell'account. La sessione Playwright (QR-login) NON viene toccata —
     se l'account è già loggato resta loggato. Per re-fare il login: torna in
-    <a href="/settings/whatsapp">/settings/whatsapp</a>.
+    <a href="/accounts/messaging?tab=browser">Messaging Accounts</a>.
   </p>
 
   <form method="post" action="/settings/whatsapp/account/{{ account.id }}/edit" class="settings-form">
@@ -53,7 +53,7 @@
       <button type="submit" class="btn-primary">
         <svg class="icon" aria-hidden="true"><use href="#i-save"/></svg> Salva modifiche
       </button>
-      <a href="/settings/whatsapp" class="link-cancel">Annulla</a>
+      <a href="/accounts/messaging?tab=browser" class="link-cancel">Annulla</a>
     </div>
   </form>
 
