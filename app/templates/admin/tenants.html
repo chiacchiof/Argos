@@ -34,6 +34,7 @@
           <th>Slug</th>
           <th>Utenti</th>
           <th>Stato</th>
+          <th title="Se ON il tenant accede alla memoria del sito di TUTTI i tenant (pool condiviso). Se OFF vede solo la propria.">Memoria sito</th>
           <th>Creata</th>
           <th>Azioni</th>
         </tr>
@@ -52,10 +53,22 @@
             <span class="badge badge-off">disattivato</span>
             {% endif %}
           </td>
+          <td>
+            {% if t.site_memory_shared %}
+            <span class="badge badge-ok" title="Accede al pool condiviso">condivisa</span>
+            {% else %}
+            <span class="badge badge-off" title="Vede solo la propria memoria">isolata</span>
+            {% endif %}
+          </td>
           <td><small>{{ t.created_at.strftime("%Y-%m-%d %H:%M") if t.created_at else "-" }}</small></td>
           <td class="admin-actions-cell">
             <form method="post" action="/admin/tenants/{{ t.id }}/toggle" style="display:inline">
               <button type="submit" class="btn-link">{% if t.is_active %}Disattiva{% else %}Attiva{% endif %}</button>
+            </form>
+            <form method="post" action="/admin/tenants/{{ t.id }}/toggle-site-memory" style="display:inline">
+              <button type="submit" class="btn-link" title="Toggle pool memoria sito cross-tenant">
+                {% if t.site_memory_shared %}Isola memoria{% else %}Condividi memoria{% endif %}
+              </button>
             </form>
             <form method="post" action="/admin/tenants/{{ t.id }}/delete" style="display:inline"
                   onsubmit="return confirm('Eliminare il tenant {{ t.name }}? Tutti gli utenti collegati verranno eliminati a cascata.');">

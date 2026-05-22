@@ -9,8 +9,12 @@ Wrapper user-friendly su Alembic + safety checks. Workflow tipico:
     # 3. applica su locale + pytest
     python scripts/db.py migrate
 
-    # 4. quando soddisfatto, applica su Neon (prod)
-    python scripts/db.py promote
+    # 4. quando soddisfatto, applica su Neon (prod) — USA IL WRAPPER:
+    pwsh scripts/deploy_to_neon.ps1
+    #    (oppure `python scripts/db.py promote` SOLO se sei sicuro che la DSN
+    #     risolta sia davvero Neon — vedi caveat in scripts/README.md sezione
+    #     "DSN Neon": l'override `data/db_config.enc` ha priorità massima e
+    #     puo' silenziosamente puntare al locale.)
 
 Vedi scripts/README.md per dettagli + esempi.
 """
@@ -268,7 +272,12 @@ def cmd_migrate(args) -> int:
     print("[3/3] OK locale aggiornato e testato.")
     print()
     print("Prossimo step (quando sei pronto a deployare in prod):")
-    print("  python scripts/db.py promote")
+    print("  pwsh scripts/deploy_to_neon.ps1")
+    print()
+    print("  (Wrapper safe per Neon: nasconde temporaneamente l'override")
+    print("   `data/db_config.enc` e forza la DSN Neon vera. `db.py promote`")
+    print("   diretto va usato SOLO se sei sicuro che la DSN risolta sia Neon —")
+    print("   vedi scripts/README.md sezione 'DSN Neon' per i caveat.)")
     return 0
 
 

@@ -912,6 +912,11 @@ _TENANT_AWARE_TABLES = (
     "email_accounts", "telegram_bots",
     "llm_api_keys", "llm_usage",
     "recon_runs", "recon_checkpoints", "recon_visited",
+    # Site memory: la tabella resta tecnicamente condivisa (UNIQUE globale per
+    # registrable_domain), ma `tenant_id` marca il "primo discoverer" del pattern
+    # / "ultimo writer" del playbook. La visibilita' nei runner/UI dipende dal
+    # flag `tenants.site_memory_shared` (vedi `_can_see_all_site_memory()`).
+    "site_patterns", "site_playbooks",
 )
 
 # Tabelle che ricevono `created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL`
@@ -959,6 +964,8 @@ def _apply_multitenant_columns(conn) -> None:
         ("idx_llm_api_keys_tenant", "llm_api_keys(tenant_id, provider, status)"),
         ("idx_llm_usage_tenant", "llm_usage(tenant_id, created_at DESC)"),
         ("idx_recon_runs_tenant", "recon_runs(tenant_id, status)"),
+        ("idx_site_patterns_tenant", "site_patterns(tenant_id, registrable_domain)"),
+        ("idx_site_playbooks_tenant", "site_playbooks(tenant_id, registrable_domain)"),
     ]
     for name, definition in tenant_indices:
         conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {definition}")
@@ -1125,6 +1132,77 @@ def migrate_legacy_channels_to_accounts() -> None:
                     )
                 except Exception as e:
                     log.warning("[migrate] telegram channel_config fallita: %s", e)
+
+
+def migrate_site_memory_to_super_admin() -> None:
+    """One-shot idempotente: backfilla `site_patterns.tenant_id` e
+    `site_playbooks.tenant_id` con il tenant del super-admin per le righe
+    legacy che hanno tenant_id IS NULL.
+
+    La colonna tenant_id e' aggiunta da `_apply_multitenant_columns` (chiamato
+    in init_db) come nullable. Questa funzione ASSEGNA un tenant a tutte le
+    righe pre-multi-tenant. Il super-admin (edgAdmin per il pilot) e' il
+    "tenant principale" scelto dall'utente.
+
+    Idempotente: se non ci sono righe NULL, esce subito.
+    """
+    with connect() as con:
+        # Conta righe con tenant_id NULL
+        try:
+            n_patterns = con.execute(
+                "SELECT COUNT(*) AS c FROM site_patterns WHERE tenant_id IS NULL"
+            ).fetchone()["c"]
+            n_playbooks = con.execute(
+                "SELECT COUNT(*) AS c FROM site_playbooks WHERE tenant_id IS NULL"
+            ).fetchone()["c"]
+        except Exception as e:
+            log.warning("[migrate] site_memory count fallito: %s", e)
+            return
+
+        if not n_patterns and not n_playbooks:
+            return  # gia' migrato
+
+        # Trova il tenant del super-admin. Strategia: il primo user con
+        # role='super_admin' ha sempre tenant_id NULL (vincolo DB), ma il pilot
+        # interno usa un super-admin che appartiene a un tenant operativo
+        # (creato manualmente). Fallback: primo tenant per id.
+        from . import db_cloud
+        if not db_cloud.is_configured():
+            log.info("[migrate] site_memory: DATABASE_URL non configurato, skip.")
+            return
+
+        super_admin_tenant_id: int | None = None
+        try:
+            tenants = db_cloud.list_tenants()
+            if not tenants:
+                log.warning("[migrate] site_memory: nessun tenant in DB, skip.")
+                return
+            # Prendi il primo tenant per id (il "principale" del pilot).
+            super_admin_tenant_id = min(int(t["id"]) for t in tenants)
+        except Exception as e:
+            log.warning("[migrate] site_memory: lookup tenant fallito: %s", e)
+            return
+
+        if super_admin_tenant_id is None:
+            return
+
+        try:
+            if n_patterns:
+                con.execute(
+                    "UPDATE site_patterns SET tenant_id = %s WHERE tenant_id IS NULL",
+                    (super_admin_tenant_id,),
+                )
+            if n_playbooks:
+                con.execute(
+                    "UPDATE site_playbooks SET tenant_id = %s WHERE tenant_id IS NULL",
+                    (super_admin_tenant_id,),
+                )
+            log.info(
+                "[migrate] site_memory backfill: %s pattern + %s playbook -> tenant_id=%s",
+                n_patterns, n_playbooks, super_admin_tenant_id,
+            )
+        except Exception as e:
+            log.warning("[migrate] site_memory backfill fallito: %s", e)
 
 
 def _dump_list(value: list[str] | None) -> str | None:
@@ -1801,6 +1879,66 @@ def list_jobs(task_id: int, tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def list_subjobs(
+    parent_job_id: int, tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Ritorna i sub-job triggerati da un parent (es. auto_extract → sub-runner
+    per sito). Ordinati per id ASC = ordine cronologico di creazione, da cui
+    si deriva il display logico `#parent.1`, `#parent.2`, ecc.
+
+    Tenant-filtered: un tenant_user non puo' enumerare sub-job di parent
+    appartenenti ad altri tenant.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            rows = con.execute(
+                "SELECT * FROM jobs WHERE triggered_by_job_id = %s "
+                "ORDER BY id ASC",
+                (parent_job_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM jobs WHERE triggered_by_job_id = %s "
+                "AND tenant_id = %s ORDER BY id ASC",
+                (parent_job_id, tenant_id),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_subjobs_for_jobs(
+    parent_job_ids: list[int], tenant_id: Any = _UNSET,
+) -> dict[int, list[dict[str, Any]]]:
+    """Batch helper: dato un insieme di parent_job_id, ritorna i sub-job
+    raggruppati per parent in UNA sola query. Usato dalla cronologia job per
+    evitare N+1 (1 query per parent).
+
+    Tenant-filtered.
+    """
+    clean = [int(p) for p in parent_job_ids if str(p).strip().lstrip("-").isdigit()]
+    if not clean:
+        return {}
+    tenant_id = _resolve_tenant(tenant_id)
+    placeholders = ",".join(["%s"] * len(clean))
+    sql = (
+        f"SELECT * FROM jobs WHERE triggered_by_job_id IN ({placeholders}) "
+        "ORDER BY triggered_by_job_id, id"
+    )
+    args: list[Any] = list(clean)
+    if tenant_id is not None:
+        sql = (
+            f"SELECT * FROM jobs WHERE triggered_by_job_id IN ({placeholders}) "
+            f"AND tenant_id = %s ORDER BY triggered_by_job_id, id"
+        )
+        args = list(clean) + [tenant_id]
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    out: dict[int, list[dict[str, Any]]] = {p: [] for p in clean}
+    for r in rows:
+        out.setdefault(int(r["triggered_by_job_id"]), []).append(dict(r))
+    return out
+
+
 def list_jobs_for_workflow_run(
     workflow_run_id: int, tenant_id: Any = _UNSET
 ) -> list[dict[str, Any]]:
@@ -2095,17 +2233,59 @@ def create_edge(
         return int(cur.fetchone()['id'])
 
 
-def delete_edge(edge_id: int) -> None:
+def delete_edge(edge_id: int, tenant_id: Any = _UNSET) -> int:
+    """Cancella un edge. Filtra per tenant via JOIN sul workflow (l'edge eredita
+    il tenant dal workflow padre). Tenant_user A NON puo' cancellare edge di
+    workflow di tenant B nemmeno passando l'edge_id esatto. Ritorna n righe."""
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        con.execute("DELETE FROM workflow_edges WHERE id = %s", (edge_id,))
+        if tenant_id is None:
+            cur = con.execute("DELETE FROM workflow_edges WHERE id = %s", (edge_id,))
+        else:
+            cur = con.execute(
+                "DELETE FROM workflow_edges WHERE id = %s AND workflow_id IN "
+                "(SELECT id FROM workflows WHERE tenant_id = %s)",
+                (edge_id, tenant_id),
+            )
+        return int(cur.rowcount or 0)
 
 
-def toggle_edge(edge_id: int, enabled: bool) -> None:
+def toggle_edge(edge_id: int, enabled: bool, tenant_id: Any = _UNSET) -> int:
+    """Toggle enabled di un edge. Filtra per tenant via JOIN sul workflow.
+    Ritorna n righe modificate (0 se il tenant non possiede il workflow)."""
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        con.execute(
-            "UPDATE workflow_edges SET enabled = %s WHERE id = %s",
-            (1 if enabled else 0, edge_id),
-        )
+        if tenant_id is None:
+            cur = con.execute(
+                "UPDATE workflow_edges SET enabled = %s WHERE id = %s",
+                (1 if enabled else 0, edge_id),
+            )
+        else:
+            cur = con.execute(
+                "UPDATE workflow_edges SET enabled = %s WHERE id = %s AND workflow_id IN "
+                "(SELECT id FROM workflows WHERE tenant_id = %s)",
+                (1 if enabled else 0, edge_id, tenant_id),
+            )
+        return int(cur.rowcount or 0)
+
+
+def get_edge(edge_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    """Get un edge per id, tenant-filtered via JOIN sul workflow. Usato dalle
+    route per fare lookup safe prima di toggle/delete."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            row = con.execute(
+                "SELECT * FROM workflow_edges WHERE id = %s", (edge_id,)
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT e.* FROM workflow_edges e "
+                "JOIN workflows w ON w.id = e.workflow_id "
+                "WHERE e.id = %s AND w.tenant_id = %s",
+                (edge_id, tenant_id),
+            ).fetchone()
+    return dict(row) if row else None
 
 
 def _would_create_cycle(workflow_id: int | None, from_task_id: int, to_task_id: int) -> bool:
@@ -2174,32 +2354,55 @@ def upsert_contact(
     tg_user = (data.get("telegram_username") or "").strip().lstrip("@").lower() or None
     whatsapp = (data.get("whatsapp") or "").strip() or None
     sitoweb = (data.get("sitoweb") or "").strip() or None
-    social = data.get("social")
-    if isinstance(social, list) and social:
-        social_json = _json.dumps(social, ensure_ascii=False)
-    elif isinstance(social, str) and social.strip():
-        social_json = social.strip()
+    # Accetta sia `social` (lista/dict/str) sia `social_json` (str pre-serializzata)
+    # per simmetria con upsert_asset. Priorita': social_json esplicito vince.
+    social_json = data.get("social_json")
+    if not social_json:
+        social = data.get("social")
+        if isinstance(social, list) and social:
+            social_json = _json.dumps(social, ensure_ascii=False)
+        elif isinstance(social, dict):
+            social_json = _json.dumps([social], ensure_ascii=False)
+        elif isinstance(social, str) and social.strip():
+            social_json = social.strip()
+        else:
+            social_json = None
+    elif isinstance(social_json, (list, dict)):
+        social_json = _json.dumps(social_json, ensure_ascii=False)
     else:
-        social_json = None
+        social_json = str(social_json).strip() or None
     source_task = data.get("source_task_id") or data.get("source_project_id")
     source_url = data.get("source_url")
     with connect() as con:
         existing = None
+        # IMPORTANTE: il dedup deve essere INTRA-TENANT, mai cross-tenant.
+        # Pre-2026-05-22 il lookup era globale: tenant B che facevano upsert
+        # con email/tg/url gia' presenti in tenant A AGGIORNAVANO il record
+        # di A (cross-tenant write attack). Fix: clausola "AND tenant_id = %s"
+        # se tenant_id e' valorizzato; super-admin (None) continua a dedup
+        # globale per back-compat con runner pre-multi-tenant.
+        tenant_clause = ""
+        tenant_args: tuple = ()
+        if tenant_id is not None:
+            tenant_clause = " AND tenant_id = %s"
+            tenant_args = (tenant_id,)
         if email:
             existing = con.execute(
-                "SELECT id FROM contacts WHERE LOWER(email) = %s LIMIT 1", (email,)
+                f"SELECT id FROM contacts WHERE LOWER(email) = %s{tenant_clause} LIMIT 1",
+                (email, *tenant_args),
             ).fetchone()
         if not existing and tg_user:
             existing = con.execute(
-                "SELECT id FROM contacts WHERE LOWER(telegram_username) = %s LIMIT 1",
-                (tg_user,),
+                f"SELECT id FROM contacts WHERE LOWER(telegram_username) = %s{tenant_clause} LIMIT 1",
+                (tg_user, *tenant_args),
             ).fetchone()
         if not existing and source_url:
             # Fallback dedup per source_url: necessario per profili con solo
             # social/whatsapp/sitoweb (no email/tg) che altrimenti verrebbero
             # ri-inseriti ad ogni run del qualifier.
             existing = con.execute(
-                "SELECT id FROM contacts WHERE source_url = %s LIMIT 1", (source_url,)
+                f"SELECT id FROM contacts WHERE source_url = %s{tenant_clause} LIMIT 1",
+                (source_url, *tenant_args),
             ).fetchone()
         asset_id = data.get("asset_id")
         if asset_id is not None:
@@ -2638,7 +2841,7 @@ def list_distinct_asset_source_tasks(only_qualified: bool = False) -> list[dict[
 
 
 def list_contacts_with_social_platform(
-    platform: str, limit: int = 500
+    platform: str, limit: int = 500, tenant_id: Any = _UNSET,
 ) -> list[dict[str, Any]]:
     """Ritorna contacts (qualsiasi status, esclusi opt-out/banned) il cui
     `social_json` contiene almeno un entry per `platform`.
@@ -2650,14 +2853,20 @@ def list_contacts_with_social_platform(
     plat = (platform or "").strip().lower()
     if plat not in ("instagram", "tiktok", "facebook"):
         return []
+    tenant_id = _resolve_tenant(tenant_id)
     sql = (
         "SELECT * FROM contacts "
         "WHERE social_json IS NOT NULL AND social_json != '' "
-        "AND status NOT IN ('optedout','banned') "
-        "ORDER BY id DESC LIMIT %s"
+        "AND status NOT IN ('optedout','banned')"
     )
+    args: list[Any] = []
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY id DESC LIMIT %s"
+    args.append(max(1, int(limit)))
     with connect() as con:
-        rows = con.execute(sql, (max(1, int(limit)),)).fetchall()
+        rows = con.execute(sql, args).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
         d = dict(r)
@@ -2682,54 +2891,85 @@ def list_contacts_with_social_platform(
     return out
 
 
-def list_contacts_with_whatsapp(limit: int = 500) -> list[dict[str, Any]]:
+def list_contacts_with_whatsapp(
+    limit: int = 500, tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
     """Ritorna contacts con campo `whatsapp` popolato (qualsiasi status,
     esclusi optedout). Usato dalla UI del task `outreach_whatsapp` per il
     selettore esplicito di target.
     """
+    tenant_id = _resolve_tenant(tenant_id)
     sql = (
         "SELECT * FROM contacts "
         "WHERE whatsapp IS NOT NULL AND whatsapp != '' "
         "AND (whatsapp_consent IS NULL OR whatsapp_consent != 'optedout') "
-        "AND status NOT IN ('optedout','banned') "
-        "ORDER BY id DESC LIMIT %s"
+        "AND status NOT IN ('optedout','banned')"
     )
+    args: list[Any] = []
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY id DESC LIMIT %s"
+    args.append(max(1, int(limit)))
     with connect() as con:
-        rows = con.execute(sql, (max(1, int(limit)),)).fetchall()
+        rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_contacts_by_ids(ids: list[int]) -> list[dict[str, Any]]:
-    """Recupera contatti per lista di ID. Niente filtri su status."""
+def get_contacts_by_ids(
+    ids: list[int], tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Recupera contatti per lista di ID. Filtra per tenant (IDOR safety):
+    se il chiamante non e' super_admin, IDs che non appartengono al tenant
+    corrente vengono silentemente esclusi."""
     clean = [int(i) for i in ids if str(i).strip().lstrip("-").isdigit()]
     if not clean:
         return []
+    tenant_id = _resolve_tenant(tenant_id)
     placeholders = ",".join("%s" for _ in clean)
     sql = f"SELECT * FROM contacts WHERE id IN ({placeholders})"
+    args: list[Any] = list(clean)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        rows = con.execute(sql, clean).fetchall()
+        rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 
-def list_contact_source_domains(limit: int = 100) -> list[tuple[str, int]]:
+def list_contact_source_domains(
+    limit: int = 100, tenant_id: Any = _UNSET,
+) -> list[tuple[str, int]]:
     """Lista dei domini di provenienza piu' frequenti (per dropdown filtro UI)."""
+    tenant_id = _resolve_tenant(tenant_id)
     sql = (
         "SELECT source_domain, COUNT(*) AS n FROM contacts "
-        "WHERE source_domain IS NOT NULL AND source_domain != '' "
-        "GROUP BY source_domain ORDER BY n DESC LIMIT %s"
+        "WHERE source_domain IS NOT NULL AND source_domain != ''"
     )
+    args: list[Any] = []
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " GROUP BY source_domain ORDER BY n DESC LIMIT %s"
+    args.append(limit)
     with connect() as con:
-        rows = con.execute(sql, (limit,)).fetchall()
+        rows = con.execute(sql, args).fetchall()
     return [(r["source_domain"], int(r["n"])) for r in rows]
 
 
-def update_contact(contact_id: int, fields: dict[str, Any]) -> None:
+def update_contact(
+    contact_id: int, fields: dict[str, Any], tenant_id: Any = _UNSET,
+) -> None:
     """Update generico di un contatto.
 
     Accetta SOLO le colonne whitelisted (no SQL injection via key utente). Le
     chiavi non riconosciute vengono ignorate. `updated_at` viene aggiornato
     sempre. Per cambi specifici di status/qualifier_score/whatsapp_consent ci
     sono helper dedicati che è meglio preferire.
+
+    **Tenant safety**: il WHERE include `AND tenant_id = %s` se il chiamante
+    non e' super_admin. Un tenant_user A NON puo' modificare contact di tenant B
+    nemmeno passando l'ID esatto (IDOR mitigation).
     """
     if not fields:
         return
@@ -2752,57 +2992,98 @@ def update_contact(contact_id: int, fields: dict[str, Any]) -> None:
     sets.append("updated_at = %s")
     vals.append(now_iso())
     vals.append(contact_id)
+    tenant_id = _resolve_tenant(tenant_id)
     sql = f"UPDATE contacts SET {', '.join(sets)} WHERE id = %s"
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        vals.append(tenant_id)
     with connect() as con:
         con.execute(sql, vals)
 
 
-def update_contact_status(contact_id: int, status: str, notes: str | None = None) -> None:
+def update_contact_status(
+    contact_id: int, status: str, notes: str | None = None, tenant_id: Any = _UNSET,
+) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
+    if notes is not None:
+        sql = "UPDATE contacts SET status = %s, notes = %s, updated_at = %s WHERE id = %s"
+        args: list[Any] = [status, notes, now_iso(), contact_id]
+    else:
+        sql = "UPDATE contacts SET status = %s, updated_at = %s WHERE id = %s"
+        args = [status, now_iso(), contact_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        if notes is not None:
-            con.execute(
-                "UPDATE contacts SET status = %s, notes = %s, updated_at = %s WHERE id = %s",
-                (status, notes, now_iso(), contact_id),
-            )
+        con.execute(sql, args)
+
+
+def update_contact_qualifier(
+    contact_id: int, score: int, status: str, tenant_id: Any = _UNSET,
+) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "UPDATE contacts SET qualifier_score = %s, status = %s, updated_at = %s WHERE id = %s"
+    args: list[Any] = [score, status, now_iso(), contact_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        con.execute(sql, args)
+
+
+def find_contact_by_email(
+    email: str, tenant_id: Any = _UNSET,
+) -> dict[str, Any] | None:
+    """Lookup contact per email. **CRITICO**: filtra per tenant per evitare
+    cross-tenant leak via inbound message dispatch (tenant A riceve mail per
+    user@x.com e matcherebbe il contact di tenant B con la stessa email).
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            row = con.execute(
+                "SELECT * FROM contacts WHERE LOWER(email) = %s LIMIT 1",
+                (email.strip().lower(),),
+            ).fetchone()
         else:
-            con.execute(
-                "UPDATE contacts SET status = %s, updated_at = %s WHERE id = %s",
-                (status, now_iso(), contact_id),
-            )
-
-
-def update_contact_qualifier(contact_id: int, score: int, status: str) -> None:
-    with connect() as con:
-        con.execute(
-            "UPDATE contacts SET qualifier_score = %s, status = %s, updated_at = %s WHERE id = %s",
-            (score, status, now_iso(), contact_id),
-        )
-
-
-def find_contact_by_email(email: str) -> dict[str, Any] | None:
-    with connect() as con:
-        row = con.execute(
-            "SELECT * FROM contacts WHERE LOWER(email) = %s LIMIT 1",
-            (email.strip().lower(),),
-        ).fetchone()
+            row = con.execute(
+                "SELECT * FROM contacts WHERE LOWER(email) = %s AND tenant_id = %s LIMIT 1",
+                (email.strip().lower(), tenant_id),
+            ).fetchone()
     return dict(row) if row else None
 
 
-def find_contact_by_telegram_chat(chat_id: str) -> dict[str, Any] | None:
+def find_contact_by_telegram_chat(
+    chat_id: str, tenant_id: Any = _UNSET,
+) -> dict[str, Any] | None:
+    """Lookup contact per telegram chat_id. Filtra per tenant (vedi nota in
+    find_contact_by_email)."""
+    tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
-        row = con.execute(
-            "SELECT * FROM contacts WHERE telegram_chat_id = %s LIMIT 1",
-            (str(chat_id),),
-        ).fetchone()
+        if tenant_id is None:
+            row = con.execute(
+                "SELECT * FROM contacts WHERE telegram_chat_id = %s LIMIT 1",
+                (str(chat_id),),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM contacts WHERE telegram_chat_id = %s AND tenant_id = %s LIMIT 1",
+                (str(chat_id), tenant_id),
+            ).fetchone()
     return dict(row) if row else None
 
 
-def set_contact_telegram_chat(contact_id: int, chat_id: str) -> None:
+def set_contact_telegram_chat(
+    contact_id: int, chat_id: str, tenant_id: Any = _UNSET,
+) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "UPDATE contacts SET telegram_chat_id = %s, updated_at = %s WHERE id = %s"
+    args: list[Any] = [str(chat_id), now_iso(), contact_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        con.execute(
-            "UPDATE contacts SET telegram_chat_id = %s, updated_at = %s WHERE id = %s",
-            (str(chat_id), now_iso(), contact_id),
-        )
+        con.execute(sql, args)
 
 
 def delete_contact(contact_id: int, tenant_id: Any = _UNSET) -> int:
@@ -2932,17 +3213,27 @@ def upsert_asset(
 
     with connect() as con:
         existing = None
+        # IMPORTANTE: dedup INTRA-TENANT (vedi stessa nota in upsert_contact).
+        # Pre-2026-05-22 tenant B che ingerivano stesso source_url di A
+        # sovrascrivevano l'asset di A. Fix: AND tenant_id = %s.
+        tenant_clause = ""
+        tenant_args: tuple = ()
+        if tenant_id is not None:
+            tenant_clause = " AND tenant_id = %s"
+            tenant_args = (tenant_id,)
         # Prima cerca per canonical (dedup cross-lingua), poi fallback su source_url
         if source_url_canonical:
             row = con.execute(
-                "SELECT id FROM assets WHERE source_url_canonical = %s AND asset_type = %s LIMIT 1",
-                (source_url_canonical, asset_type),
+                f"SELECT id FROM assets WHERE source_url_canonical = %s "
+                f"AND asset_type = %s{tenant_clause} LIMIT 1",
+                (source_url_canonical, asset_type, *tenant_args),
             ).fetchone()
             existing = int(row["id"]) if row else None
         if existing is None and source_url:
             row = con.execute(
-                "SELECT id FROM assets WHERE source_url = %s AND asset_type = %s LIMIT 1",
-                (source_url, asset_type),
+                f"SELECT id FROM assets WHERE source_url = %s "
+                f"AND asset_type = %s{tenant_clause} LIMIT 1",
+                (source_url, asset_type, *tenant_args),
             ).fetchone()
             existing = int(row["id"]) if row else None
 
@@ -3678,11 +3969,16 @@ def list_assets_for_whatsapp_outreach(
     return [dict(r) for r in rows]
 
 
-def list_asset_types_in_use() -> list[dict[str, Any]]:
+def list_asset_types_in_use(tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT asset_type, COUNT(*) AS n FROM assets"
+    args: list[Any] = []
+    if tenant_id is not None:
+        sql += " WHERE tenant_id = %s"
+        args.append(tenant_id)
+    sql += " GROUP BY asset_type ORDER BY n DESC"
     with connect() as con:
-        rows = con.execute(
-            "SELECT asset_type, COUNT(*) AS n FROM assets GROUP BY asset_type ORDER BY n DESC"
-        ).fetchall()
+        rows = con.execute(sql, args).fetchall()
     return [{"asset_type": r["asset_type"], "count": int(r["n"])} for r in rows]
 
 
@@ -4066,6 +4362,51 @@ def count_qualified_assets(
 # Site patterns -memoria pattern URL "target" per dominio
 # ===========================================================================
 
+# ===========================================================================
+# Site memory: visibilita' tenant
+# ===========================================================================
+# La memoria del sito (`site_patterns`, `site_playbooks`) e' tenant-aware ma
+# con visibilita' opt-in: il flag `tenants.site_memory_shared` decide se il
+# tenant corrente vede SOLO la sua memoria (default = isolato) oppure quella
+# di tutti i tenant (opt-in / premium).
+#
+# Il super_admin (tenant_id=None) vede sempre tutto.
+# Gli scriver runner taggano sempre con il tenant_id corrente.
+
+def _can_see_all_site_memory(tenant_id: int | None) -> bool:
+    """True se il tenant corrente puo' leggere la memoria di TUTTI i tenant.
+    Casi: super_admin (tenant_id=None) o tenant con `site_memory_shared=TRUE`.
+    """
+    if tenant_id is None:
+        return True  # super_admin
+    try:
+        with connect() as con:
+            row = con.execute(
+                "SELECT site_memory_shared FROM tenants WHERE id = %s",
+                (tenant_id,),
+            ).fetchone()
+    except Exception:
+        return False  # fail-safe: isolato
+    if not row:
+        return False
+    val = row["site_memory_shared"]
+    return bool(val)
+
+
+def _site_memory_tenant_filter(sql: str, args: list[Any], col_alias: str = "") -> tuple[str, list[Any]]:
+    """Aggiunge `AND <alias>tenant_id = %s` al WHERE se il tenant corrente NON
+    e' autorizzato a vedere tutta la memoria. No-op altrimenti.
+
+    `col_alias`: prefisso colonna per JOIN (es. 's.' per site_patterns s).
+    """
+    tenant_id = current_tenant_id()
+    if _can_see_all_site_memory(tenant_id):
+        return sql, args
+    sql += f" AND {col_alias}tenant_id = %s"
+    args.append(tenant_id)
+    return sql, args
+
+
 def find_site_patterns(
     registrable_domain: str,
     asset_type: str | None = None,
@@ -4079,6 +4420,7 @@ def find_site_patterns(
     if status:
         sql += " AND status = %s"
         args.append(status)
+    sql, args = _site_memory_tenant_filter(sql, args)
     sql += " ORDER BY (status='confirmed') DESC, successes DESC, hits DESC"
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
@@ -4096,9 +4438,13 @@ def upsert_site_pattern(
 ) -> int:
     """Inserisce un pattern se nuovo (status='candidate'); altrimenti ritorna l'id esistente
     e aggiorna asset_type/regex se erano vuoti.
+
+    `tenant_id` viene assegnato al PRIMO writer e mai cambiato (audit/ownership
+    del primo discoverer). Per la visibilita' nel pool vedi `find_site_patterns`.
     """
     ts = now_iso()
     rd = registrable_domain.lower()
+    current_tid = current_tenant_id()
     with connect() as con:
         row = con.execute(
             "SELECT id, asset_type, regex FROM site_patterns "
@@ -4127,10 +4473,11 @@ def upsert_site_pattern(
             INSERT INTO site_patterns (
               registrable_domain, pattern, regex, asset_type, status,
               hits, successes, failures,
-              source_task_id, source_job_id, notes, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, 'candidate', 0, 0, 0, %s, %s, %s, %s, %s) RETURNING id
+              source_task_id, source_job_id, notes, tenant_id, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, 'candidate', 0, 0, 0, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
-            (rd, pattern, regex, asset_type, source_task_id, source_job_id, notes, ts, ts),
+            (rd, pattern, regex, asset_type, source_task_id, source_job_id, notes,
+             current_tid, ts, ts),
         )
         return int(cur.fetchone()['id'])
 
@@ -4177,6 +4524,7 @@ def list_site_patterns(
     if status:
         sql += " AND status = %s"
         args.append(status)
+    sql, args = _site_memory_tenant_filter(sql, args)
     sql += " ORDER BY registrable_domain, (status='confirmed') DESC, successes DESC, id DESC LIMIT %s"
     args.append(limit)
     with connect() as con:
@@ -4218,16 +4566,19 @@ def maybe_promote_pattern(pattern_id: int, min_successes: int = 3, min_ratio: fl
 
 def get_site_playbook(registrable_domain: str, asset_type: str) -> dict[str, Any] | None:
     """Ritorna il playbook ATTIVO per (dominio, asset_type) o None.
-    Auto-skip se status != 'active' o transferable=0."""
+    Auto-skip se status != 'active' o transferable=0.
+    Rispetta `site_memory_shared`: i tenant isolati vedono solo i loro playbook."""
     if not registrable_domain or not asset_type:
         return None
+    sql = (
+        "SELECT * FROM site_playbooks "
+        "WHERE registrable_domain = %s AND asset_type = %s "
+        "      AND status = 'active' AND transferable = 1"
+    )
+    args: list[Any] = [registrable_domain.lower(), asset_type]
+    sql, args = _site_memory_tenant_filter(sql, args)
     with connect() as con:
-        row = con.execute(
-            """SELECT * FROM site_playbooks
-               WHERE registrable_domain = %s AND asset_type = %s
-                     AND status = 'active' AND transferable = 1""",
-            (registrable_domain.lower(), asset_type),
-        ).fetchone()
+        row = con.execute(sql, args).fetchone()
     return dict(row) if row else None
 
 
@@ -4241,9 +4592,14 @@ def upsert_site_playbook(
     transferable: bool,
 ) -> int:
     """Crea o aggiorna il playbook per (dominio, asset_type).
-    Resetta `failures` a 0 (e' una nuova versione). Ritorna l'id."""
+    Resetta `failures` a 0 (e' una nuova versione). Ritorna l'id.
+
+    `tenant_id`: l'UPDATE riassegna l'owner all'ultimo writer (il playbook e'
+    una versione nuova, ha senso che il "current owner" sia chi ha scritto la
+    versione vigente). L'INSERT iniziale usa il tenant corrente."""
     ts = now_iso()
     domain_l = registrable_domain.lower()
+    current_tid = current_tenant_id()
     with connect() as con:
         existing = con.execute(
             "SELECT id FROM site_playbooks WHERE registrable_domain = %s AND asset_type = %s",
@@ -4255,22 +4611,23 @@ def upsert_site_playbook(
                 """UPDATE site_playbooks
                    SET playbook = %s, source_runner = %s, source_job_id = %s,
                        transferable = %s, status = 'active', failures = 0,
-                       updated_at = %s
+                       tenant_id = %s, updated_at = %s
                    WHERE id = %s""",
                 (
                     playbook, source_runner, source_job_id,
-                    1 if transferable else 0, ts, pb_id,
+                    1 if transferable else 0, current_tid, ts, pb_id,
                 ),
             )
             return pb_id
         cur = con.execute(
             """INSERT INTO site_playbooks (
                 registrable_domain, asset_type, playbook, source_runner, source_job_id,
-                transferable, status, hits, successes, failures, created_at, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, 'active', 0, 0, 0, %s, %s) RETURNING id""",
+                transferable, status, hits, successes, failures,
+                tenant_id, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, 'active', 0, 0, 0, %s, %s, %s) RETURNING id""",
             (
                 domain_l, asset_type, playbook, source_runner, source_job_id,
-                1 if transferable else 0, ts, ts,
+                1 if transferable else 0, current_tid, ts, ts,
             ),
         )
         return int(cur.fetchone()['id'])
@@ -4326,6 +4683,7 @@ def list_site_playbooks(
     if status:
         sql += " AND status = %s"
         params.append(status)
+    sql, params = _site_memory_tenant_filter(sql, params)
     sql += " ORDER BY updated_at DESC LIMIT %s"
     params.append(int(limit))
     with connect() as con:
@@ -4333,46 +4691,89 @@ def list_site_playbooks(
     return [dict(r) for r in rows]
 
 
-def delete_site_playbook(playbook_id: int) -> None:
+def delete_site_playbook(playbook_id: int, tenant_id: Any = _UNSET) -> int:
+    """Cancella un playbook. Filtra per tenant (IDOR safety): tenant_user A
+    NON puo' cancellare playbook di tenant B. Ritorna n righe cancellate."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "DELETE FROM site_playbooks WHERE id = %s"
+    args: list[Any] = [playbook_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        con.execute("DELETE FROM site_playbooks WHERE id = %s", (playbook_id,))
-
-
-def delete_site_pattern(pattern_id: int) -> None:
-    with connect() as con:
-        con.execute("DELETE FROM site_patterns WHERE id = %s", (pattern_id,))
-
-
-def delete_site_patterns_by_domain(registrable_domain: str) -> int:
-    """Cancella tutti i pattern di un dominio. Ritorna il numero di righe cancellate."""
-    if not registrable_domain:
-        return 0
-    with connect() as con:
-        cur = con.execute(
-            "DELETE FROM site_patterns WHERE registrable_domain = %s",
-            (registrable_domain.lower(),),
-        )
+        cur = con.execute(sql, args)
         return int(cur.rowcount or 0)
 
 
-def delete_site_playbooks_by_domain(registrable_domain: str) -> int:
-    """Cancella tutti i playbook di un dominio. Ritorna n righe cancellate."""
-    if not registrable_domain:
-        return 0
+def delete_site_pattern(pattern_id: int, tenant_id: Any = _UNSET) -> int:
+    """Cancella un pattern. Filtra per tenant (IDOR safety). Ritorna n righe."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "DELETE FROM site_patterns WHERE id = %s"
+    args: list[Any] = [pattern_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        cur = con.execute(
-            "DELETE FROM site_playbooks WHERE registrable_domain = %s",
-            (registrable_domain.lower(),),
-        )
+        cur = con.execute(sql, args)
         return int(cur.rowcount or 0)
 
 
-def truncate_site_memory() -> dict[str, int]:
-    """Svuota completamente la memoria sito (pattern + playbook).
-    Ritorna un dict con n righe cancellate per tabella."""
+def delete_site_patterns_by_domain(
+    registrable_domain: str, tenant_id: Any = _UNSET,
+) -> int:
+    """Cancella tutti i pattern di un dominio (scoped al tenant del chiamante,
+    a meno che sia super_admin). Ritorna il numero di righe cancellate."""
+    if not registrable_domain:
+        return 0
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "DELETE FROM site_patterns WHERE registrable_domain = %s"
+    args: list[Any] = [registrable_domain.lower()]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        n_pat = int(con.execute("DELETE FROM site_patterns").rowcount or 0)
-        n_pb = int(con.execute("DELETE FROM site_playbooks").rowcount or 0)
+        cur = con.execute(sql, args)
+        return int(cur.rowcount or 0)
+
+
+def delete_site_playbooks_by_domain(
+    registrable_domain: str, tenant_id: Any = _UNSET,
+) -> int:
+    """Cancella tutti i playbook di un dominio (scoped al tenant). Ritorna n righe."""
+    if not registrable_domain:
+        return 0
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "DELETE FROM site_playbooks WHERE registrable_domain = %s"
+    args: list[Any] = [registrable_domain.lower()]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        cur = con.execute(sql, args)
+        return int(cur.rowcount or 0)
+
+
+def truncate_site_memory(tenant_id: Any = _UNSET) -> dict[str, int]:
+    """Svuota la memoria sito. Per tenant_user e' scoped al suo tenant; per
+    super_admin (tenant_id=None) svuota tutto.
+
+    **PROTEZIONE**: pre-2026-05-22 era un comando "flush all globale" — un
+    tenant_user poteva cancellare la memoria di tutti i tenant. Ora un
+    tenant_user puo' resettare solo la propria, e il super_admin deve
+    invocare esplicitamente con tenant_id=None.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            n_pat = int(con.execute("DELETE FROM site_patterns").rowcount or 0)
+            n_pb = int(con.execute("DELETE FROM site_playbooks").rowcount or 0)
+        else:
+            n_pat = int(con.execute(
+                "DELETE FROM site_patterns WHERE tenant_id = %s", (tenant_id,)
+            ).rowcount or 0)
+            n_pb = int(con.execute(
+                "DELETE FROM site_playbooks WHERE tenant_id = %s", (tenant_id,)
+            ).rowcount or 0)
     return {"site_patterns": n_pat, "site_playbooks": n_pb}
 
 
@@ -4493,18 +4894,30 @@ def list_threads(
     return [dict(r) for r in rows]
 
 
-def update_thread_status(thread_id: int, status: str) -> None:
+def update_thread_status(
+    thread_id: int, status: str, tenant_id: Any = _UNSET,
+) -> None:
+    """Aggiorna status di un thread. Tenant-filtered (IDOR safety)."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "UPDATE threads SET status = %s WHERE id = %s"
+    args: list[Any] = [status, thread_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        con.execute(
-            "UPDATE threads SET status = %s WHERE id = %s", (status, thread_id)
-        )
+        con.execute(sql, args)
 
 
-def touch_thread(thread_id: int) -> None:
+def touch_thread(thread_id: int, tenant_id: Any = _UNSET) -> None:
+    """Bump last_msg_at di un thread. Tenant-filtered."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "UPDATE threads SET last_msg_at = %s WHERE id = %s"
+    args: list[Any] = [now_iso(), thread_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        con.execute(
-            "UPDATE threads SET last_msg_at = %s WHERE id = %s", (now_iso(), thread_id)
-        )
+        con.execute(sql, args)
 
 
 # ===========================================================================
@@ -5523,27 +5936,38 @@ def list_llm_usage(
 # Contacts -helpers WhatsApp (consent + inbound tracking)
 # ===========================================================================
 
-def update_contact_whatsapp_consent(contact_id: int, consent: str) -> None:
-    """Aggiorna `contacts.whatsapp_consent`. Valori validi: 'cold'|'opt_in'|'optedout'."""
+def update_contact_whatsapp_consent(
+    contact_id: int, consent: str, tenant_id: Any = _UNSET,
+) -> None:
+    """Aggiorna `contacts.whatsapp_consent`. Valori validi: 'cold'|'opt_in'|'optedout'.
+    Filtra per tenant (IDOR safety)."""
     if consent not in ("cold", "opt_in", "optedout"):
         raise ValueError(f"whatsapp_consent invalido: {consent!r}")
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "UPDATE contacts SET whatsapp_consent = %s, updated_at = %s WHERE id = %s"
+    args: list[Any] = [consent, now_iso(), contact_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        con.execute(
-            "UPDATE contacts SET whatsapp_consent = %s, updated_at = %s WHERE id = %s",
-            (consent, now_iso(), contact_id),
-        )
+        con.execute(sql, args)
 
 
-def touch_contact_whatsapp_inbound(contact_id: int) -> None:
+def touch_contact_whatsapp_inbound(
+    contact_id: int, tenant_id: Any = _UNSET,
+) -> None:
     """Segna che il contatto ha appena scritto al business number -abilita la
-    24h-window per messaggi free-form via Motore B.
+    24h-window per messaggi free-form via Motore B. Tenant-filtered.
     """
+    tenant_id = _resolve_tenant(tenant_id)
     ts = now_iso()
+    sql = "UPDATE contacts SET whatsapp_last_inbound_at = %s, updated_at = %s WHERE id = %s"
+    args: list[Any] = [ts, ts, contact_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     with connect() as con:
-        con.execute(
-            "UPDATE contacts SET whatsapp_last_inbound_at = %s, updated_at = %s WHERE id = %s",
-            (ts, ts, contact_id),
-        )
+        con.execute(sql, args)
 
 
 def list_contacts_for_whatsapp_outreach(
@@ -5552,6 +5976,7 @@ def list_contacts_for_whatsapp_outreach(
     exclude_contacted: bool = True,
     limit: int = 1000,
     contact_tag_filters: list[tuple[str, str]] | list[dict] | None = None,
+    tenant_id: Any = _UNSET,
 ) -> list[dict]:
     """Carica i contatti idonei a outreach_whatsapp.
 
@@ -5561,6 +5986,7 @@ def list_contacts_for_whatsapp_outreach(
     `contact_tag_filters`: lista di (tag_key, tag_value) o {key, value}.
     Multipli filtri sono combinati in AND tramite EXISTS join su asset_tags.
     """
+    tenant_id = _resolve_tenant(tenant_id)
     sql = "SELECT * FROM contacts WHERE whatsapp IS NOT NULL AND whatsapp != ''"
     args: list = []
     if only_qualified:
@@ -5570,6 +5996,9 @@ def list_contacts_for_whatsapp_outreach(
     if exclude_contacted:
         sql += " AND status != 'contacted'"
     sql, args = _add_contact_tag_filters_clause(sql, args, contact_tag_filters)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
     sql += " ORDER BY id DESC LIMIT %s"
     args.append(limit)
     with connect() as con:

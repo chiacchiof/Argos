@@ -352,3 +352,381 @@ def test_whatsapp_api_config_isolation(populated_db):
     assert {c["label"] for c in cfg_b} == {"WA Bob"}
     # Anti-IDOR
     assert db.get_whatsapp_api_config(b_id, tenant_id=populated_db["tenant_a"]) is None
+
+
+# ---------------------------------------------------------------------------
+# IDOR contacts (vulnerabilita' fixate 2026-05-22): list_*, find_*, get_*_by_ids,
+# update_* devono filtrare per tenant.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def populated_contacts(populated_db):
+    """Crea 1 contact per tenant con email + whatsapp + telegram_chat_id + social."""
+    alice_c = db.upsert_contact(
+        {
+            "email": "shared@example.com", "display_name": "Alice's Mario",
+            "whatsapp": "+39111", "telegram_chat_id": "111",
+            "social_json": '[{"platform":"instagram","url":"https://ig.com/alice_mario"}]',
+            "source_domain": "alice.test",
+        },
+        tenant_id=populated_db["tenant_a"], created_by_user_id=populated_db["alice_id"],
+    )
+    bob_c = db.upsert_contact(
+        {
+            "email": "shared@example.com", "display_name": "Bob's Mario",
+            "whatsapp": "+39222", "telegram_chat_id": "222",
+            "social_json": '[{"platform":"instagram","url":"https://ig.com/bob_mario"}]',
+            "source_domain": "bob.test",
+        },
+        tenant_id=populated_db["tenant_b"], created_by_user_id=populated_db["bob_id"],
+    )
+    return {**populated_db, "alice_c": alice_c, "bob_c": bob_c}
+
+
+def test_get_contacts_by_ids_filters_tenant(populated_contacts):
+    """IDOR fix: get_contacts_by_ids non deve ritornare contact di altri tenant
+    nemmeno se l'attaccante passa l'ID esatto."""
+    ctx = populated_contacts
+    # Alice chiede l'ID di Bob → ritorna [] (tenant filtra)
+    results = db.get_contacts_by_ids([ctx["bob_c"]], tenant_id=ctx["tenant_a"])
+    assert results == []
+    # Bob chiede il suo → ritorna 1
+    results = db.get_contacts_by_ids([ctx["bob_c"]], tenant_id=ctx["tenant_b"])
+    assert len(results) == 1
+    # Super-admin chiede entrambi → ritorna 2
+    results = db.get_contacts_by_ids([ctx["alice_c"], ctx["bob_c"]], tenant_id=None)
+    assert len(results) == 2
+
+
+def test_list_contacts_with_whatsapp_filters_tenant(populated_contacts):
+    ctx = populated_contacts
+    # Alice vede solo il suo
+    rows = db.list_contacts_with_whatsapp(tenant_id=ctx["tenant_a"])
+    assert len(rows) == 1
+    assert rows[0]["whatsapp"] == "+39111"
+    # Bob vede solo il suo
+    rows = db.list_contacts_with_whatsapp(tenant_id=ctx["tenant_b"])
+    assert rows[0]["whatsapp"] == "+39222"
+
+
+def test_list_contacts_with_social_platform_filters_tenant(populated_contacts):
+    ctx = populated_contacts
+    rows = db.list_contacts_with_social_platform("instagram", tenant_id=ctx["tenant_a"])
+    assert len(rows) == 1
+    assert "alice_mario" in rows[0]["_platform_url"]
+    rows = db.list_contacts_with_social_platform("instagram", tenant_id=ctx["tenant_b"])
+    assert "bob_mario" in rows[0]["_platform_url"]
+
+
+def test_list_contact_source_domains_filters_tenant(populated_contacts):
+    ctx = populated_contacts
+    rows = db.list_contact_source_domains(tenant_id=ctx["tenant_a"])
+    domains = {d for d, _ in rows}
+    assert domains == {"alice.test"}
+    rows = db.list_contact_source_domains(tenant_id=ctx["tenant_b"])
+    assert {d for d, _ in rows} == {"bob.test"}
+
+
+def test_find_contact_by_email_filters_tenant(populated_contacts):
+    """CRITICO: inbound poisoning. Tenant A che riceve mail per shared@example.com
+    NON deve matchare il contact di Bob con la stessa email."""
+    ctx = populated_contacts
+    # Alice cerca shared@example.com → trova IL SUO contact, non quello di Bob
+    c = db.find_contact_by_email("shared@example.com", tenant_id=ctx["tenant_a"])
+    assert c["display_name"] == "Alice's Mario"
+    # Bob cerca lo stesso → trova IL SUO
+    c = db.find_contact_by_email("shared@example.com", tenant_id=ctx["tenant_b"])
+    assert c["display_name"] == "Bob's Mario"
+
+
+def test_find_contact_by_telegram_chat_filters_tenant(populated_contacts):
+    """Stesso pattern di find_contact_by_email: tenant deve restare isolato
+    anche se chat_id collide accidentalmente."""
+    ctx = populated_contacts
+    # Alice cerca telegram_chat_id="222" (di Bob) → non trova nulla
+    c = db.find_contact_by_telegram_chat("222", tenant_id=ctx["tenant_a"])
+    assert c is None
+    # Bob cerca lo stesso → trova il suo
+    c = db.find_contact_by_telegram_chat("222", tenant_id=ctx["tenant_b"])
+    assert c["display_name"] == "Bob's Mario"
+
+
+def test_update_contact_filters_tenant(populated_contacts):
+    """Write IDOR: Alice tenta UPDATE su contact_id di Bob → no-op silenzioso."""
+    ctx = populated_contacts
+    db.update_contact(ctx["bob_c"], {"display_name": "HACKED"}, tenant_id=ctx["tenant_a"])
+    # Il contact di Bob NON e' stato modificato
+    c = db.get_contact(ctx["bob_c"], tenant_id=ctx["tenant_b"])
+    assert c["display_name"] == "Bob's Mario"
+
+
+def test_update_contact_status_filters_tenant(populated_contacts):
+    ctx = populated_contacts
+    db.update_contact_status(ctx["bob_c"], "rejected", tenant_id=ctx["tenant_a"])
+    c = db.get_contact(ctx["bob_c"], tenant_id=ctx["tenant_b"])
+    assert c["status"] != "rejected"
+
+
+# ---------------------------------------------------------------------------
+# IDOR workflow edges (fixed 2026-05-22): get_edge + delete_edge + toggle_edge
+# devono filtrare per tenant via JOIN sul workflow padre.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def populated_edges(populated_db):
+    """Crea 1 workflow per tenant con 1 edge ognuno."""
+    ctx = populated_db
+    # 2 task in piu' (servono per legare gli edge)
+    task_a2 = db.create_task(
+        {"name": "Alice T2", "objective": "x"},
+        tenant_id=ctx["tenant_a"], created_by_user_id=ctx["alice_id"],
+    )
+    task_b2 = db.create_task(
+        {"name": "Bob T2", "objective": "x"},
+        tenant_id=ctx["tenant_b"], created_by_user_id=ctx["bob_id"],
+    )
+    wf_a = db.create_workflow(
+        "WF Alice", tenant_id=ctx["tenant_a"], created_by_user_id=ctx["alice_id"]
+    )
+    wf_b = db.create_workflow(
+        "WF Bob", tenant_id=ctx["tenant_b"], created_by_user_id=ctx["bob_id"]
+    )
+    edge_a = db.create_edge(
+        from_task_id=ctx["task_alice"], to_task_id=task_a2, workflow_id=wf_a,
+    )
+    edge_b = db.create_edge(
+        from_task_id=ctx["task_bob"], to_task_id=task_b2, workflow_id=wf_b,
+    )
+    return {**ctx, "wf_a": wf_a, "wf_b": wf_b, "edge_a": edge_a, "edge_b": edge_b}
+
+
+def test_get_edge_filters_tenant(populated_edges):
+    ctx = populated_edges
+    # Alice non vede edge di Bob
+    assert db.get_edge(ctx["edge_b"], tenant_id=ctx["tenant_a"]) is None
+    # Bob vede il suo
+    assert db.get_edge(ctx["edge_b"], tenant_id=ctx["tenant_b"]) is not None
+    # Super-admin vede tutto
+    assert db.get_edge(ctx["edge_b"], tenant_id=None) is not None
+
+
+def test_delete_edge_filters_tenant(populated_edges):
+    """Write IDOR: Alice tenta DELETE su edge di Bob → no-op."""
+    ctx = populated_edges
+    n = db.delete_edge(ctx["edge_b"], tenant_id=ctx["tenant_a"])
+    assert n == 0  # niente cancellato
+    # Edge di Bob ancora esiste
+    assert db.get_edge(ctx["edge_b"], tenant_id=ctx["tenant_b"]) is not None
+
+
+def test_toggle_edge_filters_tenant(populated_edges):
+    ctx = populated_edges
+    # Alice tenta toggle su edge di Bob → no-op
+    n = db.toggle_edge(ctx["edge_b"], enabled=False, tenant_id=ctx["tenant_a"])
+    assert n == 0
+    # Edge di Bob ancora enabled
+    edge = db.get_edge(ctx["edge_b"], tenant_id=ctx["tenant_b"])
+    assert edge["enabled"] == 1
+
+
+# ---------------------------------------------------------------------------
+# IDOR site memory (fixed 2026-05-22): delete_site_pattern/playbook + flush.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def populated_site_memory(populated_db):
+    """1 pattern + 1 playbook per tenant."""
+    ctx = populated_db
+    # Crea pattern per Alice
+    tok_a = db.set_current_tenant(ctx["tenant_a"])
+    try:
+        pat_a = db.upsert_site_pattern(
+            registrable_domain="alice.test", pattern="/p/", regex="/p/", asset_type="x",
+        )
+        pb_a = db.upsert_site_playbook(
+            registrable_domain="alice.test", asset_type="x",
+            playbook='{"text":"alice"}', source_runner="test",
+            source_job_id=None, transferable=True,
+        )
+    finally:
+        db.reset_current_tenant(tok_a)
+    # Crea pattern per Bob
+    tok_b = db.set_current_tenant(ctx["tenant_b"])
+    try:
+        pat_b = db.upsert_site_pattern(
+            registrable_domain="bob.test", pattern="/q/", regex="/q/", asset_type="x",
+        )
+        pb_b = db.upsert_site_playbook(
+            registrable_domain="bob.test", asset_type="x",
+            playbook='{"text":"bob"}', source_runner="test",
+            source_job_id=None, transferable=True,
+        )
+    finally:
+        db.reset_current_tenant(tok_b)
+    return {**ctx, "pat_a": pat_a, "pat_b": pat_b, "pb_a": pb_a, "pb_b": pb_b}
+
+
+def test_delete_site_pattern_filters_tenant(populated_site_memory):
+    """Alice tenta DELETE su pattern di Bob → no-op."""
+    ctx = populated_site_memory
+    n = db.delete_site_pattern(ctx["pat_b"], tenant_id=ctx["tenant_a"])
+    assert n == 0
+    # Pattern di Bob ancora c'e' (visible al super-admin)
+    rows = db.list_site_patterns(registrable_domain="bob.test")
+    # list_site_patterns nel context senza tenant filtra: serve super-admin
+    tok = db.set_current_tenant(None)
+    try:
+        rows = db.list_site_patterns(registrable_domain="bob.test")
+        assert any(r["id"] == ctx["pat_b"] for r in rows)
+    finally:
+        db.reset_current_tenant(tok)
+
+
+def test_delete_site_playbook_filters_tenant(populated_site_memory):
+    ctx = populated_site_memory
+    n = db.delete_site_playbook(ctx["pb_b"], tenant_id=ctx["tenant_a"])
+    assert n == 0
+    # Playbook di Bob ancora esiste
+    tok = db.set_current_tenant(ctx["tenant_b"])
+    try:
+        pb = db.get_site_playbook("bob.test", "x")
+        assert pb is not None
+    finally:
+        db.reset_current_tenant(tok)
+
+
+def test_truncate_site_memory_filters_tenant(populated_site_memory):
+    """truncate da tenant_user A svuota SOLO la memoria di A, non di B."""
+    ctx = populated_site_memory
+    res = db.truncate_site_memory(tenant_id=ctx["tenant_a"])
+    assert res["site_patterns"] == 1
+    assert res["site_playbooks"] == 1
+    # Memoria di Bob intatta
+    tok = db.set_current_tenant(ctx["tenant_b"])
+    try:
+        assert db.list_site_patterns(registrable_domain="bob.test")
+        assert db.get_site_playbook("bob.test", "x") is not None
+    finally:
+        db.reset_current_tenant(tok)
+
+
+def test_truncate_site_memory_superadmin_wipes_all(populated_site_memory):
+    """Super-admin (tenant_id=None) puo' fare flush totale."""
+    res = db.truncate_site_memory(tenant_id=None)
+    assert res["site_patterns"] == 2
+    assert res["site_playbooks"] == 2
+
+
+# ---------------------------------------------------------------------------
+# End-to-end route IDOR: Alice logged-in via HTTP tenta di toccare workflow
+# edges di Bob via POST → atteso 404 (route fa get_edge tenant-filtered)
+# ---------------------------------------------------------------------------
+
+def test_e2e_route_delete_edge_idor_blocked(populated_edges, tmp_path, monkeypatch):
+    """End-to-end: Alice logga via HTTP, tenta POST /workflow_edges/{edge_b}/delete
+    via il proprio client → la route ritorna 404, l'edge di Bob NON e' cancellato.
+    """
+    from app import config, storage
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
+
+    ctx = populated_edges
+    from app.main import app
+    with TestClient(app) as client:
+        r = client.post(
+            "/login",
+            data={"email": "alice@a.it", "password": "pwd-alice", "next": "/"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        r = client.post(
+            f"/workflow_edges/{ctx['edge_b']}/delete",
+            data={"redirect_to": "/workflows"},
+            follow_redirects=False,
+        )
+        # Atteso: 404 (route fa get_edge che filtra per tenant di Alice)
+        assert r.status_code == 404, f"IDOR exploit possibile: got {r.status_code}"
+
+    # Verifica DB: edge di Bob ancora esiste
+    edge = db.get_edge(ctx["edge_b"], tenant_id=None)
+    assert edge is not None, "Edge di Bob cancellato — IDOR exploit successo!"
+
+
+def test_upsert_contact_dedup_is_intra_tenant(populated_db):
+    """REGRESSIONE 2026-05-22: pre-fix, upsert_contact con stessa email per
+    tenant A e poi tenant B FACEVA UPDATE del record di A (cross-tenant write
+    attack). Post-fix il dedup e' intra-tenant: B crea un record NUOVO."""
+    ctx = populated_db
+    a_id = db.upsert_contact(
+        {"email": "shared@example.com", "display_name": "Alice's"},
+        tenant_id=ctx["tenant_a"], created_by_user_id=ctx["alice_id"],
+    )
+    b_id = db.upsert_contact(
+        {"email": "shared@example.com", "display_name": "Bob's"},
+        tenant_id=ctx["tenant_b"], created_by_user_id=ctx["bob_id"],
+    )
+    # Devono essere 2 record DISTINTI
+    assert a_id != b_id, "Cross-tenant dedup: B ha sovrascritto A!"
+    # Ognuno appartiene al proprio tenant con i propri dati
+    ca = db.get_contact(a_id, tenant_id=ctx["tenant_a"])
+    cb = db.get_contact(b_id, tenant_id=ctx["tenant_b"])
+    assert ca["display_name"] == "Alice's"
+    assert cb["display_name"] == "Bob's"
+
+
+def test_upsert_asset_dedup_is_intra_tenant(populated_db):
+    """REGRESSIONE 2026-05-22: stesso pattern di upsert_contact su asset
+    (dedup per source_url_canonical era cross-tenant)."""
+    ctx = populated_db
+    a_id = db.upsert_asset(
+        {"asset_type": "lead", "title": "Alice's", "raw_json": "{}",
+         "source_url": "https://shared.test/page"},
+        tenant_id=ctx["tenant_a"], created_by_user_id=ctx["alice_id"],
+    )
+    b_id = db.upsert_asset(
+        {"asset_type": "lead", "title": "Bob's", "raw_json": "{}",
+         "source_url": "https://shared.test/page"},
+        tenant_id=ctx["tenant_b"], created_by_user_id=ctx["bob_id"],
+    )
+    assert a_id != b_id, "Cross-tenant dedup: B ha sovrascritto A!"
+    aa = db.get_asset(a_id, tenant_id=ctx["tenant_a"])
+    ab = db.get_asset(b_id, tenant_id=ctx["tenant_b"])
+    assert aa["title"] == "Alice's"
+    assert ab["title"] == "Bob's"
+
+
+def test_e2e_route_delete_site_pattern_idor_blocked(populated_site_memory, tmp_path, monkeypatch):
+    """End-to-end: Alice tenta POST /site_memory/pattern/{pat_b}/delete → la
+    funzione DB filtra per tenant, ritorna n=0 ma route ritorna 303 redirect.
+    Verifica DB: pattern di Bob ancora esiste."""
+    from app import config, storage
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(storage, "RESULTS_DIR", tmp_path / "results")
+
+    ctx = populated_site_memory
+    from app.main import app
+    with TestClient(app) as client:
+        r = client.post(
+            "/login",
+            data={"email": "alice@a.it", "password": "pwd-alice", "next": "/"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        r = client.post(
+            f"/site_memory/pattern/{ctx['pat_b']}/delete",
+            follow_redirects=False,
+        )
+        # La route fa sempre 303 redirect (delete e' "silenzioso"), ma in DB
+        # il filtro tenant non ha matchato → 0 righe cancellate.
+        assert r.status_code in (303, 200)
+
+    # Verifica DB: pattern di Bob ancora esiste
+    tok = db.set_current_tenant(None)
+    try:
+        patterns = db.list_site_patterns(registrable_domain="bob.test")
+        assert any(p["id"] == ctx["pat_b"] for p in patterns), \
+            "Pattern di Bob cancellato da Alice — IDOR exploit successo!"
+    finally:
+        db.reset_current_tenant(tok)

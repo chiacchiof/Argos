@@ -130,6 +130,26 @@ def tenants_toggle(
     return RedirectResponse(url="/admin/tenants", status_code=303)
 
 
+@router.post("/tenants/{tenant_id}/toggle-site-memory")
+def tenants_toggle_site_memory(
+    request: Request,
+    tenant_id: int,
+    current_user: CurrentUser = Depends(require_super_admin),
+):
+    """Toggle del flag `site_memory_shared`: se ON il tenant accede a tutta la
+    memoria del sito (cross-tenant), se OFF vede solo le righe taggate con il
+    suo tenant_id. Le scritture restano sempre taggate con il tenant corrente.
+    """
+    t = db_cloud.get_tenant(tenant_id)
+    if not t:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant non trovato")
+    new_state = not bool(t.get("site_memory_shared"))
+    db_cloud.update_tenant(tenant_id, site_memory_shared=new_state)
+    msg = "accede alla memoria condivisa" if new_state else "torna a memoria isolata"
+    _flash(request, "success", f"Tenant '{t['name']}' ora {msg}.")
+    return RedirectResponse(url="/admin/tenants", status_code=303)
+
+
 @router.post("/tenants/{tenant_id}/delete")
 def tenants_delete(
     request: Request,

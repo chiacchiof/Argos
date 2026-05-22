@@ -298,8 +298,8 @@ async def create_edge(
 
 @router.post("/workflow_edges/{edge_id}/toggle")
 async def toggle_edge(edge_id: int, redirect_to: str = Form("/workflows")):
-    edges = db.list_all_edges()
-    cur = next((e for e in edges if e["id"] == edge_id), None)
+    # Lookup tenant-filtered: ritorna None se edge appartiene ad altro tenant.
+    cur = db.get_edge(edge_id)
     if not cur:
         raise HTTPException(status_code=404, detail="edge non trovato")
     db.toggle_edge(edge_id, not bool(cur.get("enabled")))
@@ -308,6 +308,9 @@ async def toggle_edge(edge_id: int, redirect_to: str = Form("/workflows")):
 
 @router.post("/workflow_edges/{edge_id}/delete")
 async def delete_edge(edge_id: int, redirect_to: str = Form("/workflows")):
+    # Lookup tenant-filtered: 404 se edge appartiene ad altro tenant.
+    if not db.get_edge(edge_id):
+        raise HTTPException(status_code=404, detail="edge non trovato")
     db.delete_edge(edge_id)
     return RedirectResponse(url=redirect_to, status_code=303)
 

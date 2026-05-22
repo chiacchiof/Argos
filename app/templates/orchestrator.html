@@ -48,11 +48,13 @@
         <legend>Livello di autonomia</legend>
         <div class="autonomy-grid">
           {% for key, meta in autonomy_levels.items() %}
-          <label class="autonomy-option {% if key == autonomy_level %}selected{% endif %}">
+          <label class="autonomy-option">
             <input type="radio" name="autonomy_level" value="{{ key }}"
                    {% if key == autonomy_level %}checked{% endif %}>
-            <strong>{{ meta.label }}</strong>
-            <span>{{ meta.description }}</span>
+            <span class="autonomy-option-content">
+              <span class="autonomy-option-label">{{ meta.label }}</span>
+              <span class="autonomy-option-desc">{{ meta.description }}</span>
+            </span>
           </label>
           {% endfor %}
         </div>

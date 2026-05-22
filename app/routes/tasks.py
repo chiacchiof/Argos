@@ -1600,8 +1600,20 @@ async def task_jobs_partial(request: Request, task_id: int):
         raise HTTPException(status_code=404, detail="task non trovato")
     task_jobs = db.list_jobs(task_id)
     has_active = any(j["status"] in ("queued", "running") for j in task_jobs)
+    # Calcola anche il dashboard del job piu' recente: il template lo emette
+    # come HTMX out-of-band swap su `#job-status`, cosi' i pulsanti
+    # stop/pause/cancel si aggiornano insieme alla cronologia. Senza OOB
+    # il pannello superiore restava "fermo" finche' l'utente non faceva F5.
+    from ..dashboard import compute_dashboard
+    latest = db.latest_job(task_id)
+    latest_dashboard = compute_dashboard(latest["id"]) if latest else None
     return templates.TemplateResponse(
         request,
         "partials/jobs_history_wrapper.html",
-        {"task": task, "jobs": task_jobs, "has_active": has_active},
+        {
+            "task": task,
+            "jobs": task_jobs,
+            "has_active": has_active,
+            "latest_dashboard": latest_dashboard,
+        },
     )

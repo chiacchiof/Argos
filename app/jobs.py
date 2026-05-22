@@ -124,6 +124,68 @@ def reconcile_orphan_jobs() -> int:
     return n
 
 
+# Quanti secondi di grazia diamo a un job "running" prima di considerarlo zombie
+# se il suo task asyncio non e' piu' nel processo. 60s assorbe la finestra fra
+# start_job e registrazione in `_active_jobs` (popolata dal thread proactor)
+# senza killare runner appena partiti.
+_WATCHDOG_GRACE_SECONDS = 60
+
+
+def watchdog_zombie_jobs() -> int:
+    """Watchdog runtime: ogni N secondi (chiamato dallo scheduler) controlla i
+    job in stato attivo (queued/running/paused) nel DB e li confronta con il
+    registro `_active_jobs` / `_running_tasks` in-process.
+
+    Se un job e' "running" nel DB ma il suo task asyncio NON e' piu' vivo
+    (`is_runner_alive(job_id) == False`) E sono passati piu' di `_WATCHDOG_GRACE_SECONDS`
+    da started_at, lo riconcilia automaticamente marcandolo come 'error'.
+
+    Cosi' i job zombie (process morto, crash silente del runner, task asyncio
+    abbandonato) si auto-riconciliano senza richiedere un riavvio dell'app —
+    l'UI smette di mostrare "running da 14 minuti" e l'utente puo' rilanciare.
+
+    Ritorna il numero di zombie riconciliati. Idempotente.
+    """
+    import datetime as _dt
+    n = 0
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for j in _list_active_jobs_in_db():
+        jid = int(j["id"])
+        if is_runner_alive(jid):
+            continue  # vivo, non toccare
+        # Grace period: leggi started_at dal DB, se < N secondi fa salta
+        with db.connect() as con:
+            row = con.execute(
+                "SELECT started_at FROM jobs WHERE id = %s", (jid,)
+            ).fetchone()
+        started_iso = (row or {}).get("started_at") if row else None
+        if started_iso:
+            try:
+                started = _dt.datetime.fromisoformat(started_iso.replace("Z", "+00:00"))
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=_dt.timezone.utc)
+                if (now - started).total_seconds() < _WATCHDOG_GRACE_SECONDS:
+                    continue  # ancora nel grace period, salta
+            except Exception:
+                pass
+        db.append_job_log(
+            jid,
+            f"Watchdog: runner asyncio non più attivo dopo grace period "
+            f"({_WATCHDOG_GRACE_SECONDS}s). Marco come errore.",
+        )
+        db.update_job(
+            jid,
+            status="error",
+            error="Runner died (watchdog detected zombie).",
+            finished_at=db.now_iso(),
+        )
+        db.set_control_signal(jid, None)
+        n += 1
+    if n:
+        log.warning("watchdog_zombie_jobs: %d zombi riconciliati", n)
+    return n
+
+
 def _list_active_jobs_in_db() -> list[dict[str, Any]]:
     with db.connect() as con:
         rows = con.execute(
@@ -612,6 +674,16 @@ def start_scheduler() -> None:
         _poll_telegram_inbound,
         trigger=IntervalTrigger(seconds=30),
         id="poll_telegram_inbound",
+        replace_existing=True,
+        max_instances=1,
+    )
+    # Watchdog zombie: ogni 60s ricontrolla i job "running" che non hanno piu'
+    # un task asyncio vivo. Auto-riconcilia senza riavvio app. Vedi
+    # `watchdog_zombie_jobs` per i criteri (grace period 60s).
+    _scheduler.add_job(
+        watchdog_zombie_jobs,
+        trigger=IntervalTrigger(seconds=60),
+        id="watchdog_zombie_jobs",
         replace_existing=True,
         max_instances=1,
     )

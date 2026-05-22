@@ -67,6 +67,10 @@ async def lifespan(app: FastAPI):
     # -> email_accounts / telegram_bots. Da quando le route /settings/email|telegram
     # sono state rimosse (2026-05-22) la fonte canonica e' la tabella multi-account.
     db.migrate_legacy_channels_to_accounts()
+    # Site memory: backfilla tenant_id NULL (righe legacy pre-multi-tenant) al
+    # tenant principale. Necessaria perche' da 2026-05-22 la memoria del sito
+    # e' tenant-scoped opt-in (vedi tenants.site_memory_shared).
+    db.migrate_site_memory_to_super_admin()
     # Riconcilia job orfani (server riavviato mentre stavano girando)
     jobs.reconcile_orphan_jobs()
     jobs.start_scheduler()

@@ -48,11 +48,12 @@ SCHEMA_SQL = """
 CREATE EXTENSION IF NOT EXISTS citext;
 
 CREATE TABLE IF NOT EXISTS tenants (
-  id           BIGSERIAL PRIMARY KEY,
-  name         TEXT UNIQUE NOT NULL,
-  slug         TEXT UNIQUE NOT NULL,
-  is_active    BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id                  BIGSERIAL PRIMARY KEY,
+  name                TEXT UNIQUE NOT NULL,
+  slug                TEXT UNIQUE NOT NULL,
+  is_active           BOOLEAN NOT NULL DEFAULT TRUE,
+  site_memory_shared  BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -86,6 +87,12 @@ def init_db() -> None:
             # Idempotent: aggiungi first_name + last_name su users esistenti.
             conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
             conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT")
+            # Idempotent: aggiungi site_memory_shared su tenants esistenti
+            # (default FALSE = isolato; super-admin lo abilita per i tenant premium).
+            conn.execute(
+                "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS "
+                "site_memory_shared BOOLEAN NOT NULL DEFAULT FALSE"
+            )
             conn.commit()
         _bootstrap_super_admin()
         log.info("Cloud DB inizializzato (tenants/users pronti).")
@@ -155,7 +162,13 @@ def create_tenant(name: str, slug: str) -> int:
         return int(row["id"])
 
 
-def update_tenant(tenant_id: int, *, name: str | None = None, is_active: bool | None = None) -> None:
+def update_tenant(
+    tenant_id: int,
+    *,
+    name: str | None = None,
+    is_active: bool | None = None,
+    site_memory_shared: bool | None = None,
+) -> None:
     fields: list[str] = []
     params: list[Any] = []
     if name is not None:
@@ -164,6 +177,9 @@ def update_tenant(tenant_id: int, *, name: str | None = None, is_active: bool | 
     if is_active is not None:
         fields.append("is_active = %s")
         params.append(is_active)
+    if site_memory_shared is not None:
+        fields.append("site_memory_shared = %s")
+        params.append(site_memory_shared)
     if not fields:
         return
     params.append(tenant_id)

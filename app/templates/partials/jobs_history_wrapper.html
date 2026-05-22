@@ -1,8 +1,28 @@
+{# Wrapper unico per il blocco "stato esecuzione corrente" + "cronologia job".
+   Rendering iniziale: il browser carica entrambi i div in ordine visivo
+   normale. Update HTMX (polling ogni 3s/15s): la response include questo
+   stesso partial; HTMX rimpiazza `#jobs-history` (target del trigger) E
+   processa l'OOB swap su `#job-status`, aggiornando i pulsanti e le metriche
+   live SENZA richiedere F5.
+
+   Adattivo: 3s mentre c'e' un job in queued/running, 15s a riposo (per
+   catturare transizioni gestite dal watchdog backend). #}
+
+<h3>Stato esecuzione corrente</h3>
+<div id="job-status" hx-swap-oob="true">
+  {% if latest_dashboard %}
+    {% with d = latest_dashboard %}
+      {% include "partials/job_dashboard.html" %}
+    {% endwith %}
+  {% else %}
+    <p class="muted">Nessuna esecuzione ancora lanciata. Premi "Esegui ora".</p>
+  {% endif %}
+</div>
+
+<h3>Cronologia job</h3>
 <div id="jobs-history"
-     {% if has_active %}
      hx-get="/tasks/{{ task.id }}/jobs"
-     hx-trigger="every 3s"
-     hx-swap="outerHTML"
-     {% endif %}>
+     hx-trigger="every {% if has_active %}3{% else %}15{% endif %}s"
+     hx-swap="outerHTML">
   {% include "partials/jobs_history.html" %}
 </div>

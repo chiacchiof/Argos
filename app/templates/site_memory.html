@@ -9,6 +9,22 @@
   selettive prima di un test "pulito da 0", o tutto via "Svuota memoria".
 </p>
 
+{# Info visibilita' tenant — solo per chi non e' super_admin #}
+{% if visibility_mode == "isolated" %}
+  <p class="muted small" style="background:var(--surface-2); padding:.5rem .8rem; border-left:3px solid var(--brand-2); border-radius:3px;">
+    🔒 Stai vedendo solo la memoria del tuo tenant. Per accedere alla memoria condivisa
+    cross-tenant (premium feature) contatta l'amministratore.
+  </p>
+{% elif visibility_mode == "shared" %}
+  <p class="muted small" style="background:var(--surface-2); padding:.5rem .8rem; border-left:3px solid var(--success); border-radius:3px;">
+    🌐 Accesso pool condiviso attivo: stai vedendo la memoria di tutti i tenant.
+  </p>
+{% elif is_super_admin %}
+  <p class="muted small" style="background:var(--surface-2); padding:.5rem .8rem; border-left:3px solid var(--brand-2); border-radius:3px;">
+    👑 Vista super-admin: tutte le righe di tutti i tenant. Colonna "tenant" mostra l'owner.
+  </p>
+{% endif %}
+
 {% if request.query_params.get('_msg') %}
   <div class="flash-success">{{ request.query_params.get('_msg') | replace('+', ' ') }}</div>
 {% endif %}
@@ -73,6 +89,7 @@
       <th>Asset type</th>
       <th>Status</th>
       <th>Hit / Succ / Fail</th>
+      {% if is_super_admin %}<th>Tenant</th>{% endif %}
       <th>Aggiornato</th>
       <th>Azioni</th>
     </tr>
@@ -87,6 +104,7 @@
       <td>{{ p.asset_type or '—' }}</td>
       <td><span class="status-pill status-{{ p.status }}">{{ p.status }}</span></td>
       <td>{{ p.hits }} / {{ p.successes }} / {{ p.failures }}</td>
+      {% if is_super_admin %}<td><small class="muted">{{ p.tenant_id or '—' }}</small></td>{% endif %}
       <td class="small muted">{{ p.updated_at[:19] if p.updated_at else '—' }}</td>
       <td>
         <form method="post" action="/site_memory/pattern/{{ p.id }}/delete" style="display:inline"
@@ -123,7 +141,7 @@
     {% else %}
       <span class="status-pill status-rejected">non-transferable</span>
     {% endif %}
-    <span class="muted small">id={{ p.id }} · source={{ p.source_runner }} · hits={{ p.hits }} · succ={{ p.successes }} · fail={{ p.failures }}</span>
+    <span class="muted small">id={{ p.id }} · source={{ p.source_runner }} · hits={{ p.hits }} · succ={{ p.successes }} · fail={{ p.failures }}{% if is_super_admin %} · tenant={{ p.tenant_id or '—' }}{% endif %}</span>
     <form method="post" action="/site_memory/playbook/{{ p.id }}/delete" style="display:inline; margin-left:auto"
           onsubmit="return confirm('Cancellare il playbook di {{ p.registrable_domain }}?');">
       <button type="submit" class="btn-danger-small">🗑️</button>

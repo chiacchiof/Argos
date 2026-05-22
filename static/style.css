@@ -1551,27 +1551,73 @@ a.tag-chip-mini:hover { background: var(--brand-soft); border-color: var(--brand
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-2);
-  padding: 0.8rem 0.9rem 1rem;
+  padding: 0.85rem 1rem 1rem;
   margin: 1rem 0;
 }
 .orchestrator-autonomy legend { padding: 0 0.5rem; font-weight: 600; }
-.autonomy-grid { display: grid; grid-template-columns: 1fr; gap: 0.5rem; }
-.autonomy-option {
+.autonomy-grid {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.2rem 0.6rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+@media (max-width: 720px) {
+  .autonomy-grid { grid-template-columns: 1fr; }
+}
+.orchestrator-autonomy .autonomy-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
   margin: 0;
-  padding: 0.65rem 0.8rem;
+  padding: 0.75rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-1);
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+  min-width: 0;
 }
-.autonomy-option:hover { border-color: var(--border-strong); }
-.autonomy-option input { width: auto; grid-row: span 2; margin-top: 0.2rem; }
-.autonomy-option span { color: var(--fg-muted); font-size: 0.88em; }
-.autonomy-option.selected {
+.orchestrator-autonomy .autonomy-option:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+.orchestrator-autonomy .autonomy-option input[type="radio"] {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  min-width: 1rem;
+  margin: 0.15rem 0 0;
+  accent-color: var(--brand-2);
+}
+.orchestrator-autonomy .autonomy-option input[type="radio"]:focus {
+  outline: none;
+  box-shadow: none;
+}
+.orchestrator-autonomy .autonomy-option:has(input:focus-visible) {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+.orchestrator-autonomy .autonomy-option-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1;
+  min-width: 0;
+}
+.orchestrator-autonomy .autonomy-option-label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--fg-strong);
+  line-height: 1.3;
+}
+.orchestrator-autonomy .autonomy-option-desc {
+  display: block;
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  font-weight: 400;
+}
+.orchestrator-autonomy .autonomy-option:has(input:checked) {
   border-color: var(--brand-2);
   background: var(--brand-soft);
   box-shadow: var(--glow-brand);

@@ -1312,26 +1312,28 @@ Lo stesso task può apparire in più workflow. Sulla pagina del task vedi "Quest
 
 ## 7. Canali Email e Telegram
 
-Configurabili in `/settings`. Le credenziali sensibili vanno preferibilmente in `.env`.
+Tutti i canali si configurano dall'UI multi-account (`/accounts/email`, `/accounts/messaging`, `/accounts/llm-keys`). Le credenziali sono cifrate con `ARGOS_SECRET` (Fernet) e scoped al tenant. Da 2026-05-22 NIENTE credenziali in `.env`.
 
 ### Email
 
 **Setup**:
-1. Su `/settings` → sezione 📧 Email (oppure `/accounts/email` per multi-account)
-2. SMTP host (es. `smtp.gmail.com`), port (587 con STARTTLS o 465 con SSL), user, From address
+1. Vai su `/accounts/email` → "➕ Aggiungi account"
+2. Label simbolico (es. "prod"), From address, SMTP host (es. `smtp.gmail.com`), port (587 STARTTLS o 465 SSL), user
 3. **Password**: salvata cifrata nel DB. Per Gmail: NON la password Google ma una **App Password** dedicata ([qui](https://myaccount.google.com/apppasswords))
 4. IMAP host/user simili (per Gmail: `imap.gmail.com:993`); password salvata via UI (spesso uguale a SMTP)
-5. Spunta "Canale abilitato"
-6. Click "Test invio SMTP" → se arriva la mail di test sei a posto.
+5. Status = `active` (gli account `quarantine` / `banned` non vengono usati)
+6. Test invio dalla dashboard account → se arriva la mail di test sei a posto.
 
-**Polling**: ogni 60 secondi un job APScheduler legge le mail nuove (UNSEEN) dalla casella IMAP, le parsa, matcha sul campo `From`, crea/aggiorna `contact` + `thread` + `message(direction='in', status='received')`.
+Un task `outreach` con `message_channels=email` usa **l'account specificato in `email_account_id`** sul task, oppure il primo account `active` del tenant se vuoto.
+
+**Polling**: ogni 60 secondi un job APScheduler legge le mail nuove (UNSEEN) dalla casella IMAP del primo account attivo, le parsa, matcha sul campo `From`, crea/aggiorna `contact` + `thread` + `message(direction='in', status='received')`.
 
 ### Telegram
 
 **Setup**:
 1. Apri Telegram, scrivi a [@BotFather](https://t.me/BotFather) → `/newbot` → segui le istruzioni → ottieni il **token** (formato `12345:ABCdef...`)
-2. Su `/settings` → sezione 💬 Telegram → incolla il token (viene salvato cifrato nel DB) → spunta "Canale abilitato" → salva. Per multi-bot vedi `/accounts/messaging`.
-3. Click "Test invio" → inserisci il **chat_id** del tuo account (lo ottieni scrivendo prima al bot e poi guardando i log inbound di Argos).
+2. Vai su `/accounts/messaging?tab=telegram` → "➕ Aggiungi bot" → incolla token, label, daily_msg_cap → Salva (token cifrato Fernet)
+3. Test "/getMe" dalla dashboard bot → verifica token + bot_username.
 
 **Polling**: ogni 30s `getUpdates` Telegram → ogni messaggio inbound diventa un `contact` (con `telegram_chat_id` salvato) + thread + message.
 
@@ -1483,6 +1485,17 @@ I log del runner mostrano:
 - `📌 memoria DB: pattern id=N -> status='confirmed' (post-validation: 12 successes / 3 failures)` → promozione.
 
 **Tool chat per ispezione/cleanup**: `list_site_patterns(domain?)` per leggere, `set_site_pattern_status(pattern_id, 'rejected')` per scartare manualmente un pattern fasullo (vedi 9.6).
+
+**Multi-tenant visibility (2026-05-22)**: `site_patterns` e `site_playbooks` sono **tenant-aware con visibilità opt-in**.
+
+- Ogni riga ha un `tenant_id` (il "primo discoverer" per i pattern, l'"ultimo writer" per i playbook).
+- Ogni tenant **scrive sempre** con il proprio `tenant_id` — la sua attività diventa patrimonio della piattaforma.
+- **Lettura**:
+  - **Tenant isolato** (`tenants.site_memory_shared = FALSE`, default): vede solo le righe taggate col proprio `tenant_id`.
+  - **Tenant condiviso** (`site_memory_shared = TRUE`, feature premium attivabile dal super-admin in `/admin/tenants`): vede tutta la pool cross-tenant.
+  - **Super-admin**: vede sempre tutto, con colonna "Tenant" visibile in `/site_memory`.
+- I tool chat (`list_site_patterns`, `list_site_playbooks`) seguono automaticamente la stessa logica di visibilità — l'orchestrator NON mostra mai memoria di altri tenant a un tenant_user.
+- Le righe legacy pre-multi-tenant (`tenant_id IS NULL`) sono state backfillate al tenant principale dalla migration `5bca203147e9` (vedi `alembic/versions/`).
 
 ### 9.3.1 Discovery multi-step: drill-down nelle listing intermediarie
 
@@ -1875,7 +1888,7 @@ URL principali:
 
 **SMTP test fallisce con "auth"**
 - Per Gmail/Outlook NON usare la password normale. Crea una **App Password** dedicata.
-- Verifica di aver salvato la password dalla UI (`/settings` o `/accounts/email`) e che `ARGOS_SECRET` sia coerente con quella usata al momento del salvataggio (altrimenti la decrypt fallisce).
+- Verifica di aver salvato la password dalla UI (`/accounts/email`) e che `ARGOS_SECRET` sia coerente con quella usata al momento del salvataggio (altrimenti la decrypt fallisce).
 
 **Telegram bot non riceve messaggi**
 - Hai scritto al bot per primo? È un vincolo di Telegram.

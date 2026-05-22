@@ -25,7 +25,12 @@ async def site_memory_list(
     request: Request,
     domain: str | None = None,
 ):
-    """Lista pattern + playbook (tutti o filtrati per dominio)."""
+    """Lista pattern + playbook visibili al tenant corrente (o tutti per
+    super_admin / tenant con `site_memory_shared=TRUE`).
+
+    Il filtraggio per tenant_id avviene dentro `db.list_site_patterns` /
+    `db.list_site_playbooks` via `_site_memory_tenant_filter`.
+    """
     domain = (domain or "").strip().lower() or None
 
     patterns = db.list_site_patterns(registrable_domain=domain, limit=500)
@@ -50,6 +55,15 @@ async def site_memory_list(
         *(p.get("registrable_domain") for p in playbooks if p.get("registrable_domain")),
     })
 
+    # Info visibilita' per la banner-info nel template.
+    current_user = getattr(request.state, "current_user", None)
+    is_super_admin = bool(current_user and current_user.is_super_admin)
+    visibility_mode = "all"
+    if not is_super_admin:
+        # Lookup del flag del tenant corrente per mostrare il "perche'" all'utente.
+        tenant_id = db.current_tenant_id()
+        visibility_mode = "shared" if db._can_see_all_site_memory(tenant_id) else "isolated"
+
     return templates.TemplateResponse(
         request,
         "site_memory.html",
@@ -60,6 +74,8 @@ async def site_memory_list(
             "all_domains": all_domains,
             "n_patterns": len(patterns),
             "n_playbooks": len(playbooks),
+            "is_super_admin": is_super_admin,
+            "visibility_mode": visibility_mode,
         },
     )
 
