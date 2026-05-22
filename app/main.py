@@ -43,11 +43,15 @@ _PUBLIC_PATH_PREFIXES = ("/static", "/login", "/logout", "/favicon.ico", "/dbcon
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Log riepilogativo del DB target attivo (LOCALE vs REMOTO + origine).
-    log.info(db.describe_active_dsn())
+    # Usiamo uvicorn.error: il logger app.main non ha handler propri e i messaggi
+    # vengono scartati silenziosamente; uvicorn.error è sempre configurato da uvicorn.
+    import logging as _logging
+    _ulog = _logging.getLogger("uvicorn.error")
+    _ulog.info(db.describe_active_dsn())
 
     # Versione corrente + check release (non bloccante, fa fetch in background)
     from . import __version__, release_check
-    log.info(f"[VERSION] Argos v{__version__}")
+    _ulog.info(f"[VERSION] Argos v{__version__}")
     if release_check.is_enabled():
         import asyncio
         async def _bg_check():

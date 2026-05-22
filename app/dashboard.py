@@ -44,23 +44,20 @@ def _human_seconds(s: float) -> str:
     return f"{h}h {m:02d}m"
 
 
-def compute_task_health(task_id: int, last_n: int = 5) -> dict[str, Any]:
-    """Calcola un health score 0-100 basato sugli ultimi N job del task.
+_EMPTY_HEALTH: dict[str, Any] = {
+    "score": None, "label": "mai eseguito", "color": "muted",
+    "n_total": 0, "n_done": 0, "n_error": 0, "n_cancelled": 0,
+    "last_status": None,
+}
 
-    Ritorna sempre un dict (anche con N=0). I valori derivati sono pensati per
-    essere stampati come badge nella UI: `score`, `label`, `color`, e i conteggi.
-    """
-    jobs = db.list_jobs(task_id)[:last_n]
-    n = len(jobs)
+
+def _health_from_jobs(jobs_for_task: list[dict[str, Any]]) -> dict[str, Any]:
+    n = len(jobs_for_task)
     if n == 0:
-        return {
-            "score": None, "label": "mai eseguito", "color": "muted",
-            "n_total": 0, "n_done": 0, "n_error": 0, "n_cancelled": 0,
-            "last_status": None,
-        }
-    n_done = sum(1 for j in jobs if (j.get("status") or "") == "done")
-    n_err = sum(1 for j in jobs if (j.get("status") or "") == "error")
-    n_cancel = sum(1 for j in jobs if (j.get("status") or "") == "cancelled")
+        return dict(_EMPTY_HEALTH)
+    n_done = sum(1 for j in jobs_for_task if (j.get("status") or "") == "done")
+    n_err = sum(1 for j in jobs_for_task if (j.get("status") or "") == "error")
+    n_cancel = sum(1 for j in jobs_for_task if (j.get("status") or "") == "cancelled")
     score = int(round(100 * n_done / n))
     if score >= 80:
         label, color = "healthy", "ok"
@@ -76,8 +73,34 @@ def compute_task_health(task_id: int, last_n: int = 5) -> dict[str, Any]:
         "n_done": n_done,
         "n_error": n_err,
         "n_cancelled": n_cancel,
-        "last_status": (jobs[0].get("status") or None) if jobs else None,
+        "last_status": (jobs_for_task[0].get("status") or None),
     }
+
+
+def compute_task_health(task_id: int, last_n: int = 5) -> dict[str, Any]:
+    """Calcola un health score 0-100 basato sugli ultimi N job del task.
+
+    Per liste con MOLTI task usare `compute_task_health_batch(task_ids)` che
+    ottiene gli stessi dati in una sola query (vs N query, pessimo su DB
+    remoto).
+    """
+    return _health_from_jobs(db.list_jobs(task_id)[:last_n])
+
+
+def compute_task_health_batch(
+    task_ids: list[int], last_n: int = 5
+) -> dict[int, dict[str, Any]]:
+    """Versione batch di `compute_task_health`: 1 query SQL per N task.
+
+    Su DB remoto (Neon/Azure) ogni round-trip costa 30-60 ms; sostituire
+    N chiamate a `list_jobs` con una singola CTE-windowed query taglia la
+    latenza di /tasks da O(N×RTT) a O(RTT). Vedi
+    `db.list_recent_jobs_for_tasks`.
+    """
+    if not task_ids:
+        return {}
+    jobs_by_task = db.list_recent_jobs_for_tasks(task_ids, last_n=last_n)
+    return {tid: _health_from_jobs(jobs_by_task.get(tid, [])) for tid in task_ids}
 
 
 def compute_dashboard(job_id: int) -> dict[str, Any] | None:

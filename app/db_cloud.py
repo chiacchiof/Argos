@@ -15,55 +15,29 @@ from typing import Any, Iterator
 log = logging.getLogger(__name__)
 
 
-_pool = None  # type: ignore[var-annotated]
-
-
 def is_configured() -> bool:
     """True se DATABASE_URL è settato e quindi il backend cloud è attivo."""
     return bool(os.environ.get("DATABASE_URL"))
 
 
 def _get_pool():
-    """Singleton lazy del connection pool psycopg3.
+    """Riusa il pool unificato di `app.db`.
 
-    Import psycopg ritardato: se l'utente non usa il cloud DB non vogliamo
-    forzarlo a installare psycopg.
+    Storicamente db_cloud aveva un proprio ConnectionPool separato. Ma punta
+    alla stessa DSN del DB business (`DATABASE_URL`) — due pool warm = doppio
+    handshake TLS al boot e doppia occupazione di slot connessione lato server
+    (rilevante su Neon free / Azure Burstable dove le connessioni sono poche).
+    Delego a `db._get_pool()` per avere un solo pool condiviso.
     """
-    global _pool
-    if _pool is not None:
-        return _pool
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        raise RuntimeError(
-            "DATABASE_URL non impostata. Setta la connection string Neon/Postgres "
-            "in .env per abilitare il backend cloud."
-        )
-    try:
-        from psycopg.rows import dict_row
-        from psycopg_pool import ConnectionPool
-    except ImportError as exc:
-        raise RuntimeError(
-            "psycopg[binary,pool] non installato. Esegui: pip install -e ."
-        ) from exc
+    from . import db
 
-    _pool = ConnectionPool(
-        conninfo=dsn,
-        min_size=1,
-        max_size=10,
-        timeout=10,
-        kwargs={"row_factory": dict_row},
-        open=True,
-    )
-    return _pool
+    return db._get_pool()
 
 
 @contextmanager
 def connect() -> Iterator[Any]:
-    """Context manager per ottenere una connessione dal pool.
-
-    Uso:
-        with connect() as conn:
-            row = conn.execute("SELECT 1").fetchone()
+    """Context manager per ottenere una connessione dal pool unificato (vedi
+    `_get_pool` qui sopra).
     """
     pool = _get_pool()
     with pool.connection() as conn:
@@ -322,10 +296,7 @@ def delete_user(user_id: int) -> None:
 
 
 def close_pool() -> None:
-    global _pool
-    if _pool is not None:
-        try:
-            _pool.close()
-        except Exception:
-            pass
-        _pool = None
+    """Chiude il pool unificato (delega a `app.db.reset_pool`)."""
+    from . import db
+
+    db.reset_pool()

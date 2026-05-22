@@ -145,8 +145,8 @@ async def index(
             return q_norm in blob
         tasks = [t for t in tasks if _match(t)]
 
-    from ..dashboard import compute_task_health
-    health_by_task = {t["id"]: compute_task_health(t["id"]) for t in tasks}
+    from ..dashboard import compute_task_health_batch
+    health_by_task = compute_task_health_batch([t["id"] for t in tasks])
     return templates.TemplateResponse(
         request,
         "tasks_list.html",

@@ -147,8 +147,10 @@ Il codice non cambia, è solo una migrazione data-only.
 
 Entrambi sono Postgres 16 standard → zero differenze nel codice applicativo. Le uniche cose da gestire:
 - Connection string nel `.env` (cambia host).
-- Se in futuro passi a Neon **pooled endpoint** o ad Azure dietro PgBouncer → settare `prepare_threshold=None` in `psycopg_pool.ConnectionPool`. Per ora con direct Neon non serve.
+- Se in futuro passi a Neon **pooled endpoint** o ad Azure dietro PgBouncer → `prepare_threshold=None` viene **auto-applicato** da `app.db._is_pgbouncer_dsn()` se hostname contiene `-pooler`/`pgbouncer` o porta `6543`. Override manuale: `DATABASE_DISABLE_PREPARED=1`.
 - SSL `sslmode=require` su entrambi (già nella connection string).
+- I parametri TCP keepalive (`keepalives=1`, `keepalives_idle=30`, ecc.) sono auto-appesi alla DSN da `app.db._compose_conninfo()` per evitare drop su NAT/firewall.
+- Tuning pool: `DATABASE_POOL_MIN_SIZE` (default 4) tiene connessioni warm → niente handshake TLS nel critical path. Vedi `.env.example`.
 
 ---
 

@@ -39,11 +39,14 @@ async def workflows_list(request: Request, author: str = "", q: str = ""):
             w for w in workflows
             if q_norm in (str(w.get("name") or "") + " " + str(w.get("description") or "")).lower()
         ]
-    # arricchisci con count di task / edges per workflow
+    # arricchisci con count di task / edges per workflow.
+    # Batch: 1 query per TUTTI gli edge dei workflow filtrati (vs 1 query per
+    # workflow, lento su DB remoto).
+    edges_by_wf = db.list_edges_by_workflow_ids([w["id"] for w in workflows])
     enriched = []
     for w in workflows:
-        edges = db.list_edges(workflow_id=w["id"])
-        task_ids = set()
+        edges = edges_by_wf.get(int(w["id"]), [])
+        task_ids: set[int] = set()
         for e in edges:
             task_ids.add(e["from_task_id"])
             task_ids.add(e["to_task_id"])
@@ -204,8 +207,9 @@ def _workflow_live_view(workflow_id: int, edges: list[dict]) -> dict:
             prev = latest_per_task.get(tid)
             if prev is None or int(j.get("id") or 0) > int(prev.get("id") or 0):
                 latest_per_task[tid] = j
+        tasks_by_id = db.get_tasks_by_ids(sorted(task_ids))
         for tid in sorted(task_ids):
-            t = db.get_task(tid)
+            t = tasks_by_id.get(tid)
             j = latest_per_task.get(tid)
             active_tasks.append(
                 {

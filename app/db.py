@@ -131,6 +131,128 @@ def _resolve_dsn() -> str:
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 
 
+# ---------------------------------------------------------------------------
+# Pool tuning (Postgres remoto: Neon, Azure, Supabase, ...)
+# ---------------------------------------------------------------------------
+# Su DB remoto la latenza per round-trip è 30-60 ms (vs ~0.1 ms su localhost).
+# Ogni query separata paga il RTT, ogni NUOVA connessione paga handshake TLS
+# completo (200-500 ms). Per non sprecare prestazioni:
+#
+# - min_size alto → connessioni WARM nel pool, niente handshake nel critical
+#   path quando più request HTMX arrivano in parallelo.
+# - keepalive TCP → evita che il middlebox/load-balancer killi connessioni
+#   idle (Neon auto-suspend, Azure Gateway, NAT).
+# - prepare_threshold=None se il DB è dietro PgBouncer/Neon pooler
+#   (transaction-mode pooler non supporta i prepared statements server-side
+#   di psycopg3 → ogni query darebbe DuplicatePreparedStatement).
+#
+# I default sono pensati per uso single-user single-tenant tipico (5 PC, ~10
+# request HTMX paralleli). Override via env per scenari più grandi.
+
+_DEFAULT_POOL_MIN = 4   # connessioni warm sempre disponibili
+_DEFAULT_POOL_MAX = 10  # tetto, scelto sotto i limiti free di Neon/Azure
+_DEFAULT_POOL_TIMEOUT = 10.0  # attesa massima per ottenere una conn dal pool
+_DEFAULT_POOL_MAX_IDLE = 300.0  # ricicla conn idle dopo 5 min (anti-killer)
+
+# Parametri TCP keepalive di libpq. Sono aggiunti alla conninfo se l'utente
+# non li ha già settati. Funzionano sia su Neon che su Azure Postgres.
+_KEEPALIVE_PARAMS = {
+    "keepalives": "1",
+    "keepalives_idle": "30",      # primo keepalive dopo 30s di idle
+    "keepalives_interval": "10",  # successivi ogni 10s
+    "keepalives_count": "3",      # 3 fallimenti consecutivi → chiudi
+}
+
+
+def _is_pgbouncer_dsn(dsn: str) -> bool:
+    """True se il DB sembra essere dietro un pooler PgBouncer-like
+    (transaction-mode). In tal caso `prepare_threshold` va disabilitato per
+    evitare 'prepared statement does not exist' al cambio di backend.
+
+    Detection heuristica:
+      - DATABASE_DISABLE_PREPARED=1 in env → opt-in esplicito
+      - hostname contiene '-pooler' (Neon pooled endpoint)
+      - hostname contiene 'pgbouncer'
+      - porta 6543 (Supabase pooler default)
+    """
+    if (os.environ.get("DATABASE_DISABLE_PREPARED") or "").strip() == "1":
+        return True
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(dsn)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except Exception:
+        return False
+    if "-pooler" in host or "pgbouncer" in host:
+        return True
+    if port == 6543:
+        return True
+    return False
+
+
+def _compose_conninfo(dsn: str) -> str:
+    """Restituisce la DSN con i parametri di keepalive aggiunti (se mancanti).
+
+    Idempotente: se la DSN dell'utente già contiene `keepalives=...` non
+    sovrascrive nulla. Lasciamo `sslmode` invariato (l'utente lo controlla).
+    """
+    try:
+        from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+        parsed = urlparse(dsn)
+        existing = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        for k, v in _KEEPALIVE_PARAMS.items():
+            existing.setdefault(k, v)
+        new_query = urlencode(existing)
+        return urlunparse(parsed._replace(query=new_query))
+    except Exception:
+        # In caso di DSN esotica, restituisci l'originale: meglio funzionare
+        # senza keepalive che fallire del tutto.
+        return dsn
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _pool_settings() -> dict[str, Any]:
+    """Parametri del ConnectionPool letti da env (con default ragionevoli)."""
+    return {
+        "min_size": max(0, _env_int("DATABASE_POOL_MIN_SIZE", _DEFAULT_POOL_MIN)),
+        "max_size": max(1, _env_int("DATABASE_POOL_MAX_SIZE", _DEFAULT_POOL_MAX)),
+        "timeout": _env_float("DATABASE_POOL_TIMEOUT", _DEFAULT_POOL_TIMEOUT),
+        "max_idle": _env_float("DATABASE_POOL_MAX_IDLE", _DEFAULT_POOL_MAX_IDLE),
+    }
+
+
+def _conn_kwargs(dsn: str) -> dict[str, Any]:
+    """kwargs passati ad ogni nuova connessione del pool. Include
+    `prepare_threshold=None` se il DB è dietro PgBouncer-like pooler."""
+    from psycopg.rows import dict_row
+
+    kw: dict[str, Any] = {"row_factory": dict_row}
+    if _is_pgbouncer_dsn(dsn):
+        # None disattiva del tutto i prepared statements server-side.
+        kw["prepare_threshold"] = None
+    return kw
+
+
 def describe_active_dsn() -> str:
     """Una riga riepilogativa del DB target attivo, sicura da loggare (password
     mascherata). Include la categoria LOCALE/REMOTO e l'origine (.env vs /dbconfig).
@@ -169,19 +291,34 @@ def describe_active_dsn() -> str:
 
 
 def _get_pool():
+    """Singleton lazy del ConnectionPool.
+
+    Le impostazioni del pool (min/max/timeout/max_idle) sono override-abili via
+    env (`DATABASE_POOL_*`), così su DB remoto si può alzare min_size senza
+    toccare codice. Il PgBouncer-like pooling è auto-rilevato per evitare il
+    bug dei prepared statements server-side.
+    """
     global _pool
     if _pool is not None:
         return _pool
-    from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
 
+    raw_dsn = _resolve_dsn()
+    conninfo = _compose_conninfo(raw_dsn)
+    settings = _pool_settings()
+    log.info(
+        "[DB] pool init: min=%s max=%s timeout=%.1fs max_idle=%.0fs pgbouncer_mode=%s",
+        settings["min_size"],
+        settings["max_size"],
+        settings["timeout"],
+        settings["max_idle"],
+        _is_pgbouncer_dsn(raw_dsn),
+    )
     _pool = ConnectionPool(
-        conninfo=_resolve_dsn(),
-        min_size=1,
-        max_size=10,
-        timeout=10,
-        kwargs={"row_factory": dict_row},
+        conninfo=conninfo,
+        kwargs=_conn_kwargs(raw_dsn),
         open=True,
+        **settings,
     )
     return _pool
 
@@ -1052,6 +1189,28 @@ def get_task(task_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
     return _row_to_task(row) if row else None
 
 
+def get_tasks_by_ids(
+    task_ids: list[int], tenant_id: Any = _UNSET
+) -> dict[int, dict[str, Any]]:
+    """Batch lookup: ritorna dict {task_id: task_row}, una sola query. Usato
+    dalle view che devono mostrare i nomi/agent_mode di molti task in lista
+    (es. workflow_live_view) — su DB remoto N round-trip diventano insostenibili.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    clean = [int(t) for t in task_ids if str(t).strip().lstrip("-").isdigit()]
+    if not clean:
+        return {}
+    placeholders = ",".join(["%s"] * len(clean))
+    args: list[Any] = list(clean)
+    where = f"id IN ({placeholders})"
+    if tenant_id is not None:
+        where += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        rows = con.execute(f"SELECT * FROM tasks WHERE {where}", args).fetchall()
+    return {int(r["id"]): _row_to_task(r) for r in rows}
+
+
 def set_task_disabled(task_id: int, disabled: bool, tenant_id: Any = _UNSET) -> None:
     """Imposta il flag `disabled` (0/1) per un task. Filtra per tenant se passato."""
     tenant_id = _resolve_tenant(tenant_id)
@@ -1418,6 +1577,45 @@ def get_job(job_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def list_recent_jobs_for_tasks(
+    task_ids: list[int],
+    last_n: int = 5,
+    tenant_id: Any = _UNSET,
+) -> dict[int, list[dict[str, Any]]]:
+    """Batch helper: ritorna gli ULTIMI `last_n` job per ciascun task_id, in
+    UNA SOLA query (CTE + ROW_NUMBER). Senza questa, la dashboard delle
+    liste task farebbe N query separate (una `latest_jobs(task_id)` per ogni
+    task), e su DB remoto ogni query costa un round-trip → la pagina /tasks
+    diventava lentissima sopra ~10 task. Vedi
+    `app.dashboard.compute_task_health_batch`.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    clean_ids = [int(t) for t in task_ids if isinstance(t, (int,)) or str(t).strip().lstrip("-").isdigit()]
+    if not clean_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(clean_ids))
+    args: list[Any] = list(clean_ids)
+    tenant_clause = ""
+    if tenant_id is not None:
+        tenant_clause = " AND tenant_id = %s"
+        args.append(tenant_id)
+    args.append(int(last_n))
+    sql = (
+        f"SELECT id, task_id, status, started_at, finished_at, error "
+        f"FROM ("
+        f"  SELECT id, task_id, status, started_at, finished_at, error, "
+        f"         ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn "
+        f"  FROM jobs WHERE task_id IN ({placeholders}){tenant_clause}"
+        f") sub WHERE rn <= %s ORDER BY task_id, id DESC"
+    )
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    out: dict[int, list[dict[str, Any]]] = {tid: [] for tid in clean_ids}
+    for r in rows:
+        out.setdefault(int(r["task_id"]), []).append(dict(r))
+    return out
+
+
 def list_jobs(task_id: int, tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
     tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
@@ -1673,6 +1871,28 @@ def list_all_edges() -> list[dict[str, Any]]:
     with connect() as con:
         rows = con.execute("SELECT * FROM workflow_edges ORDER BY id").fetchall()
     return [dict(r) for r in rows]
+
+
+def list_edges_by_workflow_ids(
+    workflow_ids: list[int],
+) -> dict[int, list[dict[str, Any]]]:
+    """Batch helper: ritorna gli edges raggruppati per workflow_id, in UNA
+    sola query. Usato dalla route /workflows che senza questo faceva N query.
+    Il filtro per tenant è implicito: passa solo workflow_id già filtrati."""
+    clean = [int(w) for w in workflow_ids if str(w).strip().lstrip("-").isdigit()]
+    if not clean:
+        return {}
+    placeholders = ",".join(["%s"] * len(clean))
+    with connect() as con:
+        rows = con.execute(
+            f"SELECT * FROM workflow_edges WHERE workflow_id IN ({placeholders}) "
+            f"ORDER BY workflow_id, id",
+            clean,
+        ).fetchall()
+    out: dict[int, list[dict[str, Any]]] = {w: [] for w in clean}
+    for r in rows:
+        out.setdefault(int(r["workflow_id"]), []).append(dict(r))
+    return out
 
 
 def create_edge(

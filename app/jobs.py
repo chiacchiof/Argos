@@ -339,7 +339,9 @@ async def _run_job(job_id: int, task_id: int) -> None:
             from .agent.runner_responder import run_agent as run_r
             await run_r(task, job_id)
         else:
-            await run_react(task, job_id)
+            # run_react può fallback a Playwright via fetch_url quando il
+            # contenuto HTTP è scarso → serve ProactorEventLoop su Windows.
+            await _run_in_proactor_thread(lambda: run_react(task, job_id), job_id)
     except asyncio.CancelledError:
         log.info("job %s cancelled by user", job_id)
         db.append_job_log(job_id, "Job cancellato dall'utente (hard stop).")
