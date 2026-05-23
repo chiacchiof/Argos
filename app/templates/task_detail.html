@@ -86,12 +86,32 @@
   </div>
   {% endif %}
 
-  {# Stato esecuzione corrente + cronologia job: renderizzati entrambi dal
-     partial `jobs_history_wrapper.html` (con i suoi h3) per garantire che
-     l'update HTMX (polling ogni 3s/15s) ri-renderizzi anche i pulsanti
-     stop/pause/cancel via OOB swap, evitando il bug "i pulsanti spariscono
-     finche' non faccio F5". #}
+  {# IMPORTANTE: gli h3 e i due div con id devono essere renderizzati QUI
+     (NON via include del wrapper, perche' lo wrapper duplicherebbe #job-status
+     come OOB swap-target). Il wrapper viene usato SOLO come response del
+     polling HTMX `/tasks/{id}/jobs`.
+     - first render: questo template rende h3 + div inline (con polling su
+       #jobs-history e dashboard renderizzato nel #job-status)
+     - update polling: la response (wrapper) rimpiazza #jobs-history outerHTML
+       e fa OOB swap su #job-status. Senza duplicazione. #}
   {% set has_active = jobs | selectattr("status", "in", ["queued", "running"]) | list | length > 0 %}
-  {% include "partials/jobs_history_wrapper.html" %}
+  <h3>Stato esecuzione corrente</h3>
+  <div id="job-status">
+    {% if latest_dashboard %}
+      {% with d = latest_dashboard %}
+        {% include "partials/job_dashboard.html" %}
+      {% endwith %}
+    {% else %}
+      <p class="muted">Nessuna esecuzione ancora lanciata. Premi "Esegui ora".</p>
+    {% endif %}
+  </div>
+
+  <h3>Cronologia job</h3>
+  <div id="jobs-history"
+       hx-get="/tasks/{{ task.id }}/jobs"
+       hx-trigger="every {% if has_active %}3{% else %}15{% endif %}s"
+       hx-swap="outerHTML">
+    {% include "partials/jobs_history.html" %}
+  </div>
 </section>
 {% endblock %}

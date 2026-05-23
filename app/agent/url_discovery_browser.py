@@ -195,16 +195,15 @@ async def discover_urls_via_scroll(
         error_local: str | None = None
         try:
             with sync_playwright() as p:
-                # Wrap p con stealth se disponibile (intercetta tutte le pages
-                # create da p.chromium.launch(...))
-                p_ctx = p
-                if _stealth_available:
-                    try:
-                        p_ctx = _stealth.use_sync(p)
-                    except Exception as _e:
-                        log.debug("stealth wrap fallito: %s", _e)
-                        p_ctx = p
-                browser = p_ctx.chromium.launch(headless=True)
+                # NOTA: pre-2026-05-23 facevamo `p_ctx = _stealth.use_sync(p)` ma
+                # `use_sync()` ritorna un SyncWrappingContextManager (da usare con
+                # `with`), NON un proxy diretto del playwright. Il codice falliva
+                # con `AttributeError: 'SyncWrappingContextManager' object has no
+                # attribute 'chromium'`. Fix: applichiamo stealth a livello PAGE
+                # via `apply_stealth_sync(page)` dopo la new_page(). Semantica
+                # equivalente (stealth applicato alla pagina prima della goto)
+                # ma compat con API playwright_stealth >=2.x.
+                browser = p.chromium.launch(headless=True)
                 try:
                     context = browser.new_context(
                         user_agent=(
@@ -215,6 +214,12 @@ async def discover_urls_via_scroll(
                         viewport={"width": 1280, "height": 900},
                     )
                     page = context.new_page()
+                    # Applica stealth alla pagina (non bloccante se fallisce)
+                    if _stealth_available:
+                        try:
+                            _stealth.apply_stealth_sync(page)
+                        except Exception as _e:
+                            log.debug("stealth apply_stealth_sync failed (non bloccante): %s", _e)
                     page.set_default_timeout(_PAGE_TIMEOUT_S * 1000)
                     page.goto(url, wait_until="domcontentloaded")
                     # wait for networkidle per dare tempo a JS di completare render

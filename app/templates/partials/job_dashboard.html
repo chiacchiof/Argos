@@ -137,6 +137,20 @@
     <p>📄 Report: <a href="/tasks/{{ d.task_id }}/results/{{ rel }}">{{ rel }}</a></p>
   {% endif %}
 
+  {% if d.master_summary_text %}
+  {# Riepilogo generato da LLM al termine del parent job. Aggrega l'esito dei
+     sub-job (uno per sito) + raccomandazioni concrete per il prossimo run. #}
+  <details class="master-summary" {% if d.status in ['done', 'error', 'cancelled'] %}open{% endif %}>
+    <summary>📋 Riepilogo finale ({{ d.n_subjobs }} sub-job analizzati)</summary>
+    <div class="master-summary-body">{{ d.master_summary_text | safe }}</div>
+  </details>
+  <style>
+    .master-summary { margin: 0.8rem 0; padding: 0.6rem 1rem; border: 1px solid var(--border, #444); border-radius: 6px; background: var(--surface-2, rgba(255,255,255,0.03)); }
+    .master-summary > summary { cursor: pointer; font-weight: 600; padding: 0.2rem 0; }
+    .master-summary-body { white-space: pre-wrap; font-family: inherit; margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px dashed var(--border, #444); }
+  </style>
+  {% endif %}
+
   <p class="dashboard-footer">
     <a href="/jobs/{{ d.job_id }}/status" hx-get="/jobs/{{ d.job_id }}/status"
        hx-target="closest .dashboard-panel" hx-swap="outerHTML">📜 mostra log completo</a>

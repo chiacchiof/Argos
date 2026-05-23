@@ -176,6 +176,31 @@ CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_master_summary",
+            "description": (
+                "Ritorna il master_summary.md generato al termine di un job parent "
+                "auto_extract con sub-job. Contiene: esito globale, per-sito, "
+                "PATTERN PROBLEMATICI RILEVATI (con codici P1-P8 standard del "
+                "catalogo: extract_failed_loop, HTTP_403, Cloudflare, memory_stuck, "
+                "login_wall, timeout, errore_argos, SPA_non_scrappabile), e "
+                "RACCOMANDAZIONI CONCRETE ordinate per priorita'. "
+                "USA QUESTO TOOL quando l'utente chiede 'com'e' andato il job X', "
+                "'perche' non ha estratto profili', 'cosa devo cambiare', "
+                "'cosa e' successo'. La sezione 'Pattern problematici rilevati' "
+                "ti dice ESATTAMENTE come spiegare il problema all'utente e quale "
+                "fix consigliare. Se il file non esiste (job non terminato o "
+                "senza sub-job) ritorna `{ok: false, reason: ...}`."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"job_id": {"type": "integer"}},
+                "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_extraction_templates",
             "description": "Lista i template di estrazione (key, name, description) usabili nei task scraping.",
             "parameters": {"type": "object", "properties": {}},
@@ -1991,6 +2016,8 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
             return _tool_list_jobs(args)
         if name == "get_job_status":
             return _tool_get_job_status(args)
+        if name == "get_master_summary":
+            return _tool_get_master_summary(args)
         if name == "list_extraction_templates":
             return _tool_list_extraction_templates()
         if name == "list_chat_models":
@@ -2118,6 +2145,78 @@ def _tool_get_job_status(args: dict[str, Any]) -> str:
         "log_tail": log_tail,
     }
     return json.dumps(out, ensure_ascii=False, indent=2, default=str)
+
+
+def _tool_get_master_summary(args: dict[str, Any]) -> str:
+    """Ritorna il master_summary.md generato post-job per un parent auto_extract.
+
+    Contiene sezioni standard: esito globale, per-sito, **pattern problematici
+    rilevati** (codici P1-P8 dal catalogo), raccomandazioni concrete azionabili.
+
+    USA QUESTO TOOL quando l'utente chiede "com'e' andato il job", "perche' ha
+    fallito", "cosa devo fare", "cosa e' successo". La sezione 'Pattern
+    problematici rilevati' ti dice ESATTAMENTE come spiegare il problema
+    all'utente e quale fix consigliare.
+    """
+    from pathlib import Path as _P
+    job_id = int(args.get("job_id") or 0)
+    if job_id <= 0:
+        return json.dumps({"ok": False, "reason": "job_id mancante"})
+    j = db.get_job(job_id)
+    if not j:
+        return json.dumps({"ok": False, "reason": f"job #{job_id} non trovato"})
+    rp = j.get("result_path") or ""
+    if not rp:
+        return json.dumps({
+            "ok": False, "job_id": job_id,
+            "reason": (
+                "Job senza result_path. Probabilmente non e' un parent "
+                "auto_extract o non e' ancora terminato."
+            ),
+        })
+    p = _P(rp)
+    run_dir = p if p.is_dir() else p.parent
+    summary = run_dir / "master_summary.md"
+    if not summary.exists():
+        n_sub = 0
+        try:
+            n_sub = len(db.list_subjobs(job_id))
+        except Exception:
+            pass
+        if n_sub == 0:
+            return json.dumps({
+                "ok": False, "job_id": job_id,
+                "reason": (
+                    "Nessun master_summary.md disponibile: questo job non ha "
+                    "sub-job (probabilmente non e' un parent auto_extract). "
+                    "Usa get_job_status per il log diretto."
+                ),
+            })
+        return json.dumps({
+            "ok": False, "job_id": job_id,
+            "reason": (
+                f"Job ha {n_sub} sub-job ma master_summary.md non e' stato "
+                "generato. Possibili cause: LLM error durante la generazione, "
+                "job non ancora terminato, ARGOS_SECRET mancante. Riprova "
+                "dopo il termine del job o rigenera manualmente."
+            ),
+        })
+    try:
+        text = summary.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return json.dumps({
+            "ok": False, "job_id": job_id,
+            "reason": f"Impossibile leggere master_summary.md: {e}",
+        })
+    # Sanitization anti-injection: il summary e' generato dal nostro LLM ma
+    # potrebbe contenere riflessi di asset content (descrizioni siti scrapati).
+    # Riusiamo l'helper standard.
+    return json.dumps({
+        "ok": True,
+        "job_id": job_id,
+        "n_subjobs": len(db.list_subjobs(job_id)),
+        "summary_markdown": _sanitize_for_llm(text, max_len=8000),
+    }, ensure_ascii=False, indent=2)
 
 
 def _tool_list_extraction_templates() -> str:
@@ -3278,6 +3377,13 @@ def _chat_system_prompt(
         "In alternativa, con Azioni ON, usa propose_plan + execute_plan.\n"
         "- Per modifiche puntuali (lancia job 12, crea questo task, mostra stato workflow 4): usa direttamente i tool.\n"
         "- Per stato dei job/agenti usa list_jobs / get_job_status / list_tasks invece di descrivere a vuoto.\n"
+        "- **Per spiegare 'com'e' andato' un job auto_extract con sub-job (e quale fix consigliare all'utente): "
+        "chiama PRIMA `get_master_summary(job_id)`. Ritorna un markdown strutturato con sezioni '🎯 Esito globale', "
+        "'📍 Per sito', '🔍 Pattern problematici rilevati' (con codici P1-P8 standard del catalogo: extract_failed_loop, "
+        "HTTP_403, Cloudflare, memory_stuck, login_wall, timeout, errore_argos, SPA_non_scrappabile), e "
+        "'💡 Raccomandazioni concrete' ordinate per priorita'. Estrai dalla sezione 'Pattern problematici' la diagnosi e "
+        "dalla sezione 'Raccomandazioni' le azioni concrete da suggerire all'utente. NON inventare diagnosi: cita quelle "
+        "del summary. Se il summary non esiste fallback su get_job_status + log_tail.**\n"
         "- FEEDBACK LOOP TASK FALLITO/SUBOTTIMALE: quando l'utente ti passa un report di job, un log, "
         "un output insoddisfacente, oppure dice 'il task X è venuto male / non ha trovato niente / "
         "rendi più efficace / aggiusta / migliora questo task', NON ricreare da zero: aggiorna il task "

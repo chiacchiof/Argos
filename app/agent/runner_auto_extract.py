@@ -77,7 +77,10 @@ async def _execute_strategy(
         existing_allowed.append(reg)
     sub_task["allowed_domains"] = existing_allowed
 
-    sub_job_id = db.create_job(task["id"])
+    # Lega il sub-job al parent via triggered_by_job_id: cosi' la UI puo'
+    # raggrupparlo sotto la card del parent (display logico #parent.N) e il
+    # master summary post-job puo' enumerare tutti i sub via db.list_subjobs().
+    sub_job_id = db.create_job(task["id"], triggered_by_job_id=parent_job_id)
     db.append_job_log(
         sub_job_id,
         f"Sub-job di auto_extract job#{parent_job_id} per {site_url} (strategy={strategy})",
@@ -262,6 +265,29 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         f"Avvio auto_extract per task #{task['id']} \"{task['name']}\". "
         "Strategia per ogni sito decisa da un profiler LLM."
     )
+
+    # NB: tutto il body e' avvolto in try/finally per garantire che il
+    # master_summary venga generato anche su error/cancelled (l'utente vede
+    # SEMPRE un overview "com'e' andato il task", anche quando e' fallito).
+    try:
+        return await _run_agent_inner(task, job_id, jlog)
+    finally:
+        # Best-effort: il summary e' una nice-to-have, non deve mai bloccare
+        # il completamento del job ne' propagare eccezioni.
+        try:
+            from .master_summary import generate_master_summary
+            summary_path = await generate_master_summary(job_id)
+            if summary_path:
+                jlog(f"📋 Master summary generato: {summary_path}")
+        except Exception as e:
+            jlog(f"⚠️ master_summary fallito (non bloccante): {type(e).__name__}: {e}")
+
+
+async def _run_agent_inner(
+    task: dict[str, Any], job_id: int, jlog,
+) -> str:
+    """Body originale di run_agent. Estratto in funzione separata per permettere
+    il wrapping try/finally del master_summary trigger senza indentare 250+ righe."""
 
     # 1. Risolvi LLM per il profiler
     try:

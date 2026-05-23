@@ -251,4 +251,35 @@ def compute_dashboard(job_id: int) -> dict[str, Any] | None:
         "recent_actions": recent_actions[-5:],
         "result_path": job.get("result_path"),
         "error": job.get("error"),
+        "master_summary_text": _read_master_summary(job),
+        "n_subjobs": _count_subjobs(job),
     }
+
+
+def _read_master_summary(job: dict[str, Any]) -> str | None:
+    """Legge `master_summary.md` dalla run_dir del job, se esiste.
+
+    Generato da `app.agent.master_summary.generate_master_summary` al termine
+    di un parent auto_extract con sub-job. Ritorna None se assente o non leggibile.
+    """
+    rp = job.get("result_path") or ""
+    if not rp:
+        return None
+    from pathlib import Path as _P
+    p = _P(rp)
+    run_dir = p if p.is_dir() else p.parent
+    summary = run_dir / "master_summary.md"
+    if not summary.exists():
+        return None
+    try:
+        return summary.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _count_subjobs(job: dict[str, Any]) -> int:
+    """Numero di sub-job triggerati da questo job (auto_extract → site_explorer/browser_use/...)."""
+    try:
+        return len(db.list_subjobs(int(job["id"])))
+    except Exception:
+        return 0

@@ -653,6 +653,50 @@ def test_e2e_route_delete_edge_idor_blocked(populated_edges, tmp_path, monkeypat
     assert edge is not None, "Edge di Bob cancellato — IDOR exploit successo!"
 
 
+def test_list_subjobs_filters_tenant(populated_db):
+    """IDOR fix: list_subjobs(parent_id) non deve ritornare sub-job di un
+    parent appartenente ad altro tenant nemmeno se l'attaccante ne indovina l'id.
+    """
+    ctx = populated_db
+    # Crea un parent job + 2 sub per tenant_a
+    parent_a = db.create_job(ctx["task_alice"], tenant_id=ctx["tenant_a"], created_by_user_id=ctx["alice_id"])
+    sub_a1 = db.create_job(ctx["task_alice"], triggered_by_job_id=parent_a, tenant_id=ctx["tenant_a"], created_by_user_id=ctx["alice_id"])
+    sub_a2 = db.create_job(ctx["task_alice"], triggered_by_job_id=parent_a, tenant_id=ctx["tenant_a"], created_by_user_id=ctx["alice_id"])
+    # Crea un parent job + 1 sub per tenant_b
+    parent_b = db.create_job(ctx["task_bob"], tenant_id=ctx["tenant_b"], created_by_user_id=ctx["bob_id"])
+    sub_b1 = db.create_job(ctx["task_bob"], triggered_by_job_id=parent_b, tenant_id=ctx["tenant_b"], created_by_user_id=ctx["bob_id"])
+
+    # Alice vede i suoi sub
+    subs = db.list_subjobs(parent_a, tenant_id=ctx["tenant_a"])
+    assert {s["id"] for s in subs} == {sub_a1, sub_a2}
+    # Alice NON vede i sub di Bob nemmeno passando il parent di Bob
+    assert db.list_subjobs(parent_b, tenant_id=ctx["tenant_a"]) == []
+    # Bob vede i suoi
+    subs = db.list_subjobs(parent_b, tenant_id=ctx["tenant_b"])
+    assert {s["id"] for s in subs} == {sub_b1}
+    # Super-admin vede tutto
+    assert len(db.list_subjobs(parent_a, tenant_id=None)) == 2
+    assert len(db.list_subjobs(parent_b, tenant_id=None)) == 1
+
+
+def test_list_subjobs_for_jobs_batch_filters_tenant(populated_db):
+    """Variante batch: list_subjobs_for_jobs([...]) rispetta lo stesso filtro."""
+    ctx = populated_db
+    parent_a = db.create_job(ctx["task_alice"], tenant_id=ctx["tenant_a"], created_by_user_id=ctx["alice_id"])
+    db.create_job(ctx["task_alice"], triggered_by_job_id=parent_a, tenant_id=ctx["tenant_a"], created_by_user_id=ctx["alice_id"])
+    parent_b = db.create_job(ctx["task_bob"], tenant_id=ctx["tenant_b"], created_by_user_id=ctx["bob_id"])
+    db.create_job(ctx["task_bob"], triggered_by_job_id=parent_b, tenant_id=ctx["tenant_b"], created_by_user_id=ctx["bob_id"])
+
+    # Alice chiede entrambi gli ID: vede solo i suoi sub
+    res = db.list_subjobs_for_jobs([parent_a, parent_b], tenant_id=ctx["tenant_a"])
+    assert len(res.get(parent_a, [])) == 1
+    assert res.get(parent_b, []) == []  # Bob's parent: zero sub visibili ad Alice
+    # Super-admin vede tutto
+    res = db.list_subjobs_for_jobs([parent_a, parent_b], tenant_id=None)
+    assert len(res[parent_a]) == 1
+    assert len(res[parent_b]) == 1
+
+
 def test_upsert_contact_dedup_is_intra_tenant(populated_db):
     """REGRESSIONE 2026-05-22: pre-fix, upsert_contact con stessa email per
     tenant A e poi tenant B FACEVA UPDATE del record di A (cross-tenant write

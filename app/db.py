@@ -1994,6 +1994,58 @@ def latest_job(task_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def current_or_latest_job(
+    task_id: int, tenant_id: Any = _UNSET,
+) -> dict[str, Any] | None:
+    """Smart picker per il "current job" mostrato nel pannello superiore della
+    task detail page.
+
+    Priorita':
+      1. Parent attivo (status in queued/running/paused AND triggered_by_job_id IS NULL)
+         → cosi' i pulsanti stop/pause sono sul parent, non su un sub gia' done
+      2. Qualsiasi job attivo (parent o sub)
+      3. Latest (max id) come fallback
+
+    Risolve un bug UX: pre-2026-05-23 latest_job() ritornava il sub piu' recente
+    (max id), anche se gia' `done`, mentre il parent era ancora running. Il
+    pannello "Stato esecuzione corrente" mostrava `Job #178 DONE` invece del
+    parent #174 RUNNING — niente pulsanti stop visibili, confusione.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        tenant_clause = "" if tenant_id is None else " AND tenant_id = %s"
+        tenant_args: tuple = () if tenant_id is None else (tenant_id,)
+
+        # 1. Parent attivo (no triggered_by_job_id, status non terminale)
+        sql = (
+            "SELECT * FROM jobs WHERE task_id = %s "
+            "AND triggered_by_job_id IS NULL "
+            "AND status IN ('queued', 'running', 'paused')"
+            f"{tenant_clause} ORDER BY id DESC LIMIT 1"
+        )
+        row = con.execute(sql, (task_id, *tenant_args)).fetchone()
+        if row:
+            return dict(row)
+
+        # 2. Qualsiasi job attivo
+        sql = (
+            "SELECT * FROM jobs WHERE task_id = %s "
+            "AND status IN ('queued', 'running', 'paused')"
+            f"{tenant_clause} ORDER BY id DESC LIMIT 1"
+        )
+        row = con.execute(sql, (task_id, *tenant_args)).fetchone()
+        if row:
+            return dict(row)
+
+        # 3. Fallback: latest (max id)
+        sql = (
+            f"SELECT * FROM jobs WHERE task_id = %s{tenant_clause} "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        row = con.execute(sql, (task_id, *tenant_args)).fetchone()
+    return dict(row) if row else None
+
+
 def set_control_signal(job_id: int, signal: str | None) -> None:
     with connect() as con:
         con.execute("UPDATE jobs SET control_signal = %s WHERE id = %s", (signal, job_id))

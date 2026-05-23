@@ -582,9 +582,10 @@ def _make_incremental_flush_callback(
     job_id: int,
     flush_every: int = 3,
     memory_stuck_threshold: int = 8,
+    extract_fail_threshold: int = 3,
 ):
     """Costruisce callback async chiamato dopo ogni step browser_use che svolge
-    DUE compiti generici e domain-agnostic:
+    TRE compiti generici e domain-agnostic:
 
     1. **Flush incrementale**: ogni `flush_every` step, scarica
        history.extracted_content() su profiles.jsonl. Cosi' se il job e' killato
@@ -595,6 +596,13 @@ def _make_incremental_flush_callback(
        control_signal=stop sul job_id, terminando graceful l'agente. Evita loop
        di failure che bruciano step e soldi senza fare progressi.
 
+    3. **Early-stop Extract failure repeated**: se la Memory/Eval del model_output
+       contiene pattern di "extract_structured_data failed" per
+       `extract_fail_threshold` step consecutivi, abort. Senza questo controllo,
+       un modello LLM (anche capable come qwen3.6:27b) che fallisce
+       l'extract_structured_data sulla prima pagina entra in retry loop e
+       brucia 8+ minuti prima del timeout esterno (incidente 2026-05-23).
+
     `agent_holder` e' un dict mutabile usato per passare l'agente dopo
     l'inizializzazione (circular dependency: la callback ha bisogno dell'agent,
     l'agent ha bisogno della callback).
@@ -604,21 +612,39 @@ def _make_incremental_flush_callback(
         "last_flushed": 0,
         "last_memory_hash": None,
         "memory_stuck_count": 0,
+        "extract_fail_count": 0,
         "early_stopped": False,
     }
+
+    # Pattern regex per detection di "extract_structured_data failed" nella
+    # Memory/Eval. Comprende varianti del modello su come descrive il problema.
+    import re
+    _EXTRACT_FAIL_RE = re.compile(
+        r"extract_structured_data.{0,40}(failed|fail|error|retry|attempts?\s+failed)",
+        re.IGNORECASE,
+    )
 
     async def _on_new_step(browser_state, model_output, step_n: int) -> None:
         state["count"] += 1
 
-        # -- Compito 2: early-stop su Memory identica --
+        # -- Estrai Memory + Eval text (difensivo: model_output puo' essere
+        # pydantic model o dict con strutture leggermente diverse tra versioni
+        # di browser-use) --
+        mem_text: str | None = None
+        eval_text: str | None = None
         try:
-            # AgentOutput puo' essere pydantic model o dict; estraggo Memory in modo difensivo
-            mem_text: str | None = None
             cs = getattr(model_output, "current_state", None) or getattr(model_output, "state", None)
             if cs is not None:
                 mem_text = getattr(cs, "memory", None)
-                if mem_text is None and isinstance(cs, dict):
-                    mem_text = cs.get("memory")
+                eval_text = getattr(cs, "evaluation_previous_goal", None) or getattr(cs, "evaluation", None)
+                if isinstance(cs, dict):
+                    mem_text = mem_text or cs.get("memory")
+                    eval_text = eval_text or cs.get("evaluation_previous_goal") or cs.get("evaluation")
+        except Exception as e:
+            log.debug("model_output parse failed at step %s: %s", step_n, e)
+
+        # -- Compito 2: early-stop su Memory identica --
+        try:
             if mem_text and isinstance(mem_text, str):
                 import hashlib
                 h = hashlib.md5(mem_text.encode("utf-8", errors="ignore")).hexdigest()
@@ -641,6 +667,37 @@ def _make_incremental_flush_callback(
                         log.debug("set_control_signal failed: %s", e)
         except Exception as e:
             log.debug("memory-stuck check failed at step %s: %s", step_n, e)
+
+        # -- Compito 3: early-stop su extract_structured_data fallito ripetuto --
+        try:
+            combined = " ".join(filter(None, [mem_text, eval_text]))
+            if combined and _EXTRACT_FAIL_RE.search(combined):
+                state["extract_fail_count"] += 1
+            else:
+                # Reset solo se non c'e' indizio di fallimento (preserva il count
+                # tra step adiacenti dove l'LLM sta ragionando senza menzionarlo).
+                if combined:
+                    state["extract_fail_count"] = 0
+            if (
+                state["extract_fail_count"] >= extract_fail_threshold
+                and not state["early_stopped"]
+            ):
+                state["early_stopped"] = True
+                jlog(
+                    f"  🛑 early-stop: extract_structured_data fallito "
+                    f"{state['extract_fail_count']} step consecutivi (step {step_n}). "
+                    f"Pattern noto: il modello LLM non riesce a generare JSON strict "
+                    f"compatibile con lo schema; browser-use library ritorna errore. "
+                    f"Abort precoce per evitare di sprecare step. "
+                    f"FIX SUGGERITO: aggiungi un Browser LLM cloud capable "
+                    f"(gpt-4o-mini) sul task — vedi /accounts/llm-keys."
+                )
+                try:
+                    db.set_control_signal(job_id, "stop")
+                except Exception as e:
+                    log.debug("set_control_signal failed: %s", e)
+        except Exception as e:
+            log.debug("extract-fail check failed at step %s: %s", step_n, e)
 
         # -- Compito 1: flush incrementale --
         if (state["count"] - state["last_flushed"]) < flush_every:

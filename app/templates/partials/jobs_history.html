@@ -1,10 +1,38 @@
-{% if jobs %}
+{# Cronologia job ad albero parent/child.
+   Top-level: parent o standalone (triggered_by_job_id IS NULL).
+   Sub: triggered da un parent, visualizzati con display_id `#parent.N` e
+   indentazione.
+
+   Navigazione: click su "dettagli" di una riga (parent o sub) → carica
+   inline il dashboard di QUEL job in una riga espansa, SENZA sovrascrivere
+   il pannello "Stato esecuzione corrente" in alto. Cosi' l'utente puo'
+   ispezionare un sub specifico mentre il parent (con i pulsanti stop)
+   resta sempre visibile in cima. #}
+
+{% if top_level_jobs %}
 <table class="data">
-  <thead><tr><th>#</th><th>Stato</th><th>Avvio</th><th>Fine</th><th>Risultato</th><th></th></tr></thead>
-  <tbody>
-    {% for j in jobs %}
+  <thead>
     <tr>
-      <td>{{ j.id }}</td>
+      <th>#</th>
+      <th>Stato</th>
+      <th>Avvio</th>
+      <th>Fine</th>
+      <th>Risultato</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for j in top_level_jobs %}
+    {% set subs = subjobs_by_parent.get(j.id, []) %}
+    {# Riga parent #}
+    <tr class="job-row job-row-parent">
+      <td>
+        {% if subs %}
+          <details open class="job-tree-toggle"><summary>{{ j.id }}<span class="muted small"> · {{ subs|length }} sub</span></summary></details>
+        {% else %}
+          {{ j.id }}
+        {% endif %}
+      </td>
       <td><span class="status status-{{ j.status }}">{{ j.status }}</span></td>
       <td><small>{{ j.started_at or "—" }}</small></td>
       <td><small>{{ j.finished_at or "—" }}</small></td>
@@ -16,14 +44,81 @@
           <a href="/tasks/{{ task.id }}/results/{{ rel }}">{{ rel }}</a>
         {% else %}—{% endif %}
       </td>
+      <td class="job-actions-cell">
+        <a href="#"
+           hx-get="/jobs/{{ j.id }}/dashboard"
+           hx-target="#job-detail-{{ j.id }}"
+           hx-swap="innerHTML"
+           onclick="document.getElementById('job-detail-row-{{ j.id }}').style.display='table-row'; return false;"
+           title="Mostra dashboard del job (con pulsanti stop/pause se attivo)">📊 dettagli</a>
+        &middot;
+        <a href="/jobs/{{ j.id }}/status" hx-boost="false" target="_blank" title="Log completo in nuova tab">log</a>
+      </td>
+    </tr>
+    {# Riga espandibile per il dashboard del parent (nascosta di default) #}
+    <tr id="job-detail-row-{{ j.id }}" class="job-detail-row" style="display:none">
+      <td colspan="6">
+        <div id="job-detail-{{ j.id }}" class="job-detail-inline">
+          <small class="muted">Caricamento...</small>
+        </div>
+      </td>
+    </tr>
+    {# Righe sub-job (rientrate) #}
+    {% for s in subs %}
+    <tr class="job-row job-row-sub">
+      <td class="job-sub-id" title="DB id={{ s.id }}">
+        <span class="job-tree-branch">└─</span>
+        <span class="job-display-id">{{ s.display_id }}</span>
+      </td>
+      <td><span class="status status-{{ s.status }}">{{ s.status }}</span></td>
+      <td><small>{{ s.started_at or "—" }}</small></td>
+      <td><small>{{ s.finished_at or "—" }}</small></td>
       <td>
-        <a href="#" hx-get="/jobs/{{ j.id }}/status"
-           hx-target="#job-status" hx-swap="innerHTML">log</a>
+        {% if s.result_path %}
+          {% set s_norm = s.result_path.replace('\\','/') %}
+          {% set s_marker = '/results/' ~ task.id|string ~ '/' %}
+          {% set s_rel = s_norm.split(s_marker)[-1] %}
+          <a href="/tasks/{{ task.id }}/results/{{ s_rel }}">{{ s_rel }}</a>
+        {% else %}—{% endif %}
+      </td>
+      <td class="job-actions-cell">
+        <a href="#"
+           hx-get="/jobs/{{ s.id }}/dashboard"
+           hx-target="#job-detail-{{ s.id }}"
+           hx-swap="innerHTML"
+           onclick="document.getElementById('job-detail-row-{{ s.id }}').style.display='table-row'; return false;"
+           title="Mostra dashboard del sub-job (con pulsanti stop se attivo)">📊 dettagli</a>
+        &middot;
+        <a href="/jobs/{{ s.id }}/status" hx-boost="false" target="_blank" title="Log completo in nuova tab">log</a>
+      </td>
+    </tr>
+    {# Riga espandibile per il dashboard del sub (nascosta di default) #}
+    <tr id="job-detail-row-{{ s.id }}" class="job-detail-row" style="display:none">
+      <td colspan="6">
+        <div id="job-detail-{{ s.id }}" class="job-detail-inline">
+          <small class="muted">Caricamento...</small>
+        </div>
       </td>
     </tr>
     {% endfor %}
+    {% endfor %}
   </tbody>
 </table>
+<style>
+  .job-row-sub td { background: var(--surface-2, rgba(255,255,255,0.02)); }
+  .job-row-sub .job-sub-id { padding-left: 1.2rem; }
+  .job-tree-branch { opacity: 0.6; margin-right: 0.3rem; font-family: monospace; }
+  .job-display-id { font-family: monospace; opacity: 0.85; }
+  .job-tree-toggle { display: inline; }
+  .job-tree-toggle summary { cursor: pointer; list-style: none; display: inline; }
+  .job-tree-toggle summary::-webkit-details-marker { display: none; }
+  .job-tree-toggle[open] > summary::before { content: "▼ "; opacity: 0.5; }
+  .job-tree-toggle:not([open]) > summary::before { content: "▶ "; opacity: 0.5; }
+  .job-actions-cell a { font-size: 0.85em; opacity: 0.9; }
+  .job-actions-cell a:hover { opacity: 1; }
+  .job-detail-row td { padding: 0.6rem 1rem !important; background: var(--surface-3, rgba(255,255,255,0.04)) !important; border-top: 1px dashed var(--border, #555); }
+  .job-detail-inline { max-width: 100%; overflow-x: auto; }
+</style>
 {% else %}
 <p class="muted">Nessun job ancora eseguito.</p>
 {% endif %}

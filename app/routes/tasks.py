@@ -1572,7 +1572,9 @@ async def task_detail(request: Request, task_id: int):
     if not task:
         raise HTTPException(status_code=404, detail="task non trovato")
     task_jobs = db.list_jobs(task_id)
-    latest = db.latest_job(task_id)
+    # Smart picker: preferenza parent attivo > qualsiasi attivo > latest.
+    # Cosi' i pulsanti stop/pause sono sul job giusto (no sub gia' done).
+    latest = db.current_or_latest_job(task_id)
     from ..dashboard import compute_dashboard, compute_task_health
     latest_dashboard = compute_dashboard(latest["id"]) if latest else None
     health = compute_task_health(task_id)
@@ -1580,17 +1582,52 @@ async def task_detail(request: Request, task_id: int):
     edges_with_task = db.list_edges(from_task_id=task_id) + db.list_edges(to_task_id=task_id)
     workflow_ids = sorted({e["workflow_id"] for e in edges_with_task if e.get("workflow_id")})
     related_workflows = [db.get_workflow(wid) for wid in workflow_ids if db.get_workflow(wid)]
+    top_level, subjobs_by_parent = _build_jobs_tree(task_jobs)
     return templates.TemplateResponse(
         request,
         "task_detail.html",
         {
             "task": task,
             "jobs": task_jobs,
+            "top_level_jobs": top_level,
+            "subjobs_by_parent": subjobs_by_parent,
             "latest_dashboard": latest_dashboard,
             "health": health,
             "related_workflows": related_workflows,
         },
     )
+
+
+def _build_jobs_tree(jobs: list[dict]) -> tuple[list[dict], dict[int, list[dict]]]:
+    """Raggruppa i job in albero parent/child.
+
+    Ritorna:
+      - top_level: lista dei parent (triggered_by_job_id IS NULL), ordinata
+        per id DESC (i piu' recenti in cima)
+      - subjobs_by_parent: dict {parent_id: [sub-job ordinati per id ASC]}
+        ogni sub e' arricchito con `display_id` (`#170.1`, `#170.2`, ecc.)
+
+    I sub-job orfani (parent non nella lista) vengono trattati come top-level
+    (es. job rimasti da quando triggered_by_job_id non era popolato).
+    """
+    top_level = [j for j in jobs if not j.get("triggered_by_job_id")]
+    top_ids = {int(j["id"]) for j in top_level}
+    subjobs_by_parent: dict[int, list[dict]] = {}
+    for j in jobs:
+        parent_id = j.get("triggered_by_job_id")
+        if parent_id and int(parent_id) in top_ids:
+            subjobs_by_parent.setdefault(int(parent_id), []).append(dict(j))
+        elif parent_id and int(parent_id) not in top_ids:
+            # Sub orfano: il parent non e' nei jobs visibili. Mostralo top-level.
+            top_level.append(j)
+    # Ordina sub per id ASC e calcola display_id #parent.N
+    for pid, subs in subjobs_by_parent.items():
+        subs.sort(key=lambda s: int(s["id"]))
+        for idx, s in enumerate(subs, start=1):
+            s["display_id"] = f"#{pid}.{idx}"
+    # Top-level ordinato per id DESC (piu' recente in cima)
+    top_level.sort(key=lambda j: -int(j["id"]))
+    return top_level, subjobs_by_parent
 
 
 @router.get("/tasks/{task_id}/jobs", response_class=HTMLResponse)
@@ -1605,14 +1642,18 @@ async def task_jobs_partial(request: Request, task_id: int):
     # stop/pause/cancel si aggiornano insieme alla cronologia. Senza OOB
     # il pannello superiore restava "fermo" finche' l'utente non faceva F5.
     from ..dashboard import compute_dashboard
-    latest = db.latest_job(task_id)
+    # Stesso smart picker della view task_detail (parent attivo > attivo > latest)
+    latest = db.current_or_latest_job(task_id)
     latest_dashboard = compute_dashboard(latest["id"]) if latest else None
+    top_level, subjobs_by_parent = _build_jobs_tree(task_jobs)
     return templates.TemplateResponse(
         request,
         "partials/jobs_history_wrapper.html",
         {
             "task": task,
-            "jobs": task_jobs,
+            "jobs": task_jobs,  # backward compat (alcuni include legacy lo usano)
+            "top_level_jobs": top_level,
+            "subjobs_by_parent": subjobs_by_parent,
             "has_active": has_active,
             "latest_dashboard": latest_dashboard,
         },

@@ -32,7 +32,16 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
-    http_user_agent: str = "Argos/0.1 (+local research bot)"
+    # User-Agent del fetch HTTP: dichiarato come Chrome moderno per essere
+    # accettato da siti con anti-bot semplici (Cloudflare entry-level,
+    # WP-Defender, ecc.). Pre-2026-05-23 era "Argos/0.1 (+local research bot)"
+    # — banalmente blacklistato (es. pokerstrategy.com restituiva 403 immediato).
+    # Override via env `HTTP_USER_AGENT` per setup specifici.
+    http_user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
     http_timeout: int = 20
 
     default_max_iterations: int = 10
