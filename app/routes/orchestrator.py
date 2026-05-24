@@ -26,6 +26,7 @@ from ..agent.llm_providers import (
     list_providers,
     resolve_api_key,
     resolve_base_url,
+    resolve_credential,
 )
 from ..agent.ollama import list_models
 from ..agent.tools.fetch_http import fetch_http
@@ -2026,8 +2027,16 @@ async def _build_chat_payload(
         models = await _models_for_provider(provider_key)
         model = models[0] if models else settings.default_model
 
-    base_url = resolve_base_url(provider_key, cfg["llm_base_url"])
-    api_key = resolve_api_key(provider_key, cfg["llm_api_key"])
+    # Risoluzione chiave/base_url: priorita' (1) vault via llm_credential_id,
+    # (2) llm_api_key legacy nel project, (3) env var del provider. Prima del fix
+    # 2026-05-24 si usavano solo (2)+(3) → la chiave nel vault veniva ignorata e
+    # l'orchestrator rifiutava il provider 'openai' anche con vault popolato.
+    api_key, base_url, _resolved_cred_id = resolve_credential(
+        cfg.get("llm_credential_id"),
+        provider_key,
+        project_key=cfg.get("llm_api_key") or None,
+        custom_base_url=cfg.get("llm_base_url") or None,
+    )
     capabilities = (chat_options or {}).get("capabilities") or _chat_model_capabilities(
         provider_key,
         model,
@@ -2986,6 +2995,129 @@ def _resolve_extraction_schema(
     return None, None, None
 
 
+# Mapping output_asset_type sensato per ogni extraction_template named. Usato
+# come default deterministico quando l'orchestrator non specifica il campo:
+# molti modelli (gpt-4o-mini su tutti) tendono a omettere `output_asset_type`,
+# lasciando i task con NULL → asset DB senza tipo, filtering UI degradato,
+# qualifier downstream confuso. Il default qui evita la regressione.
+_OUTPUT_ASSET_TYPE_BY_TEMPLATE: dict[str, str] = {
+    "business_directory": "azienda",
+    "restaurant": "ristorante",
+    "professional": "professionista",
+    "hotel": "struttura_ricettiva",
+    "ecommerce_products": "prodotto",
+    "real_estate": "immobile",
+    "events": "evento",
+    "news_articles": "articolo",
+    "job_listings": "annuncio_lavoro",
+    "profile_contacts": "profilo",
+    "profile_interests": "social_profile",
+}
+
+# agent_mode per i quali ha senso derivare default scraping (allowed_domains,
+# output_asset_type, ecc.). `auto_extract` è escluso da `allowed_domains` perché
+# nasce per liste eterogenee di domini diversi.
+_SCRAPING_AGENT_MODES = {"bulk_extract", "site_explorer", "browser_use", "auto_extract"}
+
+
+def _apply_create_task_defaults(
+    planned_kwargs: dict[str, Any],
+    *,
+    raw_args: dict[str, Any],
+    agent_mode: str,
+    extraction_template: str | None,
+) -> list[dict[str, Any]]:
+    """Applica default 'intelligenti' quando l'orchestrator omette campi che hanno
+    una scelta sensata derivabile dal contesto. Ritorna la lista delle modifiche
+    applicate per esporla nel risultato (`applied_defaults`), così l'orchestrator
+    può citarle all'utente in trasparenza.
+
+    Default applicati:
+    - `allowed_domains`: per agent_mode di scraping (esclusi auto_extract), se
+      vuoto/non passato, deriva i registrable domain unici dai seed concreti.
+    - `max_iterations`: per site_explorer, se non passato (o lasciato al default 10),
+      alza a 30 (target_cap_per_site ≤ 50) o 50 (cap > 50 o unbounded 0).
+    - `output_asset_type`: se non passato e c'è un template named noto, applica
+      il mapping `_OUTPUT_ASSET_TYPE_BY_TEMPLATE`.
+
+    Non sovrascrive valori passati esplicitamente: il caller (LLM o umano) ha
+    sempre la precedenza.
+    """
+    from urllib.parse import urlparse
+    # Import lazy per evitare ciclo: runner_bulk_extract importa altri moduli pesanti.
+    from ..agent.runner_bulk_extract import _registrable_domain
+
+    applied: list[dict[str, Any]] = []
+
+    # --- allowed_domains ---
+    raw_domains = raw_args.get("allowed_domains")
+    domains_passed_explicit = raw_domains is not None  # anche [] esplicito vale
+    if (
+        not domains_passed_explicit
+        and agent_mode in _SCRAPING_AGENT_MODES
+        and agent_mode != "auto_extract"
+    ):
+        seeds = [str(s).strip() for s in (raw_args.get("seed_queries") or []) if str(s).strip()]
+        derived: list[str] = []
+        for s in seeds:
+            try:
+                host = (urlparse(s).hostname or "").lower()
+            except Exception:
+                host = ""
+            if not host:
+                continue
+            rd = _registrable_domain(host)
+            if rd and rd not in derived:
+                derived.append(rd)
+        if derived:
+            planned_kwargs["allowed_domains"] = derived
+            applied.append({
+                "field": "allowed_domains",
+                "value": derived,
+                "reason": "derivati automaticamente dai registrable domain dei seed",
+            })
+
+    # --- max_iterations (solo site_explorer, dove il default 10 è troppo basso) ---
+    raw_iters = raw_args.get("max_iterations")
+    iters_passed_explicit = raw_iters is not None and str(raw_iters).strip() != ""
+    if agent_mode == "site_explorer" and not iters_passed_explicit:
+        cap = planned_kwargs.get("target_cap_per_site")
+        # cap == 0 = unbounded (molti target attesi); cap None = mai settato.
+        if cap is None or cap == 0 or cap > 50:
+            new_iters = 50
+        else:
+            new_iters = 30
+        if planned_kwargs.get("max_iterations") != new_iters:
+            planned_kwargs["max_iterations"] = new_iters
+            applied.append({
+                "field": "max_iterations",
+                "value": new_iters,
+                "reason": (
+                    f"site_explorer richiede ≥30 step LLM per la fase MAPPING "
+                    f"(target_cap_per_site={cap}); default 10 sarebbe troppo basso"
+                ),
+            })
+
+    # --- output_asset_type (solo per agent_mode scraping e template named) ---
+    raw_oat = raw_args.get("output_asset_type")
+    oat_passed_explicit = raw_oat is not None and str(raw_oat).strip() != ""
+    if (
+        not oat_passed_explicit
+        and agent_mode in _SCRAPING_AGENT_MODES
+        and extraction_template
+        and extraction_template in _OUTPUT_ASSET_TYPE_BY_TEMPLATE
+    ):
+        derived_oat = _OUTPUT_ASSET_TYPE_BY_TEMPLATE[extraction_template]
+        planned_kwargs["output_asset_type"] = derived_oat
+        applied.append({
+            "field": "output_asset_type",
+            "value": derived_oat,
+            "reason": f"mapping da extraction_template='{extraction_template}'",
+        })
+
+    return applied
+
+
 def _tool_create_task(args: dict[str, Any]) -> str:
     name = str(args.get("name") or "").strip()
     agent_mode = str(args.get("agent_mode") or "").strip()
@@ -3138,6 +3270,16 @@ def _tool_create_task(args: dict[str, Any]) -> str:
             v = str(args.get("speed_profile") or "safe").strip()
             if v in ("safe", "balanced", "aggressive"):
                 planned_kwargs["speed_profile"] = v
+        # Default deterministici per campi che gli LLM piccoli (gpt-4o-mini) tendono
+        # a omettere ma che hanno una scelta sensata derivabile dal contesto. Non
+        # sovrascrive valori passati esplicitamente. Trasparente: gli `applied_defaults`
+        # vengono ritornati nel result per essere citati all'utente.
+        applied_defaults = _apply_create_task_defaults(
+            planned_kwargs,
+            raw_args=args,
+            agent_mode=agent_mode,
+            extraction_template=extraction_template,
+        )
         planned = PlannedTask(**planned_kwargs)
     except Exception as e:
         return json.dumps({"ok": False, "reason": f"campi task non validi: {type(e).__name__}: {e}"})
@@ -3149,9 +3291,22 @@ def _tool_create_task(args: dict[str, Any]) -> str:
         except Exception:
             pass
     task_id = db.create_task(payload)
-    return json.dumps(
-        {"ok": True, "task_id": task_id, "name": planned.name, "agent_mode": planned.agent_mode}
-    )
+    result: dict[str, Any] = {
+        "ok": True,
+        "task_id": task_id,
+        "name": planned.name,
+        "agent_mode": planned.agent_mode,
+    }
+    if applied_defaults:
+        result["applied_defaults"] = applied_defaults
+        result["note_for_llm"] = (
+            "Ho applicato automaticamente i default elencati in `applied_defaults` "
+            "perché non li avevi passati nei tool args. Citali brevemente all'utente "
+            "(es. 'ho derivato allowed_domains da seed', 'ho alzato max_iterations a "
+            "30 per site_explorer'). Non ripetere questi default ai prossimi create_task "
+            "dello stesso turno: ora che li sai, passali esplicitamente."
+        )
+    return json.dumps(result, ensure_ascii=False)
 
 
 _UPDATE_TASK_STRING_FIELDS = {
@@ -4182,6 +4337,38 @@ def _chat_system_prompt(
         "futuro; (C) seed più 'alto' (es. homepage città) lasciando che la fase MAPPING "
         "scopra le sotto-listing. Per multi-task usa propose_plan + execute_plan (genera "
         "i task in batch). Per workflow usa create_workflow + add_node per ogni seed.\n\n"
+        "DEFAULT AUTOMATICI APPLICATI DA create_task (non li devi calcolare tu):\n"
+        "Quando ometti `allowed_domains`, `max_iterations`, `output_asset_type` per un task di "
+        "scraping, il tool li deriva da solo (registrable domain dei seed, 30/50 step per "
+        "site_explorer, mapping output_asset_type da template) e te li riporta in "
+        "`applied_defaults` del result. Citali brevemente all'utente in trasparenza. Se "
+        "vuoi forzare valori diversi, passali esplicitamente — il tuo valore vince sempre "
+        "sul default. Quindi: NON serve che tu specifichi questi 3 campi se la derivazione "
+        "automatica va bene per il caso utente; specificali solo per override esplicito.\n\n"
+        "ANTI-DUPLICATE TOOL CALL (efficienza):\n"
+        "Quando crei N task simili nello stesso turno (es. 3 task site_explorer per 3 "
+        "categorie diverse), chiama `list_extraction_templates` UNA SOLA VOLTA all'inizio: "
+        "i template sono identici per tutto il turno, ricaricarli per ogni task è spreco "
+        "di context. Stesso principio per `list_provider_models`, `list_chat_models`, "
+        "`list_whatsapp_senders`, `list_social_senders`: una volta a turno basta.\n\n"
+        "ANTI-ALLUCINAZIONE CREATE_TASK MULTIPLI (regola tassativa):\n"
+        "Quando crei N task in un turno, l'unica fonte di verità sono gli `task_id` ritornati "
+        "dalle tool-call SUCCESS (ok=true). Regole non-negoziabili:\n"
+        "  (a) Annuncia all'utente SOLO i task_id presenti nei tool-result success. NON "
+        "inventare ID consecutivi 'per simmetria' (es. se hai ricevuto task_id=47, NON "
+        "scrivere 'creati 47, 48, 49' a meno che 48 e 49 siano davvero nei tool-result).\n"
+        "  (b) Se una chiamata `create_task` ritorna `ok=false` o un `tool_error` di "
+        "parsing/timeout, il task NON esiste. Riprova la chiamata UNA VOLTA con args corretti; "
+        "se fallisce ancora, dillo all'utente esplicitamente: 'ho creato N/M task, gli altri "
+        "M-N sono falliti con [reason]'. NON riempire la tabella con ID inventati per fare "
+        "scena.\n"
+        "  (c) Prima di scrivere la tabella di sintesi dei task creati, conta i tool-result "
+        "success di create_task nello stesso turno: la riga della tabella corrisponde 1:1 a "
+        "uno di quei tool-result. Se conti N success ma stai per scrivere M righe con N<M, "
+        "FERMATI e riscrivi solo N righe.\n"
+        "  (d) Incidente di riferimento (2026-05-24, turno orchestrator id=58): con "
+        "gpt-oss:20b il 3° create_task aveva JSON troncato → tool_error → il modello ha "
+        "annunciato 3 task (47, 48, 49) ma solo 47 esisteva. Non ripetere quel pattern.\n\n"
         "PRE-FLIGHT INSPECTION (regola tassativa quando l'utente fornisce URL specifiche):\n"
         "Quando l'utente menziona uno o piu' URL/domini concreti come seed per uno scraping, "
         "pipeline pre-task in 3 step (chiamali in ordine, FERMATI al primo che da' un "
