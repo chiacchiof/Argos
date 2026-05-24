@@ -1161,6 +1161,39 @@ async def _run_agent_inner(
         except Exception as e:
             log.debug("Playbook outcome bump failed: %s", e)
 
+    # Site intelligence: registra l'esito per (dominio, tenant) cosi' che
+    # l'orchestrator possa consultarlo pre-task nei run successivi.
+    # Best-effort: errori qui non devono compromettere il return del runner.
+    if seed_reg_domain and not stopped:
+        try:
+            success = n_assets_in_db > 0
+            db.upsert_site_intelligence(
+                registrable_domain=seed_reg_domain,
+                status="accessible" if success else "low_yield",
+                strategy_worked="site_explorer" if success else None,
+                job_id=job_id,
+                success=success,
+                notes=(
+                    f"site_explorer estratti={n_assets_in_db}, "
+                    f"step={n_steps}, target_cap={target_cap}"
+                ),
+            )
+            if not success:
+                # Auto-promote check: se N tenant indipendenti hanno fail
+                # sullo stesso dominio, promuovi a community pool.
+                try:
+                    promo = db.auto_promote_to_community_pool(seed_reg_domain)
+                    if promo.get("promoted"):
+                        jlog(
+                            f"  🌐 Pool community: {seed_reg_domain} promosso "
+                            f"a shared ({promo['n_tenants']} tenant negativi), "
+                            f"policy id={promo['policy_id']}"
+                        )
+                except Exception as ee:
+                    log.debug("auto_promote check failed: %s", ee)
+        except Exception as e:
+            log.debug("site_intelligence upsert failed: %s", e)
+
     db.update_job(
         job_id, status=final_status, finished_at=db.now_iso(),
         result_path=str(report_path),

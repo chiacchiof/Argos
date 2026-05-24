@@ -240,6 +240,153 @@ CAMPI DA ESTRARRE (schema JSON, UNA riga per ogni pagina valida in profiles.json
 """
 
 
+BUSINESS_DIRECTORY = """\
+OBIETTIVO: identificare PAGINE-AZIENDA di una directory commerciale locale (Pagine
+Gialle, Yelp, Yellow Pages, TripAdvisor business, registro CCIAA). Una pagina per
+ogni attività con i suoi contatti pubblici, per lead generation B2B.
+
+COME RICONOSCERE LA PAGINA:
+- URL del tipo /<citta>/<categoria>/<slug>[_id], /azienda/<slug>, /business/<id>
+- Mostra UNA singola attività (ragione sociale, indirizzo, telefono, categoria)
+- NON sono target: home, listing/ricerca, pagina-categoria, mappa, FAQ.
+
+CAMPI DA ESTRARRE (schema JSON, UNA riga per azienda in profiles.jsonl):
+{
+  "url": "URL canonico della pagina-azienda",
+  "display_name": "ragione sociale / nome commerciale visibile",
+  "category": "categoria merceologica della directory (string|null)",
+  "address": "indirizzo postale completo (string|null)",
+  "city": "string|null",
+  "postal_code": "string|null",
+  "country": "codice ISO-3166 alpha-2 (string|null)",
+  "phone": "telefono principale, formato come mostrato (string|null)",
+  "phones_other": ["telefoni aggiuntivi, mobile, fax"],
+  "email": "email pubblica anche se offuscata es. 'nome [at] dominio' (string|null)",
+  "website": "URL sito ufficiale, se diverso da source_domain (string|null)",
+  "vat_or_tax_id": "P.IVA / C.F. / VAT se visibile (string|null)",
+  "opening_hours": "stringa libera con orari (string|null)",
+  "description": "primi ~300 char della descrizione dell'attività (string|null)",
+  "source_url": "URL della pagina (ridondante per facilità di filtri)",
+  "source_domain": "host del source_url",
+  "page_title": "<title>",
+  "lang": "codice ISO-639",
+  "crawled_at": "ISO-8601 UTC"
+}
+"""
+
+
+RESTAURANT = """\
+OBIETTIVO: identificare PAGINE-RISTORANTE (TripAdvisor, TheFork, Google Maps
+business, Just Eat, siti propri di locali). Per scouting partner / lead gen ho.re.ca.
+
+COME RICONOSCERE LA PAGINA:
+- URL del tipo /Restaurant_Review-..., /ristorante/<slug>, /place/<id>
+- Mostra UN singolo ristorante con cucina, indirizzo, telefono, prezzo medio
+- NON sono target: home, top-list, ricerca città, pagina-cucina generica.
+
+CAMPI DA ESTRARRE (schema JSON, UNA riga per ristorante in profiles.jsonl):
+{
+  "url": "URL canonico",
+  "display_name": "nome locale",
+  "cuisine_types": ["italiana", "sushi", "pizzeria", "..."],
+  "price_range": "$|$$|$$$|$$$$ o testo es. 'EUR 20-40' (string|null)",
+  "address": "indirizzo completo (string|null)",
+  "city": "string|null",
+  "country": "codice ISO-3166 alpha-2 (string|null)",
+  "phone": "string|null",
+  "email": "string|null",
+  "website": "URL sito ufficiale del locale (string|null)",
+  "booking_url": "link prenotazione (TheFork, sito proprio) (string|null)",
+  "rating_avg": "numero 0-5 (float|null)",
+  "reviews_count": "int|null",
+  "opening_hours": "stringa libera con orari (string|null)",
+  "seating_capacity": "int|null",
+  "features": ["delivery", "takeaway", "outdoor", "vegan_friendly", "..."],
+  "description": "primi ~300 char (string|null)",
+  "source_url": "...",
+  "source_domain": "...",
+  "page_title": "<title>",
+  "lang": "codice ISO-639",
+  "crawled_at": "ISO-8601 UTC"
+}
+"""
+
+
+PROFESSIONAL = """\
+OBIETTIVO: identificare PAGINE-PROFESSIONISTA da albi/ordini professionali o
+directory verticali (avvocati, medici, commercialisti, architetti, ingegneri,
+notai, psicologi). Per lead gen B2B su servizi professionali.
+
+COME RICONOSCERE LA PAGINA:
+- URL del tipo /albo/<id>, /professionista/<slug>, /<ordine>/<citta>/<slug>
+- Mostra UN singolo professionista con nome, ordine/iscrizione, recapiti
+- NON sono target: home, ricerca, pagina-ordine generica, news.
+
+CAMPI DA ESTRARRE (schema JSON, UNA riga per professionista in profiles.jsonl):
+{
+  "url": "URL canonico",
+  "display_name": "nome e cognome del professionista",
+  "profession": "avvocato|medico|commercialista|notaio|architetto|ingegnere|psicologo|...",
+  "specialization": "specializzazione (es. 'cardiologo', 'penalista', 'tributarista') (string|null)",
+  "registration_body": "ordine / albo di appartenenza (string|null)",
+  "registration_number": "numero iscrizione albo (string|null)",
+  "city": "string|null",
+  "address": "indirizzo studio (string|null)",
+  "phone": "string|null",
+  "email": "email pubblica anche offuscata (string|null)",
+  "website": "sito personale o studio (string|null)",
+  "pec": "indirizzo PEC se presente (string|null)",
+  "vat_or_tax_id": "P.IVA / C.F. (string|null)",
+  "languages": ["lingue di lavoro dichiarate"],
+  "bio": "primi ~300 char di biografia / presentazione (string|null)",
+  "source_url": "...",
+  "source_domain": "...",
+  "page_title": "<title>",
+  "lang": "codice ISO-639",
+  "crawled_at": "ISO-8601 UTC"
+}
+"""
+
+
+HOTEL = """\
+OBIETTIVO: identificare PAGINE-STRUTTURA RICETTIVA (hotel, B&B, agriturismo,
+ostello, appartamento). Fonti tipiche: Booking, Hotels.com, siti propri,
+directory turistiche regionali.
+
+COME RICONOSCERE LA PAGINA:
+- URL del tipo /hotel/<paese>/<slug>, /accommodation/<id>, /struttura/<slug>
+- Mostra UNA singola struttura con stelle, indirizzo, prezzo medio, contatti
+- NON sono target: home, ricerca destinazione, mappa, pagina-città generica.
+
+CAMPI DA ESTRARRE (schema JSON, UNA riga per struttura in profiles.jsonl):
+{
+  "url": "URL canonico",
+  "display_name": "nome struttura",
+  "property_type": "hotel|b&b|agriturismo|ostello|appartamento|resort|residence|villa",
+  "stars": "numero stelle ufficiali, 1-5 (int|null)",
+  "address": "indirizzo completo (string|null)",
+  "city": "string|null",
+  "country": "codice ISO-3166 alpha-2 (string|null)",
+  "phone": "string|null",
+  "email": "string|null",
+  "website": "sito ufficiale (string|null)",
+  "booking_url": "link prenotazione esterna se diverso dal source (string|null)",
+  "rating_avg": "numero 0-10 (Booking) o 0-5 (TripAdvisor) (float|null)",
+  "rating_scale_max": "5 o 10 (int|null)",
+  "reviews_count": "int|null",
+  "price_avg_eur": "prezzo medio notte in EUR se mostrato (float|null)",
+  "rooms_count": "numero camere se visibile (int|null)",
+  "amenities": ["wifi", "parcheggio", "piscina", "ristorante", "spa", "..."],
+  "description": "primi ~300 char (string|null)",
+  "source_url": "...",
+  "source_domain": "...",
+  "page_title": "<title>",
+  "lang": "codice ISO-639",
+  "crawled_at": "ISO-8601 UTC"
+}
+"""
+
+
 PROFILE_INTERESTS = """\
 OBIETTIVO: profilare un utente social (Facebook / Instagram / TikTok) a partire
 dal contenuto VISIBILE delle sue pagine-profilo, INFERENDO i suoi interessi.
@@ -311,6 +458,26 @@ TEMPLATES: dict[str, Template] = {
         "description": "Profilo per AUDIENCE clustering: hobby, interessi, gusti, gruppi. Per recon_social.",
         "schema": PROFILE_INTERESTS,
     },
+    "business_directory": {
+        "name": "Aziende — directory locale",
+        "description": "Pagine-azienda da directory commerciali (Pagine Gialle, Yelp, Yellow Pages): contatti B2B con telefono/email/indirizzo/categoria",
+        "schema": BUSINESS_DIRECTORY,
+    },
+    "restaurant": {
+        "name": "Ristoranti",
+        "description": "Locali ho.re.ca. da TripAdvisor / TheFork / Google Maps / siti propri: cucina, prezzo, rating, contatti",
+        "schema": RESTAURANT,
+    },
+    "professional": {
+        "name": "Professionisti (albo)",
+        "description": "Pagine-professionista da albi/ordini (avvocati, medici, commercialisti, ecc.): ordine, specializzazione, recapiti, PEC",
+        "schema": PROFESSIONAL,
+    },
+    "hotel": {
+        "name": "Strutture ricettive",
+        "description": "Hotel / B&B / agriturismi / appartamenti da Booking / siti propri / directory turistiche: stelle, prezzo, rating, contatti",
+        "schema": HOTEL,
+    },
     "ecommerce_products": {
         "name": "Prodotti e-commerce",
         "description": "Pagine-prodotto con prezzo, SKU, disponibilità, immagini",
@@ -338,7 +505,7 @@ TEMPLATES: dict[str, Template] = {
     },
     "custom": {
         "name": "Personalizzato (vuoto)",
-        "description": "Parti da uno schema vuoto e scrivilo da zero",
+        "description": "Parti da uno schema vuoto e scrivilo da zero — RICHIEDE che chi crea il task fornisca lo schema reale, NON usare con il placeholder",
         "schema": CUSTOM_PLACEHOLDER,
     },
 }

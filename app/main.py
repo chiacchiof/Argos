@@ -16,6 +16,7 @@ from .routes import admin as admin_routes
 from .routes import assets as assets_routes
 from .routes import auth as auth_routes
 from .routes import dbconfig as dbconfig_routes
+from .routes import docs as docs_routes
 from .routes import import_csv as import_csv_routes
 from .routes import inbox as inbox_routes
 from .routes import jobs as jobs_routes
@@ -205,6 +206,7 @@ app.include_router(social_accounts_routes.router)
 app.include_router(accounts_email_routes.router)
 app.include_router(accounts_messaging_routes.router)
 app.include_router(accounts_llm_keys_routes.router)
+app.include_router(docs_routes.router)
 app.include_router(update_routes.router)
 
 

@@ -548,6 +548,43 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
         f"Run {status_word}: {n_profiles} profili, {n_ok} seed ok, "
         f"{n_failed} fallite. Report: {report_path}"
     )
+
+    # Site intelligence: registra l'esito per ciascun dominio processato.
+    # Per browser_use spesso 1 seed = 1 dominio, ma supportiamo lista.
+    if not stopped:
+        try:
+            from .runner_bulk_extract import _registrable_domain
+            from urllib.parse import urlparse as _urlparse
+            seen_domains = set()
+            for s in seeds_to_run:
+                host = (_urlparse(s).hostname or "").lower()
+                reg = _registrable_domain(host)
+                if not reg or reg in seen_domains:
+                    continue
+                seen_domains.add(reg)
+                success = n_profiles > 0
+                db.upsert_site_intelligence(
+                    registrable_domain=reg,
+                    status="accessible" if success else "low_yield",
+                    strategy_worked="browser_use" if success else None,
+                    job_id=job_id,
+                    success=success,
+                    notes=f"browser_use estratti={n_profiles} ({n_ok} seed ok, {n_failed} ko)",
+                )
+                if not success:
+                    try:
+                        promo = db.auto_promote_to_community_pool(reg)
+                        if promo.get("promoted"):
+                            jlog(
+                                f"  🌐 Pool community: {reg} promosso a shared "
+                                f"({promo['n_tenants']} tenant negativi), "
+                                f"policy id={promo['policy_id']}"
+                            )
+                    except Exception as ee:
+                        log.debug("auto_promote check failed: %s", ee)
+        except Exception as e:
+            log.debug("site_intelligence upsert failed: %s", e)
+
     db.update_job(
         job_id,
         status=final_status,

@@ -14,7 +14,12 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from .. import db, jobs
-from ..agent.extraction_templates import get_schema, list_templates
+from ..agent.extraction_templates import (
+    CUSTOM_PLACEHOLDER,
+    TEMPLATES as _EXTRACTION_TEMPLATES,
+    get_schema,
+    list_templates,
+)
 from ..agent.llm_providers import (
     env_key_status,
     get_provider,
@@ -162,6 +167,101 @@ CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["provider"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "match_scraping_policies",
+            "description": (
+                "Valuta tutte le regole policy attive contro una URL/dominio. "
+                "Le policies sono regole manual/auto/community salvate dal "
+                "tenant (es. 'tutti i pokerstrategy.com → skip'). Ritorna la "
+                "lista delle policy matched ordinate per priority (piu' bassa "
+                "= piu' importante). Se trovi una policy con `action='skip'` "
+                "o `action='force_skip'`, NON creare il task: spiega all'utente "
+                "il `reason` della policy e proponi alternativa. Se trovi "
+                "`action='prefer_browser'` o `action='force_browser'` usa "
+                "agent_mode=browser_use. Se nessuna policy matcha, procedi "
+                "con inspect_url come fallback. Questa e' la lookup table "
+                "del 'cervello scraping' di Argos."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url_or_domain": {
+                        "type": "string",
+                        "description": "URL (con scheme) o dominio puro (es. paginegialle.it).",
+                    },
+                },
+                "required": ["url_or_domain"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_site_intel",
+            "description": (
+                "Ritorna l'intelligence storica accumulata da Argos per un "
+                "dominio: quante volte e' stato scrapeato con successo/fallimento, "
+                "qual e' la strategia che ha funzionato l'ultima volta, l'ultimo "
+                "status (accessible/blocked/low_yield/...), eventuale "
+                "protection anti-bot rilevata, e note testuali. "
+                "CHIAMA QUESTO TOOL PRIMA di proporre un task scraping su "
+                "domini che potrebbero essere gia' stati provati (anche da "
+                "altri tenant via shared pool). Se ritorna `fail_count > "
+                "success_count` o `last_status='blocked'`, AVVISA l'utente "
+                "che il sito ha storia negativa e consiglia alternativa. "
+                "Se ritorna `last_strategy_worked='X'`, suggerisci di usare "
+                "quella strategia. Se ritorna None, e' un dominio nuovo: "
+                "usa inspect_url per probe pre-task. Differenza con "
+                "inspect_url: questo legge storia DB, inspect_url fa probe "
+                "HTTP live."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": "Dominio registrabile (es. paginegialle.it, italiapokerclub.com). NO http/https.",
+                    },
+                },
+                "required": ["domain"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_url",
+            "description": (
+                "Probe pre-task su una URL: fa una richiesta HTTP veloce e "
+                "ritorna verdict su accessibilita', protezioni anti-bot "
+                "(Cloudflare, DataDome, Akamai, ...) e strategia consigliata. "
+                "CHIAMA QUESTO TOOL PRIMA di creare un task scraping quando "
+                "l'utente fornisce URL specifiche (seed_queries). Cosi' eviti "
+                "di creare task su siti morti (404), bloccati (403/anti-bot "
+                "pesante), o che richiedono browser headed. Ritorna: "
+                "{status_code, accessible, protection: 'cloudflare|datadome|None', "
+                "recommended_strategy: 'skip|skip_or_proxy|browser_use|"
+                "bulk_extract_or_site_explorer', severity: 'ok|warning|block', "
+                "reason: <testo>}. Usa questo verdict per (a) avvisare l'utente "
+                "se un seed e' inutile/bloccato, (b) scegliere agent_mode "
+                "corretto per il task. Es. se protection='cloudflare' e "
+                "severity='block', NON creare un task auto_extract su quel "
+                "sito: dillo all'utente e suggerisci un'alternativa."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL completa (con scheme http/https) da ispezionare.",
+                    },
+                },
+                "required": ["url"],
             },
         },
     },
@@ -540,7 +640,28 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                     "seed_queries": {"type": "array", "items": {"type": "string"}},
                     "allowed_domains": {"type": "array", "items": {"type": "string"}},
                     "max_iterations": {"type": "integer"},
-                    "extraction_template": {"type": "string"},
+                    "extraction_template": {
+                        "type": "string",
+                        "description": (
+                            "Key di un template da list_extraction_templates() — "
+                            "es. 'business_directory', 'restaurant', 'professional', "
+                            "'hotel', 'profile_contacts', 'ecommerce_products', "
+                            "'real_estate', 'events', 'news_articles', 'job_listings', "
+                            "'profile_interests'. Usa 'custom' SOLO se nessun template "
+                            "named copre il caso, e in quel caso PASSA ANCHE extraction_schema "
+                            "con i campi reali da estrarre. Senza schema, custom è inutilizzabile."
+                        ),
+                    },
+                    "extraction_schema": {
+                        "type": "string",
+                        "description": (
+                            "Schema di estrazione testuale (OBIETTIVO + COME RICONOSCERE + "
+                            "CAMPI DA ESTRARRE in JSON). OBBLIGATORIO quando extraction_template='custom'. "
+                            "OPZIONALE per template named: passalo solo se vuoi sovrascrivere "
+                            "lo schema di default (es. raffinare per un sito specifico). "
+                            "NON passare il placeholder vuoto ('field1, field2') — il tool rifiuta."
+                        ),
+                    },
                     "input_artifact_path": {"type": "string"},
                     "message_subject": {"type": "string"},
                     "message_template": {
@@ -783,7 +904,22 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                     "allowed_domains": {"type": "array", "items": {"type": "string"}},
                     "blocked_domains": {"type": "array", "items": {"type": "string"}},
                     "max_iterations": {"type": "integer"},
-                    "extraction_template": {"type": "string"},
+                    "extraction_template": {
+                        "type": "string",
+                        "description": (
+                            "Key da list_extraction_templates(). Se cambi solo il template, "
+                            "lo schema di default viene applicato. Per 'custom' devi passare "
+                            "anche extraction_schema con i campi reali."
+                        ),
+                    },
+                    "extraction_schema": {
+                        "type": "string",
+                        "description": (
+                            "Sovrascrive lo schema corrente del task. OBBLIGATORIO se "
+                            "extraction_template viene cambiato a 'custom'. Puoi passarlo "
+                            "anche da solo per raffinare lo schema senza cambiare template."
+                        ),
+                    },
                     "input_artifact_path": {"type": "string"},
                     "message_subject": {"type": "string"},
                     "message_template": {"type": "string"},
@@ -2125,6 +2261,12 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
             return _tool_check_llm_credentials(args)
         if name == "list_provider_models":
             return _tool_list_provider_models(args)
+        if name == "inspect_url":
+            return await _tool_inspect_url(args)
+        if name == "get_site_intel":
+            return _tool_get_site_intel(args)
+        if name == "match_scraping_policies":
+            return _tool_match_scraping_policies(args)
         if name == "list_workflows":
             return _tool_list_workflows(args)
         if name == "list_jobs":
@@ -2233,6 +2375,104 @@ def _tool_check_llm_credentials(args: dict[str, Any]) -> str:
             f"update_task rifiutera' il cambio dello slot LLM."
         )
     return json.dumps(out, ensure_ascii=False)
+
+
+def _tool_match_scraping_policies(args: dict[str, Any]) -> str:
+    """Valuta policies attive contro un URL/dominio. Ritorna lista di policy
+    matched (tenant + shared pool), ordinata per priority ASC."""
+    url_or_domain = (args.get("url_or_domain") or "").strip()
+    if not url_or_domain:
+        return json.dumps({"ok": False, "reason": "url_or_domain mancante"})
+    try:
+        matched = db.match_scraping_policies(url_or_domain)
+    except Exception as e:
+        return json.dumps({
+            "ok": False,
+            "reason": f"errore match: {type(e).__name__}: {e}",
+        })
+    slim = [
+        {
+            "id": p["id"],
+            "match_pattern": p.get("match_pattern"),
+            "action": p.get("action"),
+            "reason": p.get("reason"),
+            "source": p.get("source"),
+            "priority": p.get("priority"),
+        }
+        for p in matched
+    ]
+    return json.dumps({
+        "ok": True,
+        "url_or_domain": url_or_domain,
+        "matched_count": len(slim),
+        "policies": slim,
+        "top_action": slim[0]["action"] if slim else None,
+    }, ensure_ascii=False)
+
+
+def _tool_get_site_intel(args: dict[str, Any]) -> str:
+    """Ritorna l'intelligence storica per un dominio (tenant-scoped o shared
+    pool se attivo). Pre-task knowledge per l'orchestrator."""
+    domain = (args.get("domain") or "").strip().lower()
+    if not domain:
+        return json.dumps({"ok": False, "reason": "domain mancante"})
+    # Strip eventuale schema/path se l'LLM passa URL invece di dominio
+    if domain.startswith(("http://", "https://")):
+        from urllib.parse import urlparse as _urlparse
+        domain = (_urlparse(domain).hostname or domain).lower()
+    if "/" in domain:
+        domain = domain.split("/", 1)[0]
+    if domain.startswith("www."):
+        domain = domain[4:]
+    intel = db.get_site_intelligence(domain)
+    if not intel:
+        return json.dumps({
+            "ok": True,
+            "domain": domain,
+            "intel": None,
+            "note": (
+                "Nessuna intelligence storica per questo dominio. "
+                "Non e' mai stato scrapeato (o solo da tenant non in shared pool). "
+                "Usa inspect_url per probe live pre-task."
+            ),
+        })
+    return json.dumps({
+        "ok": True,
+        "domain": domain,
+        "intel": {
+            "last_status": intel.get("last_status"),
+            "last_protection": intel.get("last_protection"),
+            "success_count": intel.get("success_count"),
+            "fail_count": intel.get("fail_count"),
+            "last_strategy_worked": intel.get("last_strategy_worked"),
+            "last_job_id": intel.get("last_job_id"),
+            "last_seen_at": intel.get("last_seen_at"),
+            "visibility": intel.get("visibility"),
+            "notes": (intel.get("notes") or "")[:1500],
+        },
+    }, ensure_ascii=False)
+
+
+async def _tool_inspect_url(args: dict[str, Any]) -> str:
+    """Probe pre-task: ritorna verdict accessibilita' + protezioni + strategia
+    consigliata per una URL. Vedi `app.agent.url_inspector.inspect_url`."""
+    url = (args.get("url") or "").strip()
+    if not url:
+        return json.dumps({"ok": False, "reason": "url mancante"})
+    if not url.startswith(("http://", "https://")):
+        return json.dumps({
+            "ok": False,
+            "reason": f"URL deve iniziare con http:// o https://, ricevuto: {url!r}",
+        })
+    try:
+        from ..agent.url_inspector import inspect_url
+        result = await inspect_url(url, timeout=10.0)
+    except Exception as e:
+        return json.dumps({
+            "ok": False,
+            "reason": f"errore durante l'ispezione: {type(e).__name__}: {e}",
+        })
+    return json.dumps({"ok": True, **result}, ensure_ascii=False)
 
 
 def _tool_list_provider_models(args: dict[str, Any]) -> str:
@@ -2668,6 +2908,84 @@ def _normalize_model_name(raw: str | None) -> str:
     return m
 
 
+def _resolve_extraction_schema(
+    extraction_template: str | None, extraction_schema: str | None
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """Risolve (template, schema) per create/update_task con regole anti-placeholder.
+
+    Ritorna `(template_normalized, schema_normalized, error_dict)`. Se `error_dict`
+    è non-None, il caller DEVE rifiutare l'operazione (hard-reject).
+
+    Regole:
+    - Se l'LLM passa `extraction_schema` non vuoto e non placeholder, vince
+      sempre (override anche su template "named"): permette di customizzare
+      uno schema noto per un sito specifico.
+    - Se passa `template="custom"` SENZA `extraction_schema` valido → reject:
+      il task creato avrebbe il placeholder generico e zero capacità di estrazione.
+    - Se passa `extraction_schema` ma è il placeholder vuoto → reject.
+    - Per template named (non-custom) senza schema esplicito → schema di default.
+    """
+    tpl = (extraction_template or "").strip().lower() or None
+    raw_schema = (extraction_schema or "").strip() or None
+    placeholder_norm = CUSTOM_PLACEHOLDER.strip()
+
+    # Caso (a) — l'LLM ha passato uno schema esplicito
+    if raw_schema:
+        if raw_schema == placeholder_norm:
+            return tpl, None, {
+                "ok": False,
+                "reason": "extraction_schema_is_placeholder",
+                "user_action_required": (
+                    "L'`extraction_schema` passato coincide col placeholder vuoto "
+                    "('OBIETTIVO: descrivi qui... field1, field2'). Riscrivilo con "
+                    "i campi reali che vuoi estrarre dalle pagine (display_name, "
+                    "indirizzo, telefono, email, sito_web, categoria... a seconda "
+                    "del caso). Senza schema reale il runner non sa cosa estrarre. "
+                    "Esempio per directory aziende: usa il template 'business_directory'."
+                ),
+            }
+        return tpl, raw_schema, None
+
+    # Caso (b) — solo template, nessun schema esplicito
+    if tpl == "custom":
+        return tpl, None, {
+            "ok": False,
+            "reason": "custom_template_without_schema",
+            "user_action_required": (
+                "Hai scelto `extraction_template='custom'` ma non hai fornito un "
+                "`extraction_schema` reale. Il template 'custom' è un guscio vuoto: "
+                "SE lo usi devi passare uno schema JSON con i campi che vuoi estrarre. "
+                "ALTERNATIVA CONSIGLIATA: chiama `list_extraction_templates()` e vedi "
+                "se uno dei template named (business_directory, restaurant, "
+                "professional, hotel, profile_contacts, ecommerce_products, "
+                "real_estate, events, news_articles, job_listings, profile_interests) "
+                "copre il tuo caso d'uso. Se nessuno calza, scrivi un `extraction_schema` "
+                "custom modellato sul prompt utente e ripassalo qui."
+            ),
+        }
+
+    if tpl and tpl not in _EXTRACTION_TEMPLATES:
+        # Template name che non corrisponde a nulla noto: ignora silenziosamente
+        # (`get_schema` ricade sul default e il caller non si accorge). Meglio
+        # essere espliciti per evitare task con schema sbagliato.
+        return tpl, None, {
+            "ok": False,
+            "reason": "unknown_extraction_template",
+            "passed_value": tpl,
+            "user_action_required": (
+                "Il valore di `extraction_template` non corrisponde a nessun template "
+                "noto. Chiama `list_extraction_templates()` per la lista corrente, "
+                "scegli il template che meglio si adatta al caso d'uso e ripassa "
+                "esattamente la sua `key`. Per casi senza template adatto usa "
+                "`extraction_template='custom'` + `extraction_schema=<schema_reale>`."
+            ),
+        }
+
+    if tpl:
+        return tpl, get_schema(tpl), None
+    return None, None, None
+
+
 def _tool_create_task(args: dict[str, Any]) -> str:
     name = str(args.get("name") or "").strip()
     agent_mode = str(args.get("agent_mode") or "").strip()
@@ -2675,8 +2993,44 @@ def _tool_create_task(args: dict[str, Any]) -> str:
     if not name or not agent_mode or not objective:
         return json.dumps({"ok": False, "reason": "name, agent_mode e objective sono obbligatori"})
     base_key = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "task"
-    extraction_template = args.get("extraction_template")
-    extraction_schema = get_schema(extraction_template) if extraction_template else None
+
+    extraction_template, extraction_schema, schema_err = _resolve_extraction_schema(
+        args.get("extraction_template"), args.get("extraction_schema")
+    )
+    if schema_err is not None:
+        return json.dumps(schema_err, ensure_ascii=False)
+
+    # Guard site_explorer multi-seed: il runner usa solo seed_queries[0]. Se
+    # l'orchestrator passa N seed diversi per agent_mode=site_explorer, gli
+    # altri sarebbero persi silenziosamente. Hard-reject con suggerimento.
+    if agent_mode == "site_explorer":
+        seeds_for_check = [
+            str(s).strip() for s in (args.get("seed_queries") or [])
+            if str(s).strip()
+        ]
+        if len(seeds_for_check) > 1:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": "site_explorer_multi_seed",
+                    "passed_seeds": seeds_for_check,
+                    "user_action_required": (
+                        "`site_explorer` è single-seed: il runner usa SOLO il primo "
+                        "`seed_queries[0]` e ignora gli altri. Hai passato "
+                        f"{len(seeds_for_check)} seed. Scegli UNA strategia: "
+                        "(A) crea N task site_explorer separati, uno per ogni seed "
+                        "(consigliato — dashboard e retry indipendenti per sito); "
+                        "(B) crea un workflow con N nodi site_explorer in parallelo + "
+                        "qualifier finale (più pulito per il riuso futuro); "
+                        "(C) usa un seed più 'alto' (es. homepage città/categoria) "
+                        "e lascia che la fase MAPPING di site_explorer scopra le "
+                        "sotto-listing. NON ripassare lo stesso create_task con N "
+                        "seed: gli altri verrebbero persi."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
     try:
         planned_kwargs: dict[str, Any] = dict(
             key=base_key[:60],
@@ -2801,7 +3155,7 @@ def _tool_create_task(args: dict[str, Any]) -> str:
 
 
 _UPDATE_TASK_STRING_FIELDS = {
-    "name", "objective", "agent_mode", "extraction_template",
+    "name", "objective", "agent_mode", "extraction_template", "extraction_schema",
     "input_artifact_path", "message_subject", "message_template",
     "responder_system_prompt", "output_asset_type", "social_platform",
     "outreach_intent", "message_template_variants", "recon_mode",
@@ -3111,14 +3465,33 @@ def _tool_update_task(args: dict[str, Any]) -> str:
                 {"ok": False, "reason": f"valore non valido per '{k}': {type(e).__name__}: {e}"}
             )
 
-    if "extraction_template" in patch and patch["extraction_template"]:
-        try:
-            schema = get_schema(patch["extraction_template"])
-            if schema is not None:
-                patch["extraction_schema"] = schema
+    # Risoluzione template + schema con regole anti-placeholder. Si applica
+    # ogni volta che il caller tocca uno dei due campi: a parità di template
+    # esistente, l'orchestrator può aggiornare SOLO lo schema (es. raffinarlo)
+    # e viceversa. Hard-reject se passa template='custom' senza schema reale
+    # (incidente task #45 del 2026-05-24).
+    if "extraction_template" in patch or "extraction_schema" in patch:
+        effective_template = patch.get(
+            "extraction_template", existing.get("extraction_template")
+        )
+        effective_schema = patch.get(
+            "extraction_schema", existing.get("extraction_schema")
+        )
+        # Caso 1: il caller ha passato template (named) ma NON schema → schema
+        # va derivato dal template, non lasciato a quello vecchio.
+        if "extraction_template" in patch and "extraction_schema" not in patch:
+            effective_schema = None  # forza re-derivazione in helper
+        tpl_norm, schema_norm, schema_err = _resolve_extraction_schema(
+            effective_template, effective_schema
+        )
+        if schema_err is not None:
+            return json.dumps(schema_err, ensure_ascii=False)
+        if "extraction_template" in patch:
+            patch["extraction_template"] = tpl_norm
+        if schema_norm != existing.get("extraction_schema"):
+            patch["extraction_schema"] = schema_norm
+            if "extraction_schema" not in changed:
                 changed.append("extraction_schema")
-        except Exception:
-            pass
 
     if not patch:
         return json.dumps(
@@ -3771,6 +4144,84 @@ def _chat_system_prompt(
         "Usa target_contact_ids SOLO come ultima risorsa (il task funziona, ma l'audience non è visibile "
         "nella UI di edit, e l'utente potrebbe pensare che la config sia vuota).\n"
         "Convenzione artifact: extract*->qualifier passa profiles.jsonl; qualifier->outreach/responder passa qualified.jsonl.\n\n"
+        "EXTRACTION TEMPLATE + SCHEMA (regola tassativa per task di scraping):\n"
+        "Ogni task di scraping (bulk_extract / site_explorer / browser_use / auto_extract) "
+        "richiede uno schema di estrazione: dice al runner QUALI CAMPI estrarre e COME "
+        "riconoscere una pagina target. Senza schema buono il job produce zero asset o spazzatura.\n"
+        "PIPELINE OBBLIGATORIA prima di chiamare create_task:\n"
+        "  (1) `list_extraction_templates()` per vedere i template disponibili (oggi 11 named "
+        "+ 1 custom). Match per concetto (azienda → 'business_directory', ristorante → "
+        "'restaurant', hotel/B&B → 'hotel', avvocato/medico → 'professional', annuncio "
+        "immobile → 'real_estate', prodotto e-commerce → 'ecommerce_products', evento → "
+        "'events', articolo/blog → 'news_articles', annuncio lavoro → 'job_listings', "
+        "profilo personale con contatti → 'profile_contacts', profilo social per "
+        "audience clustering → 'profile_interests').\n"
+        "  (2a) Se UNO dei template named copre il caso d'uso → passa SOLO `extraction_template='<key>'`. "
+        "Lo schema di default è sufficiente. Non duplicare passando anche `extraction_schema`.\n"
+        "  (2b) Se NESSUN template named copre → passa `extraction_template='custom'` E "
+        "`extraction_schema='<schema reale>'`. Lo schema reale DEVE contenere: (i) blocco "
+        "OBIETTIVO che descrive cosa identificare, (ii) blocco COME RICONOSCERE LA PAGINA "
+        "(criteri URL + contenuto distintivo + cosa NON è target), (iii) blocco CAMPI DA "
+        "ESTRARRE con JSON dei campi richiesti dall'utente. NON passare il placeholder "
+        "vuoto con 'field1, field2': il tool lo rifiuta con `extraction_schema_is_placeholder`. "
+        "NON omettere `extraction_schema` quando template='custom': il tool rifiuta con "
+        "`custom_template_without_schema`.\n"
+        "ESEMPIO ERRORE TIPICO (task #45 del 2026-05-24): utente chiede scraping Pagine "
+        "Gialle per estrarre nome/indirizzo/telefono/email/sito/categoria. Risposta "
+        "SBAGLIATA: `extraction_template='custom'` senza schema. Risposta GIUSTA: "
+        "`extraction_template='business_directory'` (copre perfettamente il caso e "
+        "include tutti i campi richiesti). Prima di rinunciare al named, controlla davvero la lista.\n\n"
+        "SITE_EXPLORER SINGLE-SEED (regola tassativa):\n"
+        "Il runner site_explorer usa SOLO `seed_queries[0]` — gli altri seed vengono "
+        "ignorati silenziosamente. Se l'utente porta N URL listing/categoria DIVERSE "
+        "(es. paginegialle.it/ricerca/abbigliamento + .../bar + .../ristoranti), NON "
+        "creare un singolo task con N seed: il tool ora rifiuta con `site_explorer_multi_seed`. "
+        "Opzioni corrette: (A) N task site_explorer separati, uno per seed — consigliato, "
+        "dà dashboard e retry indipendenti per categoria/sito; (B) un workflow con N nodi "
+        "site_explorer in parallelo + qualifier finale di unione — più pulito per riuso "
+        "futuro; (C) seed più 'alto' (es. homepage città) lasciando che la fase MAPPING "
+        "scopra le sotto-listing. Per multi-task usa propose_plan + execute_plan (genera "
+        "i task in batch). Per workflow usa create_workflow + add_node per ogni seed.\n\n"
+        "PRE-FLIGHT INSPECTION (regola tassativa quando l'utente fornisce URL specifiche):\n"
+        "Quando l'utente menziona uno o piu' URL/domini concreti come seed per uno scraping, "
+        "pipeline pre-task in 3 step (chiamali in ordine, FERMATI al primo che da' un "
+        "segnale di stop):\n"
+        "  (0) `match_scraping_policies(url_or_domain)` per ciascun dominio: legge le "
+        "regole policy salvate (manual/auto/community). Se ritorna una policy con "
+        "`action='skip'` o `action='force_skip'`, SI FERMA QUI: NON creare il task, "
+        "cita il `reason` della policy all'utente e proponi alternativa. Se ritorna "
+        "`action='force_browser'`, salta al passo 2 e forza agent_mode=browser_use.\n"
+        "  (1) `get_site_intel(domain)` PER OGNI dominio: legge la storia accumulata da "
+        "Argos (success/fail counts, ultima strategia, blocchi noti). Se ritorna "
+        "`intel.last_status='blocked'` o `fail_count > success_count` con un `last_seen_at` "
+        "recente, AVVISA l'utente che il sito ha storia negativa e proponi alternativa "
+        "(es. directory alternativa, recon_social) senza creare il task. Se ritorna "
+        "`last_strategy_worked='X'`, riusa quella strategia. Se ritorna `intel=None` "
+        "(dominio mai visto), procedi al passo 2.\n"
+        "  (2) `inspect_url(url)` per probe HTTP live: ritorna `protection` (cloudflare/"
+        "datadome/None), `recommended_strategy`, `severity` (ok/warning/block). Usa il "
+        "verdict per (a) avvisare l'utente se un seed e' inutile/bloccato, (b) scegliere "
+        "agent_mode corretto.\n"
+        "Cita ALL'UTENTE i verdict di entrambi i tool nel messaggio (es. 'paginegialle.it: "
+        "mai testato in passato (no intel), probe live → 200 OK senza protezione "
+        "→ posso usare bulk_extract'). NON creare task su URL non ispezionati quando "
+        "l'utente ti ha dato URL specifiche.\n"
+        "Esempio pipeline COMPLETA per richiesta 'scrapa italiapokerclub.com':\n"
+        "  1. get_site_intel('italiapokerclub.com')\n"
+        "  2. inspect_url('https://italiapokerclub.com')\n"
+        "  3. Sintesi all'utente con verdict + proposta task O proposta alternative.\n\n"
+        "Regole di reazione al verdict di inspect_url:\n"
+        "- severity='block' (404, server error, anti-bot pesante con HTTP 4xx) → AVVERTI "
+        "l'utente che quel seed non funzionera'. NON creare un task auto_extract/bulk_extract "
+        "su quel sito.\n"
+        "- severity='warning' + protection='cloudflare'/'datadome' + status=200 → proponi "
+        "site_explorer (HTTP+readability con TLS impersonation Chrome120) come primo "
+        "tentativo; browser_use solo come fallback. Avverti che potrebbe bloccare dopo "
+        "i primi N hit (esempio reale: italiapokerclub.com ha bloccato dopo il 1o run).\n"
+        "- severity='ok' + protection=None → procedi con bulk_extract (se conosci pattern "
+        "URL) o site_explorer (se serve discovery).\n"
+        "- recommended_strategy='browser_use' (SPA body corto, 403) → configura "
+        "agent_mode=browser_use + Browser LLM cloud-capable (gpt-4o-mini consigliato).\n\n"
         "STRATEGIE SCRAPING (decision tree operativo — sintetizzato dalla GUIDA §3.0.3):\n"
         "A. Sito statico con pattern URL chiaro (cataloghi, e-commerce piccolo, immobili, directory) → bulk_extract con crawler ON (auto-detect pattern via 1 LLM call discovery, poi BFS deterministico).\n"
         "B. Sito multi-livello (categorie + sotto-categorie + paginazioni) → site_explorer con target_cap_per_site esplicito (30-100). Il LLM mappa le listing, il runner estrae.\n"

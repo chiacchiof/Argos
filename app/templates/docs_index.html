@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Guide · Argos{% endblock %}
+
+{% block content %}
+<section class="docs-index">
+  <h2>📚 Guide</h2>
+  <p class="muted">
+    Manuali interni della piattaforma. La fonte di verita' e' il markdown nel
+    repo (<code>docs/</code>), qui lo trovi reso a HTML per consultarlo da dentro
+    l'app. Aggiornato sotto controllo versione.
+  </p>
+
+  <div class="docs-cards">
+    {% for g in guides %}
+    <a href="/docs/{{ g.slug }}" class="docs-card">
+      <div class="docs-card-icon">{{ g.icon }}</div>
+      <div class="docs-card-body">
+        <h3>{{ g.title }}</h3>
+        <p class="muted">{{ g.description }}</p>
+        {% if g.admin_only %}
+        <small class="docs-card-tag">solo super-admin</small>
+        {% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+
+  {% if is_super_admin %}
+  <p class="muted small" style="margin-top:1.5rem">
+    Tip: le guide sono in <code>docs/USER_GUIDE.md</code> e <code>docs/ADMIN_GUIDE.md</code>.
+    Modificale via PR e saranno automaticamente aggiornate qui dopo il deploy.
+  </p>
+  {% endif %}
+</section>
+
+<style>
+.docs-index { max-width: 900px; margin: 0 auto; padding: 1rem 0; }
+.docs-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+@media (max-width: 700px) { .docs-cards { grid-template-columns: 1fr; } }
+.docs-card {
+  display: flex; gap: 1rem; padding: 1.2rem 1.4rem;
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px); text-decoration: none; color: var(--fg);
+  transition: border-color .15s, transform .15s;
+}
+.docs-card:hover { border-color: var(--brand-2); transform: translateY(-2px); }
+.docs-card-icon { font-size: 2.4em; line-height: 1; }
+.docs-card-body h3 { margin: 0 0 .3rem 0; color: var(--fg-strong); }
+.docs-card-body p { margin: 0; font-size: 0.92em; }
+.docs-card-tag {
+  display: inline-block; margin-top: .5rem;
+  background: var(--surface-2); color: var(--fg-muted);
+  padding: .1rem .4rem; border-radius: 3px; font-size: 0.8em;
+}
+</style>
+{% endblock %}

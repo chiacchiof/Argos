@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from .. import db, jobs, storage
 from ..models import WorkflowIn
 from ..templates import templates
+from . import _tenant_filter as _tf
 
 router = APIRouter()
 
@@ -47,8 +48,9 @@ async def workflows_list(
     if author_norm not in ("mine", "tenant", "all"):
         author_norm = default_author
     filter_uid = current_uid if (author_norm == "mine" and current_uid is not None) else None
-    workflows = db.list_workflows(created_by_user_id=filter_uid)
-    total_tenant = len(db.list_workflows()) if author_norm == "mine" else len(workflows)
+    tenant_arg = _tf.tenant_query_arg(request)
+    workflows = db.list_workflows(tenant_id=tenant_arg, created_by_user_id=filter_uid)
+    total_tenant = len(db.list_workflows(tenant_id=tenant_arg)) if author_norm == "mine" else len(workflows)
     q_norm = (q or "").strip().lower()
     if q_norm:
         workflows = [
@@ -79,6 +81,7 @@ async def workflows_list(
         "total_tenant": total_tenant,
         "current_user_authenticated": current_uid is not None,
         "filter_q": q_norm,
+        **_tf.picker_context(request),
     }
     if _partial:
         return templates.TemplateResponse(

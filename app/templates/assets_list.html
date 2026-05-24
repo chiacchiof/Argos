@@ -2,6 +2,7 @@
 {% block title %}Assets — Argos{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
+{% include "partials/tenant_picker.html" %}
 
 {# Macro: costruisce un URL /assets preservando tutti i filtri correnti +
    sostituendo il set di tag (k, v) con `pairs`. Usato dai chip attivi e dai

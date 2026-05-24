@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from .. import db, jobs, storage
+from . import _tenant_filter as _tf
 from ..agent.extraction_templates import TEMPLATES, get_schema, list_templates
 from ..agent.llm_providers import (
     DEFAULT_PROVIDER,
@@ -107,10 +108,11 @@ async def index(
         author_norm = default_author
 
     filter_uid = current_uid if (author_norm == "mine" and current_uid is not None) else None
-    all_tasks = db.list_tasks(created_by_user_id=filter_uid)
+    tenant_arg = _tf.tenant_query_arg(request)
+    all_tasks = db.list_tasks(tenant_id=tenant_arg, created_by_user_id=filter_uid)
     # Conteggio "totali del tenant" (per badge sul toggle): calcolato sempre
     # senza filtro author, cosi' l'utente vede quanti ne perde mostrando solo i suoi.
-    total_tenant = len(db.list_tasks()) if author_norm == "mine" else len(all_tasks)
+    total_tenant = len(db.list_tasks(tenant_id=tenant_arg)) if author_norm == "mine" else len(all_tasks)
     # Conteggi per tab (sempre calcolati su all_tasks, prima di filtrare per tab,
     # ma DOPO l'eventuale filtro status_tag — cosi' i numeri sui tab riflettono
     # cio' che vedrebbe l'utente cliccandoli con lo status_tag attivo).
@@ -165,6 +167,7 @@ async def index(
         "total_tenant": total_tenant,
         "current_user_authenticated": current_uid is not None,
         "filter_q": q_norm,
+        **_tf.picker_context(request),
     }
     # `_partial=1`: usato dal polling HTMX della cronologia attiva — ritorna
     # solo il wrapper della tabella (con il proprio hx-get di refresh), senza

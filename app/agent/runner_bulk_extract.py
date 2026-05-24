@@ -1398,6 +1398,44 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int) -> str:
         f"Run {status_word}: {n_ok} estratti, {n_failed} falliti, "
         f"{n_ingested} ingest. Report: {report_path}"
     )
+
+    # Site intelligence: registra esito per ciascun dominio in all_urls.
+    if not stopped:
+        try:
+            from urllib.parse import urlparse as _urlparse
+            seen_domains = set()
+            for u in all_urls:
+                host = (_urlparse(u).hostname or "").lower()
+                reg = _registrable_domain(host)
+                if not reg or reg in seen_domains:
+                    continue
+                seen_domains.add(reg)
+                success = n_ingested > 0
+                db.upsert_site_intelligence(
+                    registrable_domain=reg,
+                    status="accessible" if success else "low_yield",
+                    strategy_worked="bulk_extract" if success else None,
+                    job_id=job_id,
+                    success=success,
+                    notes=(
+                        f"bulk_extract ok={n_ok}, fail={n_failed}, "
+                        f"ingest={n_ingested}"
+                    ),
+                )
+                if not success:
+                    try:
+                        promo = db.auto_promote_to_community_pool(reg)
+                        if promo.get("promoted"):
+                            jlog(
+                                f"  🌐 Pool community: {reg} promosso a shared "
+                                f"({promo['n_tenants']} tenant negativi), "
+                                f"policy id={promo['policy_id']}"
+                            )
+                    except Exception as ee:
+                        log.debug("auto_promote check failed: %s", ee)
+        except Exception as e:
+            log.debug("site_intelligence upsert failed: %s", e)
+
     db.update_job(
         job_id, status=final_status, finished_at=db.now_iso(),
         result_path=str(report_path),

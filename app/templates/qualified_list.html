@@ -2,6 +2,7 @@
 {% block title %}Qualified · Argos{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
+{% include "partials/tenant_picker.html" %}
 {% set has_advanced_filters = filter_score_min is not none or filter_type or filter_task or (extra_tag_filters and extra_tag_filters|length > 0) %}
 {% set has_any_filter = selected_qualifiers or filter_search or has_advanced_filters or filter_status != 'qualified' %}
 <section>

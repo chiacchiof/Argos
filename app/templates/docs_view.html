@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}{{ guide_title }} · Argos{% endblock %}
+{% block main_class %}wide{% endblock %}
+
+{% block content %}
+<section class="docs-view">
+  <nav class="docs-breadcrumb">
+    <a href="/docs">📚 Guide</a> &raquo; {{ guide_icon }} {{ guide_title }}
+  </nav>
+
+  <article class="md-prose docs-article">
+    {{ guide_html|safe }}
+  </article>
+
+  <p class="muted small docs-footer">
+    Fonte: <code>docs/{{ guide_name }}.md</code> nel repository Argos.
+  </p>
+</section>
+
+<style>
+.docs-view { max-width: 980px; margin: 0 auto; padding: 1rem 0 3rem 0; }
+.docs-breadcrumb { font-size: 0.9em; color: var(--fg-muted); margin-bottom: 1rem; }
+.docs-breadcrumb a { color: var(--brand-2); }
+.docs-article h1, .docs-article h2, .docs-article h3, .docs-article h4 { color: var(--fg-strong); }
+.docs-article h1 { font-size: 1.8em; margin: 1.5rem 0 .8rem 0; border-bottom: 1px solid var(--border); padding-bottom: .4rem; }
+.docs-article h2 { font-size: 1.4em; margin: 2rem 0 .6rem 0; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
+.docs-article h3 { font-size: 1.15em; margin: 1.5rem 0 .5rem 0; }
+.docs-article h4 { font-size: 1em; margin: 1.2rem 0 .4rem 0; }
+.docs-article p, .docs-article li { line-height: 1.55; }
+.docs-article code {
+  background: var(--surface-2); color: var(--fg);
+  padding: .1rem .4rem; border-radius: 3px; font-size: 0.9em;
+}
+.docs-article pre {
+  background: var(--surface-2); border: 1px solid var(--border);
+  padding: .8rem 1rem; border-radius: 4px;
+  overflow-x: auto; font-size: 0.88em;
+}
+.docs-article pre code { background: transparent; padding: 0; }
+.docs-article a { color: var(--brand-2); }
+.docs-article table {
+  width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.94em;
+}
+.docs-article th, .docs-article td {
+  border: 1px solid var(--border); padding: .4rem .7rem; text-align: left; vertical-align: top;
+}
+.docs-article th { background: var(--surface-2); color: var(--fg-strong); font-weight: 600; }
+.docs-article blockquote {
+  border-left: 3px solid var(--brand-2);
+  padding: .2rem .8rem; margin: 1rem 0;
+  background: var(--surface-2); color: var(--fg-muted);
+}
+.docs-article hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+.docs-footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+</style>
+{% endblock %}

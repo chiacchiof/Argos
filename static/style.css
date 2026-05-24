@@ -2882,3 +2882,93 @@ fieldset.rating-fieldset legend { font-weight: 600; padding: 0 0.4rem; color: va
 .recent-report-name { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 0.9em; }
 .recent-report-run { white-space: nowrap; }
 .recent-report-meta { margin-left: auto; white-space: nowrap; }
+
+/* ============================================================
+   20. GUIDE BOX (in-app expandable docs)
+   ============================================================ */
+.guide-box {
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.6rem 1rem;
+  margin: 1rem 0;
+}
+.guide-box > summary {
+  cursor: pointer;
+  padding: 0.4rem 0;
+  color: var(--fg-strong);
+  list-style: none;
+}
+.guide-box > summary::-webkit-details-marker { display: none; }
+.guide-box > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 0.4rem;
+  transition: transform 0.15s;
+}
+.guide-box[open] > summary::before { transform: rotate(90deg); }
+.guide-box[open] > summary {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.6rem;
+}
+.guide-content h4 {
+  margin: 1.2rem 0 0.4rem 0;
+  color: var(--fg-strong);
+  font-size: 1rem;
+}
+.guide-content h4:first-child { margin-top: 0.2rem; }
+.guide-content p, .guide-content li { color: var(--fg); }
+.guide-content code {
+  background: var(--surface-2);
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+.guide-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.6rem 0;
+  font-size: 0.92em;
+}
+.guide-table th, .guide-table td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+.guide-table th { background: var(--surface-2); color: var(--fg-strong); font-weight: 600; }
+.guide-table td:first-child { white-space: nowrap; }
+
+/* ============================================================
+   21. TENANT PICKER (super-admin "view as tenant")
+   ============================================================ */
+.tenant-picker-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--surface-2);
+  border: 1px dashed var(--brand-2, var(--border));
+  padding: 0.35rem 0.7rem;
+  border-radius: var(--radius-sm, 6px);
+  margin: 0.4rem 0 0.8rem 0;
+}
+.tenant-picker-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.tenant-picker-select {
+  background: var(--surface-1);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.92em;
+}
+.tenant-picker-reset {
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  text-decoration: underline;
+}
+.tenant-picker-reset:hover { color: var(--brand-2); }

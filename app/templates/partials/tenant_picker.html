@@ -1,0 +1,25 @@
+{# Dropdown "View as tenant" — visibile solo ai super-admin.
+   Aggiunge ?as_tenant_id=N alla URL; il backend lo legge via
+   app.routes._tenant_filter.tenant_query_arg(). #}
+{% if tenant_picker_visible %}
+<form method="get" class="tenant-picker-form">
+  {# Preserva gli altri query param (es. ?status=qualified) salvo as_tenant_id. #}
+  {% for k, v in request.query_params.items() if k != 'as_tenant_id' %}
+    <input type="hidden" name="{{ k }}" value="{{ v }}">
+  {% endfor %}
+  <label class="tenant-picker-label">
+    <span class="muted small">👑 Vista super-admin &mdash;</span>
+    <select name="as_tenant_id" onchange="this.form.submit()" class="tenant-picker-select">
+      <option value="">tutti i tenant</option>
+      {% for t in tenant_picker_tenants %}
+        <option value="{{ t.id }}" {% if tenant_picker_current == t.id %}selected{% endif %}>
+          {{ t.name }}{% if not t.is_active %} (disattivato){% endif %}
+        </option>
+      {% endfor %}
+    </select>
+  </label>
+  {% if tenant_picker_current %}
+    <a href="?{% for k, v in request.query_params.items() if k != 'as_tenant_id' %}{{ k }}={{ v }}{% if not loop.last %}&{% endif %}{% endfor %}" class="tenant-picker-reset">torna a vista globale</a>
+  {% endif %}
+</form>
+{% endif %}

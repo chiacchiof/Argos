@@ -13,6 +13,7 @@ from .. import db
 from .. import export_csv
 from ..agent import asset_dedup
 from ..templates import templates
+from . import _tenant_filter as _tf
 
 
 router = APIRouter()
@@ -110,6 +111,7 @@ async def assets_list(
     page = max(1, int(page or 1))
     offset = (page - 1) * per_page
 
+    tenant_arg = _tf.tenant_query_arg(request)
     total = db.count_assets(
         asset_type=asset_type,
         status=status,
@@ -120,6 +122,7 @@ async def assets_list(
         tag_expr=tag_expr_v or None,
         has_contacts=has_contacts_v,
         has_social=has_social_v,
+        tenant_id=tenant_arg,
     )
     total_pages = max(1, (total + per_page - 1) // per_page)
     # Clamp page se l'utente passa un numero oltre la fine
@@ -139,6 +142,7 @@ async def assets_list(
         has_social=has_social_v,
         limit=per_page,
         offset=offset,
+        tenant_id=tenant_arg,
     )
     types_in_use = db.list_asset_types_in_use()
     # Tag keys per il widget condiviso _tag_filter_widget.html (dropdown F1-F6).
@@ -197,6 +201,7 @@ async def assets_list(
             "qs_base": qs_base,
             "export_field_groups": _export_field_groups_for_template(),
             "default_export_fields": list(export_csv.DEFAULT_FIELDS),
+            **_tf.picker_context(request),
         },
     )
 
@@ -310,6 +315,7 @@ async def qualified_assets_list(
     page_v = max(1, page_v)
     offset = (page_v - 1) * per_page_v
 
+    tenant_arg = _tf.tenant_query_arg(request)
     total = db.count_qualified_assets(
         qualifier_slugs=qualifier_slugs,
         status_filter=status,
@@ -322,6 +328,7 @@ async def qualified_assets_list(
         tag_expr=tag_expr_v or None,
         has_contacts=has_contacts_v,
         has_social=has_social_v,
+        tenant_id=tenant_arg,
     )
     total_pages = max(1, (total + per_page_v - 1) // per_page_v)
     if page_v > total_pages:
@@ -342,6 +349,7 @@ async def qualified_assets_list(
         tag_expr=tag_expr_v or None,
         has_contacts=has_contacts_v,
         has_social=has_social_v,
+        tenant_id=tenant_arg,
     )
     # Parse social_json di ogni asset una volta sola (lo usa il template per
     # renderizzare l'icona platform + handle / URL nella colonna Contatti/Social).
@@ -419,6 +427,7 @@ async def qualified_assets_list(
             "qs_base": qs_base,
             "export_field_groups": _export_field_groups_for_template(),
             "default_export_fields": list(export_csv.DEFAULT_FIELDS),
+            **_tf.picker_context(request),
         },
     )
 

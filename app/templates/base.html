@@ -273,6 +273,9 @@
         <a href="/settings" class="nav-item nav-item-sm {% if req_path == '/settings' or (req_path.startswith('/settings/') and not req_path.startswith('/settings/whatsapp')) %}is-active{% endif %}">
           <svg class="icon"><use href="#i-settings"/></svg><span>Settings</span>
         </a>
+        <a href="/docs" class="nav-item nav-item-sm {% if req_path.startswith('/docs') %}is-active{% endif %}" title="Guide utente e super-admin">
+          <span class="icon" aria-hidden="true" style="display:inline-block;width:16px;text-align:center">📚</span><span>Guide</span>
+        </a>
       </div>
     </aside>
     {% endif %}

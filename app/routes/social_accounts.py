@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from .. import db, db_cloud
 from ..agent.social.crypto_creds import encrypt, is_configured
 from ..templates import templates
+from . import _tenant_filter as _tf
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -52,13 +53,14 @@ async def social_accounts_list(request: Request, author: str = ""):
         author_norm = default_author
 
     filter_uid = current_uid if (author_norm == "mine" and current_uid is not None) else None
+    tenant_arg = _tf.tenant_query_arg(request)
     accounts = [
-        a for a in db.list_social_accounts(created_by_user_id=filter_uid)
+        a for a in db.list_social_accounts(tenant_id=tenant_arg, created_by_user_id=filter_uid)
         if a.get("platform") in SOCIAL_PLATFORMS
     ]
     # Conteggio "tutti del tenant" per badge sul toggle (anche se author=mine)
     total_tenant = (
-        len([a for a in db.list_social_accounts() if a.get("platform") in SOCIAL_PLATFORMS])
+        len([a for a in db.list_social_accounts(tenant_id=tenant_arg) if a.get("platform") in SOCIAL_PLATFORMS])
         if author_norm == "mine" else len(accounts)
     )
     # Arricchisci con dms_today (count da log)
@@ -94,6 +96,7 @@ async def social_accounts_list(request: Request, author: str = ""):
             "current_user_authenticated": current_uid is not None,
             "current_user_id": current_uid,
             "tenant_users": tenant_users,
+            **_tf.picker_context(request),
         },
     )
 

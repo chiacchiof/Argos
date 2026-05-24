@@ -8,6 +8,7 @@ from .. import db
 from ..channels import email as ch_email
 from ..channels import telegram as ch_telegram
 from ..templates import templates
+from . import _tenant_filter as _tf
 
 
 router = APIRouter()
@@ -19,7 +20,8 @@ async def inbox_list(
     channel: str | None = None,
     status: str | None = None,
 ):
-    threads = db.list_threads(channel=channel, status=status, limit=200)
+    tenant_arg = _tf.tenant_query_arg(request)
+    threads = db.list_threads(channel=channel, status=status, limit=200, tenant_id=tenant_arg)
     return templates.TemplateResponse(
         request,
         "inbox_list.html",
@@ -27,6 +29,7 @@ async def inbox_list(
             "threads": threads,
             "filter_channel": channel or "",
             "filter_status": status or "",
+            **_tf.picker_context(request),
         },
     )
 

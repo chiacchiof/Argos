@@ -9,6 +9,105 @@
   selettive prima di un test "pulito da 0", o tutto via "Svuota memoria".
 </p>
 
+<details class="guide-box">
+  <summary><strong>📖 Guida: come funzionano le memorie sito</strong> <small class="muted">(clicca per espandere)</small></summary>
+  <div class="guide-content">
+
+    <h4>I 4 tipi di knowledge accumulati da Argos</h4>
+    <table class="guide-table">
+      <thead>
+        <tr><th>Tabella</th><th>Cosa contiene</th><th>Chi popola</th><th>Chi legge</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>📐 site_patterns</strong></td>
+          <td>Regex di URL appresi (es. <code>tryst.link/escorts/*</code> è una pagina profilo)</td>
+          <td>Runner <code>bulk_extract</code> + <code>site_explorer</code> durante la discovery</td>
+          <td><code>bulk_extract</code> nei run successivi: riusa <em>confirmed</em>, evita <em>rejected</em></td>
+        </tr>
+        <tr>
+          <td><strong>📚 site_playbooks</strong></td>
+          <td>Istruzioni testuali "ecco come si estrae da X", scritte da un agente potente per uno debole</td>
+          <td><code>browser_use</code> al primo successo su un nuovo sito</td>
+          <td><code>site_explorer</code> (e altri runner deboli) per imitare browser_use senza usarlo</td>
+        </tr>
+        <tr>
+          <td><strong>🧠 site_intelligence</strong> <span class="status-pill status-shared">novità</span></td>
+          <td>Storia per dominio: success/fail count, protezioni rilevate (Cloudflare/DataDome/...), ultima strategia che ha funzionato</td>
+          <td>Automaticamente <em>tutti</em> i runner al termine di ogni job</td>
+          <td>L'<strong>orchestrator</strong> pre-task per decidere quale strategia consigliare</td>
+        </tr>
+        <tr>
+          <td><strong>📜 scraping_policies</strong> <span class="status-pill status-shared">novità</span></td>
+          <td>Regole <code>regex_dominio → action</code> (skip, warn, prefer_browser, force_skip...)</td>
+          <td>Tu manualmente, oppure sistema (auto-promote community)</td>
+          <td>L'<strong>orchestrator</strong> pre-task: se matcha <code>skip</code> rifiuta il job</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h4>🔒 Privata vs 🌐 Condivisa <small class="muted">(per singola riga)</small></h4>
+    <p>Ogni riga di <strong>intelligence</strong> e <strong>policy</strong> ha un flag <code>visibility</code>:</p>
+    <ul>
+      <li><span class="status-pill status-private">🔒 private</span> <em>(default)</em> &mdash; visibile solo al tenant che l'ha creata.</li>
+      <li><span class="status-pill status-shared">🌐 shared</span> &mdash; visibile a tutti i tenant abilitati al pool community.</li>
+    </ul>
+    <p>Una riga diventa <strong>shared</strong> in due modi:</p>
+    <ol>
+      <li><strong>Manuale</strong>: clicchi il pulsante 🌐 nella colonna "Azioni" della tabella.</li>
+      <li><strong>Auto-promote community</strong>: quando <strong>3 tenant indipendenti</strong> hanno
+          intelligence negativa sullo stesso dominio (almeno 1 fail e 0 success), il sistema:
+        <ul>
+          <li>flippa tutte le righe <em>private</em> di quel dominio a <em>shared</em>;</li>
+          <li>crea una <code>scraping_policy</code> automatica con <code>action='warn'</code> e
+              <code>source='community'</code>, visibile a tutti.</li>
+        </ul>
+      </li>
+    </ol>
+
+    <h4>🏢 Accesso al pool community <small class="muted">(per tenant)</small></h4>
+    <p>Un tenant vede le righe <em>shared</em> degli altri solo se:</p>
+    <ul>
+      <li>è <strong>super-admin</strong> (vede tutto, sempre);</li>
+      <li>oppure ha il flag <code>tenants.site_memory_shared = TRUE</code>, gestito dal super-admin
+          nella pagina <a href="/admin/tenants">/admin/tenants</a>.</li>
+    </ul>
+    <p>Senza accesso al pool, il tenant vede solo le righe con il proprio <code>tenant_id</code>
+       (anche se ne esistono di <em>shared</em> altrove). Le righe con <code>tenant_id = NULL</code>
+       (es. policy globali create dal sistema) sono visibili a tutti.</p>
+
+    <h4>🆕 Cosa è cambiato con il "Super Orchestrator"</h4>
+    <ol>
+      <li><strong>Pre-flight <code>inspect_url</code></strong>: prima di creare un task,
+          l'orchestrator fa HEAD probe dell'URL per detectare protezioni anti-bot
+          (Cloudflare, DataDome, Akamai, PerimeterX, Imperva). Ti dice subito se il sito
+          è realisticamente scrappabile o no.</li>
+      <li><strong>Tabella <code>site_intelligence</code></strong>: prima ogni job partiva "da zero"
+          sul knowledge del sito. Ora i runner accumulano automaticamente la storia, e
+          l'orchestrator la consulta per evitare di ri-fare i tentativi già falliti.</li>
+      <li><strong>Tabella <code>scraping_policies</code></strong>: regole modificabili
+          manualmente. Puoi scrivere "tutti i <code>pokerstrategy.com</code> &rarr; skip"
+          e l'orchestrator rifiuta automaticamente ogni task che matcha.</li>
+      <li><strong>Cross-tenant community pool</strong>: il knowledge negativo si propaga.
+          Se 3 clienti indipendenti falliscono sullo stesso sito, il quarto vede già il
+          warning. Questo è il vero "intelligence collettiva" del sistema.</li>
+    </ol>
+
+    <h4>🎯 Cosa devi fare tu</h4>
+    <ul>
+      <li><strong>Niente, normalmente</strong>: tutto è automatico. I runner popolano,
+          l'orchestrator legge.</li>
+      <li><strong>Crea policy manuali</strong> per "lista nera" (siti che sai essere
+          inutilizzabili) o per "forzare" una strategia (es. <code>force_browser</code>).</li>
+      <li><strong>Toggle visibility</strong> se vuoi condividere/ritirare una riga dal
+          pool community manualmente.</li>
+      <li><strong>Cancella entries</strong> prima di un test "pulito" o quando un sito
+          cambia struttura (lo storico vecchio diventa fuorviante).</li>
+    </ul>
+
+  </div>
+</details>
+
 {# Info visibilita' tenant — solo per chi non e' super_admin #}
 {% if visibility_mode == "isolated" %}
   <p class="muted small" style="background:var(--surface-2); padding:.5rem .8rem; border-left:3px solid var(--brand-2); border-radius:3px;">
@@ -104,7 +203,7 @@
       <td>{{ p.asset_type or '—' }}</td>
       <td><span class="status-pill status-{{ p.status }}">{{ p.status }}</span></td>
       <td>{{ p.hits }} / {{ p.successes }} / {{ p.failures }}</td>
-      {% if is_super_admin %}<td><small class="muted">{{ p.tenant_id or '—' }}</small></td>{% endif %}
+      {% if is_super_admin %}<td><small class="muted">{{ tenant_names.get(p.tenant_id) if p.tenant_id else 'globale' }}</small></td>{% endif %}
       <td class="small muted">{{ p.updated_at[:19] if p.updated_at else '—' }}</td>
       <td>
         <form method="post" action="/site_memory/pattern/{{ p.id }}/delete" style="display:inline"
@@ -141,7 +240,7 @@
     {% else %}
       <span class="status-pill status-rejected">non-transferable</span>
     {% endif %}
-    <span class="muted small">id={{ p.id }} · source={{ p.source_runner }} · hits={{ p.hits }} · succ={{ p.successes }} · fail={{ p.failures }}{% if is_super_admin %} · tenant={{ p.tenant_id or '—' }}{% endif %}</span>
+    <span class="muted small">id={{ p.id }} · source={{ p.source_runner }} · hits={{ p.hits }} · succ={{ p.successes }} · fail={{ p.failures }}{% if is_super_admin %} · tenant={{ tenant_names.get(p.tenant_id) if p.tenant_id else 'globale' }}{% endif %}</span>
     <div class="playbook-actions" style="margin-left:auto; display:flex; gap:.35rem;">
       {% if p.status == 'active' %}
       <form method="post" action="/site_memory/playbook/{{ p.id }}/disable" style="display:inline"
@@ -176,6 +275,198 @@
 <p class="muted"><em>Nessun playbook memorizzato{% if filter_domain %} per <strong>{{ filter_domain }}</strong>{% endif %}.</em></p>
 {% endif %}
 
+<hr>
+
+<h3>🧠 Site Intelligence ({{ n_intelligence }})</h3>
+<p class="muted small">
+  Storia accumulata per dominio: success/fail counts, ultima strategia che ha
+  funzionato, eventuali protezioni anti-bot rilevate. Aggiornata automaticamente
+  alla fine di ogni job. L'orchestrator legge queste righe pre-task per
+  consigliare la strategia migliore.
+</p>
+
+{% if intelligence %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>id</th>
+      <th>Dominio</th>
+      <th>Status</th>
+      <th>Protection</th>
+      <th>Success / Fail</th>
+      <th>Ultima strategia OK</th>
+      <th>Visto</th>
+      <th>Visibility</th>
+      {% if is_super_admin %}<th>Tenant</th>{% endif %}
+      <th>Note</th>
+      <th>Azioni</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for i in intelligence %}
+    <tr>
+      <td>{{ i.id }}</td>
+      <td><strong>{{ i.registrable_domain }}</strong></td>
+      <td><span class="status-pill status-{{ i.last_status }}">{{ i.last_status }}</span></td>
+      <td>{% if i.last_protection %}<code>{{ i.last_protection }}</code>{% else %}—{% endif %}</td>
+      <td>
+        <span class="muted small">
+          <strong style="color: var(--success);">✓ {{ i.success_count }}</strong>
+          /
+          <strong style="color: var(--danger);">✗ {{ i.fail_count }}</strong>
+        </span>
+      </td>
+      <td>{% if i.last_strategy_worked %}<code>{{ i.last_strategy_worked }}</code>{% else %}—{% endif %}</td>
+      <td><small class="muted">{{ i.last_seen_at[:19] if i.last_seen_at else '—' }}</small></td>
+      <td>
+        {% if i.visibility == 'shared' %}
+          <span class="status-pill status-shared" title="Visibile a tutti i tenant nel pool community">🌐 shared</span>
+        {% else %}
+          <span class="status-pill status-private" title="Visibile solo al tuo tenant">🔒 private</span>
+        {% endif %}
+      </td>
+      {% if is_super_admin %}<td><small class="muted">{{ tenant_names.get(i.tenant_id) if i.tenant_id else 'globale' }}</small></td>{% endif %}
+      <td><small class="muted">{{ (i.notes or '')[:120] }}{% if (i.notes or '')|length > 120 %}…{% endif %}</small></td>
+      <td style="white-space:nowrap">
+        {% set intel_toggle_msg = ('Rimuovere ' ~ i.registrable_domain ~ ' dal pool community (torna privata)?') if i.visibility == 'shared' else ('Condividere ' ~ i.registrable_domain ~ ' con tutti i tenant nel pool community?') %}
+        <form method="post" action="/site_memory/intelligence/{{ i.id }}/toggle-visibility" style="display:inline"
+              onsubmit="return confirm({{ intel_toggle_msg | tojson }});">
+          <button type="submit" class="btn-link-small" title="{% if i.visibility == 'shared' %}Rendi privata{% else %}Condividi nel pool community{% endif %}">
+            {% if i.visibility == 'shared' %}🔒{% else %}🌐{% endif %}
+          </button>
+        </form>
+        <form method="post" action="/site_memory/intelligence/{{ i.id }}/delete" style="display:inline"
+              onsubmit="return confirm({{ ('Cancellare intelligence per ' ~ i.registrable_domain ~ '?') | tojson }});">
+          <button type="submit" class="btn-danger-small">🗑️</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted"><em>Nessuna intelligence ancora accumulata{% if filter_domain %} per <strong>{{ filter_domain }}</strong>{% endif %}. Lancia qualche job di scraping e i dati appariranno automaticamente qui.</em></p>
+{% endif %}
+
+<hr>
+
+<h3>📜 Scraping policies ({{ n_policies }})</h3>
+<p class="muted small">
+  Regole match → action create manualmente o auto-generate. L'orchestrator le
+  valuta pre-task: se una policy matcha l'URL e ha <code>action='skip'</code>,
+  rifiuta di creare il task. Utile per "lista nera" di siti noti come
+  inutilizzabili, o per "forzare" una strategia specifica.
+</p>
+
+<details class="collapsible-section">
+  <summary>➕ Aggiungi policy</summary>
+  <form method="post" action="/site_memory/policy/create" class="settings-form" style="margin-top:.6rem">
+    <div class="row" style="display:flex; gap:.6rem; flex-wrap:wrap">
+      <label style="flex:1; min-width:200px">Match pattern (regex)
+        <input type="text" name="match_pattern" required placeholder="es. pokerstrategy\.com">
+      </label>
+      <label>Match kind
+        <select name="match_kind">
+          <option value="domain_regex" selected>domain_regex</option>
+          <option value="url_regex">url_regex</option>
+          <option value="domain_exact">domain_exact</option>
+        </select>
+      </label>
+      <label>Action
+        <select name="action">
+          <option value="skip" selected>skip (rifiuta task)</option>
+          <option value="warn">warn (avvisa solo)</option>
+          <option value="prefer_browser">prefer_browser</option>
+          <option value="force_browser">force_browser</option>
+          <option value="prefer_bulk">prefer_bulk</option>
+          <option value="prefer_site_explorer">prefer_site_explorer</option>
+          <option value="force_skip">force_skip</option>
+        </select>
+      </label>
+      <label>Priority
+        <input type="number" name="priority" value="100" min="1" max="999" style="width:80px">
+      </label>
+    </div>
+    <label>Motivazione <span class="hint">(visibile all'utente quando la policy matcha)</span>
+      <input type="text" name="reason" placeholder="es. 'Cloudflare Turnstile attivo, scraping inefficace'">
+    </label>
+    <div class="actions">
+      <button type="submit">➕ Crea policy</button>
+    </div>
+  </form>
+</details>
+
+{% if policies %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>id</th>
+      <th>Match</th>
+      <th>Action</th>
+      <th>Motivazione</th>
+      <th>Source</th>
+      <th>Visibility</th>
+      {% if is_super_admin %}<th>Tenant</th>{% endif %}
+      <th>Prio</th>
+      <th>Active</th>
+      <th>Hits</th>
+      <th>Azioni</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in policies %}
+    <tr {% if not p.active %}class="row-disabled"{% endif %}>
+      <td>{{ p.id }}</td>
+      <td>
+        <code class="small">{{ p.match_pattern }}</code>
+        <br><small class="muted">{{ p.match_kind }}</small>
+      </td>
+      <td><span class="status-pill status-{% if p.action in ['skip','force_skip'] %}rejected{% elif 'browser' in p.action %}candidate{% else %}active{% endif %}">{{ p.action }}</span></td>
+      <td><small class="muted">{{ (p.reason or '')[:140] }}</small></td>
+      <td>
+        <code class="small">{{ p.source }}</code>
+        {% if p.source == 'community' %}
+          <br><span class="status-pill status-shared" title="Auto-promossa dal consenso di più tenant">🌐 community</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if p.visibility == 'shared' %}
+          <span class="status-pill status-shared" title="Visibile a tutti i tenant nel pool community">🌐 shared</span>
+        {% else %}
+          <span class="status-pill status-private" title="Visibile solo al tuo tenant">🔒 private</span>
+        {% endif %}
+      </td>
+      {% if is_super_admin %}<td><small class="muted">{{ tenant_names.get(p.tenant_id) if p.tenant_id else 'globale' }}</small></td>{% endif %}
+      <td>{{ p.priority }}</td>
+      <td>
+        {% if p.active %}<span class="status-pill status-active">on</span>
+        {% else %}<span class="status-pill status-archived">off</span>{% endif %}
+      </td>
+      <td><small class="muted">{{ p.hits }}</small></td>
+      <td style="white-space:nowrap">
+        {% set policy_toggle_msg = 'Rimuovere la policy dal pool community (torna privata)?' if p.visibility == 'shared' else 'Condividere la policy con tutti i tenant nel pool community?' %}
+        <form method="post" action="/site_memory/policy/{{ p.id }}/toggle-visibility" style="display:inline"
+              onsubmit="return confirm({{ policy_toggle_msg | tojson }});">
+          <button type="submit" class="btn-link-small" title="{% if p.visibility == 'shared' %}Rendi privata{% else %}Condividi nel pool community{% endif %}">
+            {% if p.visibility == 'shared' %}🔒{% else %}🌐{% endif %}
+          </button>
+        </form>
+        <form method="post" action="/site_memory/policy/{{ p.id }}/toggle" style="display:inline">
+          <button type="submit" class="btn-link-small">{{ '⏸' if p.active else '▶' }}</button>
+        </form>
+        <form method="post" action="/site_memory/policy/{{ p.id }}/delete" style="display:inline"
+              onsubmit="return confirm('Cancellare la policy #{{ p.id }}?');">
+          <button type="submit" class="btn-danger-small">🗑️</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted"><em>Nessuna policy attiva. Aggiungine una qui sopra per insegnare ad Argos quali siti evitare o come trattarli.</em></p>
+{% endif %}
+
 <style>
 .flash-success { background: var(--success-soft); color: var(--success); border:1px solid var(--success-border); padding:.6rem 1rem; border-radius:var(--radius-sm); margin:1rem 0; }
 .filter-bar { display:flex; gap:1rem; align-items:center; flex-wrap:wrap; margin:1rem 0; }
@@ -198,6 +489,9 @@
 .status-pill.status-candidate { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-border); }
 .status-pill.status-rejected, .status-pill.status-stale { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-border); }
 .status-pill.status-archived { background: var(--surface-3); color: var(--fg-muted); border-color: var(--border); }
+.status-pill.status-shared { background: var(--brand-soft, var(--surface-2)); color: var(--brand-2, var(--fg)); border-color: var(--brand-border, var(--border)); }
+.status-pill.status-private { background: var(--surface-3); color: var(--fg-muted); border-color: var(--border); }
+.row-disabled td { opacity: .55; }
 .playbook-card { border:1px solid var(--border); background: var(--surface-1); border-radius:var(--radius-sm); padding:.8rem 1rem; margin:.8rem 0; }
 .playbook-header { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
 .playbook-text { background: var(--surface-2); color: var(--fg); border:1px solid var(--border); padding:.6rem .8rem; border-radius:var(--radius-xs); font-family: var(--font-mono); font-size:.88em; white-space:pre-wrap; margin:.6rem 0; max-height:240px; overflow:auto; }

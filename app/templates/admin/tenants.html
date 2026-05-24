@@ -8,6 +8,73 @@
   <h2>Aziende (tenant)</h2>
   {% include "admin/_flashes.html" %}
 
+  <details class="guide-box">
+    <summary><strong>📖 Guida: a cosa serve il flag "Memoria sito" del tenant</strong>
+      <small class="muted">(clicca per espandere)</small></summary>
+    <div class="guide-content">
+
+      <p>
+        Argos accumula knowledge per dominio in 4 tabelle: <code>site_patterns</code>,
+        <code>site_playbooks</code>, <code>site_intelligence</code>, <code>scraping_policies</code>.
+        Ogni riga è di default <strong>privata</strong>: visibile solo al tenant che l'ha generata.
+        Vedi la <a href="/site_memory">pagina /site_memory</a> per la guida completa.
+      </p>
+
+      <h4>Cosa controlla il flag <code>site_memory_shared</code> di un tenant</h4>
+      <p>
+        Il flag determina se <strong>quel tenant accede al pool community</strong>: ovvero se può
+        leggere le righe marcate come <code>visibility = 'shared'</code> dagli altri tenant.
+      </p>
+      <table class="guide-table">
+        <thead><tr><th>Flag</th><th>Cosa vede il tenant nella memoria sito</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-off">isolata</span></td>
+            <td>Solo le righe con <code>tenant_id</code> uguale al suo (più le globali con
+                <code>tenant_id NULL</code>, es. policy di sistema).</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-ok">condivisa</span></td>
+            <td>Le proprie righe <strong>+</strong> tutte le righe shared di qualunque tenant
+                <strong>+</strong> le globali.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>Granularità: il flag NON rende automaticamente shared le righe del tenant</h4>
+      <p>
+        Decidere se condividere o meno una riga è una scelta separata, per riga, fatta nella
+        pagina <code>/site_memory</code> con il toggle 🌐 / 🔒. Il flag del tenant qui controlla
+        solo la <em>lettura</em> del pool.
+      </p>
+
+      <h4>Auto-promote community (automatismo del sistema)</h4>
+      <p>
+        Quando <strong>3 tenant indipendenti</strong> registrano intelligence negativa sullo stesso
+        dominio (almeno 1 fail e 0 success), il sistema:
+      </p>
+      <ol>
+        <li>flippa <em>tutte</em> le righe di intelligence di quel dominio da <code>private</code> a <code>shared</code>;</li>
+        <li>crea una <code>scraping_policy</code> automatica con <code>source='community'</code> e
+            <code>action='warn'</code>, anch'essa shared.</li>
+      </ol>
+      <p>
+        I tenant che hanno il flag "condivisa" vedranno subito questo warning quando proveranno lo
+        stesso sito. I tenant "isolata" non vedranno nulla: continuano a sbattere il muso da soli.
+      </p>
+
+      <h4>Quando attivare "condivisa"</h4>
+      <ul>
+        <li><strong>Premium feature</strong>: chi paga di più accede al sapere collettivo.</li>
+        <li><strong>Tenant interni</strong>: brand multipli della stessa organizzazione che vuoi far
+            collaborare implicitamente.</li>
+        <li><strong>Lascialo OFF</strong> se il tenant è un cliente isolato che non vuole essere
+            "contaminato" dalle scelte di altri.</li>
+      </ul>
+
+    </div>
+  </details>
+
   <div class="admin-card-block">
     <h3>Crea nuova azienda</h3>
     <form method="post" action="/admin/tenants" class="admin-form-inline">

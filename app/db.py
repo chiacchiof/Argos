@@ -805,6 +805,54 @@ CREATE TABLE IF NOT EXISTS site_playbooks (
 );
 
 -- ============================================================
+-- Site intelligence: memoria storica per dominio (success/fail counts +
+-- ultima strategia che ha funzionato). Aggiornata automaticamente
+-- post-job dai runner; l'orchestrator legge da qui pre-task per
+-- suggerire la strategia migliore.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS site_intelligence (
+  id BIGSERIAL PRIMARY KEY,
+  registrable_domain TEXT NOT NULL,
+  tenant_id BIGINT REFERENCES tenants(id) ON DELETE CASCADE,
+  visibility TEXT NOT NULL DEFAULT 'private',
+  last_status TEXT NOT NULL DEFAULT 'unknown',
+  last_protection TEXT,
+  success_count INTEGER NOT NULL DEFAULT 0,
+  fail_count INTEGER NOT NULL DEFAULT 0,
+  last_strategy_worked TEXT,
+  last_job_id BIGINT,
+  last_seen_at TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (registrable_domain, tenant_id)
+);
+
+-- ============================================================
+-- Scraping policies: regole match_pattern -> action modificabili dall'utente
+-- o auto-create dal sistema. Valutate pre-task per consigliare/forzare
+-- strategie. Es: "tutti i pokerstrategy.com -> skip" o "yescasa.it ->
+-- prefer_browser".
+-- ============================================================
+CREATE TABLE IF NOT EXISTS scraping_policies (
+  id BIGSERIAL PRIMARY KEY,
+  match_kind TEXT NOT NULL DEFAULT 'domain_regex',
+  match_pattern TEXT NOT NULL,
+  action TEXT NOT NULL,
+  reason TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
+  priority INTEGER NOT NULL DEFAULT 100,
+  active INTEGER NOT NULL DEFAULT 1,
+  tenant_id BIGINT REFERENCES tenants(id) ON DELETE CASCADE,
+  visibility TEXT NOT NULL DEFAULT 'private',
+  hits INTEGER NOT NULL DEFAULT 0,
+  last_hit_at TEXT,
+  created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- ============================================================
 -- Social DM log (history outreach messaggi)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS social_dm_log (
@@ -884,6 +932,9 @@ CREATE INDEX IF NOT EXISTS idx_recon_visited_run ON recon_visited(run_id, visite
 CREATE INDEX IF NOT EXISTS idx_site_patterns_asset_type ON site_patterns(asset_type);
 CREATE INDEX IF NOT EXISTS idx_site_patterns_domain_status ON site_patterns(registrable_domain, status);
 CREATE INDEX IF NOT EXISTS idx_site_playbooks_domain ON site_playbooks(registrable_domain);
+CREATE INDEX IF NOT EXISTS idx_site_intelligence_lookup ON site_intelligence(registrable_domain, tenant_id);
+CREATE INDEX IF NOT EXISTS idx_scraping_policies_active_priority ON scraping_policies(active, priority);
+CREATE INDEX IF NOT EXISTS idx_scraping_policies_tenant ON scraping_policies(tenant_id, active);
 CREATE INDEX IF NOT EXISTS idx_social_accounts_platform_status ON social_accounts(platform, status);
 CREATE INDEX IF NOT EXISTS idx_social_dm_log_account ON social_dm_log(account_id, sent_at);
 CREATE INDEX IF NOT EXISTS idx_social_dm_log_target ON social_dm_log(target_contact_id);
@@ -5022,17 +5073,35 @@ def _can_see_all_site_memory(tenant_id: int | None) -> bool:
     return bool(val)
 
 
-def _site_memory_tenant_filter(sql: str, args: list[Any], col_alias: str = "") -> tuple[str, list[Any]]:
+def _site_memory_tenant_filter(
+    sql: str, args: list[Any], col_alias: str = "",
+    *, respect_visibility: bool = False,
+) -> tuple[str, list[Any]]:
     """Aggiunge `AND <alias>tenant_id = %s` al WHERE se il tenant corrente NON
     e' autorizzato a vedere tutta la memoria. No-op altrimenti.
 
     `col_alias`: prefisso colonna per JOIN (es. 's.' per site_patterns s).
+
+    `respect_visibility` (2026-05-24): se True, espande il filter per
+    includere anche entries cross-tenant con `visibility='shared'` o
+    `tenant_id IS NULL` (pool globale). Usato dalle tabelle che supportano
+    il pool community (`site_intelligence`, `scraping_policies`). Per le
+    tabelle legacy senza colonna visibility (`site_patterns`,
+    `site_playbooks`) lascia respect_visibility=False.
     """
     tenant_id = current_tenant_id()
     if _can_see_all_site_memory(tenant_id):
         return sql, args
-    sql += f" AND {col_alias}tenant_id = %s"
-    args.append(tenant_id)
+    if respect_visibility:
+        sql += (
+            f" AND ({col_alias}tenant_id = %s "
+            f"     OR {col_alias}tenant_id IS NULL "
+            f"     OR {col_alias}visibility = 'shared')"
+        )
+        args.append(tenant_id)
+    else:
+        sql += f" AND {col_alias}tenant_id = %s"
+        args.append(tenant_id)
     return sql, args
 
 
@@ -5429,6 +5498,465 @@ def delete_site_playbooks_by_domain(
         return int(cur.rowcount or 0)
 
 
+# ===========================================================================
+# Site intelligence: memoria storica per dominio (cross-job).
+# Aggiornata post-job dai runner. Usata pre-task dall'orchestrator.
+# ===========================================================================
+
+def get_site_intelligence(
+    registrable_domain: str, tenant_id: Any = _UNSET,
+) -> dict[str, Any] | None:
+    """Ritorna l'intelligence storica per un dominio.
+
+    Lookup order (con `site_memory_shared` flag):
+      1. Riga tenant-owned (visibility privata o shared).
+      2. Riga shared di altri tenant (solo se shared pool e' attivo per il
+         tenant corrente).
+
+    Ritorna None se nessuna riga rilevante.
+    """
+    if not registrable_domain:
+        return None
+    sql = (
+        "SELECT * FROM site_intelligence "
+        "WHERE registrable_domain = %s"
+    )
+    args: list[Any] = [registrable_domain.lower()]
+    sql, args = _site_memory_tenant_filter(sql, args, respect_visibility=True)
+    # Priorita': la riga del tenant corrente prima, poi quelle shared/global.
+    sql += (
+        " ORDER BY (tenant_id IS NOT NULL) DESC, "
+        "          (visibility = 'shared') DESC, "
+        "          updated_at DESC LIMIT 1"
+    )
+    with connect() as con:
+        row = con.execute(sql, args).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_site_intelligence(
+    *,
+    registrable_domain: str,
+    status: str,
+    protection: str | None = None,
+    strategy_worked: str | None = None,
+    job_id: int | None = None,
+    success: bool = False,
+    notes: str | None = None,
+    visibility: str | None = None,
+    tenant_id: Any = _UNSET,
+) -> int:
+    """Crea o aggiorna la riga di intelligence per (domain, tenant_corrente).
+
+    - `status`: 'accessible' | 'blocked' | 'rate_limited' | 'requires_browser' | 'unknown'
+    - `protection`: 'cloudflare' | 'datadome' | ... | None (header-detected)
+    - `strategy_worked`: 'bulk_extract' | 'site_explorer' | 'browser_use' (se success=True)
+    - `success`: True → incrementa success_count + sets `last_strategy_worked`
+                False → incrementa fail_count
+    - `notes`: testo libero appeso (se nuovo, replace; se update, append con timestamp)
+
+    Idempotente: UNIQUE(domain, tenant_id) garantisce 1 riga per coppia.
+    """
+    if not registrable_domain:
+        return 0
+    ts = now_iso()
+    domain_l = registrable_domain.lower()
+    current_tid = current_tenant_id() if tenant_id is _UNSET else tenant_id
+    vis = (visibility or "private")
+    with connect() as con:
+        existing = con.execute(
+            "SELECT id, success_count, fail_count, notes FROM site_intelligence "
+            "WHERE registrable_domain = %s AND tenant_id IS NOT DISTINCT FROM %s",
+            (domain_l, current_tid),
+        ).fetchone()
+        if existing:
+            sid = int(existing["id"])
+            sc = int(existing["success_count"]) + (1 if success else 0)
+            fc = int(existing["fail_count"]) + (0 if success else 1)
+            merged_notes = existing.get("notes") or ""
+            if notes:
+                merged_notes = (
+                    (merged_notes + "\n" if merged_notes else "")
+                    + f"[{ts[:19]}] {notes}"
+                )[:4000]
+            con.execute(
+                "UPDATE site_intelligence "
+                "SET last_status = %s, last_protection = %s, "
+                "    success_count = %s, fail_count = %s, "
+                "    last_strategy_worked = COALESCE(%s, last_strategy_worked), "
+                "    last_job_id = COALESCE(%s, last_job_id), "
+                "    last_seen_at = %s, notes = %s, updated_at = %s "
+                "WHERE id = %s",
+                (
+                    status, protection, sc, fc,
+                    strategy_worked if success else None, job_id,
+                    ts, merged_notes, ts, sid,
+                ),
+            )
+            return sid
+        cur = con.execute(
+            "INSERT INTO site_intelligence ("
+            "  registrable_domain, tenant_id, visibility, "
+            "  last_status, last_protection, "
+            "  success_count, fail_count, last_strategy_worked, last_job_id, "
+            "  last_seen_at, notes, created_at, updated_at"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "RETURNING id",
+            (
+                domain_l, current_tid, vis,
+                status, protection,
+                1 if success else 0, 0 if success else 1,
+                strategy_worked if success else None, job_id,
+                ts, (f"[{ts[:19]}] {notes}" if notes else None), ts, ts,
+            ),
+        )
+        return int(cur.fetchone()["id"])
+
+
+def list_site_intelligence(
+    *,
+    registrable_domain: str | None = None,
+    limit: int = 200,
+    tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Lista intelligence: include propria privata + community shared + global.
+    Tenant-scoped via _site_memory_tenant_filter(respect_visibility=True)."""
+    sql = "SELECT * FROM site_intelligence WHERE 1=1"
+    args: list[Any] = []
+    if registrable_domain:
+        sql += " AND registrable_domain = %s"
+        args.append(registrable_domain.lower())
+    sql, args = _site_memory_tenant_filter(sql, args, respect_visibility=True)
+    sql += " ORDER BY updated_at DESC LIMIT %s"
+    args.append(int(limit))
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_site_intelligence_visibility(
+    intel_id: int, visibility: str, tenant_id: Any = _UNSET,
+) -> int:
+    """Cambia visibility (private | shared) di una row intelligence.
+    'shared' = la rendi visibile a tutti i tenant nel pool community.
+    Tenant-safe: solo l'owner della row puo' cambiarla."""
+    if visibility not in ("private", "shared"):
+        return 0
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = (
+        "UPDATE site_intelligence SET visibility = %s, updated_at = %s "
+        "WHERE id = %s"
+    )
+    args: list[Any] = [visibility, now_iso(), intel_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        cur = con.execute(sql, args)
+        return int(cur.rowcount or 0)
+
+
+def count_tenants_with_negative_intel(
+    registrable_domain: str, *, min_fail_count: int = 1,
+) -> int:
+    """Conta quanti tenant DISTINTI hanno una riga `site_intelligence` per
+    questo dominio con `fail_count >= min_fail_count` E `success_count == 0`
+    (esito netto negativo). Usato per auto-promote: se N tenant indipendenti
+    falliscono sullo stesso sito, e' probabile che sia inscrappabile."""
+    if not registrable_domain:
+        return 0
+    with connect() as con:
+        row = con.execute(
+            "SELECT COUNT(DISTINCT tenant_id) AS n FROM site_intelligence "
+            "WHERE registrable_domain = %s "
+            "  AND fail_count >= %s AND success_count = 0 "
+            "  AND tenant_id IS NOT NULL",
+            (registrable_domain.lower(), min_fail_count),
+        ).fetchone()
+    return int(row["n"] or 0) if row else 0
+
+
+def auto_promote_to_community_pool(
+    registrable_domain: str, *, threshold: int = 3,
+) -> dict[str, Any]:
+    """Se >= `threshold` tenant indipendenti hanno intel negativa sul dominio:
+      1. Tutte le entries `private` di quel dominio diventano `shared`.
+      2. Crea una `scraping_policies` automatica con action='warn' (no
+         skip forzato, l'utente decide) e source='community'.
+    Idempotente: rilanciato non duplica policy (controlla esistenza prima).
+
+    Ritorna dict con:
+      - `n_tenants`: int (quanti tenant matchano)
+      - `promoted`: bool (True se ha promosso)
+      - `policy_id`: int|None (id della policy community se creata)
+    """
+    n = count_tenants_with_negative_intel(registrable_domain)
+    if n < threshold:
+        return {"n_tenants": n, "promoted": False, "policy_id": None}
+
+    ts = now_iso()
+    with connect() as con:
+        # 1. Promuovi entries private a shared (anche per altri tenant)
+        con.execute(
+            "UPDATE site_intelligence SET visibility = 'shared', updated_at = %s "
+            "WHERE registrable_domain = %s "
+            "  AND visibility = 'private' AND fail_count > 0",
+            (ts, registrable_domain.lower()),
+        )
+        # 2. Crea policy community se non esiste gia'
+        existing = con.execute(
+            "SELECT id FROM scraping_policies "
+            "WHERE source = 'community' AND match_kind = 'domain_exact' "
+            "  AND match_pattern = %s",
+            (registrable_domain.lower(),),
+        ).fetchone()
+        if existing:
+            policy_id = int(existing["id"])
+        else:
+            row = con.execute(
+                "INSERT INTO scraping_policies ("
+                "  match_kind, match_pattern, action, reason, source, "
+                "  priority, active, tenant_id, visibility, "
+                "  created_at, updated_at"
+                ") VALUES ('domain_exact', %s, 'warn', %s, 'community', "
+                "         50, 1, NULL, 'shared', %s, %s) RETURNING id",
+                (
+                    registrable_domain.lower(),
+                    (
+                        f"Auto-promossa dal pool community: {n} tenant "
+                        f"indipendenti hanno avuto esiti negativi su questo "
+                        f"dominio. Verifica con get_site_intel prima del task."
+                    ),
+                    ts, ts,
+                ),
+            ).fetchone()
+            policy_id = int(row["id"])
+    return {"n_tenants": n, "promoted": True, "policy_id": policy_id}
+
+
+def set_scraping_policy_visibility(
+    policy_id: int, visibility: str, tenant_id: Any = _UNSET,
+) -> int:
+    """Cambia visibility (private | shared) di una policy. Tenant-safe."""
+    if visibility not in ("private", "shared"):
+        return 0
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = (
+        "UPDATE scraping_policies SET visibility = %s, updated_at = %s "
+        "WHERE id = %s"
+    )
+    args: list[Any] = [visibility, now_iso(), policy_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        cur = con.execute(sql, args)
+        return int(cur.rowcount or 0)
+
+
+def delete_site_intelligence(
+    intel_id: int, tenant_id: Any = _UNSET,
+) -> int:
+    """Cancella una riga di intelligence. Tenant-safe."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "DELETE FROM site_intelligence WHERE id = %s"
+    args: list[Any] = [intel_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        cur = con.execute(sql, args)
+        return int(cur.rowcount or 0)
+
+
+# ===========================================================================
+# Scraping policies: regole match → action modificabili (manual o auto).
+# ===========================================================================
+
+_VALID_POLICY_ACTIONS = {
+    "skip", "warn",
+    "prefer_browser", "prefer_bulk", "prefer_site_explorer",
+    "force_browser", "force_skip",
+}
+_VALID_POLICY_MATCH_KINDS = {"domain_regex", "url_regex", "domain_exact"}
+
+
+def list_scraping_policies(
+    *,
+    active_only: bool = False,
+    tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Lista policies: include propria privata + community shared + global.
+    Tenant-scoped via _site_memory_tenant_filter(respect_visibility=True).
+    Ordina per priority ASC (priorita' bassa = piu' importante)."""
+    sql = "SELECT * FROM scraping_policies WHERE 1=1"
+    args: list[Any] = []
+    if active_only:
+        sql += " AND active = 1"
+    sql, args = _site_memory_tenant_filter(sql, args, respect_visibility=True)
+    sql += " ORDER BY priority ASC, id DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_scraping_policy(
+    *,
+    match_pattern: str,
+    action: str,
+    match_kind: str = "domain_regex",
+    reason: str | None = None,
+    source: str = "manual",
+    priority: int = 100,
+    visibility: str = "private",
+    tenant_id: Any = _UNSET,
+    created_by_user_id: Any = _UNSET,
+) -> int:
+    """Crea una nuova policy. Validate action + match_kind."""
+    if action not in _VALID_POLICY_ACTIONS:
+        raise ValueError(
+            f"action '{action}' non valida. Allowed: {sorted(_VALID_POLICY_ACTIONS)}"
+        )
+    if match_kind not in _VALID_POLICY_MATCH_KINDS:
+        raise ValueError(
+            f"match_kind '{match_kind}' non valido. Allowed: {sorted(_VALID_POLICY_MATCH_KINDS)}"
+        )
+    if not match_pattern or not match_pattern.strip():
+        raise ValueError("match_pattern vuoto")
+    # Compile-test regex per fail-fast su pattern malformati
+    if match_kind in ("domain_regex", "url_regex"):
+        import re as _re
+        try:
+            _re.compile(match_pattern)
+        except _re.error as e:
+            raise ValueError(f"regex malformata: {e}") from e
+    ts = now_iso()
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
+    with connect() as con:
+        cur = con.execute(
+            "INSERT INTO scraping_policies ("
+            "  match_kind, match_pattern, action, reason, source, priority, "
+            "  active, tenant_id, visibility, created_by_user_id, "
+            "  created_at, updated_at"
+            ") VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s) "
+            "RETURNING id",
+            (
+                match_kind, match_pattern.strip(), action, reason, source,
+                int(priority), tenant_id, visibility, created_by_user_id, ts, ts,
+            ),
+        )
+        return int(cur.fetchone()["id"])
+
+
+def update_scraping_policy(
+    policy_id: int,
+    *,
+    action: str | None = None,
+    reason: str | None = None,
+    priority: int | None = None,
+    active: bool | None = None,
+    tenant_id: Any = _UNSET,
+) -> int:
+    """Patch parziale di una policy. Tenant-safe."""
+    tenant_id = _resolve_tenant(tenant_id)
+    fields: list[str] = []
+    args: list[Any] = []
+    if action is not None:
+        if action not in _VALID_POLICY_ACTIONS:
+            raise ValueError(f"action '{action}' non valida")
+        fields.append("action = %s"); args.append(action)
+    if reason is not None:
+        fields.append("reason = %s"); args.append(reason)
+    if priority is not None:
+        fields.append("priority = %s"); args.append(int(priority))
+    if active is not None:
+        fields.append("active = %s"); args.append(1 if active else 0)
+    if not fields:
+        return 0
+    fields.append("updated_at = %s"); args.append(now_iso())
+    sql = "UPDATE scraping_policies SET " + ", ".join(fields) + " WHERE id = %s"
+    args.append(policy_id)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        cur = con.execute(sql, args)
+        return int(cur.rowcount or 0)
+
+
+def delete_scraping_policy(policy_id: int, tenant_id: Any = _UNSET) -> int:
+    """Cancella una policy. Tenant-safe."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "DELETE FROM scraping_policies WHERE id = %s"
+    args: list[Any] = [policy_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        cur = con.execute(sql, args)
+        return int(cur.rowcount or 0)
+
+
+def match_scraping_policies(
+    url_or_domain: str, *, tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Valuta tutte le policy attive contro un URL/dominio. Ritorna la lista
+    delle policy che fanno match, ordinate per priority. Incrementa `hits`
+    sulle policy che hanno fatto match (audit).
+
+    Usage tipico: pre-task l'orchestrator chiama questo helper passando
+    l'URL/dominio fornito dall'utente, e applica l'azione della prima policy
+    che matcha (priority piu' bassa).
+    """
+    import re as _re
+    if not url_or_domain:
+        return []
+    candidate = url_or_domain.strip()
+    # Estrai dominio dal URL se serve
+    from urllib.parse import urlparse as _urlparse
+    if "://" in candidate:
+        host = (_urlparse(candidate).hostname or "").lower()
+    else:
+        host = candidate.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    full_url = candidate if "://" in candidate else f"https://{host}/"
+
+    policies = list_scraping_policies(active_only=True, tenant_id=tenant_id)
+    matched: list[dict[str, Any]] = []
+    for p in policies:
+        kind = p.get("match_kind") or "domain_regex"
+        pattern = p.get("match_pattern") or ""
+        try:
+            if kind == "domain_exact":
+                if host == pattern.lower() or host.endswith("." + pattern.lower()):
+                    matched.append(p)
+            elif kind == "url_regex":
+                if _re.search(pattern, full_url):
+                    matched.append(p)
+            else:  # domain_regex (default)
+                if _re.search(pattern, host):
+                    matched.append(p)
+        except _re.error:
+            continue  # regex broken: ignora ma non bloccare
+    # Bump hits sulle policy matched
+    if matched:
+        ts = now_iso()
+        ids = [int(p["id"]) for p in matched]
+        ph = ",".join(["%s"] * len(ids))
+        try:
+            with connect() as con:
+                con.execute(
+                    f"UPDATE scraping_policies SET hits = hits + 1, "
+                    f"last_hit_at = %s WHERE id IN ({ph})",
+                    [ts] + ids,
+                )
+        except Exception as e:
+            log.debug("policies bump hits failed: %s", e)
+    return matched
+
+
 def truncate_site_memory(tenant_id: Any = _UNSET) -> dict[str, int]:
     """Svuota la memoria sito. Per tenant_user e' scoped al suo tenant; per
     super_admin (tenant_id=None) svuota tutto.
@@ -5443,6 +5971,8 @@ def truncate_site_memory(tenant_id: Any = _UNSET) -> dict[str, int]:
         if tenant_id is None:
             n_pat = int(con.execute("DELETE FROM site_patterns").rowcount or 0)
             n_pb = int(con.execute("DELETE FROM site_playbooks").rowcount or 0)
+            n_int = int(con.execute("DELETE FROM site_intelligence").rowcount or 0)
+            n_pol = int(con.execute("DELETE FROM scraping_policies").rowcount or 0)
         else:
             n_pat = int(con.execute(
                 "DELETE FROM site_patterns WHERE tenant_id = %s", (tenant_id,)
@@ -5450,7 +5980,16 @@ def truncate_site_memory(tenant_id: Any = _UNSET) -> dict[str, int]:
             n_pb = int(con.execute(
                 "DELETE FROM site_playbooks WHERE tenant_id = %s", (tenant_id,)
             ).rowcount or 0)
-    return {"site_patterns": n_pat, "site_playbooks": n_pb}
+            n_int = int(con.execute(
+                "DELETE FROM site_intelligence WHERE tenant_id = %s", (tenant_id,)
+            ).rowcount or 0)
+            n_pol = int(con.execute(
+                "DELETE FROM scraping_policies WHERE tenant_id = %s", (tenant_id,)
+            ).rowcount or 0)
+    return {
+        "site_patterns": n_pat, "site_playbooks": n_pb,
+        "site_intelligence": n_int, "scraping_policies": n_pol,
+    }
 
 
 # ===========================================================================
