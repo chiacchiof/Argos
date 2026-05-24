@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db, db_cloud
+from ..auth import require_architect_or_admin
 from ..templates import templates
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
 
 
 @router.get("/site_memory", response_class=HTMLResponse)

@@ -45,6 +45,12 @@
         <td>
           {% if t.disabled %}<span class="disabled-badge" title="Task disabilitato: non puo' essere lanciato">🚫</span>{% endif %}
           <a href="/tasks/{{ t.id }}">{{ t.name }}</a>
+          {% if t.is_published_agent %}
+          <span class="published-agent-pill"
+                title="Pubblicato come agente operator{% if t.agent_display_name %}: {{ t.agent_display_name }}{% endif %}">
+            🤖 agente
+          </span>
+          {% endif %}
         </td>
         <td>
           {% if act %}

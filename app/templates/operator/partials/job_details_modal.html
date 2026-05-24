@@ -1,0 +1,116 @@
+{# Modal con dettagli di un singolo job (per operator).
+   Variabili: job (dict), task (dict | None), files (list), log_tail (list str), duration_sec (int|None). #}
+{% set status = job.status or 'unknown' %}
+{% set display_name = (task.agent_display_name if task else None) or (task.name if task else None) or ('Job #' ~ job.id) %}
+{% set icon_id = ((task.agent_icon if task else None) if (task.agent_icon if task else None) and (task.agent_icon if task else '').startswith('op-i-') else 'op-i-cog') %}
+<div class="op-modal-backdrop" onclick="if(event.target===this) opCloseModal()">
+  <div class="op-modal op-modal-job" role="dialog" aria-modal="true" aria-labelledby="op-job-title">
+
+    <header class="op-modal-head">
+      <span class="op-modal-icon"><svg><use href="#{{ icon_id }}"/></svg></span>
+      <div class="op-modal-head-text">
+        <div class="op-modal-kind-row">
+          <span class="op-job-status-pill op-job-status-{{ status }}">
+            {% if status == 'done' %}✓ Completato
+            {% elif status == 'error' %}✗ Errore
+            {% elif status == 'running' %}▶ In esecuzione
+            {% elif status == 'queued' %}⏳ In coda
+            {% elif status == 'paused' %}⏸ In pausa
+            {% elif status == 'cancelled' %}⊘ Annullato
+            {% else %}{{ status }}{% endif %}
+          </span>
+          {% if duration_sec is not none %}
+          <span class="op-modal-category">Durata: {{ duration_sec // 60 }}m {{ duration_sec % 60 }}s</span>
+          {% endif %}
+        </div>
+        <h2 id="op-job-title">{{ display_name }}</h2>
+        <p class="op-modal-subtitle">
+          Esecuzione #{{ job.id }}{% if job.started_at %} · iniziata {{ job.started_at[:16] | replace('T', ' ') }}{% endif %}
+        </p>
+      </div>
+      <button type="button" class="op-modal-close" onclick="opCloseModal()" aria-label="Chiudi">
+        <svg><use href="#op-i-close"/></svg>
+      </button>
+    </header>
+
+    <div class="op-modal-body">
+
+      {# Errore visibile se status=error #}
+      {% if status == 'error' and job.error %}
+      <section class="op-details-section">
+        <h3>Cosa e' andato storto</h3>
+        <div class="op-job-error-box">{{ job.error }}</div>
+      </section>
+      {% endif %}
+
+      {# File generati (se ce ne sono) — clic per aprire viewer #}
+      <section class="op-details-section">
+        <h3>File generati</h3>
+        {% if files %}
+          <ul class="op-job-files">
+            {% for f in files %}
+            {% set is_viewable = f.name.endswith('.md') or f.name.endswith('.jsonl') or f.name.endswith('.json') or f.name.endswith('.csv') or f.name.endswith('.txt') or f.name.endswith('.log') %}
+            <li class="op-job-file">
+              <span class="op-job-file-icon">
+                {% if f.name.endswith('.md') %}📄
+                {% elif f.name.endswith('.jsonl') or f.name.endswith('.json') %}📊
+                {% elif f.name.endswith('.csv') %}📋
+                {% else %}📁{% endif %}
+              </span>
+              <span class="op-job-file-name">{{ f.name }}</span>
+              <span class="op-job-file-size">
+                {% if f.size %}{{ (f.size / 1024) | round(1) }} KB{% endif %}
+              </span>
+              {% if is_viewable %}
+              <button type="button" class="op-btn-mini"
+                      hx-get="/jobs/{{ job.id }}/operator-file?file={{ f.name | urlencode }}"
+                      hx-target="#op-modal-container"
+                      hx-swap="innerHTML">
+                Apri
+              </button>
+              {% else %}
+              <a href="/tasks/{{ task.id }}/results/{{ f.name }}" target="_blank" rel="noopener" class="op-btn-mini">Download</a>
+              {% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="op-details-muted">
+            {% if status in ('queued', 'running', 'paused') %}
+              L'agente sta ancora lavorando, i file appariranno alla fine.
+            {% elif status == 'error' %}
+              Nessun file e' stato generato a causa dell'errore.
+            {% else %}
+              Nessun file generato.
+            {% endif %}
+          </p>
+        {% endif %}
+      </section>
+
+      {# Log tail #}
+      {% if log_tail %}
+      <section class="op-details-section">
+        <h3>Ultimi messaggi del log</h3>
+        <pre class="op-job-log">{% for line in log_tail %}{{ line }}
+{% endfor %}</pre>
+      </section>
+      {% endif %}
+
+    </div>
+
+    <footer class="op-modal-foot">
+      <button type="button" class="op-btn-secondary" onclick="opCloseModal()">Chiudi</button>
+    </footer>
+  </div>
+</div>
+
+<script>
+  (function() {
+    window.opCloseModal = function() {
+      var c = document.getElementById('op-modal-container');
+      if (c) c.innerHTML = '';
+    };
+    function esc(e) { if (e.key === 'Escape') window.opCloseModal(); }
+    document.addEventListener('keydown', esc, { once: true });
+  })();
+</script>

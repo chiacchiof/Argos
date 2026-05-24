@@ -13,17 +13,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db
 from ..agent.llm_providers import env_key_status, get_provider, list_providers
 from ..agent.ollama import list_models
+from ..auth import require_architect_or_admin
 from ..config import settings as app_settings
 from ..templates import templates
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
 
 
 def _orchestrator_defaults() -> dict[str, Any]:

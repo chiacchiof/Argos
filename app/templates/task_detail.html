@@ -44,6 +44,12 @@
       </details>
       {% endif %}
 
+      {# 2.5 Pubblica come agente operator — collassabile, aperta se gia' pubblicato.
+         Wrap in Jinja `with` per mappare i nomi attesi dal partial. #}
+      {% with kind='task', agent_id=task.id, obj=task %}
+        {% include "partials/publish_as_agent.html" %}
+      {% endwith %}
+
       {# 3. Configurazione — collassabile, chiusa di default. #}
       <details class="collapsible-section">
         <summary>⚙️ Configurazione</summary>

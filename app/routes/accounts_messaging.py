@@ -20,14 +20,15 @@ from __future__ import annotations
 import logging
 import secrets
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db, db_cloud
 from ..agent.social.crypto_creds import decrypt, encrypt, is_configured
+from ..auth import require_architect_or_admin
 from ..templates import templates
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
 log = logging.getLogger(__name__)
 
 

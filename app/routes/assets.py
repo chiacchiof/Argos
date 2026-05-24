@@ -6,17 +6,18 @@ una lista filtrabile per asset_type + tag.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from .. import db
 from .. import export_csv
 from ..agent import asset_dedup
+from ..auth import require_architect_or_admin
 from ..templates import templates
 from . import _tenant_filter as _tf
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
 
 
 def _parse_tag_filters(raw: str | None) -> list[tuple[str, str]]:

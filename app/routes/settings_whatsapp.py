@@ -20,18 +20,19 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .. import db
 from ..agent.social import crypto_creds
 from ..agent.social.whatsapp_api import WhatsAppAPI
 from ..agent.social.whatsapp_browser import WhatsAppBrowser
+from ..auth import require_architect_or_admin
 from ..config import DATA_DIR
 from ..templates import templates
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
 log = logging.getLogger(__name__)
 
 

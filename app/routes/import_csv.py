@@ -17,10 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db
+from ..auth import require_architect_or_admin
 from ..config import UPLOADS_DIR
 from ..import_csv import (
     TARGET_FIELDS,
@@ -33,7 +34,7 @@ from ..import_csv import (
 from ..templates import templates
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
 
 IMPORTS_DIR = UPLOADS_DIR / "imports"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB

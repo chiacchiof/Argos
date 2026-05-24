@@ -35,11 +35,11 @@ def qualifier_setup():
 
     alice = db_cloud.create_user(
         tenant_id=tenant_a, email="alice@ta", password_hash=hash_password("pwd"),
-        role="tenant_user",
+        role="tenant_architect",
     )
     bob = db_cloud.create_user(
         tenant_id=tenant_b, email="bob@tb", password_hash=hash_password("pwd"),
-        role="tenant_user",
+        role="tenant_architect",
     )
 
     # Crea task qualifier (per friendly_name lookup)

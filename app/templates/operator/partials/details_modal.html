@@ -1,0 +1,122 @@
+{# Modal read-only con dettagli di un agente (task/workflow pubblicato).
+   Caricato via HTMX da agent_card.html (click sulla card oppure su "Dettagli").
+   Variabili: agent (dict), fields (list), recent_jobs (list), extra_meta (dict). #}
+{% set icon_id = (agent.icon if agent.icon and agent.icon.startswith('op-i-') else 'op-i-' + (agent.icon or 'cog').replace('i-', '')) %}
+{% set kind_label = 'Workflow' if agent.kind == 'workflow' else 'Task' %}
+<div class="op-modal-backdrop" onclick="if(event.target===this) opCloseModal()">
+  <div class="op-modal op-modal-details" role="dialog" aria-modal="true" aria-labelledby="op-details-title">
+
+    <header class="op-modal-head">
+      <span class="op-modal-icon"><svg><use href="#{{ icon_id }}"/></svg></span>
+      <div class="op-modal-head-text">
+        <div class="op-modal-kind-row">
+          <span class="op-agent-kind-badge op-agent-kind-{{ agent.kind }}">
+            {% if agent.kind == 'workflow' %}<svg class="op-icon-tiny"><use href="#op-i-workflows"/></svg>{% endif %}
+            {{ kind_label }}
+          </span>
+          {% if agent.category %}
+          <span class="op-modal-category">{{ agent.category }}</span>
+          {% endif %}
+        </div>
+        <h2 id="op-details-title">{{ agent.display_name }}</h2>
+        <p class="op-modal-subtitle">{{ agent.description or 'Nessuna descrizione fornita.' }}</p>
+      </div>
+      <button type="button" class="op-modal-close" onclick="opCloseModal()" aria-label="Chiudi">
+        <svg><use href="#op-i-close"/></svg>
+      </button>
+    </header>
+
+    <div class="op-modal-body">
+
+      {# Sezione 1: configurazione tecnica (visible info, non sensibili) #}
+      {% if extra_meta and (extra_meta.agent_mode or extra_meta.model) %}
+      <section class="op-details-section">
+        <h3>Configurazione</h3>
+        <dl class="op-details-list">
+          {% if extra_meta.agent_mode %}
+          <dt>Tipo agente</dt>
+          <dd><code>{{ extra_meta.agent_mode }}</code></dd>
+          {% endif %}
+          {% if extra_meta.model %}
+          <dt>Modello AI</dt>
+          <dd><code>{{ extra_meta.model }}</code>{% if extra_meta.llm_provider %} <span class="op-details-muted">({{ extra_meta.llm_provider }})</span>{% endif %}</dd>
+          {% endif %}
+        </dl>
+      </section>
+      {% endif %}
+
+      {# Sezione 2: parametri richiesti al lancio #}
+      <section class="op-details-section">
+        <h3>Parametri al lancio</h3>
+        {% if fields %}
+          <ul class="op-details-fields">
+            {% for f in fields %}
+            <li>
+              <span class="op-details-field-name">{{ f.label }}</span>
+              <span class="op-details-field-type">{{ f.type }}{% if f.required %} · obbligatorio{% endif %}</span>
+            </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="op-details-muted">Nessun parametro: l'agente parte direttamente al click di "Avvia".</p>
+        {% endif %}
+      </section>
+
+      {# Sezione 3: cronologia ultime esecuzioni #}
+      <section class="op-details-section">
+        <h3>Ultime esecuzioni</h3>
+        {% if recent_jobs %}
+          <ul class="op-details-runs">
+            {% for j in recent_jobs %}
+            {% set st = j.status or 'unknown' %}
+            <li class="op-details-run op-details-run-{{ st }}">
+              <span class="op-details-run-status">
+                {% if st == 'done' %}✓ Completato
+                {% elif st == 'error' %}✗ Errore
+                {% elif st == 'running' %}▶ In corso
+                {% elif st == 'queued' %}⏳ In coda
+                {% elif st == 'paused' %}⏸ In pausa
+                {% elif st == 'cancelled' %}⊘ Annullato
+                {% else %}{{ st }}{% endif %}
+              </span>
+              <span class="op-details-run-time">
+                {% if j.finished_at %}
+                  {{ j.finished_at[:16] | replace('T', ' ') }}
+                {% elif j.started_at %}
+                  iniziato {{ j.started_at[:16] | replace('T', ' ') }}
+                {% elif j.created_at %}
+                  creato {{ j.created_at[:16] | replace('T', ' ') }}
+                {% else %}—{% endif %}
+              </span>
+            </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="op-details-muted">Mai eseguito.</p>
+        {% endif %}
+      </section>
+    </div>
+
+    <footer class="op-modal-foot">
+      <button type="button" class="op-btn-secondary" onclick="opCloseModal()">Chiudi</button>
+      <button type="button" class="op-btn-primary"
+              hx-get="/agents/{{ agent.kind }}/{{ agent.id }}/launch"
+              hx-target="#op-modal-container"
+              hx-swap="innerHTML">
+        <svg class="op-icon"><use href="#op-i-zap"/></svg>
+        <span>Avvia agente</span>
+      </button>
+    </footer>
+  </div>
+</div>
+
+<script>
+  (function() {
+    window.opCloseModal = function() {
+      var c = document.getElementById('op-modal-container');
+      if (c) c.innerHTML = '';
+    };
+    function esc(e) { if (e.key === 'Escape') window.opCloseModal(); }
+    document.addEventListener('keydown', esc, { once: true });
+  })();
+</script>

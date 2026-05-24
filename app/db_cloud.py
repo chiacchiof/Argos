@@ -61,14 +61,14 @@ CREATE TABLE IF NOT EXISTS users (
   tenant_id      BIGINT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   email          CITEXT UNIQUE NOT NULL,
   password_hash  TEXT NOT NULL,
-  role           TEXT NOT NULL CHECK (role IN ('super_admin', 'tenant_user')),
+  role           TEXT NOT NULL CHECK (role IN ('super_admin', 'tenant_architect', 'tenant_user')),
   is_active      BOOLEAN NOT NULL DEFAULT TRUE,
   first_name     TEXT,
   last_name      TEXT,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (
     (role = 'super_admin' AND tenant_id IS NULL)
-    OR (role = 'tenant_user' AND tenant_id IS NOT NULL)
+    OR (role IN ('tenant_architect', 'tenant_user') AND tenant_id IS NOT NULL)
   )
 );
 
@@ -93,12 +93,82 @@ def init_db() -> None:
                 "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS "
                 "site_memory_shared BOOLEAN NOT NULL DEFAULT FALSE"
             )
+            # Idempotent: aggiorna CHECK constraint role per ammettere
+            # 'tenant_architect' (DB pre-esistenti hanno solo 'super_admin'/'tenant_user').
+            # DROP + ADD evita errori se il vecchio constraint era diverso.
+            _ensure_role_check_constraint(conn)
             conn.commit()
         _bootstrap_super_admin()
+        _promote_legacy_users_if_requested()
         log.info("Cloud DB inizializzato (tenants/users pronti).")
     except Exception as exc:
         log.error("Errore init cloud DB: %s", exc)
         raise
+
+
+def _ensure_role_check_constraint(conn: Any) -> None:
+    """Re-crea il CHECK constraint su `users.role` per ammettere tre ruoli.
+    Idempotente: NO-OP se il constraint corrente gia' include 'tenant_architect'.
+    Su DB pre-esistenti (con CHECK vecchio a due ruoli) fa drop + add.
+    Usa savepoint per non rovinare la transazione esterna in caso di errore."""
+    # Trova i CHECK su users + verifica se includono gia' tenant_architect
+    rows = conn.execute(
+        "SELECT con.conname, pg_get_constraintdef(con.oid) AS def "
+        "FROM pg_constraint con "
+        "JOIN pg_class cls ON cls.oid = con.conrelid "
+        "WHERE cls.relname = 'users' AND con.contype = 'c'"
+    ).fetchall()
+    # Se almeno uno include gia' "tenant_architect" siamo allineati: no-op.
+    for r in rows:
+        cdef = r.get("def") or ""
+        if "tenant_architect" in cdef:
+            return  # gia' nuovo formato
+    # Altrimenti: drop dei vecchi (quelli che menzionano 'tenant_user'/'super_admin'
+    # ma NON 'tenant_architect') + add dei nuovi. Savepoint per safety.
+    conn.execute("SAVEPOINT _ensure_role_check")
+    try:
+        for r in rows:
+            cdef = r.get("def") or ""
+            if "tenant_user" in cdef or "super_admin" in cdef:
+                conn.execute(f'ALTER TABLE users DROP CONSTRAINT "{r["conname"]}"')
+        conn.execute(
+            "ALTER TABLE users ADD CONSTRAINT users_role_check "
+            "CHECK (role IN ('super_admin', 'tenant_architect', 'tenant_user'))"
+        )
+        conn.execute(
+            "ALTER TABLE users ADD CONSTRAINT users_role_tenant_check CHECK ("
+            "(role = 'super_admin' AND tenant_id IS NULL) "
+            "OR (role IN ('tenant_architect', 'tenant_user') AND tenant_id IS NOT NULL)"
+            ")"
+        )
+        conn.execute("RELEASE SAVEPOINT _ensure_role_check")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT _ensure_role_check")
+        log.exception("_ensure_role_check_constraint failed; CHECK left as-is")
+
+
+def _promote_legacy_users_if_requested() -> None:
+    """Se `ARGOS_PROMOTE_LEGACY_USERS=true`, promuove tutti i `tenant_user`
+    esistenti a `tenant_architect`. Necessario al primo deploy della UI
+    semplificata: gli utenti pre-esistenti sono tutti "potenti" (creano
+    task/workflow), quindi devono diventare architect per non perdere accesso.
+    Senza il flag, no-op (utenti restano tenant_user → vedono la nuova UI
+    operator e perdono accesso alle pagine architect)."""
+    flag = (os.environ.get("ARGOS_PROMOTE_LEGACY_USERS") or "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return
+    with connect() as conn:
+        row = conn.execute(
+            "UPDATE users SET role = 'tenant_architect' "
+            "WHERE role = 'tenant_user' RETURNING id"
+        ).fetchall()
+        conn.commit()
+    n = len(row)
+    if n > 0:
+        log.warning(
+            "ARGOS_PROMOTE_LEGACY_USERS attivo: promossi %d utenti tenant_user "
+            "→ tenant_architect.", n,
+        )
 
 
 def _bootstrap_super_admin() -> None:
@@ -246,6 +316,9 @@ def get_user_by_email(email: str) -> dict[str, Any] | None:
         ).fetchone()
 
 
+_VALID_ROLES = ("super_admin", "tenant_architect", "tenant_user")
+
+
 def create_user(
     *,
     tenant_id: int | None,
@@ -255,12 +328,12 @@ def create_user(
     first_name: str | None = None,
     last_name: str | None = None,
 ) -> int:
-    if role not in ("super_admin", "tenant_user"):
+    if role not in _VALID_ROLES:
         raise ValueError(f"role non valido: {role}")
     if role == "super_admin" and tenant_id is not None:
         raise ValueError("super_admin non deve avere tenant_id")
-    if role == "tenant_user" and tenant_id is None:
-        raise ValueError("tenant_user richiede tenant_id")
+    if role in ("tenant_architect", "tenant_user") and tenant_id is None:
+        raise ValueError(f"{role} richiede tenant_id")
     fn = (first_name or "").strip() or None
     ln = (last_name or "").strip() or None
     with connect() as conn:
@@ -280,9 +353,12 @@ def update_user(
     is_active: bool | None = None,
     first_name: str | None = None,
     last_name: str | None = None,
+    role: str | None = None,
 ) -> None:
     """Aggiorna utente. `first_name`/`last_name`: stringa vuota → NULL (clear);
-    stringa non vuota → set; None → preserve (no-op su quel campo)."""
+    stringa non vuota → set; None → preserve (no-op su quel campo).
+    `role`: solo valori in _VALID_ROLES; per cambiare super_admin <-> tenant_*
+    serve anche aggiornare tenant_id (qui non gestito — chiamare a parte)."""
     fields: list[str] = []
     params: list[Any] = []
     if password_hash is not None:
@@ -297,6 +373,11 @@ def update_user(
     if last_name is not None:
         fields.append("last_name = %s")
         params.append(last_name.strip() or None)
+    if role is not None:
+        if role not in _VALID_ROLES:
+            raise ValueError(f"role non valido: {role}")
+        fields.append("role = %s")
+        params.append(role)
     if not fields:
         return
     params.append(user_id)

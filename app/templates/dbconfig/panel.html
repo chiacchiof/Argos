@@ -5,6 +5,37 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DB Config · Argos</title>
   <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .dbconfig-preset-select {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--surface-2, #36363f);
+      border: 1px solid var(--border, #3d3d48);
+      border-radius: 6px;
+      color: var(--fg, #ececf0);
+      font-family: inherit;
+      font-size: 0.95rem;
+      margin-top: 4px;
+    }
+    .dbconfig-preset-select:focus {
+      outline: 0;
+      border-color: var(--brand-2, #4f6bf6);
+      box-shadow: 0 0 0 3px rgba(79, 107, 246, 0.2);
+    }
+    details.dbconfig-current > summary {
+      cursor: pointer;
+      list-style: none;
+    }
+    details.dbconfig-current > summary::-webkit-details-marker { display: none; }
+    details.dbconfig-current > summary::before {
+      content: "▸";
+      display: inline-block;
+      margin-right: 6px;
+      color: var(--fg-muted, #888);
+      transition: transform 0.15s;
+    }
+    details.dbconfig-current[open] > summary::before { transform: rotate(90deg); }
+  </style>
 </head>
 <body class="dbconfig-body">
   <main class="dbconfig-main">
@@ -48,8 +79,35 @@
       </div>
 
       <div class="dbconfig-current">
-        <h3>Imposta nuova connection string</h3>
-        <form method="post" action="/dbconfig/save" class="dbconfig-form">
+        <h3>Switch rapido (preset)</h3>
+        <p>
+          <small>
+            Seleziona uno dei DB pre-configurati. Le connection string sono
+            risolte lato server (mai esposte al browser).
+            <strong>Richiede riavvio</strong> per applicare.
+          </small>
+        </p>
+        <form method="post" action="/dbconfig/apply-preset" class="dbconfig-form"
+              onsubmit="return confirm('Applicare il preset selezionato? L\'app dovra\' essere riavviata.');">
+          <label>
+            Database
+            <select name="preset" required class="dbconfig-preset-select">
+              {% for p in presets %}
+              <option value="{{ p.key }}" {% if p.key == active_preset_key %}selected{% endif %}>
+                {{ p.label }}{% if p.key == active_preset_key %} · attualmente attivo{% endif %}
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit" class="btn-primary">Applica preset</button>
+        </form>
+      </div>
+
+      <details class="dbconfig-current">
+        <summary><h3 style="display:inline; margin:0;">Connection string custom</h3>
+          <small style="margin-left:.5rem; color:var(--fg-muted, #888);">(per DB non in preset)</small>
+        </summary>
+        <form method="post" action="/dbconfig/save" class="dbconfig-form" style="margin-top:1rem;">
           <label>
             Etichetta (opzionale, solo per memoria)
             <input type="text" name="active_label" placeholder="es. Locale dev, Neon prod, Azure prod"
@@ -60,16 +118,9 @@
             <textarea name="database_url" rows="3" required spellcheck="false"
                       placeholder="postgresql://user:password@host:5432/dbname?sslmode=require"></textarea>
           </label>
-          <div class="dbconfig-presets">
-            <small>Preset rapidi (cliccando popolano il campo sopra, NON salvano):</small>
-            <button type="button" class="btn-link"
-                    onclick="document.querySelector('textarea[name=database_url]').value='postgresql://postgres:postgres@localhost:5432/agentscraper_dev'; document.querySelector('input[name=active_label]').value='Locale dev';">
-              Locale dev (postgres@localhost)
-            </button>
-          </div>
           <button type="submit" class="btn-primary">Salva DSN</button>
         </form>
-      </div>
+      </details>
 
       {% if override_active %}
       <div class="dbconfig-current">

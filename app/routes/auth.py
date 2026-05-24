@@ -81,8 +81,16 @@ def login_submit(
         )
 
     request.session["user_id"] = int(row["id"])
-    target = next if _is_safe_next(next) else "/"
-    return RedirectResponse(url=target, status_code=303)
+    # Redirect role-based: l'operator (tenant_user) atterra sulla dashboard
+    # semplificata `/home` invece della lista task (UI architect).
+    # Se l'utente ha passato un `?next=...` esplicito (es. da deep link),
+    # rispetta quel destination salvo override per operator che mirava al `/`
+    # generico (rotta architect, gli darebbe 403).
+    role = row.get("role") or ""
+    proposed = next if _is_safe_next(next) else "/"
+    if role == "tenant_user" and (proposed == "/" or proposed == ""):
+        proposed = "/home"
+    return RedirectResponse(url=proposed, status_code=303)
 
 
 @router.api_route("/logout", methods=["GET", "POST"])

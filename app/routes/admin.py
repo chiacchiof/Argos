@@ -203,14 +203,14 @@ def users_create(
     if len(password) < 6:
         _flash(request, "error", "Password troppo corta (min 6 caratteri).")
         return RedirectResponse(url="/admin/users", status_code=303)
-    if role not in ("super_admin", "tenant_user"):
+    if role not in ("super_admin", "tenant_architect", "tenant_user"):
         _flash(request, "error", f"Ruolo non valido: {role}")
         return RedirectResponse(url="/admin/users", status_code=303)
 
     parsed_tenant_id: int | None = None
-    if role == "tenant_user":
+    if role in ("tenant_user", "tenant_architect"):
         if not tenant_id or not tenant_id.isdigit():
-            _flash(request, "error", "Per un tenant_user devi selezionare un tenant.")
+            _flash(request, "error", f"Per un {role} devi selezionare un tenant.")
             return RedirectResponse(url="/admin/users", status_code=303)
         parsed_tenant_id = int(tenant_id)
         if not db_cloud.get_tenant(parsed_tenant_id):

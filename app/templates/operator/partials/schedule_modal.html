@@ -1,0 +1,105 @@
+{# Modal pianificazione agente: scegli agente + cron expression con preset friendly.
+   Variabili: agents (list di task pubblicati), agent (opzionale, preselect), current_cron. #}
+<div class="op-modal-backdrop" onclick="if(event.target===this) opCloseModal()">
+  <div class="op-modal op-modal-schedule" role="dialog" aria-modal="true">
+    <header class="op-modal-head">
+      <span class="op-modal-icon">📅</span>
+      <div class="op-modal-head-text">
+        <h2>{% if agent %}Modifica pianificazione{% else %}Pianifica un agente{% endif %}</h2>
+        <p class="op-modal-subtitle">
+          {% if agent %}
+            Cambia o rimuovi la programmazione di <strong>{{ agent.display_name }}</strong>.
+          {% else %}
+            Imposta una ricorrenza automatica per un agente pubblicato. Lo lancia il sistema senza intervento.
+          {% endif %}
+        </p>
+      </div>
+      <button type="button" class="op-modal-close" onclick="opCloseModal()" aria-label="Chiudi">
+        <svg><use href="#op-i-close"/></svg>
+      </button>
+    </header>
+
+    <form method="post" id="op-schedule-form" class="op-modal-form" onsubmit="opSubmitSchedule(event)">
+      <div class="op-modal-fields">
+
+        {% if not agent %}
+        <div class="op-field">
+          <label class="op-field-label" for="op-schedule-agent">Quale agente pianificare? <span class="op-field-req">*</span></label>
+          <select name="agent_id" id="op-schedule-agent" required class="op-field-input">
+            <option value="">— scegli un agente —</option>
+            {% for a in agents %}
+            <option value="{{ a.id }}">{{ a.display_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% else %}
+        <input type="hidden" name="agent_id" value="{{ agent.id }}">
+        {% endif %}
+
+        <div class="op-field">
+          <label class="op-field-label">Quando lanciarlo?</label>
+          <div class="op-cron-presets">
+            <button type="button" class="op-cron-preset" data-cron="0 9 * * *">Ogni giorno alle 9:00</button>
+            <button type="button" class="op-cron-preset" data-cron="0 9 * * 1-5">Lun-Ven alle 9:00</button>
+            <button type="button" class="op-cron-preset" data-cron="0 14 * * 1">Lunedì alle 14:00</button>
+            <button type="button" class="op-cron-preset" data-cron="0 */6 * * *">Ogni 6 ore</button>
+            <button type="button" class="op-cron-preset" data-cron="0 0 1 * *">Il 1 del mese a mezzanotte</button>
+          </div>
+          <input type="text" id="op-schedule-cron" name="cron" value="{{ current_cron or '' }}"
+                 placeholder="Cron expression: minuto ora giorno mese giorno-settimana"
+                 class="op-field-input" autocomplete="off">
+          <small class="hint" style="color: var(--op-fg-faint); font-size: 0.75rem; margin-top: 4px; display:block;">
+            Formato: <code>min ora giorno mese giorno-settimana</code>. Es. <code>0 9 * * *</code> = ogni giorno alle 9:00. Lascia vuoto per rimuovere la pianificazione.
+          </small>
+        </div>
+
+      </div>
+      <footer class="op-modal-foot">
+        <button type="button" class="op-btn-secondary" onclick="opCloseModal()">Annulla</button>
+        {% if agent and current_cron %}
+        <button type="button" class="op-btn-secondary"
+                onclick="document.getElementById('op-schedule-cron').value=''; document.getElementById('op-schedule-form').submit();"
+                style="color: var(--op-error); border-color: rgba(248,113,113,0.3);">
+          Rimuovi pianificazione
+        </button>
+        {% endif %}
+        <button type="submit" class="op-btn-primary">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Salva
+        </button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<script>
+  (function() {
+    window.opCloseModal = function() {
+      var c = document.getElementById('op-modal-container');
+      if (c) c.innerHTML = '';
+    };
+    function esc(e) { if (e.key === 'Escape') window.opCloseModal(); }
+    document.addEventListener('keydown', esc, { once: true });
+
+    // Preset cron buttons popolano il campo
+    document.querySelectorAll('.op-cron-preset').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        document.getElementById('op-schedule-cron').value = btn.getAttribute('data-cron');
+      });
+    });
+
+    // Submit dinamico: l'action varia con agent_id (se preselect c'e' gia', usalo)
+    window.opSubmitSchedule = function(e) {
+      e.preventDefault();
+      var form = e.target;
+      var agentSelect = form.querySelector('[name=agent_id]');
+      var agentId = agentSelect.value || agentSelect.getAttribute('value');
+      if (!agentId) {
+        alert('Seleziona un agente.');
+        return false;
+      }
+      form.action = '/agents/task/' + agentId + '/schedule';
+      form.submit();
+    };
+  })();
+</script>

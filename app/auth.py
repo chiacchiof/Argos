@@ -40,6 +40,37 @@ class CurrentUser:
         return self.role == "super_admin"
 
     @property
+    def is_architect(self) -> bool:
+        """Utente tenant con poteri 'architetto': crea task/workflow, gestisce
+        asset, configura LLM. UI completa con sidebar."""
+        return self.role == "tenant_architect"
+
+    @property
+    def is_operator(self) -> bool:
+        """Utente tenant con UI semplificata: dashboard agenti, chat drawer.
+        Non puo' creare task/workflow ne' accedere a configurazioni."""
+        return self.role == "tenant_user"
+
+    @property
+    def can_manage_architecture(self) -> bool:
+        """Comodita': True se super_admin o tenant_architect (accesso a pagine
+        di costruzione: tasks, workflows, asset, settings, llm-keys, ecc.)."""
+        return self.is_super_admin or self.is_architect
+
+    @property
+    def display_name(self) -> str:
+        """Nome user-friendly per saluti UI ('Ciao, Marco'). Usa first_name se
+        disponibile, altrimenti deriva dall'email (parte locale capitalizzata)."""
+        # first_name e last_name non sono sul dataclass (li teniamo light) — quindi
+        # ricaviamo solo dall'email.
+        local = (self.email or "").split("@", 1)[0]
+        import re as _re
+        parts = [p for p in _re.split(r"[._\-+]", local) if p]
+        if parts:
+            return parts[0].capitalize()
+        return "Utente"
+
+    @property
     def initials(self) -> str:
         """Iniziali (max 2 char) derivate dall'email per l'UI compact pill.
         Es. 'francesco.castiglione@x.com' -> 'FC',
@@ -143,5 +174,73 @@ def require_super_admin(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Super-admin only",
+        )
+    return current_user
+
+
+def require_architect_or_admin(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """Gate per pagine "da architetto": creazione task/workflow, configurazione
+    asset/llm-keys/social/settings/memoria sito. Bloccato per tenant_user
+    (operator). Super-admin sempre OK.
+
+    UX: l'operator che capita su una rotta architect (es. bookmark vecchio,
+    URL digitato a mano) viene redirezionato a `/home` invece di vedere un 403
+    crudo. Per richieste HTMX usiamo `HX-Redirect` cosi' il client navigates.
+    """
+    if not current_user.can_manage_architecture:
+        is_htmx = request.headers.get("HX-Request") == "true"
+        if current_user.is_operator:
+            # Redirect gentile a /home per l'operator
+            if is_htmx:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Operator non puo' accedere a questa sezione.",
+                    headers={"HX-Redirect": "/home"},
+                )
+            raise HTTPException(
+                status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+                detail="Operator redirect",
+                headers={"Location": "/home"},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Questa sezione e' riservata agli architetti. La tua utenza ha"
+                " accesso solo alla dashboard semplificata."
+            ),
+        )
+    return current_user
+
+
+def require_operator(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """Gate per pagine specifiche operator (dashboard /home, /agents/, /messages).
+    Bloccato per super-admin e architect (loro hanno la UI completa).
+
+    UX: architect/admin che capita su rotta operator viene redirezionato a `/`
+    (loro home) invece di vedere un 403 crudo.
+    """
+    if not current_user.is_operator:
+        is_htmx = request.headers.get("HX-Request") == "true"
+        if current_user.can_manage_architecture:
+            if is_htmx:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Sezione operator-only.",
+                    headers={"HX-Redirect": "/"},
+                )
+            raise HTTPException(
+                status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+                detail="Architect redirect",
+                headers={"Location": "/"},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sezione riservata agli utenti operator.",
         )
     return current_user

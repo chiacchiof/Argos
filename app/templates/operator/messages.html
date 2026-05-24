@@ -1,0 +1,89 @@
+{% extends "operator_base.html" %}
+
+{% block title %}Messaggi · Argos{% endblock %}
+
+{% block content %}
+<section class="op-messages">
+  <header class="op-messages-head">
+    <h1>Messaggi</h1>
+    <p class="op-messages-sub">Conversazioni con i contatti raggiunti dagli agenti del tuo tenant.</p>
+  </header>
+
+  {# Filtri minimali: canale + stato #}
+  <form method="get" class="op-messages-filters">
+    <label class="op-filter">
+      <span>Canale</span>
+      <select name="channel" onchange="this.form.submit()">
+        <option value="">tutti</option>
+        <option value="email" {% if filter_channel == 'email' %}selected{% endif %}>Email</option>
+        <option value="whatsapp" {% if filter_channel == 'whatsapp' %}selected{% endif %}>WhatsApp</option>
+        <option value="telegram" {% if filter_channel == 'telegram' %}selected{% endif %}>Telegram</option>
+        <option value="instagram" {% if filter_channel == 'instagram' %}selected{% endif %}>Instagram</option>
+        <option value="tiktok" {% if filter_channel == 'tiktok' %}selected{% endif %}>TikTok</option>
+        <option value="facebook" {% if filter_channel == 'facebook' %}selected{% endif %}>Facebook</option>
+      </select>
+    </label>
+    <label class="op-filter">
+      <span>Stato</span>
+      <select name="status" onchange="this.form.submit()">
+        <option value="">tutti</option>
+        <option value="open" {% if filter_status == 'open' %}selected{% endif %}>Aperti</option>
+        <option value="replied" {% if filter_status == 'replied' %}selected{% endif %}>Con risposta</option>
+        <option value="opted_out" {% if filter_status == 'opted_out' %}selected{% endif %}>Opt-out</option>
+      </select>
+    </label>
+    {% if filter_channel or filter_status %}
+    <a href="/messages" class="op-filter-reset">azzera filtri</a>
+    {% endif %}
+  </form>
+
+  {% if threads %}
+  <ul class="op-thread-list">
+    {% for t in threads %}
+    <li class="op-thread-item">
+      <a href="/inbox/{{ t.id }}" class="op-thread-link">
+        <span class="op-thread-channel" data-channel="{{ t.channel }}">
+          {% if t.channel == 'email' %}
+            <svg><use href="#op-i-mail"/></svg>
+          {% elif t.channel == 'whatsapp' %}
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.1-1.7-.8-1.9-.9-.3-.1-.5-.1-.7.1-.2.3-.8.9-1 1.1-.2.2-.4.2-.6.1-.3-.1-1.2-.5-2.3-1.4-.9-.8-1.4-1.7-1.6-2-.2-.3 0-.5.1-.6.1-.1.3-.3.4-.5.1-.1.2-.2.2-.4.1-.2 0-.4 0-.5 0-.1-.6-1.5-.9-2-.2-.5-.5-.5-.7-.5h-.6c-.2 0-.5.1-.7.3-.2.3-.9.9-.9 2.2 0 1.3.9 2.5 1 2.7.1.2 1.8 2.7 4.3 3.8 1.5.7 2.1.7 2.9.6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.1-1.2-.1-.1-.3-.2-.6-.3zM12 2C6.5 2 2 6.5 2 12c0 1.7.4 3.4 1.3 4.9L2 22l5.2-1.4c1.4.8 3.1 1.2 4.8 1.2 5.5 0 10-4.5 10-10S17.5 2 12 2z"/></svg>
+          {% elif t.channel == 'telegram' %}
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.04 15.71l-.4 4.04c.57 0 .82-.24 1.13-.54l2.71-2.58 5.62 4.11c1.03.57 1.76.27 2.04-.95L21.94 4.85c.33-1.45-.52-2.02-1.52-1.65L2.34 9.55c-1.42.55-1.39 1.35-.24 1.71l4.6 1.43L18.69 6.1c.5-.33.97-.15.59.17L9.04 15.71z"/></svg>
+          {% else %}
+            <svg><use href="#op-i-megaphone"/></svg>
+          {% endif %}
+        </span>
+        <div class="op-thread-body">
+          <div class="op-thread-head">
+            <span class="op-thread-contact">{{ t.contact_handle or t.contact_email or t.contact_phone or 'Contatto' }}</span>
+            <span class="op-thread-time">{{ (t.last_message_at or t.updated_at or '')[:16] | replace('T', ' ') }}</span>
+          </div>
+          <div class="op-thread-preview">{{ (t.last_message_preview or t.subject or '(nessun messaggio)')[:120] }}</div>
+        </div>
+        {% if t.status == 'open' %}
+        <span class="op-thread-badge op-thread-badge-open">aperto</span>
+        {% elif t.status == 'replied' %}
+        <span class="op-thread-badge op-thread-badge-replied">risposta</span>
+        {% elif t.status == 'opted_out' %}
+        <span class="op-thread-badge op-thread-badge-out">opt-out</span>
+        {% endif %}
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="op-empty-state">
+    <div class="op-empty-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/>
+        <polyline points="22,6 12,13 2,6"/>
+      </svg>
+    </div>
+    <h3>Nessun messaggio</h3>
+    <p>
+      Quando gli agenti riceveranno risposte dai contatti, le troverai qui.
+    </p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,183 @@
+{# Chat drawer slide-in destro per l'operator.
+   Reuse degli endpoint orchestrator /orchestrator/chat/stream (NDJSON streaming).
+   Persistenza chat history in DB (tenant-scoped) → drawer chiuso+riaperto
+   mantiene la conversazione.
+
+   Variabili attese in context (opzionali): chat_history (list di msg).
+   Se mancante, il drawer si carica vuoto + l'utente puo' iniziare. #}
+
+{# Carichiamo la history tramite python helper se non gia' passata. #}
+{% set _chat_history = chat_history if chat_history is defined else [] %}
+
+<aside class="op-drawer" aria-hidden="true" aria-label="Assistente">
+
+  <header class="op-drawer-head">
+    <div class="op-drawer-head-left">
+      <span class="op-drawer-icon">
+        <svg><use href="#op-i-sparkles"/></svg>
+      </span>
+      <div>
+        <div class="op-drawer-title">Assistente</div>
+        <div class="op-drawer-subtitle">Argos AI</div>
+      </div>
+    </div>
+    <div class="op-drawer-head-actions">
+      <button type="button" class="op-drawer-minimize" onclick="opMinimizeDrawer(); return false;" aria-label="Minimizza" title="Minimizza la chat (ESC)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="20" height="20">
+          {# Freccia chevron-right — "spingi a destra il pannello" #}
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="op-drawer-transcript" id="op-drawer-transcript">
+    {% if _chat_history %}
+      {% for m in _chat_history %}
+      <div class="op-bubble op-bubble-{{ m.role }}">
+        <div class="op-bubble-body">{{ m.body | safe }}</div>
+      </div>
+      {% endfor %}
+    {% else %}
+    <div class="op-drawer-empty">
+      <div class="op-drawer-empty-icon">
+        <svg><use href="#op-i-sparkles"/></svg>
+      </div>
+      <h3>Ciao! Sono il tuo assistente.</h3>
+      <p>
+        Posso aiutarti a capire quali agenti hai a disposizione, suggerirti
+        quello giusto per il tuo obiettivo, e spiegarti i parametri da
+        compilare.
+      </p>
+      <div class="op-drawer-suggestions">
+        <button type="button" class="op-suggestion" onclick="opPrefillChat('Che agenti ho a disposizione?')">
+          Che agenti ho a disposizione?
+        </button>
+        <button type="button" class="op-suggestion" onclick="opPrefillChat('Quale agente uso per trovare contatti?')">
+          Quale agente uso per trovare contatti?
+        </button>
+        <button type="button" class="op-suggestion" onclick="opPrefillChat('Come vedo i risultati di un agente?')">
+          Come vedo i risultati di un agente?
+        </button>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <form class="op-drawer-form" onsubmit="opSendChat(event)">
+    <div class="op-drawer-input-wrap">
+      <textarea
+        id="op-drawer-input"
+        name="message"
+        placeholder="Scrivi un messaggio..."
+        rows="1"
+        autocomplete="off"
+        onkeydown="opChatKeydown(event)"
+      ></textarea>
+      <button type="submit" class="op-drawer-send" aria-label="Invia">
+        <svg><use href="#op-i-send"/></svg>
+      </button>
+    </div>
+    <div class="op-drawer-hint">Enter per inviare · Shift+Enter per andare a capo</div>
+  </form>
+</aside>
+
+<script>
+  (function() {
+    var transcript = null;
+    var input = null;
+
+    function _refs() {
+      if (!transcript) transcript = document.getElementById('op-drawer-transcript');
+      if (!input) input = document.getElementById('op-drawer-input');
+    }
+
+    window.opPrefillChat = function(text) {
+      _refs();
+      input.value = text;
+      input.focus();
+      _autosize();
+    };
+
+    window.opChatKeydown = function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        opSendChat(e);
+      }
+      _autosize();
+    };
+
+    function _autosize() {
+      _refs();
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+    }
+
+    function _appendBubble(role, text) {
+      _refs();
+      // Rimuovi l'empty state se presente
+      var empty = transcript.querySelector('.op-drawer-empty');
+      if (empty) empty.remove();
+      var div = document.createElement('div');
+      div.className = 'op-bubble op-bubble-' + role;
+      var body = document.createElement('div');
+      body.className = 'op-bubble-body';
+      body.textContent = text;
+      div.appendChild(body);
+      transcript.appendChild(div);
+      transcript.scrollTop = transcript.scrollHeight;
+      return body;
+    }
+
+    window.opSendChat = async function(e) {
+      if (e) e.preventDefault();
+      _refs();
+      var text = (input.value || '').trim();
+      if (!text) return;
+      input.value = '';
+      input.style.height = 'auto';
+      _appendBubble('user', text);
+      var assistantBody = _appendBubble('assistant', '');
+      assistantBody.classList.add('op-bubble-streaming');
+
+      var form = new FormData();
+      form.append('message', text);
+      // No web / no actions: l'operator usa modalita' read-only.
+
+      try {
+        var resp = await fetch('/orchestrator/chat/stream', {
+          method: 'POST',
+          body: form,
+          headers: { 'Accept': 'application/x-ndjson' },
+        });
+        if (!resp.ok || !resp.body) throw new Error('HTTP ' + resp.status);
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        while (true) {
+          var chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line) continue;
+            try {
+              var ev = JSON.parse(line);
+              if (ev.type === 'token' && ev.content) {
+                assistantBody.textContent += ev.content;
+                transcript.scrollTop = transcript.scrollHeight;
+              }
+            } catch (err) { /* ignore parse errors */ }
+          }
+        }
+        assistantBody.classList.remove('op-bubble-streaming');
+      } catch (err) {
+        assistantBody.classList.remove('op-bubble-streaming');
+        assistantBody.textContent = 'Errore: non riesco a contattare l\'assistente. Riprova fra un momento.';
+        assistantBody.parentElement.classList.add('op-bubble-error');
+      }
+    };
+  })();
+</script>

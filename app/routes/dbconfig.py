@@ -48,6 +48,50 @@ _SESSION_FLAG = "dbadmin_authed"
 
 
 # ---------------------------------------------------------------------------
+# Preset DSN — popolano il dropdown "switch rapido" nella UI.
+# Le DSN vivono server-side (env vars). MAI esposte al browser:
+# il template mostra solo `key + label`, non la DSN. L'endpoint
+# `/dbconfig/apply-preset` risolve la chiave -> DSN al server.
+# ---------------------------------------------------------------------------
+
+# DSN hardcoded per il DB locale dev (non e' un segreto: e' postgres:postgres
+# su localhost, valida solo sul tuo PC).
+_LOCAL_DEV_DSN = "postgresql://postgres:postgres@localhost:5432/agentscraper_dev?sslmode=disable"
+
+
+def _get_presets() -> list[dict[str, str]]:
+    """Lista dei preset disponibili. Il preset `local` e' sempre presente;
+    altri preset (es. `neon`) appaiono solo se la loro DSN e' configurata in
+    env via `DBCONFIG_PRESET_<KEY>_DSN`."""
+    presets: list[dict[str, str]] = [
+        {"key": "local", "label": "Locale dev (postgres@localhost)"},
+    ]
+    if (os.environ.get("DBCONFIG_PRESET_NEON_DSN") or "").strip():
+        presets.append({"key": "neon", "label": "Neon Production (cloud)"})
+    if (os.environ.get("DBCONFIG_PRESET_STAGING_DSN") or "").strip():
+        presets.append({"key": "staging", "label": "Staging"})
+    return presets
+
+
+def _resolve_preset_dsn(key: str) -> tuple[str, str] | None:
+    """Mappa chiave preset -> (dsn, label). None se preset sconosciuto o non
+    configurato. Le DSN sono lette esclusivamente da env vars (eccetto `local`
+    che e' hardcoded — postgres:postgres su localhost, non e' un segreto)."""
+    key = (key or "").strip().lower()
+    if key == "local":
+        return _LOCAL_DEV_DSN, "Locale dev"
+    if key == "neon":
+        dsn = (os.environ.get("DBCONFIG_PRESET_NEON_DSN") or "").strip()
+        if dsn:
+            return dsn, "Neon Production"
+    if key == "staging":
+        dsn = (os.environ.get("DBCONFIG_PRESET_STAGING_DSN") or "").strip()
+        if dsn:
+            return dsn, "Staging"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
 
@@ -86,6 +130,15 @@ def _context(request: Request, **extra: Any) -> dict:
     """Context comune per i template /dbconfig."""
     override = db_override.read_override()
     env_dsn = os.environ.get("DATABASE_URL", "")
+    # Determina la chiave del preset attualmente attivo (per pre-selezione del
+    # dropdown). Match: confronta la DSN attiva con quelle dei preset.
+    active_preset_key = ""
+    if env_dsn:
+        for p in _get_presets():
+            resolved = _resolve_preset_dsn(p["key"])
+            if resolved and resolved[0] == env_dsn:
+                active_preset_key = p["key"]
+                break
     return {
         "request": request,
         "authed": _is_authenticated(request),
@@ -93,6 +146,8 @@ def _context(request: Request, **extra: Any) -> dict:
         "active_label": (override or {}).get("active_label", ""),
         "current_dsn_masked": _mask_dsn(env_dsn),
         "current_dsn_raw_present": bool(env_dsn),
+        "presets": _get_presets(),
+        "active_preset_key": active_preset_key,
         **extra,
     }
 
@@ -184,6 +239,45 @@ def dbconfig_save(
             success=(
                 f"DSN salvata (label='{active_label or '—'}'). "
                 "RIAVVIA l'app per applicare la nuova connessione."
+            ),
+        ),
+    )
+
+
+@router.post("/apply-preset")
+def dbconfig_apply_preset(request: Request, preset: str = Form("")):
+    """Applica un preset DSN identificato per chiave (es. `local`, `neon`).
+    La DSN reale viene risolta server-side: il browser invia solo la chiave,
+    mai la connection string in chiaro.
+    """
+    if not _is_authenticated(request):
+        return RedirectResponse(url="/dbconfig", status_code=303)
+    resolved = _resolve_preset_dsn(preset)
+    if not resolved:
+        return templates.TemplateResponse(
+            request,
+            "dbconfig/panel.html",
+            _context(request, error=f"Preset sconosciuto o non configurato: {preset!r}."),
+            status_code=400,
+        )
+    dsn, label = resolved
+    try:
+        db_override.write_override(dsn, label)
+    except Exception as exc:
+        log.error("Errore scrittura override preset %s: %s", preset, exc)
+        return templates.TemplateResponse(
+            request,
+            "dbconfig/panel.html",
+            _context(request, error=f"Errore: {exc}"),
+            status_code=500,
+        )
+    return templates.TemplateResponse(
+        request,
+        "dbconfig/panel.html",
+        _context(
+            request,
+            success=(
+                f"Preset '{label}' applicato. RIAVVIA l'app per puntare al nuovo DB."
             ),
         ),
     )

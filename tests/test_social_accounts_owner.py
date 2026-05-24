@@ -27,11 +27,11 @@ def sa_setup():
     tenant = db_cloud.create_tenant("SA_Tenant", "satnt")
     u_alice = db_cloud.create_user(
         tenant_id=tenant, email="alice@sa", password_hash=hash_password("pw"),
-        role="tenant_user",
+        role="tenant_architect",
     )
     u_bob = db_cloud.create_user(
         tenant_id=tenant, email="bob@sa", password_hash=hash_password("pw"),
-        role="tenant_user",
+        role="tenant_architect",
     )
     if not db_cloud.get_user_by_email("saadmin"):
         db_cloud.create_user(

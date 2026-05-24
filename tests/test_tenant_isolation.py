@@ -26,11 +26,11 @@ def populated_db():
     )
     alice_id = db_cloud.create_user(
         tenant_id=tenant_a, email="alice@a.it", password_hash=hash_password("pwd-alice"),
-        role="tenant_user",
+        role="tenant_architect",
     )
     bob_id = db_cloud.create_user(
         tenant_id=tenant_b, email="bob@b.it", password_hash=hash_password("pwd-bob"),
-        role="tenant_user",
+        role="tenant_architect",
     )
 
     # Task per ogni utente (via API db con contesto esplicito)

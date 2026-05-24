@@ -1318,6 +1318,11 @@ def _planner_model_warning(model: str) -> str | None:
 
 @router.get("/orchestrator", response_class=HTMLResponse)
 async def orchestrator_page(request: Request):
+    # Operator non vede la pagina /orchestrator (UI architect): la sua chat
+    # vive nel drawer della dashboard /home. Redirect gentile.
+    user = getattr(request.state, "current_user", None)
+    if user and getattr(user, "is_operator", False):
+        return RedirectResponse(url="/home", status_code=303)
     return templates.TemplateResponse(
         request,
         "orchestrator.html",
@@ -1440,6 +1445,7 @@ async def orchestrator_execute(
 
 @router.post("/orchestrator/chat")
 async def orchestrator_chat(
+    request: Request,
     message: str = Form(""),
     chat_web_enabled: str = Form(""),
     chat_actions_enabled: str = Form(""),
@@ -1526,6 +1532,8 @@ async def orchestrator_chat(
         user_body,
         metadata={"attachment": _public_file_metadata(file_info)} if file_info else None,
     )
+    _user_for_op = getattr(request.state, "current_user", None)
+    _is_operator = bool(_user_for_op and getattr(_user_for_op, "is_operator", False))
     try:
         reply, metadata = await _generate_chat_reply(
             user_body,
@@ -1536,6 +1544,7 @@ async def orchestrator_chat(
                 "actions_enabled": allow_actions,
                 "capabilities": capabilities,
             },
+            is_operator=_is_operator,
         )
     except Exception as e:
         reply = (
@@ -1545,6 +1554,9 @@ async def orchestrator_chat(
         )
         metadata = {"error": f"{type(e).__name__}: {e}"}
     db.add_orchestrator_message("assistant", reply, metadata=metadata)
+    # Operator: redirect torna alla dashboard, non a /orchestrator (che e' gated).
+    if _is_operator:
+        return RedirectResponse(url="/home", status_code=303)
     return RedirectResponse(url="/orchestrator#orchestrator-chat", status_code=303)
 
 
@@ -1564,6 +1576,7 @@ async def orchestrator_chat_stream(
     _user = getattr(request.state, "current_user", None)
     _captured_tenant_id = _user.tenant_id if _user else None
     _captured_user_id = _user.id if _user else None
+    _is_operator_stream = bool(_user and getattr(_user, "is_operator", False))
 
     message = (message or "").strip()
     cfg = _saved_orchestrator_config()
@@ -1690,6 +1703,7 @@ async def orchestrator_chat_stream(
                     "capabilities": capabilities,
                 },
                 metadata_out=metadata,
+                is_operator=_is_operator_stream,
             ):
                 full_text += chunk
                 yield _chat_stream_event("token", content=chunk)
@@ -1920,11 +1934,13 @@ async def _generate_chat_reply(
     *,
     file_info: dict[str, Any] | None = None,
     chat_options: dict[str, Any] | None = None,
+    is_operator: bool = False,
 ) -> tuple[str, dict]:
     base_url, api_key, payload, metadata, tools_active = await _build_chat_payload(
         latest_user_message,
         file_info=file_info,
         chat_options=chat_options,
+        is_operator=is_operator,
     )
     headers = {"Authorization": f"Bearer {api_key}"}
     async with httpx.AsyncClient(timeout=120) as client:
@@ -1968,11 +1984,13 @@ async def _stream_chat_reply(
     file_info: dict[str, Any] | None = None,
     chat_options: dict[str, Any] | None = None,
     metadata_out: dict[str, Any] | None = None,
+    is_operator: bool = False,
 ) -> AsyncIterator[str]:
     base_url, api_key, payload, metadata, tools_active = await _build_chat_payload(
         latest_user_message,
         file_info=file_info,
         chat_options=chat_options,
+        is_operator=is_operator,
     )
     if metadata_out is not None:
         metadata_out.update(metadata)
@@ -1984,6 +2002,7 @@ async def _stream_chat_reply(
                 latest_user_message,
                 file_info=file_info,
                 chat_options=chat_options,
+                is_operator=is_operator,
             )
             if metadata_out is not None:
                 metadata_out.update(final_metadata)
@@ -2019,6 +2038,7 @@ async def _build_chat_payload(
     *,
     file_info: dict[str, Any] | None = None,
     chat_options: dict[str, Any] | None = None,
+    is_operator: bool = False,
 ) -> tuple[str, str, dict[str, Any], dict[str, Any], bool]:
     cfg = _saved_orchestrator_config()
     provider_key = cfg["llm_provider"]
@@ -2045,6 +2065,13 @@ async def _build_chat_payload(
     files_enabled = bool((chat_options or {}).get("files_enabled")) and bool(capabilities["files"])
     actions_enabled = bool((chat_options or {}).get("actions_enabled")) and bool(capabilities["actions"])
     tools_capable = bool(capabilities["actions"])
+    # Operator mode: forziamo capacities off (no web, no actions, no files).
+    # L'operator vede solo testo conversazionale, niente tool dispatch.
+    if is_operator:
+        web_enabled = False
+        files_enabled = False
+        actions_enabled = False
+        tools_capable = False
 
     history = db.list_orchestrator_messages(limit=30)
     messages: list[dict[str, Any]] = [
@@ -2055,6 +2082,7 @@ async def _build_chat_payload(
                 files_enabled=files_enabled,
                 actions_enabled=actions_enabled,
                 capabilities=capabilities,
+                is_operator=is_operator,
             ),
         }
     ]
@@ -4221,13 +4249,40 @@ def _tool_list_social_senders(args: dict[str, Any]) -> str:
     )
 
 
+def _chat_system_prompt_operator() -> str:
+    """System prompt per modalita' Operator (utente non tecnico, dashboard
+    semplificata). Compatto, friendly, no jargon tecnico. Solo lettura: puo'
+    aiutare l'utente a scoprire gli agenti pubblicati, mai a crearne di nuovi
+    o configurarli."""
+    return (
+        "Sei l'assistente di Argos per utenti operator (non tecnici). L'utente lavora"
+        " in azienda e ha accesso solo agli **agenti pubblicati** dal proprio team"
+        " architetti, che vede come card nella dashboard.\n\n"
+        "REGOLE:\n"
+        "- Italiano, tono cordiale e diretto, max 3-4 righe per risposta.\n"
+        "- NON puoi creare task, workflow, asset, ne' modificare configurazioni."
+        " Se l'utente lo chiede, spiega che deve rivolgersi all'architetto del team.\n"
+        "- Puoi aiutarlo a CAPIRE cosa fanno gli agenti disponibili, suggerire quale"
+        " usare per il suo obiettivo, e ricordargli i parametri da inserire.\n"
+        "- Per AVVIARE un agente, l'utente deve cliccare 'Avvia' sulla card della"
+        " dashboard. Non puoi farlo tu via chat (per ora).\n"
+        "- Se l'utente chiede risultati, suggeriscigli di guardare 'Agenti attivi'"
+        " in alto nella dashboard, o la pagina 'Messaggi' per le risposte ricevute.\n"
+        "- Niente menzioni di tool interni, file di config, codice, prompt LLM."
+        " Parla come se fossi un collega gentile.\n"
+    )
+
+
 def _chat_system_prompt(
     *,
     web_enabled: bool,
     files_enabled: bool,
     actions_enabled: bool,
     capabilities: dict[str, Any],
+    is_operator: bool = False,
 ) -> str:
+    if is_operator:
+        return _chat_system_prompt_operator()
     snapshot = _orchestrator_snapshot()
     if web_enabled:
         web_line = (

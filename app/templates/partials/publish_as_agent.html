@@ -1,0 +1,210 @@
+{# Fragment riusabile per pubblicare un task/workflow come "agente Operator".
+   Da includere nelle pagine detail dell'architect (task_detail.html, workflow_detail.html).
+
+   Variabili attese:
+     - kind            'task' | 'workflow'
+     - agent_id        int
+     - obj             dict con campi: is_published_agent, agent_display_name,
+                       agent_description, agent_category, agent_icon, agent_input_schema, name
+     - redirect_to     (opzionale) URL di ritorno post-submit
+
+   L'UI mostra:
+     1. Toggle "Pubblicato come agente" + badge stato
+     2. Form collapsibile con: display_name, description, category, icon, input_schema (JSON)
+     3. Bottone Salva + bottone Rimuovi (ritira) #}
+
+{% set is_pub = obj.is_published_agent %}
+<details class="publish-agent-box" {% if is_pub %}open{% endif %}>
+  <summary>
+    <span class="pub-agent-status">
+      {% if is_pub %}
+        <span class="pub-agent-badge pub-agent-badge-on">✓ Pubblicato come agente</span>
+        <small class="muted">visibile ai tuoi operator</small>
+      {% else %}
+        <span class="pub-agent-badge pub-agent-badge-off">Non pubblicato</span>
+        <small class="muted">non appare nella dashboard operator</small>
+      {% endif %}
+    </span>
+  </summary>
+
+  <form method="post" action="/{{ kind }}s/{{ agent_id }}/publish-agent" class="pub-agent-form">
+    <input type="hidden" name="redirect_to" value="{{ redirect_to or ('/' ~ kind ~ 's/' ~ agent_id) }}">
+
+    <div class="pub-agent-toggle-row">
+      <label class="pub-agent-toggle">
+        <input type="checkbox" name="is_published" value="1" {% if is_pub %}checked{% endif %}>
+        <span>Mostra questo {{ kind }} come agente nella dashboard operator</span>
+      </label>
+    </div>
+
+    <div class="pub-agent-grid">
+      <label class="pub-agent-field">
+        <span>Nome visibile <em>*</em></span>
+        <input type="text" name="display_name"
+               value="{{ obj.agent_display_name or obj.name or '' }}"
+               placeholder="es. Trova clienti settore farmacia"
+               maxlength="80">
+        <small class="hint">Quello che l'operator legge sulla card.</small>
+      </label>
+
+      <label class="pub-agent-field">
+        <span>Categoria</span>
+        <select name="category">
+          {% set cur_cat = obj.agent_category or 'altri' %}
+          <option value="lead-discovery" {% if cur_cat=='lead-discovery' %}selected{% endif %}>Ricerca contatti</option>
+          <option value="outreach" {% if cur_cat=='outreach' %}selected{% endif %}>Contatto e messaggi</option>
+          <option value="enrichment" {% if cur_cat=='enrichment' %}selected{% endif %}>Arricchimento dati</option>
+          <option value="analysis" {% if cur_cat=='analysis' %}selected{% endif %}>Analisi e qualifica</option>
+          <option value="responder" {% if cur_cat=='responder' %}selected{% endif %}>Risposte automatiche</option>
+          <option value="altri" {% if cur_cat=='altri' %}selected{% endif %}>Altri</option>
+        </select>
+      </label>
+
+      <label class="pub-agent-field">
+        <span>Icona</span>
+        <select name="icon">
+          {% set cur_icon = obj.agent_icon or ('op-i-cog' if kind == 'task' else 'op-i-workflows') %}
+          <option value="op-i-target" {% if cur_icon=='op-i-target' %}selected{% endif %}>🎯 Target</option>
+          <option value="op-i-search" {% if cur_icon=='op-i-search' %}selected{% endif %}>🔍 Ricerca</option>
+          <option value="op-i-mail" {% if cur_icon=='op-i-mail' %}selected{% endif %}>✉️ Email</option>
+          <option value="op-i-megaphone" {% if cur_icon=='op-i-megaphone' %}selected{% endif %}>📣 Megafono</option>
+          <option value="op-i-bot" {% if cur_icon=='op-i-bot' %}selected{% endif %}>🤖 Bot</option>
+          <option value="op-i-sparkles" {% if cur_icon=='op-i-sparkles' %}selected{% endif %}>✨ Brillanti</option>
+          <option value="op-i-zap" {% if cur_icon=='op-i-zap' %}selected{% endif %}>⚡ Fulmine</option>
+          <option value="op-i-workflows" {% if cur_icon=='op-i-workflows' %}selected{% endif %}>🔀 Workflow</option>
+          <option value="op-i-cog" {% if cur_icon=='op-i-cog' %}selected{% endif %}>⚙️ Generico</option>
+        </select>
+      </label>
+    </div>
+
+    <label class="pub-agent-field">
+      <span>Descrizione user-friendly <em>*</em></span>
+      <textarea name="description" rows="2" maxlength="240"
+                placeholder="1-2 frasi che spiegano cosa fa, senza gergo tecnico">{{ obj.agent_description or obj.description or '' }}</textarea>
+    </label>
+
+    <label class="pub-agent-field">
+      <span>Parametri richiesti al lancio (JSON)</span>
+      <textarea name="input_schema_json" rows="6" class="pub-agent-json"
+                placeholder='[{"name":"city","type":"text","label":"Citta","required":true,"placeholder":"es. Roma"}]'>{{ (obj.agent_input_schema | tojson) if obj.agent_input_schema else '[]' }}</textarea>
+      <small class="hint">
+        Lista di campi che l'operator deve compilare prima del lancio. Tipi: <code>text</code>,
+        <code>textarea</code>, <code>number</code>, <code>select</code> (con <code>options</code>),
+        <code>checkbox</code>. Lista vuota <code>[]</code> = lancio diretto senza form.
+      </small>
+    </label>
+
+    <div class="pub-agent-actions">
+      <button type="submit" class="btn-primary">Salva pubblicazione</button>
+      {% if is_pub %}
+      <button type="submit" name="is_published" value="" formnovalidate class="btn-link-danger">Ritira pubblicazione</button>
+      {% endif %}
+    </div>
+  </form>
+</details>
+
+<style>
+  .publish-agent-box {
+    border: 1px solid var(--border);
+    background: var(--surface-1);
+    border-radius: var(--radius-sm, 6px);
+    padding: .8rem 1rem;
+    margin: 1.2rem 0;
+  }
+  .publish-agent-box > summary {
+    cursor: pointer;
+    color: var(--fg-strong);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+  }
+  .publish-agent-box > summary::-webkit-details-marker { display: none; }
+  .publish-agent-box > summary::before {
+    content: "▸";
+    margin-right: .3rem;
+    transition: transform .15s;
+  }
+  .publish-agent-box[open] > summary::before { transform: rotate(90deg); }
+  .pub-agent-status { display: inline-flex; align-items: center; gap: .6rem; }
+  .pub-agent-badge {
+    display: inline-block;
+    padding: .2rem .55rem;
+    border-radius: 999px;
+    font-size: .8em;
+    font-weight: 600;
+  }
+  .pub-agent-badge-on {
+    background: rgba(6, 182, 212, 0.14);
+    color: #06b6d4;
+    border: 1px solid rgba(6, 182, 212, 0.32);
+  }
+  .pub-agent-badge-off {
+    background: var(--surface-2);
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+  }
+  .pub-agent-form {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .pub-agent-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: .6rem;
+    cursor: pointer;
+    color: var(--fg);
+  }
+  .pub-agent-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    gap: 1rem;
+  }
+  @media (max-width: 700px) { .pub-agent-grid { grid-template-columns: 1fr; } }
+  .pub-agent-field {
+    display: flex;
+    flex-direction: column;
+    gap: .35rem;
+  }
+  .pub-agent-field > span {
+    font-size: .85em;
+    color: var(--fg-muted);
+    font-weight: 500;
+  }
+  .pub-agent-field > span em { color: var(--brand-2); font-style: normal; }
+  .pub-agent-field input, .pub-agent-field select, .pub-agent-field textarea {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg);
+    padding: .4rem .6rem;
+    font-family: inherit;
+    font-size: .9em;
+  }
+  .pub-agent-field input:focus, .pub-agent-field select:focus, .pub-agent-field textarea:focus {
+    outline: 0;
+    border-color: var(--brand-2);
+    box-shadow: 0 0 0 3px var(--brand-soft);
+  }
+  .pub-agent-json {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: .82em;
+  }
+  .pub-agent-field .hint {
+    font-size: .78em;
+    color: var(--fg-faint);
+  }
+  .pub-agent-field .hint code {
+    background: var(--surface-2);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: .92em;
+  }
+  .pub-agent-actions {
+    display: flex;
+    gap: .6rem;
+    align-items: center;
+  }
+</style>

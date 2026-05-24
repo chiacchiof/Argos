@@ -7,16 +7,55 @@ from __future__ import annotations
 
 from urllib.parse import quote_plus
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 
 from .. import db, jobs, storage
+from ..auth import require_architect_or_admin
 from ..models import WorkflowIn
 from ..templates import templates
 from . import _tenant_filter as _tf
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
+
+
+@router.post("/workflows/{workflow_id}/publish-agent")
+async def publish_workflow_as_agent(
+    workflow_id: int,
+    is_published: str = Form(""),
+    display_name: str = Form(""),
+    description: str = Form(""),
+    category: str = Form("altri"),
+    icon: str = Form("op-i-workflows"),
+    input_schema_json: str = Form("[]"),
+    redirect_to: str = Form(""),
+):
+    """Pubblica/depubblica un workflow come agente operator (vedi
+    `tasks.publish_task_as_agent` per il pattern). `input_schema_json` e' una
+    stringa JSON: parsa o fallback a lista vuota su errore."""
+    import json as _json
+    try:
+        input_schema = _json.loads(input_schema_json or "[]")
+        if not isinstance(input_schema, list):
+            input_schema = []
+    except (_json.JSONDecodeError, TypeError):
+        input_schema = []
+    flag = (is_published or "").strip().lower() in ("1", "true", "on", "yes")
+    db.set_agent_publication(
+        kind="workflow",
+        agent_id=workflow_id,
+        is_published=flag,
+        display_name=display_name or None,
+        description=description or None,
+        category=category or None,
+        icon=icon or None,
+        input_schema=input_schema,
+    )
+    target = redirect_to or f"/workflows/{workflow_id}"
+    msg = "pubblicato" if flag else "ritirato"
+    sep = "&" if "?" in target else "?"
+    return RedirectResponse(url=f"{target}{sep}flash=Agente+{msg}", status_code=303)
 
 
 def _workflow_detail_url(workflow_id: int, *, flash: str | None = None, error: str | None = None) -> str:

@@ -103,8 +103,13 @@ def reconcile_orphan_jobs() -> int:
 
     Il processo che lo eseguiva non esiste più in memoria, quindi è morto.
     Li marchiamo come 'error' con una nota.
+
+    Inoltre: finalizza i workflow_run i cui job sono tutti terminati (incluso
+    quelli appena marcati 'error'). Senza questo passo i workflow restano
+    "running" in UI per sempre — vedi `partials/workflows_list_table.html`.
     """
     n = 0
+    orphan_workflow_run_ids: set[int] = set()
     for j in _list_active_jobs_in_db():
         db.append_job_log(
             j["id"],
@@ -118,7 +123,34 @@ def reconcile_orphan_jobs() -> int:
             finished_at=db.now_iso(),
         )
         db.set_control_signal(j["id"], None)
+        if j.get("workflow_run_id"):
+            orphan_workflow_run_ids.add(int(j["workflow_run_id"]))
         n += 1
+
+    # Finalizza i workflow_run dei job orfani (di solito risultano in stato 'error'
+    # perche' ALMENO uno dei job e' 'error'). _maybe_finalize_workflow_run
+    # decide la politica: error se almeno uno e' error, ecc.
+    for wfr_id in orphan_workflow_run_ids:
+        try:
+            _maybe_finalize_workflow_run(wfr_id)
+        except Exception:
+            log.exception("reconcile: workflow_run %s finalize failed", wfr_id)
+
+    # Cintura di sicurezza: pulisci workflow_run 'running'/'queued' che NON hanno
+    # nessun job attivo (es. job manualmente cancellati senza che _after_job_done
+    # girasse, oppure DB sporcato da un crash). Marca come 'error'.
+    try:
+        stranded = db.find_stranded_workflow_runs()
+        for wfr in stranded:
+            try:
+                _maybe_finalize_workflow_run(int(wfr["id"]))
+            except Exception:
+                log.exception("reconcile: stranded workflow_run %s finalize failed", wfr.get("id"))
+        if stranded:
+            log.info("reconcile_orphan_jobs: finalizzati %d workflow_run orfani", len(stranded))
+    except Exception:
+        log.exception("reconcile: find_stranded_workflow_runs failed")
+
     if n:
         log.info("reconcile_orphan_jobs: %d job orfani chiusi", n)
     return n
@@ -484,7 +516,18 @@ def _maybe_finalize_workflow_run(workflow_run_id: int) -> None:
 
 
 def start_job(task_id: int, workflow_run_id: int | None = None) -> int:
-    """Crea un job in stato queued e lancia il task asincrono. Ritorna job_id."""
+    """Crea un job in stato queued e lancia il task asincrono. Ritorna job_id.
+
+    IMPORTANTE: il job eredita sempre `created_by_user_id` dal TASK (chi l'ha
+    creato), NON dal caller corrente. Motivo: le credenziali LLM, gli account
+    email/social/etc. sono possedute dall'architect che ha creato il task. Se
+    un operator (utente con UI semplificata) lancia il task, il runner cerca
+    le credenziali dell'architect — non dell'operator — perche' il task e' una
+    "definizione" il cui contesto e' quello del suo creatore.
+
+    Caso edge: task senza `created_by_user_id` (es. dati pre-multi-tenant) →
+    fallback al caller corrente via _resolve_user(_UNSET).
+    """
     task = db.get_task(task_id)
     if task is None:
         raise ValueError(f"Task {task_id} non esiste.")
@@ -493,7 +536,12 @@ def start_job(task_id: int, workflow_run_id: int | None = None) -> int:
             f"Task #{task_id} '{task.get('name')}' e' disabilitato. "
             f"Riabilitalo prima di lanciarlo."
         )
-    job_id = db.create_job(task_id, workflow_run_id=workflow_run_id)
+    # Owner del job = owner del task (per credential lookup, vedi docstring).
+    owner_id = task.get("created_by_user_id")
+    create_kwargs: dict[str, Any] = {"workflow_run_id": workflow_run_id}
+    if owner_id:
+        create_kwargs["created_by_user_id"] = int(owner_id)
+    job_id = db.create_job(task_id, **create_kwargs)
     t = asyncio.create_task(_run_job(job_id, task_id))
     _running_tasks[job_id] = t
     return job_id

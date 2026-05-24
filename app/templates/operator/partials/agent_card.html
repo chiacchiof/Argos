@@ -1,0 +1,56 @@
+{# Card di un agente nella griglia.
+   Variabili attese: `agent` (dict da list_published_agents). #}
+{% set icon_id = (agent.icon if agent.icon and agent.icon.startswith('op-i-') else 'op-i-' + (agent.icon or 'cog').replace('i-', '')) %}
+{% set kind_label = 'Workflow' if agent.kind == 'workflow' else 'Task' %}
+<article class="op-agent-card op-agent-card-{{ agent.kind }}{% if agent.active_jobs > 0 %} is-running{% endif %}"
+         hx-get="/agents/{{ agent.kind }}/{{ agent.id }}/details"
+         hx-target="#op-modal-container"
+         hx-swap="innerHTML"
+         hx-trigger="click[!shouldIgnoreCardClick(event)]"
+         style="cursor: pointer;"
+         title="Apri dettagli">
+  <div class="op-agent-card-head">
+    <span class="op-agent-icon" aria-hidden="true">
+      <svg><use href="#{{ icon_id }}"/></svg>
+    </span>
+    <span class="op-agent-kind-badge op-agent-kind-{{ agent.kind }}"
+          title="{% if agent.kind == 'workflow' %}Workflow: catena di più task in cascata{% else %}Task: agente singolo{% endif %}">
+      {% if agent.kind == 'workflow' %}
+        <svg class="op-icon-tiny"><use href="#op-i-workflows"/></svg>
+      {% endif %}
+      {{ kind_label }}
+    </span>
+    {% if agent.active_jobs > 0 %}
+    <span class="op-agent-running-dot" title="In esecuzione ({{ agent.active_jobs }})">
+      <span class="op-pulse"></span>
+    </span>
+    {% endif %}
+  </div>
+
+  <div class="op-agent-card-body">
+    <h3 class="op-agent-name">{{ agent.display_name }}</h3>
+    <p class="op-agent-description">{{ agent.description or 'Agente pronto per essere lanciato.' }}</p>
+  </div>
+
+  <div class="op-agent-card-foot">
+    <button type="button"
+            class="op-btn-launch"
+            data-launch
+            hx-get="/agents/{{ agent.kind }}/{{ agent.id }}/launch"
+            hx-target="#op-modal-container"
+            hx-swap="innerHTML"
+            onclick="event.stopPropagation();">
+      Avvia
+      <svg class="op-icon-tiny"><use href="#op-i-arrow-right"/></svg>
+    </button>
+    <button type="button"
+            class="op-btn-details"
+            hx-get="/agents/{{ agent.kind }}/{{ agent.id }}/details"
+            hx-target="#op-modal-container"
+            hx-swap="innerHTML"
+            onclick="event.stopPropagation();"
+            title="Dettagli">
+      Dettagli
+    </button>
+  </div>
+</article>

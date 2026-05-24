@@ -19,11 +19,11 @@ def author_setup():
     tenant = db_cloud.create_tenant("AuthFilter", "afsetup")
     u_alice = db_cloud.create_user(
         tenant_id=tenant, email="alice@af", password_hash=hash_password("pw"),
-        role="tenant_user",
+        role="tenant_architect",
     )
     u_bob = db_cloud.create_user(
         tenant_id=tenant, email="bob@af", password_hash=hash_password("pw"),
-        role="tenant_user",
+        role="tenant_architect",
     )
     t_alice = db.create_task(
         {"name": "Alice task", "objective": "x", "agent_mode": "react"},

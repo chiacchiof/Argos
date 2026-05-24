@@ -21,15 +21,16 @@ from __future__ import annotations
 import logging
 import secrets
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db, db_cloud
 from ..agent.social.crypto_creds import encrypt, is_configured
+from ..auth import require_architect_or_admin
 from ..templates import templates
 from . import _tenant_filter as _tf
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
 log = logging.getLogger(__name__)
 
 # Piattaforme di outreach social vere (instagram/tiktok/facebook).

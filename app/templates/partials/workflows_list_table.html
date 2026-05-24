@@ -40,6 +40,12 @@
             </span>
           {% endif %}
           <a href="/workflows/{{ w.id }}">{{ w.name }}</a>
+          {% if w.is_published_agent %}
+          <span class="published-agent-pill"
+                title="Pubblicato come agente operator{% if w.agent_display_name %}: {{ w.agent_display_name }}{% endif %}">
+            🤖 agente
+          </span>
+          {% endif %}
           {% if act and act.n_active_jobs > 0 %}
           <br><small class="muted">{{ act.n_active_jobs }} job attiv{% if act.n_active_jobs == 1 %}o{% else %}i{% endif %}</small>
           {% endif %}

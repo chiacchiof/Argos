@@ -1,0 +1,215 @@
+{% extends "operator_base.html" %}
+
+{% block title %}{% if is_qualified_view %}Audience qualificate{% else %}Lead{% endif %} · Argos{% endblock %}
+
+{% block content %}
+<section class="op-leads">
+  <header class="op-leads-head">
+    <div>
+      <h1>{% if is_qualified_view %}Audience qualificate{% else %}Lead trovati{% endif %}</h1>
+      <p class="op-leads-sub">
+        {% if is_qualified_view %}
+          Contatti classificati come "qualificati" dagli agenti. Pronti per outreach.
+        {% else %}
+          Tutti i lead estratti dai tuoi agenti, indipendentemente dalla qualifica.
+        {% endif %}
+      </p>
+    </div>
+    <div class="op-leads-toggle">
+      <a href="/leads" class="op-leads-toggle-link {% if not is_qualified_view %}is-active{% endif %}">Tutti</a>
+      <a href="/leads/qualified" class="op-leads-toggle-link {% if is_qualified_view %}is-active{% endif %}">Qualificati</a>
+    </div>
+  </header>
+
+  {% set form_action = '/leads/qualified' if is_qualified_view else '/leads' %}
+  <form method="get" action="{{ form_action }}" class="op-filters-form">
+
+    {# Ricerca testuale full-width #}
+    <div class="op-filter-row op-filter-row-search">
+      <input type="search" name="q" value="{{ filter_q or '' }}" placeholder="🔍 Cerca per nome, email, titolo..." class="op-filters-search">
+      <button type="submit" class="op-btn-primary">Cerca</button>
+    </div>
+
+    {# Filtri primary inline #}
+    <div class="op-filter-row">
+      {% if is_qualified_view and qualifier_menu %}
+      <label class="op-filter-field">
+        <span>Qualifier</span>
+        <select name="qualifiers" onchange="this.form.submit()">
+          <option value="">— tutti —</option>
+          {% for q in qualifier_menu %}
+          <option value="{{ q }}" {% if q in selected_qualifiers %}selected{% endif %}>{{ q }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+
+      {% if types_in_use %}
+      <label class="op-filter-field">
+        <span>Tipo</span>
+        <select name="asset_type" onchange="this.form.submit()">
+          <option value="">— tutti —</option>
+          {% for t in types_in_use %}
+          <option value="{{ t }}" {% if t == filter_type %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+
+      {% if not is_qualified_view %}
+      <label class="op-filter-field">
+        <span>Stato</span>
+        <select name="status" onchange="this.form.submit()">
+          <option value="">— tutti —</option>
+          <option value="new" {% if filter_status == 'new' %}selected{% endif %}>Nuovi</option>
+          <option value="qualified" {% if filter_status == 'qualified' %}selected{% endif %}>Qualificati</option>
+          <option value="rejected" {% if filter_status == 'rejected' %}selected{% endif %}>Scartati</option>
+          <option value="archived" {% if filter_status == 'archived' %}selected{% endif %}>Archiviati</option>
+        </select>
+      </label>
+      {% endif %}
+
+      {% if is_qualified_view %}
+      <label class="op-filter-field">
+        <span>Score minimo</span>
+        <input type="number" name="score_min" value="{{ filter_score_min if filter_score_min is not none else '' }}" min="1" max="10" placeholder="es. 7" onchange="this.form.submit()">
+      </label>
+      {% endif %}
+
+      <label class="op-filter-toggle">
+        <input type="checkbox" name="has_contacts" value="1" {% if has_contacts %}checked{% endif %} onchange="this.form.submit()">
+        <span>Solo con contatti</span>
+      </label>
+      <label class="op-filter-toggle">
+        <input type="checkbox" name="has_social" value="1" {% if has_social %}checked{% endif %} onchange="this.form.submit()">
+        <span>Solo con social</span>
+      </label>
+    </div>
+
+    {# Tag widget avanzato (collassabile) #}
+    <details class="op-filter-advanced" {% if tag_filters %}open{% endif %}>
+      <summary>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+        </svg>
+        Filtri avanzati per tag {% if tag_filters %}<span class="op-filter-badge">{{ tag_filters|length }}</span>{% endif %}
+      </summary>
+      <div class="op-filter-tags">
+        <p class="op-filter-help">Filtra i lead per coppie chiave/valore di tag. Es. <code>country</code> = <code>it</code>, <code>lang</code> = <code>en</code>.</p>
+        {% for i in range(6) %}
+        {% set existing = tag_filters[i] if i < tag_filters|length else None %}
+        <div class="op-tag-slot">
+          <input list="op-tag-keys" name="tag_key__{{ i }}" placeholder="chiave" value="{{ existing[0] if existing else '' }}">
+          <span class="op-tag-eq">=</span>
+          <input name="tag_value__{{ i }}" placeholder="valore" value="{{ existing[1] if existing else '' }}">
+        </div>
+        {% endfor %}
+        <datalist id="op-tag-keys">
+          {% for k in available_tag_keys %}<option value="{{ k }}">{% endfor %}
+        </datalist>
+        <label class="op-filter-toggle">
+          <input type="radio" name="tag_mode" value="and" {% if tag_mode == 'and' %}checked{% endif %}> AND (tutti)
+          <input type="radio" name="tag_mode" value="or" {% if tag_mode == 'or' %}checked{% endif %} style="margin-left:14px"> OR (almeno uno)
+        </label>
+        <div class="op-filter-advanced-actions">
+          <button type="submit" class="op-btn-secondary">Applica</button>
+        </div>
+      </div>
+    </details>
+
+    {% if filter_q or filter_type or filter_status or tag_filters or has_contacts or has_social or (is_qualified_view and (selected_qualifiers or filter_score_min)) %}
+    <a href="{{ form_action }}" class="op-leads-reset">✕ Azzera filtri</a>
+    {% endif %}
+  </form>
+
+  <div class="op-leads-count">
+    <strong>{{ total }}</strong> lead{% if total != 1 %}{% endif %}
+    {% if filter_q or filter_type or filter_status or tag_filters or has_contacts or has_social %}
+    <span class="op-leads-muted">(filtrati)</span>
+    {% endif %}
+  </div>
+
+  {% if leads %}
+  <ul class="op-leads-list">
+    {% for a in leads %}
+    <li class="op-lead-card {% if a.outreach_status == 'optedout' %}op-lead-card-optout{% endif %}">
+      <div class="op-lead-head">
+        <h3 class="op-lead-title">
+          {% if a.title %}{{ a.title }}
+          {% elif a.profile_url %}{{ a.profile_url }}
+          {% else %}{{ a.asset_type or 'Lead' }} #{{ a.id }}{% endif %}
+        </h3>
+        {% if a.asset_type %}<span class="op-lead-type">{{ a.asset_type }}</span>{% endif %}
+      </div>
+
+      {% if a.subtitle %}<p class="op-lead-sub">{{ a.subtitle }}</p>{% endif %}
+
+      <div class="op-lead-contacts">
+        {% if a.email %}<span class="op-lead-contact"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="22 6 12 13 2 6"/></svg>{{ a.email }}</span>{% endif %}
+        {% if a.whatsapp %}<span class="op-lead-contact op-lead-contact-wa">🟢 WhatsApp</span>{% endif %}
+        {% if a.telegram %}<span class="op-lead-contact">✈️ {{ a.telegram }}</span>{% endif %}
+        {% if a.profile_url %}<a href="{{ a.profile_url }}" target="_blank" rel="noopener" class="op-lead-link">↗ Profilo</a>{% endif %}
+      </div>
+
+      <div class="op-lead-meta">
+        {% if a.outreach_status == 'optedout' %}
+          <span class="op-lead-status op-lead-status-optout">⊘ Opt-out</span>
+        {% elif a.status %}
+          <span class="op-lead-status op-lead-status-{{ a.status }}">{{ a.status }}</span>
+        {% endif %}
+        {% if a.created_at %}<span class="op-lead-date">{{ a.created_at[:10] }}</span>{% endif %}
+
+        {% if a.outreach_status != 'optedout' %}
+        <form method="post" action="/leads/{{ a.id }}/optout" class="op-lead-action-form"
+              onsubmit="return confirm('Escludere {{ (a.title or 'questo lead')|e }} dall\\'outreach? Nessun agente lo contatter\\'a piu\\'.');">
+          <button type="submit" class="op-btn-mini op-btn-mini-danger" title="Escludi questo lead dall'outreach futuro">
+            Opt-out
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+
+  {# Paginazione #}
+  {% if total_pages > 1 %}
+  {% set qs_parts = [] %}
+  {% if filter_q %}{% set _ = qs_parts.append('q=' ~ filter_q) %}{% endif %}
+  {% if filter_type %}{% set _ = qs_parts.append('asset_type=' ~ filter_type) %}{% endif %}
+  {% if filter_status %}{% set _ = qs_parts.append('status=' ~ filter_status) %}{% endif %}
+  {% if filter_source_task_id %}{% set _ = qs_parts.append('source_task_id=' ~ filter_source_task_id) %}{% endif %}
+  {% if has_contacts %}{% set _ = qs_parts.append('has_contacts=1') %}{% endif %}
+  {% if has_social %}{% set _ = qs_parts.append('has_social=1') %}{% endif %}
+  {% if is_qualified_view and selected_qualifiers %}{% set _ = qs_parts.append('qualifiers=' ~ (selected_qualifiers|join(','))) %}{% endif %}
+  {% if is_qualified_view and filter_score_min %}{% set _ = qs_parts.append('score_min=' ~ filter_score_min) %}{% endif %}
+  {% for k, v in tag_filters %}{% set _ = qs_parts.append('tag_key__' ~ loop.index0 ~ '=' ~ k) %}{% set _ = qs_parts.append('tag_value__' ~ loop.index0 ~ '=' ~ v) %}{% endfor %}
+  {% if tag_mode != 'and' %}{% set _ = qs_parts.append('tag_mode=' ~ tag_mode) %}{% endif %}
+  {% set base_qs = qs_parts|join('&') %}
+  <nav class="op-leads-pagination" aria-label="Paginazione">
+    {% if page > 1 %}
+    <a href="?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ page - 1 }}" class="op-leads-page">← Precedente</a>
+    {% endif %}
+    <span class="op-leads-page-info">Pagina {{ page }} di {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ page + 1 }}" class="op-leads-page">Successiva →</a>
+    {% endif %}
+  </nav>
+  {% endif %}
+
+  {% else %}
+  <div class="op-empty-state">
+    <div class="op-empty-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+    </div>
+    <h3>Nessun lead {% if is_qualified_view %}qualificato {% endif %}trovato</h3>
+    <p>
+      {% if filter_q or filter_type or tag_filters %}Nessun risultato per i filtri attivi. Prova ad azzerarli.
+      {% else %}Lancia uno degli agenti dalla <a href="/home" class="op-link">Dashboard</a> per generare lead.{% endif %}
+    </p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

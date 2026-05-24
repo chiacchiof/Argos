@@ -1,0 +1,74 @@
+{% extends "operator_base.html" %}
+
+{% block title %}Home · Argos{% endblock %}
+
+{% block content %}
+
+{# Hero full-width, sopra le canvas. #}
+<section class="op-hero">
+  <h1 class="op-hero-title">
+    Ciao, {{ current_user.display_name if current_user else 'amico' }}.<br>
+    <span class="op-hero-gradient">Cosa posso fare per te?</span>
+  </h1>
+  <p class="op-hero-subtitle">
+    Lancia uno degli agenti pronti qui sotto, oppure
+    <button type="button" class="op-hero-chat-link" onclick="opToggleDrawer()">scrivi all'assistente</button>.
+  </p>
+</section>
+
+{# Due canvas affiancate: sinistra agenti, destra lavoro in corso. #}
+<div class="op-canvases">
+
+  {# === CANVAS SINISTRA: agenti per categoria === #}
+  <section class="op-canvas op-canvas-main" aria-labelledby="op-canvas-main-title">
+    <h2 id="op-canvas-main-title" class="op-canvas-title">Agenti disponibili</h2>
+
+    {% if agent_groups %}
+    <div class="op-canvas-content">
+      {% for group in agent_groups %}
+      <div class="op-category-block">
+        <header class="op-category-header">
+          <h3 class="op-category-label">{{ group.label }}</h3>
+          <span class="op-category-count">{{ group.agents|length }} agent{{ 'e' if group.agents|length == 1 else 'i' }}</span>
+        </header>
+        <div class="op-agent-row"
+             role="region"
+             aria-label="Agenti {{ group.label }}"
+             tabindex="0">
+          {% for agent in group.agents %}
+            {% include "operator/partials/agent_card.html" %}
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="op-empty-state op-empty-canvas">
+      <div class="op-empty-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M8 12h8M12 8v8" opacity="0.4"/>
+        </svg>
+      </div>
+      <h3>Nessun agente disponibile</h3>
+      <p>
+        Il tuo team architetti non ha ancora pubblicato agenti. Chiedi a chi gestisce
+        la piattaforma di abilitare task / workflow per te &mdash; oppure scrivi
+        all'assistente per capire cosa serve.
+      </p>
+      <button type="button" class="op-btn-primary" onclick="opToggleDrawer()">
+        <svg class="op-icon"><use href="#op-i-chat"/></svg>
+        <span>Chiedi all'assistente</span>
+      </button>
+    </div>
+    {% endif %}
+  </section>
+
+  {# === CANVAS DESTRA: pannello live (incluso dal partial che gestisce polling) === #}
+  {% include "operator/partials/live_panel.html" %}
+
+</div>
+
+{# Modal launch / details dinamico — popolato da HTMX. #}
+<div id="op-modal-container"></div>
+{% endblock %}

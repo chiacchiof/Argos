@@ -1,0 +1,113 @@
+{# Modal di lancio agente — HTMX hx-get/hx-target lo inserisce in #op-modal-container.
+   Si chiude da: bottone X, click sul backdrop, ESC.
+   Submit del form -> POST /agents/{kind}/{id}/run -> redirect /home?_msg=...
+   Variabili: agent (dict), fields (list di campi del form). #}
+{% set icon_id = (agent.icon if agent.icon and agent.icon.startswith('op-i-') else 'op-i-' + (agent.icon or 'cog').replace('i-', '')) %}
+<div class="op-modal-backdrop" onclick="if(event.target===this) opCloseModal()">
+  <div class="op-modal" role="dialog" aria-modal="true" aria-labelledby="op-modal-title">
+
+    <header class="op-modal-head">
+      <span class="op-modal-icon"><svg><use href="#{{ icon_id }}"/></svg></span>
+      <div class="op-modal-head-text">
+        <h2 id="op-modal-title">{{ agent.display_name }}</h2>
+        <p class="op-modal-subtitle">{{ agent.description or 'Conferma per avviare l\'agente.' }}</p>
+      </div>
+      <button type="button" class="op-modal-close" onclick="opCloseModal()" aria-label="Chiudi">
+        <svg><use href="#op-i-close"/></svg>
+      </button>
+    </header>
+
+    <form method="post" action="/agents/{{ agent.kind }}/{{ agent.id }}/run" class="op-modal-form">
+      {% if fields %}
+      <div class="op-modal-fields">
+        {% for f in fields %}
+        <div class="op-field">
+          <label for="op-field-{{ f.name }}" class="op-field-label">
+            {{ f.label }}{% if f.required %}<span class="op-field-req">*</span>{% endif %}
+          </label>
+          {% if f.type == 'textarea' %}
+            <textarea
+              id="op-field-{{ f.name }}"
+              name="input.{{ f.name }}"
+              {% if f.required %}required{% endif %}
+              placeholder="{{ f.placeholder }}"
+              rows="3"
+              class="op-field-input"
+            >{{ f.default }}</textarea>
+          {% elif f.type == 'select' %}
+            <select id="op-field-{{ f.name }}" name="input.{{ f.name }}" {% if f.required %}required{% endif %} class="op-field-input">
+              {% if not f.required %}<option value="">— scegli —</option>{% endif %}
+              {% for opt in f.options %}
+                {% if opt is string %}
+                  <option value="{{ opt }}" {% if opt == f.default %}selected{% endif %}>{{ opt }}</option>
+                {% else %}
+                  <option value="{{ opt.value }}" {% if opt.value == f.default %}selected{% endif %}>{{ opt.label or opt.value }}</option>
+                {% endif %}
+              {% endfor %}
+            </select>
+          {% elif f.type == 'checkbox' %}
+            <label class="op-field-checkbox">
+              <input type="checkbox" name="input.{{ f.name }}" value="1" {% if f.default %}checked{% endif %}>
+              <span>{{ f.placeholder or 'Attiva' }}</span>
+            </label>
+          {% elif f.type == 'number' %}
+            <input
+              id="op-field-{{ f.name }}"
+              type="number"
+              name="input.{{ f.name }}"
+              {% if f.required %}required{% endif %}
+              value="{{ f.default }}"
+              placeholder="{{ f.placeholder }}"
+              class="op-field-input"
+            >
+          {% else %}
+            <input
+              id="op-field-{{ f.name }}"
+              type="text"
+              name="input.{{ f.name }}"
+              {% if f.required %}required{% endif %}
+              value="{{ f.default }}"
+              placeholder="{{ f.placeholder }}"
+              class="op-field-input"
+              autocomplete="off"
+            >
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="op-modal-confirm">
+        <p>Avviare <strong>{{ agent.display_name }}</strong>?</p>
+      </div>
+      {% endif %}
+
+      <footer class="op-modal-foot">
+        <button type="button" class="op-btn-secondary" onclick="opCloseModal()">Annulla</button>
+        <button type="submit" class="op-btn-primary">
+          <svg class="op-icon"><use href="#op-i-zap"/></svg>
+          <span>Avvia agente</span>
+        </button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<script>
+  (function() {
+    window.opCloseModal = function() {
+      var c = document.getElementById('op-modal-container');
+      if (c) c.innerHTML = '';
+      document.removeEventListener('keydown', _opModalEsc);
+    };
+    function _opModalEsc(e) {
+      if (e.key === 'Escape') window.opCloseModal();
+    }
+    window._opModalEsc = _opModalEsc;
+    document.addEventListener('keydown', _opModalEsc);
+    // Focus primo campo
+    setTimeout(function() {
+      var first = document.querySelector('.op-modal-form input, .op-modal-form textarea, .op-modal-form select');
+      if (first) first.focus();
+    }, 50);
+  })();
+</script>

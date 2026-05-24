@@ -1,0 +1,295 @@
+{# Toolbox destra: 3 tab CSS-only (radio + label).
+   Tab 1 "In corso" polling 3s; tab 2 "Agenda" + tab 3 "Storia" si aggiornano
+   ai full-reload (cambiano di rado).
+
+   Lo state della tab e' nel DOM via radio button — sopravvive ai re-swap
+   HTMX perche' i radio rimangono nel DOM principale (sostituendo solo l'
+   inner content del live panel non perdiamo lo state della tab attiva).
+
+   Per preservare la tab selezionata anche su full-reload, salviamo in
+   localStorage.
+#}
+<aside class="op-canvas op-canvas-side"
+       hx-get="/home?_partial=live"
+       hx-trigger="every 3s"
+       hx-swap="outerHTML"
+       aria-labelledby="op-canvas-side-title">
+
+  <h2 id="op-canvas-side-title" class="op-canvas-title">
+    🛠 Strumenti
+  </h2>
+
+  {# Radio buttons nascosti che controllano la tab attiva via CSS :checked #}
+  <input type="radio" name="op-tab" id="op-tab-live" class="op-tabs-radio"
+         {% if not (active_tab is defined and active_tab) or active_tab == 'live' %}checked{% endif %}>
+  <input type="radio" name="op-tab" id="op-tab-agenda" class="op-tabs-radio"
+         {% if active_tab is defined and active_tab == 'agenda' %}checked{% endif %}>
+  <input type="radio" name="op-tab" id="op-tab-history" class="op-tabs-radio"
+         {% if active_tab is defined and active_tab == 'history' %}checked{% endif %}>
+
+  <nav class="op-tabs-nav" aria-label="Strumenti operatore">
+    <label for="op-tab-live" class="op-tabs-tab" onclick="opSaveTab('live')">
+      {% if live_jobs %}<span class="op-pulse" aria-hidden="true"></span>{% endif %}
+      <span>In corso</span>
+      {% if live_jobs %}<span class="op-tabs-badge">{{ live_jobs|length }}</span>{% endif %}
+    </label>
+    <label for="op-tab-agenda" class="op-tabs-tab" onclick="opSaveTab('agenda')">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+      </svg>
+      <span>Agenda</span>
+      {% if agenda %}<span class="op-tabs-badge op-tabs-badge-muted">{{ agenda|length }}</span>{% endif %}
+    </label>
+    <label for="op-tab-history" class="op-tabs-tab" onclick="opSaveTab('history')">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+      <span>Storia</span>
+    </label>
+  </nav>
+
+  {# ============ TAB 1: LAVORO IN CORSO ============ #}
+  <div class="op-tab-pane op-tab-pane-live op-live-panel-body">
+    {% if live_jobs %}
+    <div class="op-live-list">
+      {% for j in live_jobs %}
+      {% set icon_id = (j.icon if j.icon and j.icon.startswith('op-i-') else 'op-i-' + (j.icon or 'cog').replace('i-', '')) %}
+      <article class="op-live-job" data-job-id="{{ j.job_id }}">
+        <div class="op-live-job-head">
+          <span class="op-live-job-icon"><svg><use href="#{{ icon_id }}"/></svg></span>
+          <div class="op-live-job-meta">
+            <h4 class="op-live-job-name">{{ j.display_name }}</h4>
+            <div class="op-live-job-status">
+              <span class="op-live-job-elapsed" data-elapsed-since="{{ j.started_at or '' }}">
+                {% if j.elapsed_sec is defined and j.elapsed_sec is not none %}
+                  {{ '%02d'|format((j.elapsed_sec // 60) | int) }}:{{ '%02d'|format((j.elapsed_sec % 60) | int) }}
+                {% else %}--:--{% endif %}
+              </span>
+              <span class="op-live-job-state op-live-job-state-{{ j.status }}">
+                {% if j.status == 'running' %}in esecuzione
+                {% elif j.status == 'queued' %}in coda
+                {% elif j.status == 'paused' %}in pausa
+                {% else %}{{ j.status }}{% endif %}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="op-live-job-progress">
+          {% if j.progress_pct is defined and j.progress_pct is not none and j.progress_pct >= 0 %}
+            <div class="op-progress-bar">
+              <div class="op-progress-fill" style="width: {{ j.progress_pct }}%"></div>
+            </div>
+            <div class="op-progress-label">
+              <span>{{ '%d'|format(j.progress_pct) }}%</span>
+              {% if j.progress_label %}<span class="op-progress-step">· {{ j.progress_label }}</span>{% endif %}
+            </div>
+          {% else %}
+            <div class="op-progress-bar op-progress-indeterminate">
+              <div class="op-progress-indeterminate-track"></div>
+            </div>
+            {% if j.progress_label %}
+            <div class="op-progress-label"><span class="op-progress-step">{{ j.progress_label }}</span></div>
+            {% endif %}
+          {% endif %}
+        </div>
+
+        {% if j.stat_text %}
+        <div class="op-live-job-stat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+          </svg>
+          <span>{{ j.stat_text }}</span>
+        </div>
+        {% endif %}
+
+        <div class="op-live-job-actions">
+          <button type="button" class="op-btn-mini"
+                  hx-get="/jobs/{{ j.job_id }}/operator-details"
+                  hx-target="#op-modal-container"
+                  hx-swap="innerHTML">Dettagli</button>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="op-live-empty">
+      <div class="op-live-empty-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+        </svg>
+      </div>
+      <p>Nessun agente in esecuzione.</p>
+      <small>Lancia un agente dalla dashboard per vederlo qui.</small>
+    </div>
+    {% endif %}
+
+    {% if recent_finished %}
+    <section class="op-live-recent">
+      <h3 class="op-live-recent-title">Completati di recente</h3>
+      <ul class="op-live-recent-list">
+        {% for r in recent_finished %}
+        {% set ricon_id = (r.icon if r.icon and r.icon.startswith('op-i-') else 'op-i-' + (r.icon or 'cog').replace('i-', '')) %}
+        <li class="op-live-recent-item op-live-recent-{{ r.status }}">
+          <span class="op-live-recent-icon"><svg><use href="#{{ ricon_id }}"/></svg></span>
+          <div class="op-live-recent-meta">
+            <div class="op-live-recent-name">{{ r.display_name }}</div>
+            <div class="op-live-recent-sub">
+              {% if r.status == 'done' %}<span class="op-live-recent-badge op-live-recent-badge-done">✓ Completato</span>
+              {% elif r.status == 'error' %}<span class="op-live-recent-badge op-live-recent-badge-error">✗ Errore</span>
+              {% elif r.status == 'cancelled' %}<span class="op-live-recent-badge op-live-recent-badge-cancel">⊘ Annullato</span>
+              {% endif %}
+              {% if r.duration_sec %}<span class="op-live-recent-duration">{{ '%d'|format(r.duration_sec // 60) }}m {{ '%d'|format(r.duration_sec % 60) }}s</span>{% endif %}
+            </div>
+          </div>
+          <button type="button" class="op-btn-mini op-btn-mini-ghost"
+                  hx-get="/jobs/{{ r.job_id }}/operator-details"
+                  hx-target="#op-modal-container"
+                  hx-swap="innerHTML">Risultati</button>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+  </div>
+
+  {# ============ TAB 2: AGENDA ============ #}
+  <div class="op-tab-pane op-tab-pane-agenda">
+    {% if agenda %}
+    <ul class="op-agenda-list">
+      {% for a in agenda %}
+      {% set aicon_id = (a.icon if a.icon and a.icon.startswith('op-i-') else 'op-i-' + (a.icon or 'clock').replace('i-', '')) %}
+      <li class="op-agenda-item">
+        <span class="op-agenda-icon"><svg><use href="#{{ aicon_id }}"/></svg></span>
+        <div class="op-agenda-meta">
+          <div class="op-agenda-name">{{ a.display_name }}</div>
+          <div class="op-agenda-when">
+            {% if a.next_run_human %}
+              <span class="op-agenda-next">📅 {{ a.next_run_human }}</span>
+            {% else %}
+              <span class="op-agenda-cron"><code>{{ a.cron }}</code></span>
+            {% endif %}
+          </div>
+        </div>
+        <button type="button" class="op-btn-mini op-btn-mini-ghost"
+                hx-get="/agents/task/{{ a.task_id }}/schedule"
+                hx-target="#op-modal-container"
+                hx-swap="innerHTML">Modifica</button>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="op-live-empty">
+      <div class="op-live-empty-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+        </svg>
+      </div>
+      <p>Nessun agente pianificato.</p>
+      <small>Puoi schedulare un lancio ricorrente di un agente.</small>
+    </div>
+    {% endif %}
+    <button type="button" class="op-btn-primary op-btn-fullwidth"
+            hx-get="/agents/task/schedule"
+            hx-target="#op-modal-container"
+            hx-swap="innerHTML">
+      + Pianifica un agente
+    </button>
+  </div>
+
+  {# ============ TAB 3: STORIA ============ #}
+  <div class="op-tab-pane op-tab-pane-history">
+    <div class="op-history-stats">
+      <div class="op-history-stat">
+        <span class="op-history-stat-num">{{ history.total }}</span>
+        <span class="op-history-stat-label">esecuzioni 7gg</span>
+      </div>
+      <div class="op-history-stat">
+        <span class="op-history-stat-num">{{ history.success_rate }}%</span>
+        <span class="op-history-stat-label">successo</span>
+      </div>
+    </div>
+
+    {% if history.days %}
+    <div class="op-history-chart" role="img" aria-label="Esecuzioni giornaliere ultimi 7 giorni">
+      {% set max_t = history.max_total if history.max_total > 0 else 1 %}
+      {% for d in history.days %}
+      {% set total_h = ((d.total / max_t) * 100) | round(0, 'floor') | int if max_t > 0 else 0 %}
+      {% set done_h = ((d.done / max_t) * 100) | round(0, 'floor') | int if max_t > 0 else 0 %}
+      <div class="op-history-bar" title="{{ d.date }}: {{ d.total }} eseguiti ({{ d.done }} ok, {{ d.error }} errore)">
+        <div class="op-history-bar-stack">
+          {% if d.error > 0 %}
+          <div class="op-history-bar-error" style="height: {{ ((d.error / max_t) * 100) | round(0, 'floor') | int }}%"></div>
+          {% endif %}
+          {% if d.done > 0 %}
+          <div class="op-history-bar-done" style="height: {{ done_h }}%"></div>
+          {% endif %}
+        </div>
+        <span class="op-history-bar-label">{{ d.day_short }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="op-history-legend">
+      <span class="op-history-legend-item"><i class="op-history-legend-done"></i> completati</span>
+      <span class="op-history-legend-item"><i class="op-history-legend-error"></i> errori</span>
+    </div>
+    {% else %}
+    <p class="op-details-muted" style="text-align:center; padding: 24px 0;">Nessuna esecuzione negli ultimi 7 giorni.</p>
+    {% endif %}
+  </div>
+
+</aside>
+
+<script>
+  // Persistenza tab attiva
+  window.opSaveTab = function(name) {
+    try { localStorage.setItem('argos.operator.tab', name); } catch(e) {}
+  };
+  // Restore on load
+  (function() {
+    try {
+      var saved = localStorage.getItem('argos.operator.tab') || 'live';
+      var el = document.getElementById('op-tab-' + saved);
+      if (el) el.checked = true;
+    } catch(e) {}
+  })();
+
+  // Timer elapsed per i job running (re-init dopo ogni partial swap)
+  (function() {
+    function tick() {
+      document.querySelectorAll('[data-elapsed-since]').forEach(function(el) {
+        var since = el.getAttribute('data-elapsed-since');
+        if (!since) return;
+        var t0 = Date.parse(since);
+        if (isNaN(t0)) return;
+        var sec = Math.max(0, Math.floor((Date.now() - t0) / 1000));
+        var m = Math.floor(sec / 60), s = sec % 60;
+        el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+      });
+    }
+    tick();
+    if (window._opLivePanelInterval) clearInterval(window._opLivePanelInterval);
+    window._opLivePanelInterval = setInterval(tick, 1000);
+  })();
+
+  // Toast on job completion (diff fra poll)
+  (function() {
+    var current = new Set();
+    document.querySelectorAll('[data-job-id]').forEach(function(el) {
+      current.add(el.getAttribute('data-job-id'));
+    });
+    var prev = window._opLivePrevJobs || new Set();
+    var disappeared = [];
+    prev.forEach(function(id) { if (!current.has(id)) disappeared.push(id); });
+    window._opLivePrevJobs = current;
+    disappeared.forEach(function(jid) {
+      fetch('/jobs/' + jid + '/operator-status', { headers: { 'Accept': 'application/json' } })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+          if (!data) return;
+          window.opShowToast(data.status, data.display_name || ('Job ' + jid), data.message || '');
+        })
+        .catch(function() {});
+    });
+  })();
+</script>

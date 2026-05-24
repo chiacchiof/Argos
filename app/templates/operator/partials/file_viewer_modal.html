@@ -1,0 +1,96 @@
+{# Modal viewer per file generati dai job. Riusa il context di _build_view_context.
+   Tipi supportati: markdown / json (jsonl) / csv / raw (txt, log).
+   Variabili: task, kind, name, raw|pretty|csv, size, download_url, job_id. #}
+<div class="op-modal-backdrop" onclick="if(event.target===this) opCloseModal()">
+  <div class="op-modal op-modal-fileview" role="dialog" aria-modal="true">
+    <header class="op-modal-head">
+      <span class="op-modal-icon">
+        {% if kind == 'markdown' %}📄
+        {% elif kind == 'json' %}📊
+        {% elif kind == 'csv' %}📋
+        {% else %}📁{% endif %}
+      </span>
+      <div class="op-modal-head-text">
+        <div class="op-modal-kind-row">
+          <span class="op-modal-category">{{ kind }}</span>
+          <span class="op-modal-category">{{ (size / 1024) | round(1) }} KB</span>
+        </div>
+        <h2>{{ name }}</h2>
+        <p class="op-modal-subtitle">File generato dall'agente</p>
+      </div>
+      <button type="button" class="op-modal-close" onclick="opCloseModal()" aria-label="Chiudi">
+        <svg><use href="#op-i-close"/></svg>
+      </button>
+    </header>
+
+    <div class="op-modal-body op-fileview-body">
+
+      {% if kind == 'markdown' %}
+        <article class="op-md-content">{{ raw | render_md | safe }}</article>
+
+      {% elif kind == 'json' %}
+        {% if json_ok %}
+        <pre class="op-fileview-pre">{{ pretty }}</pre>
+        {% else %}
+        <div class="op-fileview-warning">
+          ⚠️ JSON malformato{% if json_error %}: {{ json_error }}{% endif %}
+        </div>
+        <pre class="op-fileview-pre">{{ pretty }}</pre>
+        {% endif %}
+
+      {% elif kind == 'csv' %}
+        {% if csv and csv.rows %}
+        <div class="op-fileview-tablewrap">
+          <table class="op-fileview-table">
+            <thead>
+              <tr>
+                {% for h in csv.header %}<th>{{ h }}</th>{% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in csv.rows %}
+              <tr>
+                {% for cell in row %}<td>{{ cell }}</td>{% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if csv.truncated %}
+        <p class="op-details-muted">Mostrate prime {{ csv.rows|length }} righe. <a href="{{ download_url }}" target="_blank" rel="noopener" class="op-link">Scarica intero CSV</a>.</p>
+        {% endif %}
+        {% else %}
+        <p class="op-details-muted">CSV vuoto o malformato.</p>
+        {% endif %}
+
+      {% else %}
+        <pre class="op-fileview-pre">{{ raw }}</pre>
+      {% endif %}
+
+    </div>
+
+    <footer class="op-modal-foot">
+      <button type="button" class="op-btn-secondary"
+              hx-get="/jobs/{{ job_id }}/operator-details"
+              hx-target="#op-modal-container"
+              hx-swap="innerHTML">
+        ← Torna ai dettagli
+      </button>
+      <a href="{{ download_url }}" target="_blank" rel="noopener" class="op-btn-primary">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        Scarica
+      </a>
+    </footer>
+  </div>
+</div>
+
+<script>
+  (function() {
+    window.opCloseModal = function() {
+      var c = document.getElementById('op-modal-container');
+      if (c) c.innerHTML = '';
+    };
+    function esc(e) { if (e.key === 'Escape') window.opCloseModal(); }
+    document.addEventListener('keydown', esc, { once: true });
+  })();
+</script>

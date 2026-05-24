@@ -358,7 +358,7 @@ def test_orchestrator_plan_and_execute(authed_client, monkeypatch, tmp_path):
 
     monkeypatch.setattr(orchestrator_route, "UPLOADS_DIR", tmp_path / "uploads")
 
-    async def fake_chat_reply(latest_user_message, *, file_info=None, chat_options=None):
+    async def fake_chat_reply(latest_user_message, *, file_info=None, chat_options=None, is_operator=False):
         assert "Allegato" in latest_user_message
         assert file_info and file_info["filename"] == "brief.md"
         assert "contenuto allegato" in file_info["context_text"]
@@ -372,6 +372,7 @@ def test_orchestrator_plan_and_execute(authed_client, monkeypatch, tmp_path):
         file_info=None,
         chat_options=None,
         metadata_out=None,
+        is_operator=False,
     ):
         assert "Risposta breve" in latest_user_message
         assert chat_options["web_enabled"] is False

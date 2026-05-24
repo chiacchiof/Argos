@@ -65,33 +65,70 @@ def _resolve_local_dsn() -> str:
 
 
 def _resolve_neon_dsn() -> str:
-    """DSN di Neon (prod). Auto fallback: file cifrato -> env var -> /tmp/neon_url.txt."""
-    # 1) File cifrato /dbconfig
+    """DSN di Neon (prod). Priorita':
+
+    1. NEON_DATABASE_URL (env var esplicita, settata da deploy_to_neon.ps1)
+    2. DBCONFIG_PRESET_NEON_DSN (env var del preset /dbconfig, sempre Neon)
+    3. c:/tmp/neon_url.txt (file legacy)
+    4. data/db_config.enc (override /dbconfig — ULTIMA opzione perche' puo'
+       contenere local DSN se l'utente ha switchato per testing)
+
+    Safety check: rifiuta DSN che contengono 'localhost' / '127.0.0.1' / '@db'
+    senza porta cloud — prevent applicazione di promote/copy verso local per errore.
+    """
+    candidates: list[tuple[str, str]] = []
+
+    # 1) NEON_DATABASE_URL esplicito
+    env_url = (os.environ.get("NEON_DATABASE_URL") or "").strip()
+    if env_url:
+        candidates.append(("NEON_DATABASE_URL env", env_url))
+
+    # 2) DBCONFIG_PRESET_NEON_DSN (lo stesso preset usato dalla UI /dbconfig)
+    preset_url = (os.environ.get("DBCONFIG_PRESET_NEON_DSN") or "").strip()
+    if preset_url:
+        candidates.append(("DBCONFIG_PRESET_NEON_DSN env", preset_url))
+
+    # 3) File tmp
+    tmp_file = Path("c:/tmp/neon_url.txt")
+    if tmp_file.exists():
+        content = tmp_file.read_text(encoding="utf-8").strip()
+        if content:
+            candidates.append(("c:/tmp/neon_url.txt", content))
+
+    # 4) /dbconfig override (RISCHIOSO: puo' essere local se l'utente ha switchato)
     try:
         from app import _runtime_db_override
 
         data = _runtime_db_override.read_override()
         if data and data.get("database_url"):
-            return data["database_url"]
+            candidates.append(("/dbconfig override (data/db_config.enc)", data["database_url"]))
     except Exception:
         pass
 
-    # 2) Env var
-    env_url = (os.environ.get("NEON_DATABASE_URL") or "").strip()
-    if env_url:
-        return env_url
+    # Filtra candidati che puntano a localhost (sicurezza)
+    safe_candidates = []
+    rejected_local = []
+    for source, dsn in candidates:
+        if "localhost" in dsn or "127.0.0.1" in dsn:
+            rejected_local.append((source, dsn))
+            continue
+        safe_candidates.append((source, dsn))
 
-    # 3) File tmp
-    tmp_file = Path("c:/tmp/neon_url.txt")
-    if tmp_file.exists():
-        return tmp_file.read_text(encoding="utf-8").strip()
+    if rejected_local:
+        for source, _ in rejected_local:
+            print(f"[WARN] DSN da '{source}' rifiutata: punta a localhost (non Neon).", file=sys.stderr)
 
-    raise SystemExit(
-        "[ERROR] Nessuna DSN Neon trovata. Setta una delle:\n"
-        "   - data/db_config.enc (via UI /dbconfig)\n"
-        "   - $env:NEON_DATABASE_URL=...\n"
-        "   - c:/tmp/neon_url.txt"
-    )
+    if not safe_candidates:
+        raise SystemExit(
+            "[ERROR] Nessuna DSN Neon valida trovata (non-localhost). Setta una delle:\n"
+            "   - $env:NEON_DATABASE_URL=postgresql://...neon.tech/...\n"
+            "   - DBCONFIG_PRESET_NEON_DSN in .env (usato dal dropdown /dbconfig)\n"
+            "   - c:/tmp/neon_url.txt"
+        )
+
+    source, dsn = safe_candidates[0]
+    print(f"[INFO] Neon DSN risolta da: {source}", file=sys.stderr)
+    return dsn
 
 
 def _mask(dsn: str) -> str:
@@ -148,6 +185,41 @@ def _alembic_upgrade(dsn: str, target: str = "head") -> None:
             os.environ.pop("DATABASE_URL", None)
         else:
             os.environ["DATABASE_URL"] = saved
+
+
+def _alembic_stamp(dsn: str, revision: str) -> None:
+    """Marca la DB a una revision SENZA eseguire le migration. Utile quando
+    lo schema esiste gia' (creato da `init_db()` raw) ma manca `alembic_version`
+    — situazione tipica di Neon dopo un reset/restore non-alembic.
+    """
+    from alembic import command
+
+    cfg = _alembic_cfg()
+    saved = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = dsn
+    try:
+        command.stamp(cfg, revision)
+    finally:
+        if saved is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = saved
+
+
+def _schema_present(dsn: str) -> bool:
+    """True se almeno una tabella business esiste nello schema public (es. tasks).
+    Heuristic per capire se Neon e' davvero "vuoto" o ha lo schema senza alembic_version."""
+    import psycopg
+
+    try:
+        with psycopg.connect(dsn) as c:
+            row = c.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='public' AND table_name='tasks' LIMIT 1"
+            ).fetchone()
+            return row is not None
+    except Exception:
+        return False
 
 
 def _alembic_history() -> list[tuple[str, str]]:
@@ -315,11 +387,39 @@ def cmd_promote(args) -> int:
 
     # 3) Mostra diff revisioni pending
     v_neon = _alembic_current_version(neon_dsn)
+    schema_present_on_neon = _schema_present(neon_dsn)
     print(f"[2/4] Stato attuale:")
     print(f"  LOCALE: {v_local}")
-    print(f"  NEON:   {v_neon}")
+    print(f"  NEON:   {v_neon} (schema presente: {schema_present_on_neon})")
     if v_local == v_neon:
         print(f"  -> già allineati. Niente da promuovere.")
+        return 0
+
+    # CASO SPECIALE: Neon ha lo schema ma manca alembic_version (es. reset+init_db
+    # raw senza alembic). Non possiamo fare upgrade (CREATE TABLE fallirebbe).
+    # Usiamo `alembic stamp` per marcare la DB alla revision di local senza
+    # ri-applicare le migration: lo schema gia' c'e' (creato da SCHEMA_SQL raw),
+    # alembic_version viene popolato a v_local. Le revision pending saranno 0.
+    if v_neon is None and schema_present_on_neon:
+        print()
+        print(f"[!] Neon ha lo schema ma manca alembic_version.")
+        print(f"    Probabilmente lo schema e' stato creato da `init_db()` raw (non via alembic).")
+        print(f"    Soluzione: STAMP della revision corrente di local ({v_local}) su Neon")
+        print(f"    SENZA ri-applicare le migration (lo schema e' gia' presente).")
+        print()
+        if not args.yes:
+            resp = input(f"  Eseguire `alembic stamp {v_local}` su Neon? [y/N] ").strip().lower()
+            if resp != "y":
+                print("Aborted.")
+                return 1
+        try:
+            _alembic_stamp(neon_dsn, v_local)
+        except Exception as exc:
+            print(f"[ERROR] Stamp fallito: {exc}")
+            return 1
+        v_neon_final = _alembic_current_version(neon_dsn)
+        print(f"[OK] Neon ora a alembic_version = {v_neon_final}.")
+        print(f"     Schema gia' presente, niente da migrare.")
         return 0
 
     # Lista revisioni pending (between v_neon and v_local)

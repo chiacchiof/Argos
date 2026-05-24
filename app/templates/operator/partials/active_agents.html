@@ -1,0 +1,30 @@
+{# Sezione "Agenti attivi": polling HTMX ogni 5s.
+   Visibile solo se n_active > 0 (collassa silenziosamente quando vuota,
+   evitando rumore visivo). #}
+<section class="op-active-section"
+         hx-get="/home?_partial=active"
+         hx-trigger="every 5s"
+         hx-swap="outerHTML">
+  {% if n_active > 0 %}
+  <div class="op-active-header">
+    <span class="op-active-label">
+      <span class="op-pulse"></span>
+      In esecuzione &middot; {{ n_active }}
+    </span>
+  </div>
+  <div class="op-active-grid">
+    {% for agent in active_agents %}
+    {% set icon_id = (agent.icon if agent.icon and agent.icon.startswith('op-i-') else 'op-i-' + (agent.icon or 'cog').replace('i-', '')) %}
+    <div class="op-active-card">
+      <span class="op-active-card-icon">
+        <svg><use href="#{{ icon_id }}"/></svg>
+      </span>
+      <div class="op-active-card-body">
+        <div class="op-active-card-name">{{ agent.display_name }}</div>
+        <div class="op-active-card-status">{{ agent.active_jobs }} processo{{ 'i' if agent.active_jobs > 1 else '' }} in corso</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>

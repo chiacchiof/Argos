@@ -1080,6 +1080,44 @@ def _apply_multitenant_columns(conn) -> None:
         "REFERENCES llm_api_keys(id) ON DELETE SET NULL"
     )
 
+    # Agenti pubblicati: vedi `_apply_published_agent_columns` per la motivazione
+    # della separazione (errore in tx isolato non poisons SCHEMA_SQL).
+    _apply_published_agent_columns(conn)
+
+
+def _apply_published_agent_columns(conn: Any) -> None:
+    """Aggiunge le colonne `is_published_agent` + metadata su tasks/workflows
+    per la UI Operator. Usa SAVEPOINT per ogni statement: se una ALTER fallisce
+    (es. lock contention concorrente), gli altri statement proseguono e la
+    transazione esterna resta valida."""
+    statements = [
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_published_agent BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_display_name TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_description TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_category TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_icon TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_input_schema JSONB",
+        "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS is_published_agent BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS agent_display_name TEXT",
+        "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS agent_description TEXT",
+        "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS agent_category TEXT",
+        "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS agent_icon TEXT",
+        "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS agent_input_schema JSONB",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_published_tenant "
+        "ON tasks(tenant_id, is_published_agent) WHERE is_published_agent = TRUE",
+        "CREATE INDEX IF NOT EXISTS idx_workflows_published_tenant "
+        "ON workflows(tenant_id, is_published_agent) WHERE is_published_agent = TRUE",
+    ]
+    for i, sql in enumerate(statements):
+        sp_name = f"_pub_agent_{i}"
+        conn.execute(f"SAVEPOINT {sp_name}")
+        try:
+            conn.execute(sql)
+            conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+        except Exception as exc:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+            log.warning("published_agent column ALTER failed (will retry next boot): %s :: %s", sql[:80], exc)
+
 
 def init_db() -> None:
     """Crea (idempotente) tutte le tabelle business + indici + colonne multi-tenant.
@@ -2083,6 +2121,34 @@ def count_active_jobs_for_tasks(
     return out
 
 
+def find_stranded_workflow_runs(tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    """Workflow_runs in stato attivo ('queued'/'running') i cui job sono tutti
+    in stato finale (oppure non hanno job). Sono orfani — il finalize non e'
+    mai stato chiamato (server killato a meta', bug, ecc.).
+
+    Usato da `reconcile_orphan_jobs` al boot per pulire la UI.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = (
+        "SELECT wr.id, wr.workflow_id "
+        "FROM workflow_runs wr "
+        "JOIN workflows w ON w.id = wr.workflow_id "
+        "WHERE wr.status IN ('queued','running') "
+        "AND wr.id NOT IN ("
+        "  SELECT DISTINCT workflow_run_id FROM jobs "
+        "  WHERE workflow_run_id IS NOT NULL "
+        "  AND status IN ('queued','running','paused')"
+        ")"
+    )
+    args: list[Any] = []
+    if tenant_id is not None:
+        sql += " AND w.tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_active_workflow_runs_for_workflows(
     workflow_ids: list[int], tenant_id: Any = _UNSET,
 ) -> dict[int, dict[str, Any]]:
@@ -2461,6 +2527,193 @@ def list_workflows(
             tuple(args),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_published_agents(
+    tenant_id: Any = _UNSET,
+    category: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista agenti pubblicati (task + workflow con `is_published_agent=TRUE`).
+
+    Restituisce dict normalizzati pronti per la UI Operator:
+        {kind, id, display_name, description, category, icon, input_schema,
+         agent_mode (solo per task), active_jobs, total_runs}
+
+    Ordinati per category alfabetica poi display_name. Tenant-scoped via
+    `_resolve_tenant`. Se `category` valorizzato filtra in piu' per quella
+    categoria.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    args: list[Any] = []
+    where_t = ["is_published_agent = TRUE"]
+    where_w = ["is_published_agent = TRUE"]
+    if tenant_id is not None:
+        where_t.append("tenant_id = %s")
+        where_w.append("tenant_id = %s")
+        args.append(tenant_id)
+        args.append(tenant_id)
+    if category:
+        where_t.append("agent_category = %s")
+        where_w.append("agent_category = %s")
+        args.append(category)
+        args.append(category)
+    # Costruiamo due SELECT (task + workflow) con UNION via Python: piu' semplice
+    # dello UNION SQL per gestire i campi diversi (workflow non ha agent_mode).
+    with connect() as con:
+        # Task pubblicati
+        task_args: list[Any] = []
+        if tenant_id is not None:
+            task_args.append(tenant_id)
+        if category:
+            task_args.append(category)
+        task_sql = (
+            "SELECT id, agent_display_name, agent_description, agent_category, "
+            "  agent_icon, agent_input_schema, agent_mode, name "
+            f"FROM tasks WHERE {' AND '.join(where_t)} "
+            "ORDER BY agent_category, agent_display_name, id"
+        )
+        task_rows = con.execute(task_sql, tuple(task_args)).fetchall()
+        # Workflow pubblicati
+        wf_args: list[Any] = []
+        if tenant_id is not None:
+            wf_args.append(tenant_id)
+        if category:
+            wf_args.append(category)
+        wf_sql = (
+            "SELECT id, agent_display_name, agent_description, agent_category, "
+            "  agent_icon, agent_input_schema, name "
+            f"FROM workflows WHERE {' AND '.join(where_w)} "
+            "ORDER BY agent_category, agent_display_name, id"
+        )
+        wf_rows = con.execute(wf_sql, tuple(wf_args)).fetchall()
+    # Batch query "active jobs" + "runs" per arricchire (best-effort)
+    task_ids = [int(r["id"]) for r in task_rows]
+    wf_ids = [int(r["id"]) for r in wf_rows]
+    try:
+        active_by_task = count_active_jobs_for_tasks(task_ids) if task_ids else {}
+    except Exception:
+        active_by_task = {}
+    try:
+        active_by_wf = list_active_workflow_runs_for_workflows(wf_ids) if wf_ids else {}
+    except Exception:
+        active_by_wf = {}
+
+    out: list[dict[str, Any]] = []
+    for r in task_rows:
+        rid = int(r["id"])
+        active = active_by_task.get(rid) or {}
+        out.append({
+            "kind": "task",
+            "id": rid,
+            "display_name": r.get("agent_display_name") or r.get("name") or f"Task #{rid}",
+            "description": r.get("agent_description") or "",
+            "category": r.get("agent_category") or "altri",
+            "icon": r.get("agent_icon") or "i-cog",
+            "input_schema": r.get("agent_input_schema") or [],
+            "agent_mode": r.get("agent_mode"),
+            "active_jobs": int(active.get("n_running", 0)) + int(active.get("n_queued", 0)),
+        })
+    for r in wf_rows:
+        rid = int(r["id"])
+        active = active_by_wf.get(rid) or {}
+        out.append({
+            "kind": "workflow",
+            "id": rid,
+            "display_name": r.get("agent_display_name") or r.get("name") or f"Workflow #{rid}",
+            "description": r.get("agent_description") or "",
+            "category": r.get("agent_category") or "altri",
+            "icon": r.get("agent_icon") or "i-workflows",
+            "input_schema": r.get("agent_input_schema") or [],
+            "agent_mode": None,
+            "active_jobs": int(active.get("n_active_jobs", 0)),
+        })
+    # Re-ordina globalmente (task e workflow potrebbero avere stessa category)
+    out.sort(key=lambda a: (a["category"], a["display_name"].lower(), a["id"]))
+    return out
+
+
+def set_agent_publication(
+    kind: str,
+    agent_id: int,
+    *,
+    is_published: bool,
+    display_name: str | None = None,
+    description: str | None = None,
+    category: str | None = None,
+    icon: str | None = None,
+    input_schema: list | None = None,
+    tenant_id: Any = _UNSET,
+) -> bool:
+    """Pubblica / depubblica un task o workflow come agente operator.
+
+    Quando `is_published=True`, `display_name` e `description` sono fortemente
+    consigliati (la UI Operator li mostra). Se sono None ma `is_published=True`,
+    fallback su `name`/`description` del task originale (gestito a view-time).
+    """
+    if kind not in ("task", "workflow"):
+        raise ValueError(f"kind non valido: {kind!r}")
+    tenant_id = _resolve_tenant(tenant_id)
+    table = "tasks" if kind == "task" else "workflows"
+    import json as _json
+    schema_json = _json.dumps(input_schema or []) if input_schema is not None else None
+    sets: list[str] = ["is_published_agent = %s"]
+    args: list[Any] = [bool(is_published)]
+    if display_name is not None:
+        sets.append("agent_display_name = %s")
+        args.append((display_name or "").strip() or None)
+    if description is not None:
+        sets.append("agent_description = %s")
+        args.append((description or "").strip() or None)
+    if category is not None:
+        sets.append("agent_category = %s")
+        args.append((category or "").strip().lower() or None)
+    if icon is not None:
+        sets.append("agent_icon = %s")
+        args.append((icon or "").strip() or None)
+    if input_schema is not None:
+        sets.append("agent_input_schema = %s::jsonb")
+        args.append(schema_json)
+    sql = f"UPDATE {table} SET {', '.join(sets)} WHERE id = %s"
+    args.append(int(agent_id))
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        cur = con.execute(sql, tuple(args))
+        con.commit()
+        return (cur.rowcount or 0) > 0
+
+
+def get_published_agent(
+    kind: str, agent_id: int, tenant_id: Any = _UNSET,
+) -> dict[str, Any] | None:
+    """Ritorna un singolo agente pubblicato (per il modal Avvia)."""
+    if kind not in ("task", "workflow"):
+        return None
+    tenant_id = _resolve_tenant(tenant_id)
+    table = "tasks" if kind == "task" else "workflows"
+    sql = (
+        f"SELECT id, agent_display_name, agent_description, agent_category, "
+        f"  agent_icon, agent_input_schema, name "
+        f"FROM {table} WHERE id = %s AND is_published_agent = TRUE"
+    )
+    args: list[Any] = [agent_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        row = con.execute(sql, tuple(args)).fetchone()
+    if not row:
+        return None
+    return {
+        "kind": kind,
+        "id": int(row["id"]),
+        "display_name": row.get("agent_display_name") or row.get("name") or f"{kind.title()} #{row['id']}",
+        "description": row.get("agent_description") or "",
+        "category": row.get("agent_category") or "altri",
+        "icon": row.get("agent_icon") or ("i-cog" if kind == "task" else "i-workflows"),
+        "input_schema": row.get("agent_input_schema") or [],
+    }
 
 
 def get_workflow(workflow_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:

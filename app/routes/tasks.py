@@ -1,7 +1,7 @@
 """Route per i Task (era 'projects'). Un task è un'attività autonoma."""
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
@@ -15,11 +15,12 @@ from ..agent.llm_providers import (
     list_providers,
 )
 from ..agent.ollama import list_models
+from ..auth import require_architect_or_admin
 from ..config import settings
 from ..models import TaskIn
 from ..templates import templates
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
 
 
 @router.get("/api/models", response_class=JSONResponse)
@@ -1409,6 +1410,44 @@ async def toggle_task_disabled(task_id: int, redirect_to: str = Form("/")):
     new_val = not bool(t.get("disabled"))
     db.set_task_disabled(task_id, new_val)
     return RedirectResponse(url=redirect_to or "/", status_code=303)
+
+
+@router.post("/tasks/{task_id}/publish-agent")
+async def publish_task_as_agent(
+    task_id: int,
+    is_published: str = Form(""),
+    display_name: str = Form(""),
+    description: str = Form(""),
+    category: str = Form("altri"),
+    icon: str = Form("op-i-cog"),
+    input_schema_json: str = Form("[]"),
+    redirect_to: str = Form(""),
+):
+    """Pubblica/depubblica un task come agente operator. Form-driven dalla
+    detail page del task. `input_schema_json` e' una stringa JSON: parsa o
+    fallback a lista vuota su errore."""
+    import json as _json
+    try:
+        input_schema = _json.loads(input_schema_json or "[]")
+        if not isinstance(input_schema, list):
+            input_schema = []
+    except (_json.JSONDecodeError, TypeError):
+        input_schema = []
+    flag = (is_published or "").strip().lower() in ("1", "true", "on", "yes")
+    db.set_agent_publication(
+        kind="task",
+        agent_id=task_id,
+        is_published=flag,
+        display_name=display_name or None,
+        description=description or None,
+        category=category or None,
+        icon=icon or None,
+        input_schema=input_schema,
+    )
+    target = redirect_to or f"/tasks/{task_id}"
+    msg = "pubblicato" if flag else "ritirato"
+    sep = "&" if "?" in target else "?"
+    return RedirectResponse(url=f"{target}{sep}flash=Agente+{msg}", status_code=303)
 
 
 @router.get("/providers/model-field", response_class=HTMLResponse)
