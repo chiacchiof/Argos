@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Log job #{{ job.id }}{% if display_id %} ({{ display_id }}){% endif %} — {% if task %}{{ task.name }}{% else %}Argos{% endif %}{% endblock %}
+{% block content %}
+<section>
+  <p class="muted small">
+    {% if task %}
+      <a href="/tasks/{{ task.id }}">← {{ task.name }}</a> &middot;
+    {% endif %}
+    {% if parent_id %}
+      <a href="/jobs/{{ parent_id }}/status">↑ parent #{{ parent_id }}</a> &middot;
+    {% endif %}
+    <a href="/tasks">tutti i task</a>
+  </p>
+  <h2>
+    Log job #{{ job.id }}
+    {% if display_id %}
+      <small class="muted" title="ID visualizzato nella cronologia del parent">({{ display_id }})</small>
+    {% endif %}
+  </h2>
+  {% if display_id and parent_id %}
+  <p class="muted small">
+    Questo è un sub-job di
+    <a href="/jobs/{{ parent_id }}/status">#{{ parent_id }}</a>
+    — nella cronologia del task è indicato come <code>{{ display_id }}</code>.
+  </p>
+  {% endif %}
+  {% include "partials/job_status.html" %}
+</section>
+{% endblock %}

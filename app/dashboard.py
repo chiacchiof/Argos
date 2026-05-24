@@ -253,6 +253,7 @@ def compute_dashboard(job_id: int) -> dict[str, Any] | None:
         "error": job.get("error"),
         "master_summary_text": _read_master_summary(job),
         "n_subjobs": _count_subjobs(job),
+        "subjobs": _list_subjobs_with_links(job),
     }
 
 
@@ -283,3 +284,67 @@ def _count_subjobs(job: dict[str, Any]) -> int:
         return len(db.list_subjobs(int(job["id"])))
     except Exception:
         return 0
+
+
+def _count_profiles_jsonl(result_path: str | None) -> int | None:
+    """Conta righe non vuote di `profiles.jsonl` nella run_dir dedotta dal
+    `result_path` (file dentro la run o run-dir stessa).
+    Ritorna None se path mancante o file inesistente, l'intero se leggibile.
+    """
+    if not result_path:
+        return None
+    p = Path(result_path)
+    run_dir = p if p.is_dir() else p.parent
+    jsonl = run_dir / "profiles.jsonl"
+    if not jsonl.exists():
+        return None
+    try:
+        return sum(
+            1
+            for line in jsonl.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        )
+    except OSError:
+        return None
+
+
+def _list_subjobs_with_links(job: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per il dashboard parent: elenca i sub-job con metadata utile a navigare
+    i loro report. Ogni voce contiene il display_id (`#parent.N`), lo status,
+    il path relativo dell'artifact rispetto a `data/results/{task_id}/`
+    (pronto per costruire `/tasks/{task_id}/results/{rel}`), il numero di
+    profili estratti (se `profiles.jsonl` esiste) e l'eventuale errore.
+    Lista vuota per job senza sub.
+    """
+    try:
+        parent_id = int(job["id"])
+        task_id = int(job.get("task_id") or 0)
+    except (KeyError, TypeError, ValueError):
+        return []
+    try:
+        subs = db.list_subjobs(parent_id)
+    except Exception:
+        return []
+    if not subs:
+        return []
+    marker = f"/results/{task_id}/" if task_id else None
+    out: list[dict[str, Any]] = []
+    for idx, s in enumerate(subs, start=1):
+        rp = s.get("result_path") or ""
+        rel_path: str | None = None
+        if rp and marker:
+            norm = rp.replace("\\", "/")
+            if marker in norm:
+                rel_path = norm.split(marker)[-1]
+        out.append(
+            {
+                "id": int(s["id"]),
+                "display_id": f"#{parent_id}.{idx}",
+                "status": s.get("status"),
+                "result_rel_path": rel_path,
+                "n_profiles": _count_profiles_jsonl(rp),
+                "error": s.get("error"),
+                "finished_at": s.get("finished_at"),
+            }
+        )
+    return out

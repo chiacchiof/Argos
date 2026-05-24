@@ -434,6 +434,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   outreach_filter_tags TEXT,
   gap_between_dms_min REAL,
   gap_between_dms_max REAL,
+  qualifier_destroy_mode TEXT NOT NULL DEFAULT 'auto',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -1651,6 +1652,7 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 llm_credential_id = %s,
                 discovery_llm_credential_id = %s,
                 browser_llm_credential_id = %s,
+                qualifier_destroy_mode = %s,
                 updated_at = %s
             WHERE id = %s
               AND (%s::bigint IS NULL OR tenant_id = %s)
@@ -1728,6 +1730,9 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 int(data["llm_credential_id"]) if data.get("llm_credential_id") else None,
                 int(data["discovery_llm_credential_id"]) if data.get("discovery_llm_credential_id") else None,
                 int(data["browser_llm_credential_id"]) if data.get("browser_llm_credential_id") else None,
+                (data.get("qualifier_destroy_mode") or "auto").strip().lower()
+                    if (data.get("qualifier_destroy_mode") or "auto").strip().lower() in ("auto", "confirm")
+                    else "auto",
                 now_iso(),
                 task_id,
                 tenant_id,
@@ -1977,6 +1982,315 @@ def append_job_log(job_id: int, line: str) -> None:
         )
 
 
+def count_active_jobs_for_tasks(
+    task_ids: list[int], tenant_id: Any = _UNSET,
+) -> dict[int, dict[str, Any]]:
+    """Per N task, conta i job in stato non terminale in UNA query batch.
+
+    Stati attivi: `queued`, `running`, `paused`. Ritorna SOLO i task con almeno
+    un job attivo: `{task_id: {n_running, n_queued, n_paused, latest_status,
+    latest_id}}`. Pensato per la lista `/tasks` cosi' che il template possa
+    mostrare un badge sulla riga senza N+1 query.
+    """
+    if not task_ids:
+        return {}
+    tenant_id = _resolve_tenant(tenant_id)
+    clean = [int(t) for t in task_ids if str(t).strip().lstrip("-").isdigit()]
+    if not clean:
+        return {}
+    placeholders = ",".join(["%s"] * len(clean))
+    args: list[Any] = list(clean)
+    sql = (
+        f"SELECT task_id, status, id FROM jobs "
+        f"WHERE task_id IN ({placeholders}) "
+        f"  AND status IN ('queued','running','paused')"
+    )
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY task_id, id DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    out: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        tid = int(r["task_id"])
+        st = r["status"] or ""
+        if tid not in out:
+            out[tid] = {
+                "n_running": 0,
+                "n_queued": 0,
+                "n_paused": 0,
+                "latest_status": st,
+                "latest_id": int(r["id"]),
+            }
+        if st == "running":
+            out[tid]["n_running"] += 1
+        elif st == "queued":
+            out[tid]["n_queued"] += 1
+        elif st == "paused":
+            out[tid]["n_paused"] += 1
+    return out
+
+
+def list_active_workflow_runs_for_workflows(
+    workflow_ids: list[int], tenant_id: Any = _UNSET,
+) -> dict[int, dict[str, Any]]:
+    """Per N workflow, sintetizza in UNA query lo stato dei `workflow_runs`
+    attivi (`queued`/`running`) e dei job attivi associati.
+
+    Tenant filtering: `workflow_runs` non ha la colonna `tenant_id`, quindi
+    si filtra via JOIN su `workflows.tenant_id`.
+
+    Ritorna solo i workflow con almeno un run attivo:
+    `{workflow_id: {n_active_runs, n_active_jobs, latest_run_status}}`.
+    """
+    if not workflow_ids:
+        return {}
+    tenant_id = _resolve_tenant(tenant_id)
+    clean = [int(w) for w in workflow_ids if str(w).strip().lstrip("-").isdigit()]
+    if not clean:
+        return {}
+    placeholders = ",".join(["%s"] * len(clean))
+    args: list[Any] = list(clean)
+    tenant_clause = ""
+    if tenant_id is not None:
+        tenant_clause = " AND w.tenant_id = %s"
+        args.append(tenant_id)
+    sql = (
+        f"SELECT wr.workflow_id, "
+        f"  COUNT(DISTINCT wr.id) FILTER (WHERE wr.status IN ('queued','running')) AS n_active_runs, "
+        f"  COUNT(j.id) FILTER (WHERE j.status IN ('queued','running','paused')) AS n_active_jobs, "
+        f"  MIN(wr.status) FILTER (WHERE wr.status IN ('queued','running')) AS latest_run_status "
+        f"FROM workflow_runs wr "
+        f"JOIN workflows w ON w.id = wr.workflow_id "
+        f"LEFT JOIN jobs j ON j.workflow_run_id = wr.id "
+        f"WHERE wr.workflow_id IN ({placeholders}){tenant_clause} "
+        f"GROUP BY wr.workflow_id"
+    )
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    out: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        n_runs = int(r["n_active_runs"] or 0)
+        if n_runs == 0:
+            continue
+        out[int(r["workflow_id"])] = {
+            "n_active_runs": n_runs,
+            "n_active_jobs": int(r["n_active_jobs"] or 0),
+            "latest_run_status": r["latest_run_status"] or "running",
+        }
+    return out
+
+
+def delete_workflow_runs(
+    run_ids: list[int], tenant_id: Any = _UNSET,
+) -> dict[str, Any]:
+    """Hard-delete batch di workflow_runs + cascade sui job associati.
+
+    Tenant safety: `workflow_runs` non ha colonna `tenant_id`, quindi filtra
+    via JOIN su `workflows.tenant_id`. Un tenant_user non puo' cancellare run
+    di altri tenant.
+
+    Rifiuto blocco totale: se ANCHE UNO solo dei run o dei job collegati e' in
+    stato non terminale (`queued`/`running`/`paused`), niente viene cancellato.
+    L'utente deve fermare prima il run.
+
+    Cascade jobs: dato che `jobs.workflow_run_id` e' `ON DELETE SET NULL`, i
+    job NON sparirebbero automaticamente. Li cancello esplicitamente nella
+    transazione, restituendo i loro `(task_id, result_path)` al caller per la
+    pulizia FS via `storage.delete_job_artifact`.
+
+    Ritorna dict:
+      - `deleted_runs`: list[{id, workflow_id}]
+      - `deleted_jobs`: list[{id, task_id, result_path}]
+      - `active_blockers`: list[{kind, id, status}] (kind = 'run' | 'job');
+        se non vuoto, niente e' stato cancellato.
+    """
+    if not run_ids:
+        return {"deleted_runs": [], "deleted_jobs": [], "active_blockers": []}
+    tenant_id = _resolve_tenant(tenant_id)
+    clean = sorted({
+        int(i) for i in run_ids
+        if str(i).strip().lstrip("-").isdigit()
+    })
+    if not clean:
+        return {"deleted_runs": [], "deleted_jobs": [], "active_blockers": []}
+
+    placeholders = ",".join(["%s"] * len(clean))
+    with connect() as con:
+        # 1. Carica i workflow_runs target (tenant-filtered via JOIN workflows)
+        if tenant_id is None:
+            sql_runs = (
+                f"SELECT wr.id, wr.workflow_id, wr.status "
+                f"FROM workflow_runs wr "
+                f"WHERE wr.id IN ({placeholders})"
+            )
+            runs_rows = con.execute(sql_runs, clean).fetchall()
+        else:
+            sql_runs = (
+                f"SELECT wr.id, wr.workflow_id, wr.status "
+                f"FROM workflow_runs wr "
+                f"JOIN workflows w ON w.id = wr.workflow_id "
+                f"WHERE wr.id IN ({placeholders}) AND w.tenant_id = %s"
+            )
+            runs_rows = con.execute(sql_runs, clean + [tenant_id]).fetchall()
+        runs = [dict(r) for r in runs_rows]
+        if not runs:
+            return {"deleted_runs": [], "deleted_jobs": [], "active_blockers": []}
+
+        # Validate run status
+        blockers = [
+            {"kind": "run", "id": int(r["id"]), "status": r.get("status")}
+            for r in runs
+            if (r.get("status") or "") in ("queued", "running", "paused")
+        ]
+
+        # 2. Carica i job dei run target (cascade prep)
+        owned_run_ids = [int(r["id"]) for r in runs]
+        job_placeholders = ",".join(["%s"] * len(owned_run_ids))
+        if tenant_id is None:
+            sql_jobs = (
+                f"SELECT id, task_id, status, result_path, workflow_run_id "
+                f"FROM jobs WHERE workflow_run_id IN ({job_placeholders})"
+            )
+            jobs_rows = con.execute(sql_jobs, owned_run_ids).fetchall()
+        else:
+            sql_jobs = (
+                f"SELECT id, task_id, status, result_path, workflow_run_id "
+                f"FROM jobs WHERE workflow_run_id IN ({job_placeholders}) "
+                f"AND tenant_id = %s"
+            )
+            jobs_rows = con.execute(sql_jobs, owned_run_ids + [tenant_id]).fetchall()
+        jobs_to_delete = [dict(j) for j in jobs_rows]
+        blockers.extend(
+            {"kind": "job", "id": int(j["id"]), "status": j.get("status")}
+            for j in jobs_to_delete
+            if (j.get("status") or "") in ("queued", "running", "paused")
+        )
+
+        if blockers:
+            return {
+                "deleted_runs": [], "deleted_jobs": [],
+                "active_blockers": blockers,
+            }
+
+        # 3. Hard delete: prima i job (cascade su asset_tags via FK), poi i runs
+        if jobs_to_delete:
+            job_ids = [int(j["id"]) for j in jobs_to_delete]
+            jph = ",".join(["%s"] * len(job_ids))
+            con.execute(
+                f"DELETE FROM jobs WHERE id IN ({jph})", job_ids,
+            )
+
+        run_ph = ",".join(["%s"] * len(owned_run_ids))
+        con.execute(
+            f"DELETE FROM workflow_runs WHERE id IN ({run_ph})", owned_run_ids,
+        )
+
+    return {
+        "deleted_runs": [
+            {"id": int(r["id"]), "workflow_id": int(r["workflow_id"])}
+            for r in runs
+        ],
+        "deleted_jobs": [
+            {
+                "id": int(j["id"]),
+                "task_id": int(j["task_id"]),
+                "result_path": j.get("result_path"),
+            }
+            for j in jobs_to_delete
+        ],
+        "active_blockers": [],
+    }
+
+
+def delete_jobs(
+    job_ids: list[int], tenant_id: Any = _UNSET,
+) -> dict[str, Any]:
+    """Hard-delete batch dei job specificati + dei loro sub-job, tenant-safe.
+
+    L'insieme viene espanso includendo tutti i sub-job dei parent selezionati
+    (FK `triggered_by_job_id` → cascade logico sul livello +1). Se ANCHE UNO solo
+    dei job risultanti (parent o sub espanso) e' in stato non terminale
+    (`queued`/`running`/`paused`), l'INTERA operazione viene rifiutata: l'utente
+    deve fermare prima. Cosi' non lasciamo runner asyncio in vita con record DB
+    inesistente.
+
+    Ritorna dict:
+      - `deleted`: list[{id, task_id, result_path}] dei record effettivamente
+        rimossi (utile al caller per pulire i file su FS via
+        `storage.delete_job_artifact`).
+      - `active_blockers`: list[{id, status}]; se non vuoto, `deleted` e' vuoto
+        e nulla e' stato cancellato.
+    """
+    if not job_ids:
+        return {"deleted": [], "active_blockers": []}
+    tenant_id = _resolve_tenant(tenant_id)
+    clean = sorted({
+        int(i) for i in job_ids
+        if str(i).strip().lstrip("-").isdigit()
+    })
+    if not clean:
+        return {"deleted": [], "active_blockers": []}
+
+    placeholders = ",".join(["%s"] * len(clean))
+    with connect() as con:
+        if tenant_id is None:
+            rows = con.execute(
+                f"SELECT id, task_id, status, result_path, triggered_by_job_id "
+                f"FROM jobs "
+                f"WHERE id IN ({placeholders}) "
+                f"   OR triggered_by_job_id IN ({placeholders})",
+                list(clean) + list(clean),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                f"SELECT id, task_id, status, result_path, triggered_by_job_id "
+                f"FROM jobs "
+                f"WHERE (id IN ({placeholders}) "
+                f"    OR triggered_by_job_id IN ({placeholders})) "
+                f"  AND tenant_id = %s",
+                list(clean) + list(clean) + [tenant_id],
+            ).fetchall()
+        all_jobs = [dict(r) for r in rows]
+        if not all_jobs:
+            return {"deleted": [], "active_blockers": []}
+
+        active = [
+            {"id": int(j["id"]), "status": j.get("status")}
+            for j in all_jobs
+            if (j.get("status") or "") in ("queued", "running", "paused")
+        ]
+        if active:
+            return {"deleted": [], "active_blockers": active}
+
+        all_ids = [int(j["id"]) for j in all_jobs]
+        del_placeholders = ",".join(["%s"] * len(all_ids))
+        if tenant_id is None:
+            con.execute(
+                f"DELETE FROM jobs WHERE id IN ({del_placeholders})",
+                all_ids,
+            )
+        else:
+            con.execute(
+                f"DELETE FROM jobs WHERE id IN ({del_placeholders}) "
+                f"AND tenant_id = %s",
+                all_ids + [tenant_id],
+            )
+
+    return {
+        "deleted": [
+            {
+                "id": int(j["id"]),
+                "task_id": int(j["task_id"]),
+                "result_path": j.get("result_path"),
+            }
+            for j in all_jobs
+        ],
+        "active_blockers": [],
+    }
+
+
 def latest_job(task_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
     tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
@@ -2004,12 +2318,13 @@ def current_or_latest_job(
       1. Parent attivo (status in queued/running/paused AND triggered_by_job_id IS NULL)
          → cosi' i pulsanti stop/pause sono sul parent, non su un sub gia' done
       2. Qualsiasi job attivo (parent o sub)
-      3. Latest (max id) come fallback
-
-    Risolve un bug UX: pre-2026-05-23 latest_job() ritornava il sub piu' recente
-    (max id), anche se gia' `done`, mentre il parent era ancora running. Il
-    pannello "Stato esecuzione corrente" mostrava `Job #178 DONE` invece del
-    parent #174 RUNNING — niente pulsanti stop visibili, confusione.
+      3. Ultimo PARENT (triggered_by_job_id IS NULL), anche se terminale: cosi'
+         il dashboard mostra la lista dei sub-job aggregati e il master summary,
+         non un singolo sub-job orfano di contesto (incident 2026-05-23 dopo
+         job #185: l'ultimo job per id era #189 — un sub di #185 — quindi la
+         vista "Ultimo job" non mostrava l'albero dei 4 sub).
+      4. Latest assoluto (max id) come fallback: usato solo se non esiste
+         NESSUN parent per quel task (caso edge).
     """
     tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
@@ -2037,7 +2352,17 @@ def current_or_latest_job(
         if row:
             return dict(row)
 
-        # 3. Fallback: latest (max id)
+        # 3. Ultimo parent (anche se terminale)
+        sql = (
+            "SELECT * FROM jobs WHERE task_id = %s "
+            "AND triggered_by_job_id IS NULL"
+            f"{tenant_clause} ORDER BY id DESC LIMIT 1"
+        )
+        row = con.execute(sql, (task_id, *tenant_args)).fetchone()
+        if row:
+            return dict(row)
+
+        # 4. Fallback: latest (max id) — solo se task non ha mai avuto parent
         sql = (
             f"SELECT * FROM jobs WHERE task_id = %s{tenant_clause} "
             "ORDER BY id DESC LIMIT 1"
@@ -3667,6 +3992,71 @@ def delete_asset(asset_id: int, tenant_id: Any = _UNSET) -> int:
         return cur.rowcount
 
 
+def list_pending_destroy_assets(
+    qualifier_slug: str, tenant_id: Any = _UNSET,
+) -> list[dict[str, Any]]:
+    """Asset marcati `qualifier_<slug>:pending_destroy` dal runner qualifier in
+    modalita' `confirm`. Usato dal pannello UI di conferma a fine job.
+
+    Tenant-safe via `tasks.tenant_id` (assets eredita via source_task_id).
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    tag_key = f"qualifier_{qualifier_slug}"
+    with connect() as con:
+        if tenant_id is None:
+            sql = (
+                "SELECT a.* FROM assets a "
+                "WHERE EXISTS (SELECT 1 FROM asset_tags t WHERE t.asset_id=a.id "
+                "  AND t.tag_key=%s AND t.tag_value='pending_destroy') "
+                "ORDER BY a.id DESC"
+            )
+            rows = con.execute(sql, (tag_key,)).fetchall()
+        else:
+            sql = (
+                "SELECT a.* FROM assets a "
+                "WHERE a.tenant_id = %s "
+                "  AND EXISTS (SELECT 1 FROM asset_tags t WHERE t.asset_id=a.id "
+                "    AND t.tag_key=%s AND t.tag_value='pending_destroy') "
+                "ORDER BY a.id DESC"
+            )
+            rows = con.execute(sql, (tenant_id, tag_key)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def clear_pending_destroy_tag(
+    asset_ids: list[int], qualifier_slug: str, tenant_id: Any = _UNSET,
+) -> int:
+    """Rimuove il tag `qualifier_<slug>:pending_destroy` da un set di asset.
+    Usato dall'azione "Annulla destroy" del pannello conferma.
+    Tenant-safe via filtro implicito su assets.tenant_id.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    if not asset_ids:
+        return 0
+    ids = [int(i) for i in asset_ids if i]
+    if not ids:
+        return 0
+    placeholders = ",".join("%s" for _ in ids)
+    tag_key = f"qualifier_{qualifier_slug}"
+    with connect() as con:
+        if tenant_id is None:
+            sql = (
+                f"DELETE FROM asset_tags WHERE asset_id IN ({placeholders}) "
+                "  AND tag_key=%s AND tag_value='pending_destroy'"
+            )
+            args = ids + [tag_key]
+        else:
+            sql = (
+                f"DELETE FROM asset_tags WHERE asset_id IN ({placeholders}) "
+                "  AND tag_key=%s AND tag_value='pending_destroy' "
+                "  AND EXISTS (SELECT 1 FROM assets a "
+                "    WHERE a.id=asset_tags.asset_id AND a.tenant_id=%s)"
+            )
+            args = ids + [tag_key, tenant_id]
+        cur = con.execute(sql, args)
+        return cur.rowcount
+
+
 def delete_assets_bulk(asset_ids: list[int], tenant_id: Any = _UNSET) -> int:
     """Cancella in massa gli asset indicati. Le `asset_tags` cascade-deletono per FK."""
     tenant_id = _resolve_tenant(tenant_id)
@@ -4174,6 +4564,7 @@ def _qualified_assets_where_clause(
     has_contacts: bool = False,
     has_social: bool = False,
     asset_status_col: str | None = None,
+    require_qualified: bool = False,
 ) -> tuple[str, list[Any]]:
     """Costruisce WHERE+args condivisi da list_assets / list_qualified_assets
     (e relative count_*). Tabella aliasata come `a`.
@@ -4215,6 +4606,33 @@ def _qualified_assets_where_clause(
                 " AND CAST(qs.tag_value AS INTEGER) >= %s)"
             )
             args.extend([f"qualifier_score_{slug}", int(score_min)])
+
+    # Fallback "qualified-only" per la pagina /qualified senza slug selezionati:
+    # se NESSUN qualifier e' stato scelto ma il caller (list_qualified_assets /
+    # count_qualified_assets) chiede `require_qualified`, filtra comunque per
+    # asset che hanno ALMENO UN tag `qualifier_<slug>` col valore richiesto
+    # (qualified | rejected | both). Senza questo, /qualified mostrava ogni
+    # asset del tenant — anche quelli mai qualificati (incident 2026-05-23).
+    # Esclude i tag `qualifier_score_*` che sono metriche numeriche, non stati.
+    if require_qualified and not qualifier_slugs:
+        # NB: i pattern LIKE passano come placeholder per evitare il conflitto
+        # con `%s` di psycopg (un `%` letterale nel literal sarebbe ambiguo).
+        if status_filter == "both":
+            where += (
+                " AND EXISTS (SELECT 1 FROM asset_tags qx WHERE qx.asset_id = a.id "
+                " AND qx.tag_key LIKE %s "
+                " AND qx.tag_key NOT LIKE %s "
+                " AND qx.tag_value IN ('qualified','rejected'))"
+            )
+            args.extend(["qualifier_%", "qualifier_score_%"])
+        else:
+            where += (
+                " AND EXISTS (SELECT 1 FROM asset_tags qx WHERE qx.asset_id = a.id "
+                " AND qx.tag_key LIKE %s "
+                " AND qx.tag_key NOT LIKE %s "
+                " AND qx.tag_value = %s)"
+            )
+            args.extend(["qualifier_%", "qualifier_score_%", status_filter])
 
     if asset_type:
         where += " AND a.asset_type = %s"
@@ -4329,6 +4747,7 @@ def list_qualified_assets(
         slugs, status_filter, score_min, asset_type, source_task_id, search,
         extra_tag_filters, tenant_id, tag_mode=tag_mode, tag_expr=tag_expr,
         has_contacts=has_contacts, has_social=has_social,
+        require_qualified=True,
     )
     sql = (
         "SELECT a.* FROM assets a"
@@ -4403,6 +4822,7 @@ def count_qualified_assets(
         slugs, status_filter, score_min, asset_type, source_task_id, search,
         extra_tag_filters, tenant_id, tag_mode=tag_mode, tag_expr=tag_expr,
         has_contacts=has_contacts, has_social=has_social,
+        require_qualified=True,
     )
     sql = "SELECT COUNT(*) FROM assets a" + where
     with connect() as con:
@@ -4618,8 +5038,17 @@ def maybe_promote_pattern(pattern_id: int, min_successes: int = 3, min_ratio: fl
 
 def get_site_playbook(registrable_domain: str, asset_type: str) -> dict[str, Any] | None:
     """Ritorna il playbook ATTIVO per (dominio, asset_type) o None.
-    Auto-skip se status != 'active' o transferable=0.
-    Rispetta `site_memory_shared`: i tenant isolati vedono solo i loro playbook."""
+
+    Auto-skip se:
+      - `status != 'active'` o `transferable = 0`
+      - `failures >= 1` (soglia 2026-05-23: un solo fallimento basta a marcare
+        stantio un playbook; lo auto-disabilitiamo subito qui per evitare che
+        il caller lo riusi e sprechi step. Patch retroattiva per playbook
+        creati prima del cambio di soglia, che avevano `failures>=1` ma
+        ancora `status='active'`).
+
+    Rispetta `site_memory_shared`: i tenant isolati vedono solo i loro playbook.
+    """
     if not registrable_domain or not asset_type:
         return None
     sql = (
@@ -4631,7 +5060,19 @@ def get_site_playbook(registrable_domain: str, asset_type: str) -> dict[str, Any
     sql, args = _site_memory_tenant_filter(sql, args)
     with connect() as con:
         row = con.execute(sql, args).fetchone()
-    return dict(row) if row else None
+        if not row:
+            return None
+        # Fix-on-read: se il playbook ha gia' failures >= 1, marcalo stale
+        # adesso (la query lo aveva trovato attivo per via di una vecchia
+        # soglia piu' tollerante). Trattalo come assente.
+        if int(row.get("failures") or 0) >= 1:
+            con.execute(
+                "UPDATE site_playbooks SET status = 'stale', updated_at = %s "
+                "WHERE id = %s",
+                (now_iso(), int(row["id"])),
+            )
+            return None
+    return dict(row)
 
 
 def upsert_site_playbook(
@@ -4693,9 +5134,15 @@ def bump_playbook_hits(playbook_id: int) -> None:
         )
 
 
-def bump_playbook_outcome(playbook_id: int, *, success: bool, stale_threshold: int = 3) -> str | None:
+def bump_playbook_outcome(playbook_id: int, *, success: bool, stale_threshold: int = 1) -> str | None:
     """Bump successes o failures. Auto-stale a `failures >= stale_threshold`.
-    Ritorna 'stale' se il playbook e' stato auto-archiviato, None altrimenti."""
+    Ritorna 'stale' se il playbook e' stato auto-archiviato, None altrimenti.
+
+    Soglia 2026-05-23: abbassata da 3 a 1 failure. Un playbook che produce 0
+    asset al riapplicarsi e' quasi sempre stantio (URL salvati cambiati o
+    rimossi lato sito): meglio disabilitarlo subito e far ripartire vergine
+    il run successivo, che continuare a sprecare step in vicoli ciechi.
+    """
     ts = now_iso()
     with connect() as con:
         if success:
@@ -4749,6 +5196,26 @@ def delete_site_playbook(playbook_id: int, tenant_id: Any = _UNSET) -> int:
     tenant_id = _resolve_tenant(tenant_id)
     sql = "DELETE FROM site_playbooks WHERE id = %s"
     args: list[Any] = [playbook_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    with connect() as con:
+        cur = con.execute(sql, args)
+        return int(cur.rowcount or 0)
+
+
+def set_site_playbook_status(
+    playbook_id: int, status: str, tenant_id: Any = _UNSET,
+) -> int:
+    """Cambia lo `status` di un playbook (active | disabled | stale).
+    `disabled` significa: archivio l'esperienza ma non la riapplico nei
+    prossimi run. Diverso da `delete` che butta via tutto. Tenant-safe.
+    Ritorna n righe aggiornate."""
+    if status not in ("active", "disabled", "stale"):
+        return 0
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "UPDATE site_playbooks SET status = %s, updated_at = %s WHERE id = %s"
+    args: list[Any] = [status, now_iso(), playbook_id]
     if tenant_id is not None:
         sql += " AND tenant_id = %s"
         args.append(tenant_id)

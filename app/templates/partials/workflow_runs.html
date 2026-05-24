@@ -1,17 +1,173 @@
+{# Tabella "Esecuzioni recenti" di un workflow, con bulk delete e expand
+   inline dei job per ogni run. Pattern coerente con la cronologia job del
+   task (vedi partials/jobs_history.html). #}
 {% if runs %}
+<form method="post" action="/workflows/{{ workflow.id }}/runs/delete"
+      class="bulk-action-form" data-bulk-form data-workflow-runs-form
+      onsubmit="return window._argosWorkflowRunsConfirmDelete(this);">
+  <div class="bulk-action-bar">
+    <label class="bulk-select-all-label">
+      <input type="checkbox" data-bulk-select-all> Seleziona pagina
+    </label>
+    <span class="bulk-count" data-bulk-count>0 selezionati</span>
+    <button type="submit" class="btn-danger-inline" data-bulk-submit disabled>
+      <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
+      Cancella (<span data-bulk-action-count>0</span>)
+    </button>
+    <span class="workflow-runs-poll-paused-hint muted small" data-poll-paused-hint style="display:none">
+      ⏸ polling in pausa — deseleziona per riprenderlo
+    </span>
+  </div>
 <table class="data">
-  <thead><tr><th>Run #</th><th>Stato</th><th>Avvio</th><th>Fine</th></tr></thead>
+  <thead>
+    <tr>
+      <th class="bulk-col"><span class="visually-hidden">Seleziona</span></th>
+      <th>Run #</th>
+      <th>Stato</th>
+      <th>Avvio</th>
+      <th>Fine</th>
+      <th></th>
+    </tr>
+  </thead>
   <tbody>
     {% for r in runs %}
-    <tr>
+    {% set r_active = r.status in ('queued','running','paused') %}
+    <tr class="workflow-run-row">
+      <td class="bulk-col">
+        <input type="checkbox" name="run_ids" value="{{ r.id }}" data-bulk-row
+               {% if r_active %}disabled
+                  title="Run ancora attivo — ferma prima di cancellare"
+               {% endif %}>
+      </td>
       <td>{{ r.id }}</td>
       <td><span class="status status-{{ r.status }}">{{ r.status }}</span></td>
       <td><small>{{ r.started_at }}</small></td>
       <td><small>{{ r.finished_at or "—" }}</small></td>
+      <td>
+        <a href="#"
+           hx-get="/workflows/{{ workflow.id }}/runs/{{ r.id }}/jobs"
+           hx-target="#workflow-run-jobs-{{ r.id }}"
+           hx-swap="innerHTML"
+           onclick="document.getElementById('workflow-run-jobs-row-{{ r.id }}').style.display='table-row'; return false;"
+           title="Mostra job e risultati di questo run">📊 dettagli</a>
+        &middot;
+        {% if r_active %}
+        <button type="button" class="btn-icon-trash" disabled
+                title="Run ancora attivo — ferma prima di cancellare">🗑️</button>
+        {% else %}
+        <button type="button" class="btn-icon-trash"
+                onclick="window._argosDeleteWorkflowRunRow(this, {{ r.id }})"
+                title="Cancella questo run e i job collegati (DB + file)">🗑️</button>
+        {% endif %}
+      </td>
+    </tr>
+    <tr id="workflow-run-jobs-row-{{ r.id }}" class="workflow-run-jobs-row" style="display:none">
+      <td colspan="6">
+        <div id="workflow-run-jobs-{{ r.id }}" class="workflow-run-jobs-inline">
+          <small class="muted">Caricamento...</small>
+        </div>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+</form>
+<style>
+  .workflow-run-jobs-row td {
+    padding: 0.6rem 1rem !important;
+    background: var(--surface-3, rgba(255,255,255,0.04)) !important;
+    border-top: 1px dashed var(--border, #555);
+  }
+  .workflow-run-jobs-inline { max-width: 100%; overflow-x: auto; }
+  .workflow-run-jobs th, .workflow-run-jobs td { font-size: 0.92em; }
+  .workflow-runs-poll-paused-hint { margin-left: 0.8rem; }
+</style>
+<script>
+// === Setup unico (idempotente) per il bulk form dei workflow_runs ===
+(function setupWorkflowRunsBulkOnce() {
+  if (window._argosWorkflowRunsBulkInit) return;
+  window._argosWorkflowRunsBulkInit = true;
+
+  window._argosWireWorkflowRunsBulk = function (form) {
+    if (!form || form._argosBulkWired) return;
+    form._argosBulkWired = true;
+    var allCb = form.querySelector('[data-bulk-select-all]');
+    var submit = form.querySelector('[data-bulk-submit]');
+    var counter = form.querySelector('[data-bulk-count]');
+    var actionCounts = form.querySelectorAll('[data-bulk-action-count]');
+    var pauseHint = form.querySelector('[data-poll-paused-hint]');
+
+    function selectableRows() {
+      return form.querySelectorAll('[data-bulk-row]:not(:disabled)');
+    }
+    function refresh() {
+      var rs = selectableRows();
+      var sel = 0;
+      rs.forEach(function (c) { if (c.checked) sel++; });
+      if (counter) counter.textContent = sel + ' selezionati';
+      actionCounts.forEach(function (el) { el.textContent = sel; });
+      if (submit) submit.disabled = sel === 0;
+      if (allCb) {
+        allCb.checked = sel === rs.length && rs.length > 0;
+        allCb.indeterminate = sel > 0 && sel < rs.length;
+      }
+      if (pauseHint) pauseHint.style.display = sel > 0 ? '' : 'none';
+    }
+    if (allCb) {
+      allCb.addEventListener('change', function () {
+        selectableRows().forEach(function (c) { c.checked = allCb.checked; });
+        refresh();
+      });
+    }
+    form.addEventListener('change', function (ev) {
+      if (ev.target && ev.target.matches('[data-bulk-row]')) refresh();
+    });
+    refresh();
+  };
+
+  window._argosDeleteWorkflowRunRow = function (btn, runId) {
+    var form = btn.closest('form[data-workflow-runs-form]');
+    if (!form) return;
+    if (!confirm('Cancellare il run #' + runId + ' e tutti i job collegati?\n\nVerranno rimossi i record da DB e i file dal disco. Azione irreversibile.')) return;
+    form.querySelectorAll('[data-bulk-row]').forEach(function (c) { c.checked = false; });
+    var target = form.querySelector('[data-bulk-row][value="' + runId + '"]');
+    if (target) target.checked = true;
+    form.submit();
+  };
+
+  window._argosWorkflowRunsConfirmDelete = function (form) {
+    var sel = form.querySelectorAll('[data-bulk-row]:checked').length;
+    if (!sel) return false;
+    return confirm('Cancellare ' + sel + ' run e tutti i job collegati?\n\nVerranno rimossi i record da DB e i file dal disco. Azione irreversibile.');
+  };
+
+  // Pausa il polling HTMX su #workflow-live finche' ci sono righe selezionate.
+  // Stesso pattern della cronologia job: senza, il poll ogni 3s riswapperebbe
+  // la tabella e annullerebbe la selezione dell'utente.
+  document.body.addEventListener('htmx:beforeRequest', function (ev) {
+    var elt = ev.detail && ev.detail.elt;
+    if (!elt || elt.id !== 'workflow-live') return;
+    var checked = document.querySelectorAll('#workflow-live [data-bulk-row]:checked').length;
+    if (checked > 0) {
+      ev.preventDefault();
+    }
+  });
+
+  // Re-wire ad ogni swap del partial (idempotente via _argosBulkWired).
+  document.body.addEventListener('htmx:afterSwap', function (ev) {
+    if (ev.detail.target && ev.detail.target.id === 'workflow-live') {
+      document.querySelectorAll('form[data-workflow-runs-form]').forEach(window._argosWireWorkflowRunsBulk);
+    }
+  });
+})();
+
+// Wire del form ad ogni esecuzione dello script (anche al re-render).
+(function wireOnRender() {
+  if (window._argosWireWorkflowRunsBulk) {
+    document.querySelectorAll('form[data-workflow-runs-form]').forEach(window._argosWireWorkflowRunsBulk);
+  }
+})();
+</script>
 {% else %}
 <p class="muted">Nessuna esecuzione ancora.</p>
 {% endif %}

@@ -644,6 +644,10 @@ input[type="date"], input[type="datetime-local"], textarea, select {
   transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
 }
 form input::placeholder, form textarea::placeholder { color: var(--fg-subtle); }
+form textarea, textarea {
+  min-height: 8.5rem;
+  resize: vertical;
+}
 form input:focus, form textarea:focus, form select:focus {
   border-color: var(--border-focus);
   background: var(--surface-2);
@@ -710,6 +714,38 @@ table.data td:has(> .kebab-menu[open]), .admin-table td:has(> .kebab-menu[open])
 .row-disabled, .admin-table tr.row-disabled td { opacity: 0.55; }
 .row-disabled a, .admin-table tr.row-disabled a { color: var(--fg-subtle); }
 .disabled-badge { font-size: 0.85em; margin-right: 0.3rem; vertical-align: middle; }
+
+/* Righe con attivita' live (job in queued/running/paused). Bordo sinistro
+   colorato per essere individuabili a colpo d'occhio in liste lunghe. */
+.row-active td:first-child {
+  border-left: 3px solid var(--st-running, #4ec9b0);
+  padding-left: calc(var(--td-padding, 0.5rem) - 3px);
+}
+.row-active-paused td:first-child { border-left-color: var(--st-paused, #d7ba7d); }
+.row-active-queued td:first-child { border-left-color: var(--st-queued, #888); }
+.row-active td { background: rgba(78, 201, 176, 0.04); }
+.row-active-paused td { background: rgba(215, 186, 125, 0.04); }
+.row-active-queued td { background: rgba(150, 150, 150, 0.04); }
+
+/* Badge live "RUNNING/PAUSED/QUEUED" nelle liste — riusa .status-* esistenti
+   ma con un margin per separarlo dallo status_tag dopo. */
+.live-badge { margin-right: 0.4rem; font-size: 0.78em; letter-spacing: 0.02em; }
+
+/* Banner "N attivita' in corso" in cima alla lista. */
+.live-activity-banner {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.5rem 0.8rem; margin: 0 0 0.6rem 0;
+  background: rgba(78, 201, 176, 0.08);
+  border-left: 3px solid var(--st-running, #4ec9b0);
+  border-radius: 4px;
+  font-size: 0.92em;
+}
+.live-pulse {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--st-running, #4ec9b0);
+  box-shadow: 0 0 0 0 rgba(78, 201, 176, 0.6);
+  animation: pulse-ai 1.5s ease-in-out infinite;
+}
 
 /* ============================================================
    7. PAGE LAYOUT — page-header, section-header
@@ -917,6 +953,52 @@ table.data td:has(> .kebab-menu[open]), .admin-table td:has(> .kebab-menu[open])
   padding: 0.6rem 0.8rem;
 }
 .warning-list li { color: var(--warn); }
+
+/* Task detail tabs (CSS-only via radio + label). Lo stato della tab
+   persiste sui re-swap HTMX dei pannelli figli perche' i radio input
+   restano nel DOM principale. */
+.task-tabs { margin: 1rem 0 0.5rem; }
+.task-tabs-radio { position: absolute; opacity: 0; pointer-events: none; }
+.task-tabs-nav {
+  display: flex; gap: 0.4rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+.task-tabs-tab {
+  padding: 0.55rem 1rem; cursor: pointer; user-select: none;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  color: var(--fg-muted); font-weight: 500; font-size: 0.95em;
+  margin-bottom: -1px;  /* sovrappone il border-bottom della nav */
+}
+.task-tabs-tab:hover { color: var(--fg); background: var(--surface-1); }
+/* Task detail: tab "Ultimo job" / "Cronologia" */
+#task-tab-exec:checked ~ .task-tabs-nav label[for="task-tab-exec"],
+#task-tab-history:checked ~ .task-tabs-nav label[for="task-tab-history"] {
+  color: var(--fg-strong);
+  background: var(--surface-1);
+  border-color: var(--border);
+  border-bottom-color: var(--surface-1);
+}
+.task-tabs-panel { display: none; }
+#task-tab-exec:checked ~ .task-tabs-panel-exec,
+#task-tab-history:checked ~ .task-tabs-panel-history { display: block; }
+/* Focus visible per accessibilità (la radio è invisibile ma navigabile via tastiera). */
+.task-tabs-radio:focus-visible + .task-tabs-radio + .task-tabs-nav label[for="task-tab-exec"],
+.task-tabs-radio + .task-tabs-radio:focus-visible + .task-tabs-nav label[for="task-tab-history"] {
+  outline: 2px solid var(--ai-soft);
+  outline-offset: 2px;
+}
+/* Workflow detail: tab "Configurazione" / "Cronologia" (riusa .task-tabs-*) */
+#workflow-tab-config:checked ~ .task-tabs-nav label[for="workflow-tab-config"],
+#workflow-tab-history:checked ~ .task-tabs-nav label[for="workflow-tab-history"] {
+  color: var(--fg-strong);
+  background: var(--surface-1);
+  border-color: var(--border);
+  border-bottom-color: var(--surface-1);
+}
+#workflow-tab-config:checked ~ .task-tabs-panel-config,
+#workflow-tab-history:checked ~ .task-tabs-panel-history { display: block; }
 
 /* Optional/collapsible blocks */
 details.optional-block, details.collapsible-section {
@@ -2389,3 +2471,152 @@ fieldset.rating-fieldset legend { font-weight: 600; padding: 0 0.4rem; color: va
   stroke-linejoin: round;
   flex-shrink: 0;
 }
+
+/* ============================================================
+   25. FILE VIEWER + MARKDOWN PROSE + RESULTS NAVIGATION
+   ============================================================ */
+
+/* --- Header tabella risultati / run (titolo + bottoni a destra) --- */
+.results-list-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; margin-bottom: 0.8rem;
+}
+.results-list-head h2 { margin: 0 0 0.25rem; }
+.results-list-actions { display: flex; gap: 0.5rem; align-items: center; }
+
+/* --- File viewer (md / json / csv / text) --- */
+.file-viewer { max-width: 1180px; }
+.file-viewer-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  padding-bottom: 0.6rem; border-bottom: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+.file-viewer-header h2 { margin: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 1.1rem; word-break: break-all; }
+.file-viewer-meta { margin: 0.3rem 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.file-viewer-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
+
+.kind-tag {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--surface-2);
+}
+.kind-markdown { color: var(--brand-2); border-color: var(--brand-border); background: var(--brand-soft); }
+.kind-json     { color: #f59e0b; border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.10); }
+.kind-csv      { color: #10b981; border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.10); }
+.kind-text     { color: var(--fg-muted); }
+
+/* --- Markdown prose --- */
+.md-prose {
+  font-size: 0.96rem;
+  line-height: 1.65;
+  max-width: 880px;
+  color: var(--fg);
+}
+.md-prose h1, .md-prose h2, .md-prose h3, .md-prose h4 {
+  font-family: 'Mulish', 'Inter', sans-serif;
+  line-height: 1.25;
+  margin: 1.4em 0 0.5em;
+}
+.md-prose h1 { font-size: 1.6em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.md-prose h2 { font-size: 1.35em; border-bottom: 1px solid var(--border); padding-bottom: 0.25em; }
+.md-prose h3 { font-size: 1.15em; }
+.md-prose h4 { font-size: 1em; color: var(--fg-muted); }
+.md-prose p { margin: 0.7em 0; }
+.md-prose a { color: var(--brand-2); text-decoration: underline; text-decoration-color: var(--brand-border); }
+.md-prose a:hover { color: var(--brand-hover); text-decoration-color: var(--brand-hover); }
+.md-prose strong { color: var(--fg); }
+.md-prose em { color: var(--fg-muted); font-style: italic; }
+.md-prose code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.88em;
+  padding: 0.1em 0.35em;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.md-prose pre {
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  padding: 0.7rem 0.9rem;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+.md-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 0.85em;
+  white-space: pre;
+}
+.md-prose blockquote {
+  margin: 0.8em 0;
+  padding: 0.4em 0.9em;
+  border-left: 3px solid var(--brand-2);
+  background: var(--brand-soft);
+  color: var(--fg-muted);
+}
+.md-prose blockquote p { margin: 0.3em 0; }
+.md-prose ul, .md-prose ol { margin: 0.6em 0; padding-left: 1.6em; }
+.md-prose li { margin: 0.2em 0; }
+.md-prose hr { border: 0; border-top: 1px solid var(--border); margin: 1.5em 0; }
+.md-prose table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: auto;
+  font-size: 0.92em;
+}
+.md-prose th, .md-prose td {
+  border: 1px solid var(--border);
+  padding: 0.35em 0.7em;
+  text-align: left;
+  vertical-align: top;
+}
+.md-prose th { background: var(--surface-2); font-weight: 600; }
+.md-prose img { max-width: 100%; height: auto; }
+.md-prose del { color: var(--fg-muted); text-decoration: line-through; }
+
+/* --- CSV preview --- */
+.csv-preview-wrap { max-height: 600px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm, 4px); }
+.csv-preview { width: 100%; font-size: 0.9em; }
+.csv-preview th { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+.csv-preview td { vertical-align: top; max-width: 320px; overflow-wrap: anywhere; }
+
+/* --- Recent reports (task_detail) --- */
+.recent-reports {
+  margin: 1rem 0 0;
+  padding: 0.7rem 0.9rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+}
+.recent-reports-head {
+  display: flex; align-items: center; gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.95em;
+}
+.recent-reports-head a { margin-left: auto; }
+.recent-reports-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.3rem; }
+.recent-report-item {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.recent-report-link {
+  display: flex; align-items: baseline; gap: 0.6rem;
+  flex: 1 1 auto; min-width: 0;
+  color: var(--fg);
+  text-decoration: none;
+}
+.recent-report-link:hover .recent-report-name { color: var(--brand-2); }
+.recent-report-name { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 0.9em; }
+.recent-report-run { white-space: nowrap; }
+.recent-report-meta { margin-left: auto; white-space: nowrap; }

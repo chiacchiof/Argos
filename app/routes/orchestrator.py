@@ -141,6 +141,59 @@ CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "check_llm_credentials",
+            "description": (
+                "Verifica se un provider LLM ha una chiave API configurata "
+                "(vault o env var). CHIAMA QUESTO TOOL PRIMA di proporre "
+                "all'utente un cambio di slot LLM (`llm_provider`, "
+                "`discovery_llm_provider`, `browser_llm_provider`) via "
+                "update_task. Se ritorna `has_key=false`, NON chiamare "
+                "update_task con quel provider: rispondi all'utente che deve "
+                "prima configurare la chiave su /accounts/llm-keys, poi "
+                "riprovare. Provider senza chiave (ollama, custom) ritornano "
+                "sempre `has_key=true` con `source='not_required'`."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Chiave del provider (es. 'openai', 'anthropic', 'ollama', 'custom').",
+                    },
+                },
+                "required": ["provider"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_provider_models",
+            "description": (
+                "Ritorna la lista dei modelli suggeriti per un provider LLM "
+                "(es. per `openai`: gpt-4o-mini, gpt-4o, ...). "
+                "CHIAMA QUESTO TOOL PRIMA di proporre un cambio di "
+                "`model`/`discovery_llm_model`/`browser_llm_model` via "
+                "update_task, cosi' eviti nomi storpiati. Per provider locali "
+                "(ollama) ritorna `dynamic=true` (la lista dipende dai modelli "
+                "installati): in quel caso non validare il nome lato "
+                "orchestrator, lo accetta update_task come stringa libera."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Chiave del provider (es. 'openai', 'anthropic').",
+                    },
+                },
+                "required": ["provider"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_workflows",
             "description": "Lista i workflow del progetto (id, name, description).",
             "parameters": {"type": "object", "properties": {}},
@@ -180,16 +233,41 @@ CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
             "description": (
                 "Ritorna il master_summary.md generato al termine di un job parent "
                 "auto_extract con sub-job. Contiene: esito globale, per-sito, "
-                "PATTERN PROBLEMATICI RILEVATI (con codici P1-P8 standard del "
-                "catalogo: extract_failed_loop, HTTP_403, Cloudflare, memory_stuck, "
-                "login_wall, timeout, errore_argos, SPA_non_scrappabile), e "
-                "RACCOMANDAZIONI CONCRETE ordinate per priorita'. "
-                "USA QUESTO TOOL quando l'utente chiede 'com'e' andato il job X', "
-                "'perche' non ha estratto profili', 'cosa devo cambiare', "
+                "PATTERN PROBLEMATICI RILEVATI (catalogo P1-P9: P1=extract_failed_loop, "
+                "P2=HTTP_403, P3=anti-bot/DOM_empty, P4=memory_stuck, P5=login_wall, "
+                "P6=timeout, P7=errore_argos, P8=SPA_non_scrappabile, "
+                "P9=sito_non_directory), e RACCOMANDAZIONI CONCRETE ordinate per "
+                "priorita'. USA QUESTO TOOL quando l'utente chiede 'com'e' andato "
+                "il job X', 'perche' non ha estratto profili', 'cosa devo cambiare', "
                 "'cosa e' successo'. La sezione 'Pattern problematici rilevati' "
-                "ti dice ESATTAMENTE come spiegare il problema all'utente e quale "
-                "fix consigliare. Se il file non esiste (job non terminato o "
-                "senza sub-job) ritorna `{ok: false, reason: ...}`."
+                "ti dice come spiegare il problema all'utente e quale fix consigliare. "
+                "IMPORTANTE: il summary e' un file salvato su disco al termine del job. "
+                "Se il summary contiene diagnosi che sembrano obsolete (es. suggerisce "
+                "'cambia main LLM a openai/gpt-4o-mini' quando `get_task` dice "
+                "browser_llm_provider e' GIA' 'openai', o suggerisce 'cambia "
+                "HTTP_USER_AGENT a Mozilla' quando e' gia' Mozilla), CHIAMA "
+                "`regenerate_master_summary(job_id)` per ricrearlo con il prompt "
+                "aggiornato, poi rileggi. Non spacciare diagnosi obsolete come fresh."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"job_id": {"type": "integer"}},
+                "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "regenerate_master_summary",
+            "description": (
+                "Forza la rigenerazione del file `master_summary.md` per un job "
+                "parent. Utile quando il summary esistente contiene diagnosi "
+                "obsolete (suggerimenti gia' applicati, riferimenti a config "
+                "sorpassata, pattern attribuiti a torto). Riusa il prompt e il "
+                "modello LLM PIU' AGGIORNATI (preferenza per browser_llm cloud "
+                "se configurato). Sovrascrive il file su disco. Dopo, leggi il "
+                "summary fresco con `get_master_summary`."
             ),
             "parameters": {
                 "type": "object",
@@ -655,7 +733,40 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                 "alzato cap perché il sito ha più target del previsto'). "
                 "Per cambi di audience outreach_* preferisci target_asset_ids "
                 "(visibile in UI). Sostituzione totale delle liste: se vuoi aggiungere un dominio, "
-                "passa la lista completa (vecchi + nuovo)."
+                "passa la lista completa (vecchi + nuovo). "
+                "OBBLIGO PRE-CHECK CREDENZIALI: se devi cambiare uno slot LLM "
+                "(`llm_provider`, `discovery_llm_provider`, `browser_llm_provider`) "
+                "a un provider che richiede chiave (es. openai, anthropic), CHIAMA PRIMA "
+                "`check_llm_credentials(provider)`. Se ritorna `has_key=false`, NON "
+                "chiamare update_task: rispondi all'utente che deve configurare la "
+                "chiave su /accounts/llm-keys, poi riprovare. Se ignori questa regola, "
+                "update_task rifiutera' la chiamata con `missing_credentials`. "
+                "OBBLIGO PRE-CHECK MODELLO: se devi cambiare `model`, "
+                "`discovery_llm_model` o `browser_llm_model` per un provider con "
+                "catalogo (openai, anthropic, ecc.), CHIAMA PRIMA "
+                "`list_provider_models(provider)` e scegli un id ESATTO da quella "
+                "lista. Non inventare nomi a memoria. Se passi un nome non in "
+                "lista, update_task rifiutera' con `reason=unknown_model` e ti "
+                "dara' `closest_match` + `suggested_models`: riporta la "
+                "correzione all'utente e riprova. Per provider locali (ollama: "
+                "`dynamic=true`) qualsiasi stringa e' accettata. "
+                "AUTO-LINK CREDENTIAL_ID: quando setti uno slot `*_llm_provider`, "
+                "il tool collega in automatico il `*_credential_id` se nel vault "
+                "c'e' UNA SOLA chiave attiva per quel provider. Se ce ne sono "
+                "piu' di una, l'output conterra' `credential_warnings` con la "
+                "lista: chiedi all'utente quale usare e poi richiama update_task "
+                "passando esplicitamente il `*_credential_id`. "
+                "REGOLA SULL'OUTPUT: se la risposta contiene `skipped_fields`, "
+                "`missing_credentials`, `unknown_models` o `credential_warnings`, "
+                "NON dichiarare all'utente che tutto e' stato modificato. "
+                "Riporta esplicitamente cosa NON e' stato applicato e perche', "
+                "e cita `auto_linked_credentials` quando presente. "
+                "REGOLA ANTI-NO-OP: PRIMA di chiamare update_task, fai SEMPRE "
+                "`get_task(task_id)` e confronta i valori. NON inviare un "
+                "campo se il valore che passeresti coincide con quello "
+                "attuale (es. non passare browser_llm_provider='openai' se "
+                "task.browser_llm_provider e' gia' 'openai'). E' uno spreco "
+                "che genera anche pessimi report verso l'utente ('da X a X')."
             ),
             "parameters": {
                 "type": "object",
@@ -2010,6 +2121,10 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
             return _tool_list_tasks(args)
         if name == "get_task":
             return _tool_get_task(args)
+        if name == "check_llm_credentials":
+            return _tool_check_llm_credentials(args)
+        if name == "list_provider_models":
+            return _tool_list_provider_models(args)
         if name == "list_workflows":
             return _tool_list_workflows(args)
         if name == "list_jobs":
@@ -2018,6 +2133,8 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
             return _tool_get_job_status(args)
         if name == "get_master_summary":
             return _tool_get_master_summary(args)
+        if name == "regenerate_master_summary":
+            return await _tool_regenerate_master_summary(args)
         if name == "list_extraction_templates":
             return _tool_list_extraction_templates()
         if name == "list_chat_models":
@@ -2093,6 +2210,64 @@ def _tool_get_task(args: dict[str, Any]) -> str:
     if not t:
         return json.dumps({"ok": False, "reason": f"task #{task_id} non trovato"})
     return json.dumps({"ok": True, "task": t}, ensure_ascii=False, indent=2, default=str)
+
+
+def _tool_check_llm_credentials(args: dict[str, Any]) -> str:
+    """Verifica se un provider LLM ha credenziali configurate (vault o env)."""
+    provider = (args.get("provider") or "").strip().lower()
+    if not provider:
+        return json.dumps({"ok": False, "reason": "provider mancante"})
+    has_key, source = _provider_has_credentials(provider)
+    creds = _list_provider_credential_ids(provider) if source == "vault" else []
+    out: dict[str, Any] = {
+        "ok": True,
+        "provider": provider,
+        "has_key": has_key,
+        "source": source,
+        "vault_keys": creds,
+    }
+    if not has_key:
+        out["user_action"] = (
+            f"Per usare il provider '{provider}' l'utente deve aggiungere una "
+            f"chiave API valida in /accounts/llm-keys. Senza la chiave, "
+            f"update_task rifiutera' il cambio dello slot LLM."
+        )
+    return json.dumps(out, ensure_ascii=False)
+
+
+def _tool_list_provider_models(args: dict[str, Any]) -> str:
+    """Ritorna i modelli suggeriti per un provider LLM. Per provider con
+    catalogo dinamico (ollama) ritorna `dynamic=true` con la lista vuota:
+    nel codice runtime questa lista e' costruita interrogando l'endpoint
+    locale, non e' validabile a priori."""
+    provider = (args.get("provider") or "").strip().lower()
+    if not provider:
+        return json.dumps({"ok": False, "reason": "provider mancante"})
+    try:
+        info = get_provider(provider)
+    except Exception:
+        return json.dumps({
+            "ok": False,
+            "reason": f"provider '{provider}' sconosciuto",
+        })
+    suggested = info.get("suggested_models") or []
+    # Provider locali (ollama) hanno suggested_models = [] perche' la lista
+    # dipende dai modelli installati. Non possiamo validare un nome a priori.
+    dynamic = not info.get("needs_key") and not suggested
+    out: dict[str, Any] = {
+        "ok": True,
+        "provider": provider,
+        "name": info.get("name"),
+        "dynamic": dynamic,
+        "models": suggested,
+    }
+    if dynamic:
+        out["note"] = (
+            f"Provider '{provider}' ha un catalogo dinamico (modelli locali). "
+            "Lista vuota qui non significa 'nessun modello': update_task "
+            "accettera' qualsiasi stringa per questo provider."
+        )
+    return json.dumps(out, ensure_ascii=False)
 
 
 def _tool_list_workflows(args: dict[str, Any]) -> str:
@@ -2217,6 +2392,42 @@ def _tool_get_master_summary(args: dict[str, Any]) -> str:
         "n_subjobs": len(db.list_subjobs(job_id)),
         "summary_markdown": _sanitize_for_llm(text, max_len=8000),
     }, ensure_ascii=False, indent=2)
+
+
+async def _tool_regenerate_master_summary(args: dict[str, Any]) -> str:
+    """Forza la rigenerazione del master_summary.md. Tenant-safe via db.get_job.
+    Riusa il prompt + LLM piu' aggiornati (preferenza browser_llm cloud)."""
+    job_id = int(args.get("job_id") or 0)
+    if job_id <= 0:
+        return json.dumps({"ok": False, "reason": "job_id mancante"})
+    j = db.get_job(job_id)
+    if not j:
+        return json.dumps({"ok": False, "reason": f"job #{job_id} non trovato"})
+    from ..agent.master_summary import generate_master_summary
+    try:
+        new_path = await generate_master_summary(job_id)
+    except Exception as e:
+        return json.dumps({
+            "ok": False, "job_id": job_id,
+            "reason": f"errore durante la rigenerazione: {type(e).__name__}: {e}",
+        })
+    if not new_path:
+        return json.dumps({
+            "ok": False, "job_id": job_id,
+            "reason": (
+                "Impossibile rigenerare: parent senza sub-job, run_dir "
+                "mancante, o LLM error. Vedi get_job_status."
+            ),
+        })
+    return json.dumps({
+        "ok": True,
+        "job_id": job_id,
+        "regenerated_path": new_path,
+        "next_step": (
+            "Rileggi il summary fresco con get_master_summary(job_id), "
+            "poi rispondi all'utente."
+        ),
+    })
 
 
 def _tool_list_extraction_templates() -> str:
@@ -2596,7 +2807,108 @@ _UPDATE_TASK_STRING_FIELDS = {
     "outreach_intent", "message_template_variants", "recon_mode",
     "recon_hypothesis", "whatsapp_engine_preference", "speed_profile",
     "status_tag", "notes", "cron",
+    # Slot LLM: main (provider/base_url), discovery, browser. Il modello
+    # principale e' gestito a parte sopra (`if k == "model"`) per via della
+    # normalizzazione.
+    "llm_provider", "llm_base_url",
+    "discovery_llm_provider", "discovery_llm_model", "discovery_llm_base_url",
+    "browser_llm_provider", "browser_llm_model", "browser_llm_base_url",
 }
+# Campi `*_llm_provider` che richiedono credenziali per il provider scelto.
+# Usati da `_tool_update_task` per il check pre-validazione.
+_LLM_PROVIDER_FIELDS = (
+    "llm_provider",
+    "discovery_llm_provider",
+    "browser_llm_provider",
+)
+
+
+def _provider_has_credentials(provider_key: str) -> tuple[bool, str | None]:
+    """Ritorna (has_key, source) per un provider. Source: 'vault' (chiave
+    salvata in DB via /accounts/llm-keys), 'env' (env var legacy), o None
+    (mancante).
+
+    Provider senza `needs_key` (ollama, custom): sempre (True, 'not_required').
+
+    Usato sia dal check pre-validazione di `update_task` sia dal tool
+    `check_llm_credentials` esposto all'orchestrator.
+    """
+    key = (provider_key or "").strip().lower()
+    if not key:
+        return False, None
+    try:
+        info = get_provider(key)
+    except Exception:
+        # Provider sconosciuto: trattato come "missing" (il caller decide).
+        return False, None
+    if not info.get("needs_key"):
+        return True, "not_required"
+    try:
+        if any(
+            (k.get("provider") or "").lower() == key
+            for k in db.list_llm_api_keys(status="active")
+        ):
+            return True, "vault"
+    except Exception:
+        pass
+    if env_key_status().get(key):
+        return True, "env"
+    return False, None
+
+
+def _list_provider_credential_ids(provider_key: str) -> list[dict[str, Any]]:
+    """Ritorna le chiavi vault attive per il provider, slim view:
+    `[{'id': int, 'label': str}, ...]`. Vuoto se nessuna chiave o errore.
+    Usato per auto-link del credential_id sui task quando esiste una chiave
+    unica per il provider scelto.
+    """
+    key = (provider_key or "").strip().lower()
+    if not key:
+        return []
+    try:
+        rows = db.list_llm_api_keys(status="active")
+    except Exception:
+        return []
+    out = []
+    for k in rows:
+        if (k.get("provider") or "").lower() != key:
+            continue
+        out.append({"id": int(k["id"]), "label": k.get("label") or ""})
+    return out
+
+
+def _suggested_models_for_provider(provider_key: str) -> list[str]:
+    """Estrae la lista degli `id` di `suggested_models` di un provider.
+    Vuoto per provider senza catalogo (ollama, custom): in quel caso la
+    validazione e' skippata (l'utente puo' usare qualsiasi modello locale)."""
+    key = (provider_key or "").strip().lower()
+    if not key:
+        return []
+    try:
+        info = get_provider(key)
+    except Exception:
+        return []
+    out: list[str] = []
+    for m in info.get("suggested_models") or []:
+        if isinstance(m, dict) and m.get("id"):
+            out.append(str(m["id"]))
+        elif isinstance(m, str):
+            out.append(m)
+    return out
+
+
+def _closest_model_match(model: str, candidates: list[str]) -> str | None:
+    """Fuzzy match (difflib) tra `model` e `candidates`. Ritorna il match
+    piu' vicino se la similarita' supera 0.5, altrimenti None.
+
+    Esempio: `o4mini` → `gpt-4o-mini` (similarita' alta sui caratteri comuni).
+    """
+    if not model or not candidates:
+        return None
+    from difflib import get_close_matches
+    matches = get_close_matches(model, candidates, n=1, cutoff=0.5)
+    return matches[0] if matches else None
+
 _UPDATE_TASK_STRING_LIST_FIELDS = {
     "seed_queries", "allowed_domains", "blocked_domains",
     "message_channels", "seed_queries_friends",
@@ -2609,7 +2921,17 @@ _UPDATE_TASK_INT_FIELDS = {
     "whatsapp_api_config_id", "recon_social_account_id",
     "recon_max_targets_per_day", "recon_score_threshold",
     "whatsapp_dry_run", "outreach_filter_source_task_id",
+    # FK alla tabella llm_api_keys: l'orchestrator puo' settarli esplicitamente
+    # o lasciare che `update_task` faccia l'auto-link (vedi sotto).
+    "llm_credential_id", "discovery_llm_credential_id", "browser_llm_credential_id",
 }
+# Triplette degli slot LLM: (model_field, provider_field, credential_id_field).
+# Usate per validazione modello e auto-link credential_id.
+_LLM_SLOTS = (
+    ("model", "llm_provider", "llm_credential_id"),
+    ("discovery_llm_model", "discovery_llm_provider", "discovery_llm_credential_id"),
+    ("browser_llm_model", "browser_llm_provider", "browser_llm_credential_id"),
+)
 _UPDATE_TASK_FLOAT_FIELDS = {"gap_between_dms_min", "gap_between_dms_max"}
 _UPDATE_TASK_BOOL_FIELDS = {"crawler_enabled"}
 
@@ -2629,8 +2951,121 @@ def _tool_update_task(args: dict[str, Any]) -> str:
     if not existing:
         return json.dumps({"ok": False, "reason": f"task #{task_id} non trovato"})
 
+    # Pre-validazione provider LLM: se l'orchestrator (o il caller) chiede di
+    # settare uno degli slot `*_llm_provider` a un provider che richiede una
+    # chiave ma la chiave non e' configurata (ne' vault ne' env), rifiuto
+    # l'INTERA operazione. Senza questo, il task verrebbe salvato in stato
+    # incoerente (provider impostato, chiave mancante) e poi fallirebbe a
+    # run-time con errore criptico. Incident 2026-05-23.
+    missing_creds: list[dict[str, str]] = []
+    for fld in _LLM_PROVIDER_FIELDS:
+        new_val = args.get(fld)
+        if not new_val:
+            continue
+        has_key, _src = _provider_has_credentials(str(new_val))
+        if not has_key:
+            missing_creds.append({"field": fld, "provider": str(new_val)})
+    if missing_creds:
+        return json.dumps(
+            {
+                "ok": False,
+                "reason": "missing_credentials",
+                "missing_credentials": missing_creds,
+                "user_action_required": (
+                    "L'utente deve aggiungere una chiave API valida per i "
+                    "provider elencati prima di poter aggiornare il task. "
+                    "Indicare di andare su /accounts/llm-keys e configurare "
+                    "la chiave; dopo, riprovare update_task."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    # Validazione modello LLM: se viene passato un `*_llm_model` (o `model`)
+    # con un provider che ha un catalogo di `suggested_models`, verifica che
+    # il modello sia tra quelli noti. Se non lo e', hard reject con fuzzy
+    # suggestion. Senza questo check, l'orchestrator poteva inviare nomi
+    # storpiati (es. `o4mini` invece di `gpt-4o-mini`) e il task veniva
+    # salvato con un modello inesistente che falliva a run-time.
+    unknown_models: list[dict[str, Any]] = []
+    for model_field, provider_field, _cred_field in _LLM_SLOTS:
+        new_model = args.get(model_field)
+        if not new_model:
+            continue
+        # Provider effettivo: prima quello passato in args, poi quello esistente.
+        effective_provider = (
+            args.get(provider_field) or existing.get(provider_field) or ""
+        ).strip().lower()
+        if not effective_provider:
+            # Senza provider non si puo' validare. Skip (sara' il run-time a fallire).
+            continue
+        suggested = _suggested_models_for_provider(effective_provider)
+        if not suggested:
+            # Provider senza catalogo (ollama, custom): salta validazione.
+            continue
+        if str(new_model) in suggested:
+            continue
+        closest = _closest_model_match(str(new_model), suggested)
+        unknown_models.append({
+            "field": model_field,
+            "provider": effective_provider,
+            "passed_value": str(new_model),
+            "closest_match": closest,
+            "suggested_models": suggested,
+        })
+    if unknown_models:
+        return json.dumps(
+            {
+                "ok": False,
+                "reason": "unknown_model",
+                "unknown_models": unknown_models,
+                "user_action_required": (
+                    "Uno o piu' modelli passati non esistono per il provider "
+                    "scelto. Controlla `closest_match` per la correzione "
+                    "probabile e `suggested_models` per la lista completa. "
+                    "Riporta all'utente l'errore + la correzione suggerita, "
+                    "poi riprova update_task con il nome corretto."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    # Auto-link credential_id: se viene impostato un provider che ha UNA SOLA
+    # chiave attiva nel vault e il credential_id non e' stato passato
+    # esplicitamente, collega automaticamente. Cosi' l'utente non vede il
+    # dropdown "Chiave API: -- nessuna --" dopo un cambio di provider via
+    # orchestrator. Multi-chiave: niente auto-link, il caller dovra' scegliere.
+    auto_linked: list[dict[str, Any]] = []
+    cred_warnings: list[dict[str, Any]] = []
+    for _model_field, provider_field, cred_field in _LLM_SLOTS:
+        new_provider = args.get(provider_field)
+        if not new_provider:
+            continue
+        if args.get(cred_field):
+            # L'orchestrator l'ha settato esplicitamente: rispetto.
+            continue
+        creds = _list_provider_credential_ids(str(new_provider))
+        if len(creds) == 1:
+            # Inietto nei args cosi' che il loop sotto lo prenda da _UPDATE_TASK_INT_FIELDS.
+            args = dict(args)  # non mutare l'originale
+            args[cred_field] = creds[0]["id"]
+            auto_linked.append({
+                "field": cred_field,
+                "provider": new_provider,
+                "credential_id": creds[0]["id"],
+                "label": creds[0]["label"],
+            })
+        elif len(creds) > 1:
+            cred_warnings.append({
+                "field": cred_field,
+                "provider": new_provider,
+                "available": creds,
+                "message": "Multiple chiavi nel vault. Passa esplicitamente `{}` o chiedi all'utente quale usare.".format(cred_field),
+            })
+
     patch: dict[str, Any] = {}
     changed: list[str] = []
+    skipped: list[str] = []  # campi passati ma non riconosciuti dalla whitelist
     for k, v in args.items():
         if k == "task_id" or v is None:
             continue
@@ -2665,6 +3100,10 @@ def _tool_update_task(args: dict[str, Any]) -> str:
                         })
                 patch[k] = clean
             else:
+                # Campo non riconosciuto: NON silenziarlo. Senza questo, l'LLM
+                # chiamante assumeva che tutto fosse stato applicato e
+                # allucinava il successo (incidente 2026-05-23).
+                skipped.append(k)
                 continue
             changed.append(k)
         except (TypeError, ValueError) as e:
@@ -2694,16 +3133,35 @@ def _tool_update_task(args: dict[str, Any]) -> str:
     except Exception as e:
         return json.dumps({"ok": False, "reason": f"{type(e).__name__}: {e}"})
 
-    return json.dumps(
-        {
-            "ok": True,
-            "task_id": task_id,
-            "changed_fields": sorted(set(changed)),
-            "agent_mode": merged.get("agent_mode"),
-            "name": merged.get("name"),
-        },
-        ensure_ascii=False,
-    )
+    result: dict[str, Any] = {
+        "ok": True,
+        "task_id": task_id,
+        "changed_fields": sorted(set(changed)),
+        "agent_mode": merged.get("agent_mode"),
+        "name": merged.get("name"),
+    }
+    if skipped:
+        # Esponi i campi NON applicati: l'LLM chiamante deve poter dire all'utente
+        # "ho applicato X ma non Y" invece di assumere successo totale.
+        result["skipped_fields"] = sorted(set(skipped))
+        result["warning"] = (
+            "Alcuni campi passati non sono riconosciuti da update_task e NON "
+            "sono stati applicati. Vedi `skipped_fields`. NON dichiarare "
+            "all'utente che sono stati modificati."
+        )
+    if auto_linked:
+        # Trasparenza: l'orchestrator deve dire all'utente "ho anche collegato
+        # automaticamente la chiave X", non lasciare il side-effect implicito.
+        result["auto_linked_credentials"] = auto_linked
+    if cred_warnings:
+        # Multi-chiave: serve scelta esplicita dell'utente.
+        result["credential_warnings"] = cred_warnings
+        result.setdefault("warning", "")
+        result["warning"] = (
+            (result.get("warning") + " " if result.get("warning") else "")
+            + "Alcuni provider hanno piu' chiavi nel vault: chiedi all'utente quale usare."
+        ).strip()
+    return json.dumps(result, ensure_ascii=False)
 
 
 def _tool_create_workflow(args: dict[str, Any]) -> str:
@@ -3379,11 +3837,34 @@ def _chat_system_prompt(
         "- Per stato dei job/agenti usa list_jobs / get_job_status / list_tasks invece di descrivere a vuoto.\n"
         "- **Per spiegare 'com'e' andato' un job auto_extract con sub-job (e quale fix consigliare all'utente): "
         "chiama PRIMA `get_master_summary(job_id)`. Ritorna un markdown strutturato con sezioni '🎯 Esito globale', "
-        "'📍 Per sito', '🔍 Pattern problematici rilevati' (con codici P1-P8 standard del catalogo: extract_failed_loop, "
-        "HTTP_403, Cloudflare, memory_stuck, login_wall, timeout, errore_argos, SPA_non_scrappabile), e "
+        "'📍 Per sito', '🔍 Pattern problematici rilevati' (catalogo P1-P9: P1=extract_failed_loop "
+        "LLM-non-strict, P2=HTTP_403, P3=anti-bot/DOM_empty, P4=memory_stuck, P5=login_wall, P6=timeout, "
+        "P7=errore_argos, P8=SPA_non_scrappabile, **P9=sito_non_directory** — 0 profili nonostante "
+        "crawl OK, sito non e' una directory pubblica di profili contattabili), e "
         "'💡 Raccomandazioni concrete' ordinate per priorita'. Estrai dalla sezione 'Pattern problematici' la diagnosi e "
         "dalla sezione 'Raccomandazioni' le azioni concrete da suggerire all'utente. NON inventare diagnosi: cita quelle "
         "del summary. Se il summary non esiste fallback su get_job_status + log_tail.**\n"
+        "- **DIAGNOSI ANTI-HALLUCINATION (regole tassative quando spieghi un job fallito)**:\n"
+        "  (a) CONFRONTA SEMPRE con la config attuale via `get_task(task_id)` PRIMA di "
+        "scrivere la tabella 'configurazione consigliata'. Se `task.browser_llm_provider == 'openai'` "
+        "e `task.browser_llm_model == 'gpt-4o-mini'`, NON scrivere 'cambia browser_llm a openai/gpt-4o-mini' "
+        "— e' gia' cosi'. Per ogni slot, riporta come 'valore attuale' il valore ESATTO letto da get_task, "
+        "NON una stringa inventata.\n"
+        "  (b) Se un valore attuale e' GIA' uguale al consigliato, OMETTI quella riga dalla "
+        "tabella. Niente 'da X a X'. Se TUTTI gli slot sono adeguati, scrivi esplicitamente "
+        "'Config gia' adeguata: la causa NON e' nella config del task'.\n"
+        "  (c) HTTP_USER_AGENT e' gia' 'Mozilla/5.0 ... Chrome/120' di default dal 2026-05-23. "
+        "NON suggerire mai 'cambia User-Agent da Argos/0.1 a Mozilla' — quel suggerimento e' obsoleto.\n"
+        "  (d) P3 (DOM vuoto / anti-bot) NON si risolve cambiando main LLM o Browser LLM. "
+        "E' anti-bot lato sito. Suggerisci proxy residenziali, browser headed, o escludere il sito.\n"
+        "  (e) P9 (sito non directory) NON si risolve cambiando config. Suggerisci di cambiare "
+        "STRATEGIA: cercare directory verticali del settore, usare recon_social con keyword, "
+        "importare lead esistenti via CSV `/import` e qualificare. Lo scraping cieco di portali/news/forum "
+        "generici non porta lead utili (GDPR ha chiuso quel pattern su tutti i siti seri).\n"
+        "  (f) Se l'utente ti chiede 'perche' 0 profili' su un job auto_extract dove i siti seed sono "
+        "portali generici (es. siti di news del settore), spiega che il problema e' di STRATEGIA "
+        "(P9), non di tooling, e proponi alternative: bulk_extract su una directory verticale nota, "
+        "recon_social, o import CSV.\n"
         "- FEEDBACK LOOP TASK FALLITO/SUBOTTIMALE: quando l'utente ti passa un report di job, un log, "
         "un output insoddisfacente, oppure dice 'il task X è venuto male / non ha trovato niente / "
         "rendi più efficace / aggiusta / migliora questo task', NON ricreare da zero: aggiorna il task "

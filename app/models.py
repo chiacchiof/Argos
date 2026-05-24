@@ -62,6 +62,12 @@ class TaskIn(BaseModel):
     rating: int | None = Field(default=None, ge=1, le=5)
     notes: str | None = None
     status_tag: StatusTag | None = None
+    # Modalità destroy del runner qualifier (agent_mode='qualifier'). Quando il
+    # LLM emette verdict 'destroy' su un asset:
+    #   - 'auto' (default): hard delete immediato
+    #   - 'confirm': solo standalone, marca pending_destroy e chiede conferma
+    #     all'utente a fine job. In workflow viene forzato a 'auto'.
+    qualifier_destroy_mode: Literal["auto", "confirm"] = "auto"
     # Outreach social fields (agent_mode=outreach_social)
     social_platform: str | None = None
     # Single-select sender per outreach_social: account specifico fra IG/TT/FB.

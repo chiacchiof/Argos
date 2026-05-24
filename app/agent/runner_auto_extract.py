@@ -235,23 +235,39 @@ def _resolve_profiler_llm(task: dict[str, Any]) -> tuple[str, str, str, str | No
             provider_key = main_provider
             model = main_model
             api_key_input = task.get("llm_api_key")
+            credential_id = task.get("llm_credential_id")
+            custom_base_url = task.get("llm_base_url")
         else:
             provider_key = discovery_provider
             model = discovery_model
             api_key_input = task.get("discovery_llm_api_key")
+            credential_id = task.get("discovery_llm_credential_id")
+            custom_base_url = task.get("discovery_llm_base_url") or task.get("llm_base_url")
     elif discovery_provider:
         # Provider impostato ma modello vuoto → usa modello main col discovery provider
         # (puo' funzionare se il main_model e' compatibile, altrimenti fallira' a runtime)
         provider_key = discovery_provider
         model = main_model
         api_key_input = task.get("discovery_llm_api_key")
+        credential_id = task.get("discovery_llm_credential_id")
+        custom_base_url = task.get("discovery_llm_base_url") or task.get("llm_base_url")
     else:
         provider_key = main_provider or "ollama"
         model = main_model
         api_key_input = task.get("llm_api_key")
+        credential_id = task.get("llm_credential_id")
+        custom_base_url = task.get("llm_base_url")
 
-    base_url = resolve_base_url(provider_key, task.get("llm_base_url"))
-    api_key = resolve_api_key(provider_key, api_key_input)
+    # Usa resolve_credential per supportare chiavi salvate nel vault (FK
+    # credential_id), con fallback su project_key legacy + env. Senza, il
+    # path legacy ignora la chiave linkata al task (incident 2026-05-23).
+    from .llm_providers import resolve_credential
+    api_key, base_url, _ = resolve_credential(
+        credential_id,
+        provider_key,
+        project_key=api_key_input,
+        custom_base_url=custom_base_url,
+    )
     return base_url, api_key, model, warning
 
 

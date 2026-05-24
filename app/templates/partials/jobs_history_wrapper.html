@@ -4,11 +4,13 @@
    Gli <h3> stanno nel template `task_detail.html` (renderizzati una sola volta
    al first render) per evitare duplicazione cumulativa ad ogni poll.
 
-   Polling adattivo: 3s mentre c'e' un job in queued/running, 15s a riposo. #}
+   Polling adattivo: 3s mentre c'e' un job in queued/running, 5s a riposo
+   (era 15s, ridotto 2026-05-23 per ridurre il ritardo nel mostrare un nuovo
+   job lanciato da fuori la pagina — es. orchestrator, cron). #}
 
 <div id="jobs-history"
      hx-get="/tasks/{{ task.id }}/jobs"
-     hx-trigger="every {% if has_active %}3{% else %}15{% endif %}s"
+     hx-trigger="every {% if has_active %}3{% else %}5{% endif %}s"
      hx-swap="outerHTML">
   {% include "partials/jobs_history.html" %}
 </div>

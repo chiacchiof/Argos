@@ -7,6 +7,7 @@
      {% endif %}>
   <p>
     <strong>Job #{{ job.id }}</strong>
+    {% if display_id %}<small class="muted" title="ID nella cronologia del parent">({{ display_id }})</small>{% endif %}
     &middot;
     <span class="status status-{{ job.status }}">{{ job.status }}</span>
     {% if job.started_at %}<small>avvio: {{ job.started_at }}</small>{% endif %}

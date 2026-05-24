@@ -36,53 +36,65 @@
     {# ============================================================
        SEZIONE 1: IDENTITÀ — sempre visibile per tutte le modalità
        ============================================================ #}
-    <label>Nome
-      <input name="name" required maxlength="200" value="{{ p.get('name','') }}">
-    </label>
-    <label>Descrizione <span class="hint">(promemoria interno)</span>
-      <textarea name="description" rows="2">{{ p.get('description','') or '' }}</textarea>
-    </label>
+    <details class="collapsible-section" open>
+      <summary>Identità task</summary>
+
+      <label>Nome
+        <input name="name" required maxlength="200" value="{{ p.get('name','') }}">
+      </label>
+      <label>Descrizione <span class="hint">(promemoria interno)</span>
+        <textarea name="description" rows="2">{{ p.get('description','') or '' }}</textarea>
+      </label>
+    </details>
 
     {# ============================================================
        SEZIONE 2: MODALITÀ AGENTE — sempre visibile, pilota tutto il resto
        ============================================================ #}
-    <label>
-      <strong>Modalità agente</strong>
-      <select name="agent_mode" id="agent-mode-select">
-        {% set mode = p.get('agent_mode','react') %}
-        <option value="react" {% if mode=='react' %}selected{% endif %}>react — ricerca leggera HTTP+DDG</option>
-        <option value="browser_use" {% if mode=='browser_use' %}selected{% endif %}>browser_use — scraping con browser reale (agentico)</option>
-        <option value="bulk_extract" {% if mode=='bulk_extract' %}selected{% endif %}>bulk_extract — scraping massivo deterministico (lista URL)</option>
-        <option value="auto_extract" {% if mode=='auto_extract' %}selected{% endif %}>auto_extract — agente decide la strategia per ogni sito (consigliato per liste eterogenee)</option>
-        <option value="site_explorer" {% if mode=='site_explorer' %}selected{% endif %}>site_explorer — il LLM mappa il sito (categorie/listing/paginazione), poi il runner estrae deterministicamente</option>
-        <option value="qualifier" {% if mode=='qualifier' %}selected{% endif %}>qualifier — LLM filtra/scora contatti</option>
-        <option value="outreach" {% if mode=='outreach' %}selected{% endif %}>outreach — invio email/telegram</option>
-        <option value="outreach_social" {% if mode=='outreach_social' %}selected{% endif %}>outreach_social — DM via Instagram/TikTok (browser stealth + Playwright)</option>
-        <option value="outreach_whatsapp" {% if mode=='outreach_whatsapp' %}selected{% endif %}>outreach_whatsapp — DM WhatsApp (Motore A browser + Motore B Cloud API)</option>
-        <option value="recon_social" {% if mode=='recon_social' %}selected{% endif %}>recon_social — navigazione profili social con account loggato (READ-ONLY)</option>
-        <option value="responder" {% if mode=='responder' %}selected{% endif %}>responder — auto-reply LLM ai messaggi inbound</option>
-      </select>
-      <small class="hint mode-hint" data-mode-hint>Scegli la modalità: il form si adatterà automaticamente.</small>
-    </label>
+    <details class="collapsible-section" open>
+      <summary>Modalità agente</summary>
+
+      <label>
+        <strong>Modalità agente</strong>
+        <select name="agent_mode" id="agent-mode-select">
+          {% set mode = p.get('agent_mode','react') %}
+          <option value="react" {% if mode=='react' %}selected{% endif %}>react — ricerca leggera HTTP+DDG</option>
+          <option value="browser_use" {% if mode=='browser_use' %}selected{% endif %}>browser_use — scraping con browser reale (agentico)</option>
+          <option value="bulk_extract" {% if mode=='bulk_extract' %}selected{% endif %}>bulk_extract — scraping massivo deterministico (lista URL)</option>
+          <option value="auto_extract" {% if mode=='auto_extract' %}selected{% endif %}>auto_extract — agente decide la strategia per ogni sito (consigliato per liste eterogenee)</option>
+          <option value="site_explorer" {% if mode=='site_explorer' %}selected{% endif %}>site_explorer — il LLM mappa il sito (categorie/listing/paginazione), poi il runner estrae deterministicamente</option>
+          <option value="qualifier" {% if mode=='qualifier' %}selected{% endif %}>qualifier — LLM filtra/scora contatti</option>
+          <option value="outreach" {% if mode=='outreach' %}selected{% endif %}>outreach — invio email/telegram</option>
+          <option value="outreach_social" {% if mode=='outreach_social' %}selected{% endif %}>outreach_social — DM via Instagram/TikTok (browser stealth + Playwright)</option>
+          <option value="outreach_whatsapp" {% if mode=='outreach_whatsapp' %}selected{% endif %}>outreach_whatsapp — DM WhatsApp (Motore A browser + Motore B Cloud API)</option>
+          <option value="recon_social" {% if mode=='recon_social' %}selected{% endif %}>recon_social — navigazione profili social con account loggato (READ-ONLY)</option>
+          <option value="responder" {% if mode=='responder' %}selected{% endif %}>responder — auto-reply LLM ai messaggi inbound</option>
+        </select>
+        <small class="hint mode-hint" data-mode-hint>Scegli la modalità: il form si adatterà automaticamente.</small>
+      </label>
+    </details>
 
     {# ============================================================
        SEZIONE 3: OBIETTIVO / CRITERIO — sempre presente, label varia
        ============================================================ #}
-    <label>
-      <span class="dyn-label"
-            data-label-react="Obiettivo / cosa cercare"
-            data-label-browseruse="Obiettivo / cosa cercare"
-            data-label-qualifier="Criterio di filtro / scoring"
-            data-label-outreach="Note descrittive (opzionale)"
-            data-label-responder="Note descrittive (opzionale)">Obiettivo</span>
-      <span class="hint dyn-hint"
-            data-hint-react="Cosa deve trovare l'agente, in linguaggio naturale."
-            data-hint-browseruse="Cosa cerca l'agente nel browser. Combinato con lo schema di estrazione."
-            data-hint-qualifier="Criterio LLM per decidere se un profilo è valido (es. 'tieni solo profili con email pubblica e descrizione narrativa')."
-            data-hint-outreach="Memo per te, non usato dall'agente. Le istruzioni effettive sono in template/subject/canali."
-            data-hint-responder="Memo per te, non usato dall'agente. Le istruzioni effettive sono nel system prompt sotto.">(cosa cerca, come deve produrre il report)</span>
-      <textarea name="objective" rows="5" required>{{ p.get('objective','') }}</textarea>
-    </label>
+    <details class="collapsible-section" open>
+      <summary>Obiettivo</summary>
+
+      <label>
+        <span class="dyn-label"
+              data-label-react="Obiettivo / cosa cercare"
+              data-label-browseruse="Obiettivo / cosa cercare"
+              data-label-qualifier="Criterio di filtro / scoring"
+              data-label-outreach="Note descrittive (opzionale)"
+              data-label-responder="Note descrittive (opzionale)">Obiettivo</span>
+        <span class="hint dyn-hint"
+              data-hint-react="Cosa deve trovare l'agente, in linguaggio naturale."
+              data-hint-browseruse="Cosa cerca l'agente nel browser. Combinato con lo schema di estrazione."
+              data-hint-qualifier="Criterio LLM per decidere se un profilo è valido (es. 'tieni solo profili con email pubblica e descrizione narrativa')."
+              data-hint-outreach="Memo per te, non usato dall'agente. Le istruzioni effettive sono in template/subject/canali."
+              data-hint-responder="Memo per te, non usato dall'agente. Le istruzioni effettive sono nel system prompt sotto.">(cosa cerca, come deve produrre il report)</span>
+        <textarea name="objective" rows="5" required>{{ p.get('objective','') }}</textarea>
+      </label>
+    </details>
 
     </section>{# fine STEP 1 #}
 
@@ -727,6 +739,41 @@
       <p class="muted small">
         ⚠️ <strong>Auto-detect opt-out</strong>: messaggi che contengono <code>STOP</code>, <code>unsubscribe</code>,
         <code>rimuovimi</code>, ecc. NON ricevono risposta e il contatto viene marcato <code>optedout</code>.
+      </p>
+    </details>
+
+    {# ============================================================
+       SEZIONE 8b: QUALIFIER — solo qualifier (modalità destroy)
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="qualifier">
+      <summary>Configurazione qualifier — modalità destroy</summary>
+
+      <label>Modalità destroy
+        <span class="hint">
+          Il qualifier può emettere un 3° verdetto <code>destroy</code> per asset
+          considerati garbage (es. articolo scambiato per profilo, pagina vuota,
+          duplicato). Questo controlla cosa fa quando arriva quel verdetto.
+        </span>
+        {% set qdm = p.get('qualifier_destroy_mode') or 'auto' %}
+        <select name="qualifier_destroy_mode">
+          <option value="auto" {% if qdm == 'auto' %}selected{% endif %}>
+            auto — hard delete immediato (default; forzato anche in workflow)
+          </option>
+          <option value="confirm" {% if qdm == 'confirm' %}selected{% endif %}>
+            confirm — propone destroy, conferma manuale via UI a fine job
+          </option>
+        </select>
+      </label>
+
+      <p class="muted small">
+        ⚠️ In <strong>workflow</strong> la modalità è sempre <code>auto</code>: la
+        catena task-task non può aspettare l'utente. <code>confirm</code> ha
+        effetto solo se lanci il qualifier come task standalone.
+        <br>
+        ℹ️ Gli asset destroy vengono <strong>cancellati definitivamente</strong>
+        dal database (cascade su asset_tags). In <code>confirm</code> mode invece
+        ricevono il tag <code>qualifier_&lt;slug&gt;:pending_destroy</code> e
+        sono recuperabili finché non confermi.
       </p>
     </details>
 

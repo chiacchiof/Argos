@@ -1,0 +1,81 @@
+{# Wrapper polling HTMX adattivo per la tabella /workflows.
+   Cadenza 5s solo se almeno un workflow ha workflow_run attivi. #}
+{% set poll_qs = [] %}
+{% if author_filter and author_filter != 'mine' %}{% set _ = poll_qs.append('author=' ~ author_filter) %}{% endif %}
+{% if filter_q %}{% set _ = poll_qs.append('q=' ~ filter_q) %}{% endif %}
+{% set _ = poll_qs.append('_partial=1') %}
+<div id="workflows-list-live"
+     {% if has_active %}
+     hx-get="/workflows?{{ poll_qs|join('&') }}"
+     hx-trigger="every 5s"
+     hx-swap="outerHTML"
+     {% endif %}>
+  {% if has_active %}
+  <div class="live-activity-banner">
+    <span class="live-pulse"></span>
+    <strong>{{ active_by_wf|length }}</strong> workflow in esecuzione
+    <small class="muted">(refresh ogni 5s)</small>
+  </div>
+  {% endif %}
+
+  {% if workflows %}
+  <table class="data">
+    <thead>
+      <tr><th>#</th><th>Nome</th><th>Tasks</th><th>Edges</th><th>Aggiornato</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for w in workflows %}
+      {% set act = active_by_wf.get(w.id) %}
+      {% set row_classes = [] %}
+      {% if w.disabled %}{% set _ = row_classes.append('row-disabled') %}{% endif %}
+      {% if act %}{% set _ = row_classes.append('row-active row-active-' ~ act.latest_run_status) %}{% endif %}
+      <tr{% if row_classes %} class="{{ row_classes|join(' ') }}"{% endif %}>
+        <td>{{ w.id }}</td>
+        <td>
+          {% if w.disabled %}<span class="disabled-badge" title="Workflow disabilitato: non puo' essere lanciato">🚫</span>{% endif %}
+          {% if act %}
+            <span class="status status-{{ act.latest_run_status }} live-badge"
+                  title="{{ act.n_active_runs }} run attivi, {{ act.n_active_jobs }} job in esecuzione">
+              {% if act.latest_run_status == 'running' %}▶ RUNNING{% else %}⏳ QUEUED{% endif %}
+            </span>
+          {% endif %}
+          <a href="/workflows/{{ w.id }}">{{ w.name }}</a>
+          {% if act and act.n_active_jobs > 0 %}
+          <br><small class="muted">{{ act.n_active_jobs }} job attiv{% if act.n_active_jobs == 1 %}o{% else %}i{% endif %}</small>
+          {% endif %}
+        </td>
+        <td>{{ w.n_tasks }}</td>
+        <td>{{ w.n_edges }}</td>
+        <td><small>{{ w.updated_at }}</small></td>
+        <td class="row-actions">
+          <a href="/workflows/{{ w.id }}/edit" class="btn-icon btn-icon-brand" aria-label="Modifica workflow" title="Modifica nome/descrizione">
+            <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+          </a>
+          <form method="post" action="/workflows/{{ w.id }}/toggle-disabled" style="display:inline">
+            <input type="hidden" name="redirect_to" value="/workflows">
+            {% if w.disabled %}
+              <button type="submit" class="btn-icon btn-icon-success" aria-label="Abilita workflow" title="Riabilita il workflow">
+                <svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>
+              </button>
+            {% else %}
+              <button type="submit" class="btn-icon btn-icon-danger" aria-label="Disabilita workflow" title="Disabilita: non potra' essere lanciato"
+                      onclick="return confirm('Disabilitare il workflow #{{ w.id }} \'{{ w.name|e }}\'?');">
+                <svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg>
+              </button>
+            {% endif %}
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">
+    {% if filter_q %}
+      Nessun workflow corrisponde a "<strong>{{ filter_q }}</strong>".
+    {% else %}
+      Nessun workflow ancora. <a href="/workflows/new">Creane uno</a>.
+    {% endif %}
+  </p>
+  {% endif %}
+</div>

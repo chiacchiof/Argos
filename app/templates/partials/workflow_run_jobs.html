@@ -1,0 +1,55 @@
+{# Partial caricato via HTMX dall'expand "dettagli" di una riga in
+   `Esecuzioni recenti`. Mostra i job lanciati da quel workflow_run con
+   link diretti ai risultati e al log. #}
+{% if jobs %}
+<table class="data workflow-run-jobs">
+  <thead>
+    <tr>
+      <th>Job #</th>
+      <th>Task</th>
+      <th>Stato</th>
+      <th>Avvio</th>
+      <th>Fine</th>
+      <th>Risultato</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for j in jobs %}
+    <tr>
+      <td>#{{ j.job_id }}</td>
+      <td>
+        {% if j.task_id %}
+          <a href="/tasks/{{ j.task_id }}">{{ j.task_name }}</a>
+        {% else %}
+          <span class="muted">{{ j.task_name }}</span>
+        {% endif %}
+      </td>
+      <td><span class="status status-{{ j.status }}">{{ j.status }}</span></td>
+      <td><small>{{ j.started_at or "—" }}</small></td>
+      <td><small>{{ j.finished_at or "—" }}</small></td>
+      <td>
+        {% if j.result_rel_path and j.task_id %}
+          <a href="/tasks/{{ j.task_id }}/results/{{ j.result_rel_path }}">{{ j.result_rel_path }}</a>
+        {% else %}—{% endif %}
+      </td>
+      <td class="job-actions-cell">
+        <a href="/jobs/{{ j.job_id }}/status" hx-boost="false" target="_blank"
+           title="Log completo in nuova tab">log</a>
+        {% if j.task_id %}
+          &middot;
+          <a href="/tasks/{{ j.task_id }}#job-{{ j.job_id }}" title="Vai al task">task</a>
+        {% endif %}
+      </td>
+    </tr>
+    {% if j.error %}
+    <tr>
+      <td colspan="7"><small class="errors">⚠ {{ j.error|truncate(220) }}</small></td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted small">Nessun job registrato per questo run.</p>
+{% endif %}

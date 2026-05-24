@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Conferma destroy — {{ task.name }} — Argos{% endblock %}
+{% block content %}
+<section>
+  <p class="muted small">
+    <a href="/tasks/{{ task.id }}">← {{ task.name }} #{{ task.id }}</a>
+  </p>
+  <h2>⚠️ Conferma destroy — {{ assets|length }} asset</h2>
+  <p class="muted">
+    Il qualifier in modalità <code>confirm</code> ha proposto questi asset come
+    <strong>garbage</strong> (destroy). Sono ancora nel DB con tag
+    <code>qualifier_{{ slug }}:pending_destroy</code>. Confermando li
+    <strong>cancelli definitivamente</strong> (insieme ai loro tag, threads, ecc.).
+    Annullando, rimuovi solo il tag e gli asset restano disponibili.
+  </p>
+
+  {% if assets %}
+  <div class="actions" style="margin: 1rem 0;">
+    <form method="post" action="/tasks/{{ task.id }}/qualifier-destroy-confirm" style="display:inline">
+      <input type="hidden" name="action" value="confirm">
+      <button type="submit" class="btn-danger-inline"
+              onclick="return confirm('Cancellare DEFINITIVAMENTE {{ assets|length }} asset? L\'azione è irreversibile.');">
+        <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
+        🗑️ Conferma destroy ({{ assets|length }})
+      </button>
+    </form>
+    <form method="post" action="/tasks/{{ task.id }}/qualifier-destroy-confirm" style="display:inline; margin-left:0.6rem">
+      <input type="hidden" name="action" value="cancel">
+      <button type="submit" class="btn-link-action"
+              onclick="return confirm('Annullare destroy su {{ assets|length }} asset? Il tag pending_destroy verrà rimosso.');">
+        ↩️ Annulla destroy (mantieni asset)
+      </button>
+    </form>
+  </div>
+
+  <table class="data">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Titolo</th>
+        <th>Dominio</th>
+        <th>Tipo</th>
+        <th>Motivazione</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in assets %}
+      <tr>
+        <td>{{ a.id }}</td>
+        <td>
+          <a href="/assets/{{ a.id }}">{{ a.title or "(senza titolo)" }}</a>
+        </td>
+        <td>{{ a.source_domain or "—" }}</td>
+        <td><code>{{ a.asset_type }}</code></td>
+        <td><small class="muted">{{ a.notes|truncate(140) if a.notes else "—" }}</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <span class="empty-icon">✓</span>
+    <div class="empty-title">Nessun asset in attesa di conferma destroy</div>
+    <p class="empty-hint">
+      Il qualifier non ha proposto alcun asset come "destroy", oppure hai già
+      confermato/annullato.
+    </p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

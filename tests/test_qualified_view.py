@@ -169,14 +169,38 @@ def test_list_score_min_filter(qualifier_setup):
     assert ids == {qualifier_setup["p1"]}
 
 
-def test_list_no_qualifier_filter_returns_all(qualifier_setup):
-    """Senza filtro qualifier → tutti gli asset del tenant (anche non taggati)."""
+def test_list_no_qualifier_filter_returns_only_qualified(qualifier_setup):
+    """Senza filtro qualifier slug, la pagina /qualified mostra SOLO asset con
+    almeno un tag `qualifier_*:qualified` (fix 2026-05-23: prima ritornava
+    tutti gli asset del tenant — vedi `_qualified_assets_where_clause`,
+    parametro `require_qualified=True` settato da list/count_qualified_assets).
+    """
     rows = db.list_qualified_assets(
         qualifier_slugs=[], status_filter="qualified",
         tenant_id=qualifier_setup["tenant_a"],
     )
     ids = {r["id"] for r in rows}
-    # Tutti gli asset di Alice: p1, p2, p3
+    # Solo p1 e p2 hanno tag qualifier_*:qualified (p3 e' rejected).
+    assert ids == {qualifier_setup["p1"], qualifier_setup["p2"]}
+
+
+def test_list_no_qualifier_filter_rejected(qualifier_setup):
+    """Senza slug ma status=rejected → solo asset taggati :rejected (no :qualified)."""
+    rows = db.list_qualified_assets(
+        qualifier_slugs=[], status_filter="rejected",
+        tenant_id=qualifier_setup["tenant_a"],
+    )
+    ids = {r["id"] for r in rows}
+    assert ids == {qualifier_setup["p3"]}
+
+
+def test_list_no_qualifier_filter_both(qualifier_setup):
+    """Senza slug ma status=both → asset taggati :qualified OR :rejected."""
+    rows = db.list_qualified_assets(
+        qualifier_slugs=[], status_filter="both",
+        tenant_id=qualifier_setup["tenant_a"],
+    )
+    ids = {r["id"] for r in rows}
     assert ids == {qualifier_setup["p1"], qualifier_setup["p2"], qualifier_setup["p3"]}
 
 

@@ -2,9 +2,27 @@
 {% block title %}Risultati di {{ task.name }} - Argos{% endblock %}
 {% block content %}
 <section>
-  <h2>Risultati salvati</h2>
-  <p><a href="/tasks/{{ task.id }}">&larr; {{ task.name }}</a></p>
+  <div class="results-list-head">
+    <div>
+      <h2>Risultati salvati</h2>
+      <p><a href="/tasks/{{ task.id }}">&larr; {{ task.name }}</a></p>
+    </div>
+    {% if items %}
+    <div class="results-list-actions">
+      <a class="btn-link-action" href="/tasks/{{ task.id }}/results.zip" download
+         title="Scarica tutti i risultati del task in un unico archivio ZIP">
+        <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+        Scarica tutto (ZIP)
+      </a>
+    </div>
+    {% endif %}
+  </div>
+
   {% if items %}
+  {# Suffissi gestiti dal viewer unificato (markdown + json + csv + txt/log).
+     jsonl/ndjson hanno il viewer paginato dedicato. #}
+  {% set viewer_exts = ('.md', '.markdown', '.json', '.csv', '.txt', '.log') %}
+  {% set jsonl_exts = ('.jsonl', '.ndjson') %}
   <table class="data">
     <thead>
       <tr><th>Tipo</th><th>Nome</th><th>Contenuto</th><th>Dimensione</th><th>Azioni</th></tr>
@@ -17,12 +35,22 @@
           <td><a href="/tasks/{{ task.id }}/results/{{ it.name }}">{{ it.name }}</a></td>
           <td><small>{{ it.files_count }} file</small></td>
           <td><small>{{ it.size }} byte</small></td>
-          <td><a href="/tasks/{{ task.id }}/results/{{ it.name }}">Apri cartella</a></td>
+          <td>
+            <a href="/tasks/{{ task.id }}/results/{{ it.name }}">Apri</a>
+            &middot;
+            <a href="/tasks/{{ task.id }}/results/{{ it.name }}.zip" download
+               title="Scarica questa run come ZIP">ZIP</a>
+          </td>
         {% else %}
+          {% set lower = it.name.lower() %}
+          {% set is_jsonl = lower.endswith(jsonl_exts) %}
+          {% set is_viewable = lower.endswith(viewer_exts) or is_jsonl %}
           <td>file</td>
           <td>
-            {% if it.name.endswith(".jsonl") or it.name.endswith(".ndjson") %}
-              <a href="/tasks/{{ task.id }}/results/{{ it.name }}/view" target="_blank" rel="noopener">{{ it.name }}</a>
+            {% if is_jsonl %}
+              <a href="/tasks/{{ task.id }}/results/{{ it.name }}/view">{{ it.name }}</a>
+            {% elif is_viewable %}
+              <a href="/tasks/{{ task.id }}/file-view/{{ it.name }}">{{ it.name }}</a>
             {% else %}
               <a href="/tasks/{{ task.id }}/results/{{ it.name }}">{{ it.name }}</a>
             {% endif %}
@@ -30,11 +58,14 @@
           <td><small>-</small></td>
           <td><small>{{ it.size }} byte</small></td>
           <td>
-            {% if it.name.endswith(".jsonl") or it.name.endswith(".ndjson") %}
-              <a href="/tasks/{{ task.id }}/results/{{ it.name }}/view" target="_blank" rel="noopener">Apri</a>
+            {% if is_jsonl %}
+              <a href="/tasks/{{ task.id }}/results/{{ it.name }}/view">Apri</a>
+              &middot;
+            {% elif is_viewable %}
+              <a href="/tasks/{{ task.id }}/file-view/{{ it.name }}">Apri</a>
               &middot;
             {% endif %}
-            <a href="/tasks/{{ task.id }}/results/{{ it.name }}">Download</a>
+            <a href="/tasks/{{ task.id }}/results/{{ it.name }}" download>Download</a>
           </td>
         {% endif %}
       </tr>

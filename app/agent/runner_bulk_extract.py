@@ -839,8 +839,14 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int) -> str:
     # MAIN model: usato per le N chiamate di extraction (1 per URL)
     provider_key = task.get("llm_provider") or "ollama"
     try:
-        base_url = resolve_base_url(provider_key, task.get("llm_base_url"))
-        api_key = resolve_api_key(provider_key, task.get("llm_api_key"))
+        # resolve_credential supporta vault (FK credential_id) + fallback legacy.
+        from .llm_providers import resolve_credential
+        api_key, base_url, _ = resolve_credential(
+            task.get("llm_credential_id"),
+            provider_key,
+            project_key=task.get("llm_api_key"),
+            custom_base_url=task.get("llm_base_url"),
+        )
     except RuntimeError as e:
         jlog(f"ERRORE configurazione provider principale: {e}")
         db.update_job(job_id, status="error", error=str(e), finished_at=db.now_iso())
@@ -858,11 +864,11 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int) -> str:
         discovery_split_active = False
     else:
         try:
-            discovery_base_url = resolve_base_url(discovery_provider_key, None)
-            # API key dedicata al discovery (priorità) → env var del provider → errore
-            discovery_api_key = resolve_api_key(
+            discovery_api_key, discovery_base_url, _ = resolve_credential(
+                task.get("discovery_llm_credential_id"),
                 discovery_provider_key,
-                task.get("discovery_llm_api_key"),
+                project_key=task.get("discovery_llm_api_key"),
+                custom_base_url=task.get("discovery_llm_base_url"),
             )
             discovery_split_active = True
         except RuntimeError as e:

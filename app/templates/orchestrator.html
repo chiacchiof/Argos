@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Orchestrator - Argos{% endblock %}
 {% block content %}
+{# markdown-it client-side: serve per renderizzare il messaggio dell'orchestrator
+   alla fine dello streaming. I messaggi storici (caricati da DB al render della
+   pagina) sono gia' renderizzati server-side via filter `render_md`. #}
+<script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
 <section class="orchestrator-page">
   <div class="orchestrator-head">
     <div>
@@ -103,7 +107,7 @@
                   <strong>{% if m.role == 'assistant' %}Orchestrator{% else %}Tu{% endif %}</strong>
                   <small>{{ m.created_at }}</small>
                 </div>
-                <div class="chat-body">{{ m.body }}</div>
+                <div class="chat-body md-prose">{{ m.body | render_md | safe }}</div>
               </div>
             </div>
             {% endfor %}
@@ -420,9 +424,22 @@
       let typing = false;
       let streamDone = false;
       let received = false;
+      let accumulated = "";  // testo grezzo del messaggio, per render markdown finale
       const baseDelayMs = 18;
+      // Render markdown una volta che lo streaming e' finito: durante la digitazione
+      // mostriamo plain text (token-by-token sembra naturale), poi convertiamo
+      // a HTML cosi' `**grassetto**`, tabelle, liste, ecc. appaiono come previsto.
       const finalize = () => {
         assistant.bubble.classList.remove("is-streaming");
+        if (window.markdownit && accumulated.trim()) {
+          try {
+            const md = window.markdownit({ html: false, linkify: true, breaks: false });
+            assistant.text.innerHTML = md.render(accumulated);
+            assistant.text.classList.add("md-prose");
+          } catch (e) {
+            // Fallback: lascio il textContent come e'. Niente da fare se md-it crasha.
+          }
+        }
       };
       const pumpTyper = () => {
         if (typing) return;
@@ -468,7 +485,9 @@
                 assistant.text.removeAttribute("data-placeholder");
                 received = true;
               }
-              pending += event.content || "";
+              const chunk = event.content || "";
+              pending += chunk;
+              accumulated += chunk;
               pumpTyper();
             }
             if (event.type === "done") {

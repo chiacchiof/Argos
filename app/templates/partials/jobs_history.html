@@ -10,9 +10,26 @@
    resta sempre visibile in cima. #}
 
 {% if top_level_jobs %}
+<form method="post" action="/tasks/{{ task.id }}/jobs/delete"
+      class="bulk-action-form" data-bulk-form data-jobs-history-form
+      onsubmit="return window._argosJobsConfirmDelete(this);">
+  <div class="bulk-action-bar">
+    <label class="bulk-select-all-label">
+      <input type="checkbox" data-bulk-select-all> Seleziona pagina
+    </label>
+    <span class="bulk-count" data-bulk-count>0 selezionati</span>
+    <button type="submit" class="btn-danger-inline" data-bulk-submit disabled>
+      <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
+      Cancella (<span data-bulk-action-count>0</span>)
+    </button>
+    <span class="jobs-poll-paused-hint muted small" data-poll-paused-hint style="display:none">
+      ⏸ polling in pausa — deseleziona o chiudi i dettagli per riprenderlo
+    </span>
+  </div>
 <table class="data">
   <thead>
     <tr>
+      <th class="bulk-col"><span class="visually-hidden">Seleziona</span></th>
       <th>#</th>
       <th>Stato</th>
       <th>Avvio</th>
@@ -24,11 +41,22 @@
   <tbody>
     {% for j in top_level_jobs %}
     {% set subs = subjobs_by_parent.get(j.id, []) %}
+    {% set j_active = j.status in ('queued','running','paused') %}
     {# Riga parent #}
     <tr class="job-row job-row-parent">
+      <td class="bulk-col">
+        <input type="checkbox" name="job_ids" value="{{ j.id }}" data-bulk-row
+               {% if j_active %}disabled
+                  title="Job ancora attivo — ferma prima di cancellare"
+               {% endif %}>
+      </td>
       <td>
         {% if subs %}
-          <details open class="job-tree-toggle"><summary>{{ j.id }}<span class="muted small"> · {{ subs|length }} sub</span></summary></details>
+          <button type="button"
+                  class="job-tree-toggle is-expanded"
+                  data-parent-id="{{ j.id }}"
+                  aria-expanded="true"
+                  onclick="window._argosToggleJobTree({{ j.id }}, this)">{{ j.id }}<span class="muted small"> · {{ subs|length }} sub</span></button>
         {% else %}
           {{ j.id }}
         {% endif %}
@@ -49,15 +77,24 @@
            hx-get="/jobs/{{ j.id }}/dashboard"
            hx-target="#job-detail-{{ j.id }}"
            hx-swap="innerHTML"
-           onclick="document.getElementById('job-detail-row-{{ j.id }}').style.display='table-row'; return false;"
-           title="Mostra dashboard del job (con pulsanti stop/pause se attivo)">📊 dettagli</a>
+           onclick="window._argosOpenJobDetail({{ j.id }}); return false;"
+           title="Mostra/nascondi dashboard del job (con pulsanti stop/pause se attivo)">📊 dettagli</a>
         &middot;
         <a href="/jobs/{{ j.id }}/status" hx-boost="false" target="_blank" title="Log completo in nuova tab">log</a>
+        &middot;
+        {% if j_active %}
+        <button type="button" class="btn-icon-trash" disabled
+                title="Job ancora attivo — ferma prima di cancellare">🗑️</button>
+        {% else %}
+        <button type="button" class="btn-icon-trash"
+                onclick="window._argosDeleteJobRow(this, {{ j.id }}, {{ subs|length }})"
+                title="Cancella questo job{% if subs %} e i suoi {{ subs|length }} sub-job{% endif %} (DB + file)">🗑️</button>
+        {% endif %}
       </td>
     </tr>
     {# Riga espandibile per il dashboard del parent (nascosta di default) #}
     <tr id="job-detail-row-{{ j.id }}" class="job-detail-row" style="display:none">
-      <td colspan="6">
+      <td colspan="7">
         <div id="job-detail-{{ j.id }}" class="job-detail-inline">
           <small class="muted">Caricamento...</small>
         </div>
@@ -65,7 +102,14 @@
     </tr>
     {# Righe sub-job (rientrate) #}
     {% for s in subs %}
-    <tr class="job-row job-row-sub">
+    {% set s_active = s.status in ('queued','running','paused') %}
+    <tr class="job-row job-row-sub" data-job-parent="{{ j.id }}">
+      <td class="bulk-col">
+        <input type="checkbox" name="job_ids" value="{{ s.id }}" data-bulk-row
+               {% if s_active %}disabled
+                  title="Sub-job ancora attivo — ferma prima di cancellare"
+               {% endif %}>
+      </td>
       <td class="job-sub-id" title="DB id={{ s.id }}">
         <span class="job-tree-branch">└─</span>
         <span class="job-display-id">{{ s.display_id }}</span>
@@ -86,15 +130,24 @@
            hx-get="/jobs/{{ s.id }}/dashboard"
            hx-target="#job-detail-{{ s.id }}"
            hx-swap="innerHTML"
-           onclick="document.getElementById('job-detail-row-{{ s.id }}').style.display='table-row'; return false;"
-           title="Mostra dashboard del sub-job (con pulsanti stop se attivo)">📊 dettagli</a>
+           onclick="window._argosOpenJobDetail({{ s.id }}); return false;"
+           title="Mostra/nascondi dashboard del sub-job (con pulsanti stop se attivo)">📊 dettagli</a>
         &middot;
         <a href="/jobs/{{ s.id }}/status" hx-boost="false" target="_blank" title="Log completo in nuova tab">log</a>
+        &middot;
+        {% if s_active %}
+        <button type="button" class="btn-icon-trash" disabled
+                title="Sub-job ancora attivo — ferma prima di cancellare">🗑️</button>
+        {% else %}
+        <button type="button" class="btn-icon-trash"
+                onclick="window._argosDeleteJobRow(this, {{ s.id }}, 0)"
+                title="Cancella questo sub-job (DB + file)">🗑️</button>
+        {% endif %}
       </td>
     </tr>
     {# Riga espandibile per il dashboard del sub (nascosta di default) #}
-    <tr id="job-detail-row-{{ s.id }}" class="job-detail-row" style="display:none">
-      <td colspan="6">
+    <tr id="job-detail-row-{{ s.id }}" class="job-detail-row" data-job-parent="{{ j.id }}" style="display:none">
+      <td colspan="7">
         <div id="job-detail-{{ s.id }}" class="job-detail-inline">
           <small class="muted">Caricamento...</small>
         </div>
@@ -104,21 +157,229 @@
     {% endfor %}
   </tbody>
 </table>
+</form>
 <style>
   .job-row-sub td { background: var(--surface-2, rgba(255,255,255,0.02)); }
   .job-row-sub .job-sub-id { padding-left: 1.2rem; }
   .job-tree-branch { opacity: 0.6; margin-right: 0.3rem; font-family: monospace; }
   .job-display-id { font-family: monospace; opacity: 0.85; }
-  .job-tree-toggle { display: inline; }
-  .job-tree-toggle summary { cursor: pointer; list-style: none; display: inline; }
-  .job-tree-toggle summary::-webkit-details-marker { display: none; }
-  .job-tree-toggle[open] > summary::before { content: "▼ "; opacity: 0.5; }
-  .job-tree-toggle:not([open]) > summary::before { content: "▶ "; opacity: 0.5; }
+  .job-tree-toggle {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .job-tree-toggle::before { content: "▶ "; opacity: 0.5; }
+  .job-tree-toggle.is-expanded::before { content: "▼ "; opacity: 0.5; }
   .job-actions-cell a { font-size: 0.85em; opacity: 0.9; }
   .job-actions-cell a:hover { opacity: 1; }
   .job-detail-row td { padding: 0.6rem 1rem !important; background: var(--surface-3, rgba(255,255,255,0.04)) !important; border-top: 1px dashed var(--border, #555); }
   .job-detail-inline { max-width: 100%; overflow-x: auto; }
+  .btn-icon-trash {
+    background: none; border: none; cursor: pointer;
+    font-size: 0.95em; padding: 0 0.2rem; opacity: 0.7;
+  }
+  .btn-icon-trash:hover:not(:disabled) { opacity: 1; }
+  .btn-icon-trash:disabled { cursor: not-allowed; opacity: 0.3; }
+  .jobs-poll-paused-hint { margin-left: 0.8rem; }
 </style>
+<script>
+// === Setup unico (idempotente) per toggle tree, listener HTMX, helper bulk ===
+(function setupOnce() {
+  if (window._argosJobTreeInit) return;
+  window._argosJobTreeInit = true;
+  window._jobTreeCollapsed = window._jobTreeCollapsed || new Set();
+  window._jobDetailOpen = window._jobDetailOpen || new Set();
+
+  window._argosOpenJobDetail = function (jobId) {
+    var row = document.getElementById('job-detail-row-' + jobId);
+    if (!row) return;
+    if (row.classList.contains('is-open')) {
+      window._argosCloseJobDetail(jobId);
+      return;
+    }
+    row.style.display = 'table-row';
+    row.classList.add('is-open');
+    window._jobDetailOpen.add(jobId);
+    window._argosRefreshJobsPollHint();
+  };
+
+  window._argosCloseJobDetail = function (jobId) {
+    var row = document.getElementById('job-detail-row-' + jobId);
+    if (row) {
+      row.style.display = 'none';
+      row.classList.remove('is-open');
+    }
+    window._jobDetailOpen.delete(jobId);
+    window._argosRefreshJobsPollHint();
+  };
+
+  window._argosHasOpenJobDetails = function () {
+    if (window._jobDetailOpen.size > 0) return true;
+    return document.querySelector('#jobs-history .job-detail-row.is-open') !== null;
+  };
+
+  window._argosRefreshJobsPollHint = function () {
+    var checked = document.querySelectorAll('#jobs-history [data-bulk-row]:checked').length;
+    var paused = checked > 0 || window._argosHasOpenJobDetails();
+    document.querySelectorAll('[data-poll-paused-hint]').forEach(function (el) {
+      el.style.display = paused ? '' : 'none';
+    });
+  };
+
+  window._argosRestoreJobDetails = function () {
+    window._jobDetailOpen.forEach(function (jobId) {
+      var row = document.getElementById('job-detail-row-' + jobId);
+      if (!row) return;
+      row.style.display = 'table-row';
+      row.classList.add('is-open');
+      // Non riscaricare dashboard/log: preserva il contenuto che l'utente sta
+      // consultando (es. log aperto). Il polling interno al pannello basta.
+    });
+    window._argosRefreshJobsPollHint();
+  };
+
+  window._argosToggleJobTree = function (parentId, btn) {
+    if (window._jobTreeCollapsed.has(parentId)) {
+      window._jobTreeCollapsed.delete(parentId);
+      btn.classList.add('is-expanded');
+      btn.setAttribute('aria-expanded', 'true');
+    } else {
+      window._jobTreeCollapsed.add(parentId);
+      btn.classList.remove('is-expanded');
+      btn.setAttribute('aria-expanded', 'false');
+    }
+    window._argosApplyJobTreeState(parentId);
+  };
+
+  window._argosApplyJobTreeState = function (parentId) {
+    var hidden = window._jobTreeCollapsed.has(parentId);
+    document.querySelectorAll('[data-job-parent="' + parentId + '"]').forEach(function (row) {
+      if (hidden) {
+        row.style.display = 'none';
+        if (row.classList.contains('job-detail-row') && row.classList.contains('is-open')) {
+          var jobId = row.id.replace('job-detail-row-', '');
+          window._jobDetailOpen.delete(parseInt(jobId, 10));
+        }
+      } else if (row.classList.contains('job-detail-row')) {
+        if (row.classList.contains('is-open')) {
+          row.style.display = 'table-row';
+        } else {
+          row.style.display = 'none';
+        }
+      } else {
+        row.style.display = '';
+      }
+    });
+    window._argosRefreshJobsPollHint();
+  };
+
+  window._argosRestoreJobTree = function () {
+    window._jobTreeCollapsed.forEach(function (parentId) {
+      var btn = document.querySelector('.job-tree-toggle[data-parent-id="' + parentId + '"]');
+      if (btn) {
+        btn.classList.remove('is-expanded');
+        btn.setAttribute('aria-expanded', 'false');
+      }
+      window._argosApplyJobTreeState(parentId);
+    });
+  };
+
+  // Bulk-select per la cronologia: counter, header checkbox, submit-enable.
+  // Idempotente via marker `_argosBulkWired` sul form.
+  window._argosWireJobsBulk = function (form) {
+    if (!form || form._argosBulkWired) return;
+    form._argosBulkWired = true;
+    var allCb = form.querySelector('[data-bulk-select-all]');
+    var submit = form.querySelector('[data-bulk-submit]');
+    var counter = form.querySelector('[data-bulk-count]');
+    var actionCounts = form.querySelectorAll('[data-bulk-action-count]');
+    var pauseHint = form.querySelector('[data-poll-paused-hint]');
+
+    function selectableRows() {
+      return form.querySelectorAll('[data-bulk-row]:not(:disabled)');
+    }
+    function refresh() {
+      var rs = selectableRows();
+      var sel = 0;
+      rs.forEach(function (c) { if (c.checked) sel++; });
+      if (counter) counter.textContent = sel + ' selezionati';
+      actionCounts.forEach(function (el) { el.textContent = sel; });
+      if (submit) submit.disabled = sel === 0;
+      if (allCb) {
+        allCb.checked = sel === rs.length && rs.length > 0;
+        allCb.indeterminate = sel > 0 && sel < rs.length;
+      }
+      window._argosRefreshJobsPollHint();
+    }
+    if (allCb) {
+      allCb.addEventListener('change', function () {
+        selectableRows().forEach(function (c) { c.checked = allCb.checked; });
+        refresh();
+      });
+    }
+    form.addEventListener('change', function (ev) {
+      if (ev.target && ev.target.matches('[data-bulk-row]')) refresh();
+    });
+    refresh();
+  };
+
+  // Cestino per-riga: pre-seleziona solo questa riga, conferma, submette.
+  window._argosDeleteJobRow = function (btn, jobId, nSubs) {
+    var form = btn.closest('form[data-jobs-history-form]');
+    if (!form) return;
+    var label = 'il job #' + jobId;
+    if (nSubs > 0) label += ' e i suoi ' + nSubs + ' sub-job';
+    if (!confirm('Cancellare ' + label + '?\n\nVerranno rimossi i record da DB e i file dal disco.')) return;
+    form.querySelectorAll('[data-bulk-row]').forEach(function (c) { c.checked = false; });
+    var target = form.querySelector('[data-bulk-row][value="' + jobId + '"]');
+    if (target) target.checked = true;
+    form.submit();
+  };
+
+  // Conferma del submit bulk dalla bulk-action-bar.
+  window._argosJobsConfirmDelete = function (form) {
+    var sel = form.querySelectorAll('[data-bulk-row]:checked').length;
+    if (!sel) return false;
+    return confirm('Cancellare ' + sel + ' job (e i loro sub-job)?\n\nVerranno rimossi i record da DB e i file dal disco. Azione irreversibile.');
+  };
+
+  // Pausa il polling HTMX su #jobs-history finche' ci sono righe selezionate
+  // o un pannello dettagli aperto. Senza questo, il poll ogni 3s riswapperebbe
+  // la tabella, chiudendo dashboard/log inline e annullando la selezione bulk.
+  document.body.addEventListener('htmx:beforeRequest', function (ev) {
+    var elt = ev.detail && ev.detail.elt;
+    if (!elt || elt.id !== 'jobs-history') return;
+    var checked = document.querySelectorAll('#jobs-history [data-bulk-row]:checked').length;
+    if (checked > 0 || window._argosHasOpenJobDetails()) {
+      ev.preventDefault();
+    }
+  });
+
+  // Dopo ogni swap del partial: ripristina collassi, dettagli aperti e wire
+  // del form (idempotente). I dettagli vengono riaperti senza riscaricare il
+  // contenuto HTMX interno (preserva la vista log).
+  document.body.addEventListener('htmx:afterSwap', function (ev) {
+    if (ev.detail.target && ev.detail.target.id === 'jobs-history') {
+      window._argosRestoreJobTree();
+      window._argosRestoreJobDetails();
+      document.querySelectorAll('form[data-jobs-history-form]').forEach(window._argosWireJobsBulk);
+    }
+  });
+})();
+
+// Wire del form ad ogni esecuzione dello script (anche al re-render del partial).
+// `_argosBulkWired` blocca la doppia inizializzazione sullo stesso elemento.
+(function wireOnRender() {
+  if (window._argosWireJobsBulk) {
+    document.querySelectorAll('form[data-jobs-history-form]').forEach(window._argosWireJobsBulk);
+  }
+})();
+</script>
 {% else %}
 <p class="muted">Nessun job ancora eseguito.</p>
 {% endif %}

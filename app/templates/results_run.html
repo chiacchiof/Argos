@@ -2,32 +2,56 @@
 {% block title %}{{ run_name }} — {{ task.name }} — Argos{% endblock %}
 {% block content %}
 <section>
-  <h2>📁 {{ run_name }}</h2>
-  <p>
-    <a href="/tasks/{{ task.id }}/results">← Tutti i risultati</a>
-    &middot;
-    <a href="/tasks/{{ task.id }}">{{ task.name }}</a>
-  </p>
+  <div class="results-list-head">
+    <div>
+      <h2>📁 {{ run_name }}</h2>
+      <p>
+        <a href="/tasks/{{ task.id }}/results">← Tutti i risultati</a>
+        &middot;
+        <a href="/tasks/{{ task.id }}">{{ task.name }}</a>
+      </p>
+    </div>
+    {% if files %}
+    <div class="results-list-actions">
+      <a class="btn-link-action" href="/tasks/{{ task.id }}/results/{{ run_name }}.zip" download
+         title="Scarica questa run come archivio ZIP">
+        <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+        Scarica run (ZIP)
+      </a>
+    </div>
+    {% endif %}
+  </div>
+
   {% if files %}
+  {% set viewer_exts = ('.md', '.markdown', '.json', '.csv', '.txt', '.log') %}
+  {% set jsonl_exts = ('.jsonl', '.ndjson') %}
   <table class="data">
     <thead><tr><th>File</th><th>Dimensione</th><th>Azioni</th></tr></thead>
     <tbody>
       {% for f in files %}
+      {% set lower = f.path.lower() %}
+      {% set is_jsonl = lower.endswith(jsonl_exts) %}
+      {% set is_viewable = lower.endswith(viewer_exts) or is_jsonl %}
       <tr>
         <td>
-          {% if f.path.endswith(".jsonl") or f.path.endswith(".ndjson") %}
-            <a href="/tasks/{{ task.id }}/results-view/{{ run_name }}/{{ f.path }}" target="_blank" rel="noopener">{{ f.path }}</a>
+          {% if is_jsonl %}
+            <a href="/tasks/{{ task.id }}/results-view/{{ run_name }}/{{ f.path }}">{{ f.path }}</a>
+          {% elif is_viewable %}
+            <a href="/tasks/{{ task.id }}/file-view/{{ run_name }}/{{ f.path }}">{{ f.path }}</a>
           {% else %}
             <a href="/tasks/{{ task.id }}/results/{{ run_name }}/{{ f.path }}">{{ f.path }}</a>
           {% endif %}
         </td>
         <td><small>{{ f.size }} byte</small></td>
         <td>
-          {% if f.path.endswith(".jsonl") or f.path.endswith(".ndjson") %}
-            <a href="/tasks/{{ task.id }}/results-view/{{ run_name }}/{{ f.path }}" target="_blank" rel="noopener">Apri</a>
+          {% if is_jsonl %}
+            <a href="/tasks/{{ task.id }}/results-view/{{ run_name }}/{{ f.path }}">Apri</a>
+            &middot;
+          {% elif is_viewable %}
+            <a href="/tasks/{{ task.id }}/file-view/{{ run_name }}/{{ f.path }}">Apri</a>
             &middot;
           {% endif %}
-          <a href="/tasks/{{ task.id }}/results/{{ run_name }}/{{ f.path }}">Download</a>
+          <a href="/tasks/{{ task.id }}/results/{{ run_name }}/{{ f.path }}" download>Download</a>
         </td>
       </tr>
       {% endfor %}

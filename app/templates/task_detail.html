@@ -3,6 +3,9 @@
 {% block title %}{{ task.name }} — Argos{% endblock %}
 {% block content %}
 <section>
+  {% if request.query_params.get('flash') %}
+  <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
+  {% endif %}
   <h2>
     {{ task.name }} <small>#{{ task.id }}</small>
     {{ status_badge(task.status_tag) }}
@@ -10,108 +13,136 @@
     {{ health_badge(health) }}
   </h2>
   {% if task.description %}<p class="muted">{{ task.description }}</p>{% endif %}
-  {% if task.notes %}
-  <details class="task-notes">
-    <summary>📝 Note personali</summary>
-    <pre class="notes-body">{{ task.notes }}</pre>
-  </details>
-  {% endif %}
 
-  <details open>
-    <summary>Configurazione</summary>
-    <dl class="kv">
-      <dt>Obiettivo</dt><dd><pre>{{ task.objective }}</pre></dd>
-      <dt>Modalità agente</dt><dd><code>{{ task.agent_mode or "react" }}</code></dd>
-      <dt>Provider LLM</dt><dd><code>{{ task.llm_provider or "ollama" }}</code>{% if task.llm_base_url %} <small>({{ task.llm_base_url }})</small>{% endif %}</dd>
-      <dt>Modello</dt><dd><code>{{ task.model }}</code></dd>
-      <dt>Max iterazioni / step</dt><dd>{{ task.max_iterations }}</dd>
-      <dt>Output</dt><dd>{{ task.output_format }}</dd>
-      <dt>Cron</dt><dd><code>{{ task.cron or "—" }}</code></dd>
-      <dt>Seed query</dt><dd>{% if task.seed_queries %}<ul>{% for q in task.seed_queries %}<li>{{ q }}</li>{% endfor %}</ul>{% else %}—{% endif %}</dd>
-      <dt>Whitelist domini</dt><dd>{% if task.allowed_domains %}{{ task.allowed_domains | join(", ") }}{% else %}—{% endif %}</dd>
-      <dt>Blacklist domini</dt><dd>{% if task.blocked_domains %}{{ task.blocked_domains | join(", ") }}{% else %}—{% endif %}</dd>
-      {% if task.agent_mode == 'browser_use' %}
-      <dt>Template estrazione</dt><dd><code>{{ task.extraction_template or "profile_contacts (default)" }}</code></dd>
-      <dt>Schema effettivo</dt>
-      <dd>
-        <details>
-          <summary>{{ (task.extraction_schema or '')|length }} caratteri — espandi</summary>
-          <pre class="log">{{ task.extraction_schema or "(usa il template di default)" }}</pre>
-        </details>
-      </dd>
+  {# Tab CSS-only: radio button nascosti + label fanno da switch. Niente JS,
+     niente reload. Lo stato della tab persiste sui re-swap HTMX dei pannelli
+     figli (cronologia, dashboard, recent-reports) perche' i radio restano
+     nel DOM principale. #}
+  <div class="task-tabs">
+    <input type="radio" name="task-detail-tab" id="task-tab-exec" class="task-tabs-radio" checked>
+    <input type="radio" name="task-detail-tab" id="task-tab-history" class="task-tabs-radio">
+    <nav class="task-tabs-nav" aria-label="Sezioni task">
+      <label for="task-tab-exec" class="task-tabs-tab">🚀 Ultimo job</label>
+      <label for="task-tab-history" class="task-tabs-tab">📋 Cronologia</label>
+    </nav>
+
+    {# ============ PANEL: ESECUZIONE ============ #}
+    <div class="task-tabs-panel task-tabs-panel-exec">
+      {# 1. Workflow info (spostata sopra come da richiesta utente). #}
+      {% if related_workflows %}
+      <p class="muted">
+        🔗 Questo task fa parte di {{ related_workflows|length }} workflow:
+        {% for w in related_workflows %}<a href="/workflows/{{ w.id }}">{{ w.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+      </p>
       {% endif %}
-    </dl>
-  </details>
 
-  {% if related_workflows %}
-  <p class="muted">
-    🔗 Questo task fa parte di {{ related_workflows|length }} workflow:
-    {% for w in related_workflows %}<a href="/workflows/{{ w.id }}">{{ w.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
-  </p>
-  {% endif %}
+      {# 2. Note personali — collassabile, chiusa di default. #}
+      {% if task.notes %}
+      <details class="collapsible-section">
+        <summary>📝 Note personali</summary>
+        <pre class="notes-body">{{ task.notes }}</pre>
+      </details>
+      {% endif %}
 
-  <div class="actions">
-    <button hx-post="/tasks/{{ task.id }}/run"
-            hx-target="#job-status" hx-swap="innerHTML">
-      <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg> Esegui ora
-    </button>
-    <a href="/tasks/{{ task.id }}/edit" class="btn-link-action">
-      <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica
-    </a>
-    <form method="post" action="/tasks/{{ task.id }}/clone">
-      <button type="submit" class="btn-link-action"
-              title="Crea una copia editabile di questo task (utile per pattern '1 task per agente target')">
-        <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg> Clona
-      </button>
-    </form>
-    <a href="/tasks/{{ task.id }}/results" class="btn-link-action">
-      <svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> Risultati salvati
-    </a>
-  </div>
+      {# 3. Configurazione — collassabile, chiusa di default. #}
+      <details class="collapsible-section">
+        <summary>⚙️ Configurazione</summary>
+        <dl class="kv">
+          <dt>Obiettivo</dt><dd><pre>{{ task.objective }}</pre></dd>
+          <dt>Modalità agente</dt><dd><code>{{ task.agent_mode or "react" }}</code></dd>
+          <dt>Provider LLM</dt><dd><code>{{ task.llm_provider or "ollama" }}</code>{% if task.llm_base_url %} <small>({{ task.llm_base_url }})</small>{% endif %}</dd>
+          <dt>Modello</dt><dd><code>{{ task.model }}</code></dd>
+          <dt>Max iterazioni / step</dt><dd>{{ task.max_iterations }}</dd>
+          <dt>Output</dt><dd>{{ task.output_format }}</dd>
+          <dt>Cron</dt><dd><code>{{ task.cron or "—" }}</code></dd>
+          <dt>Seed query</dt><dd>{% if task.seed_queries %}<ul>{% for q in task.seed_queries %}<li>{{ q }}</li>{% endfor %}</ul>{% else %}—{% endif %}</dd>
+          <dt>Whitelist domini</dt><dd>{% if task.allowed_domains %}{{ task.allowed_domains | join(", ") }}{% else %}—{% endif %}</dd>
+          <dt>Blacklist domini</dt><dd>{% if task.blocked_domains %}{{ task.blocked_domains | join(", ") }}{% else %}—{% endif %}</dd>
+          {% if task.agent_mode == 'browser_use' %}
+          <dt>Template estrazione</dt><dd><code>{{ task.extraction_template or "profile_contacts (default)" }}</code></dd>
+          <dt>Schema effettivo</dt>
+          <dd>
+            <details>
+              <summary>{{ (task.extraction_schema or '')|length }} caratteri — espandi</summary>
+              <pre class="log">{{ task.extraction_schema or "(usa il template di default)" }}</pre>
+            </details>
+          </dd>
+          {% endif %}
+        </dl>
+      </details>
 
-  {# Audience snapshot (task outreach con target_asset_ids valorizzato).
-     Mostra il count + primi 20 IDs + link a edit per modificare. #}
-  {% if task.target_asset_ids %}
-  <div class="audience-summary-card">
-    <svg class="icon" aria-hidden="true"><use href="#i-target"/></svg>
-    <strong>Audience snapshot</strong>:
-    <strong>{{ task.target_asset_ids|length }}</strong> asset selezionati
-    <details style="display:inline-block; margin-left:0.6rem">
-      <summary class="muted small">primi 20 ID</summary>
-      <code style="font-size:0.85rem">{{ task.target_asset_ids[:20] | join(', ') }}{% if task.target_asset_ids|length > 20 %}, …{% endif %}</code>
-    </details>
-    <a href="/tasks/{{ task.id }}/edit" class="btn-link-action btn-small" style="margin-left:0.6rem">
-      <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica audience
-    </a>
-  </div>
-  {% endif %}
+      {# 4. Action buttons. #}
+      <div class="actions">
+        <button hx-post="/tasks/{{ task.id }}/run"
+                hx-target="#job-status" hx-swap="innerHTML">
+          <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg> Esegui ora
+        </button>
+        <a href="/tasks/{{ task.id }}/edit" class="btn-link-action">
+          <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica
+        </a>
+        <form method="post" action="/tasks/{{ task.id }}/clone">
+          <button type="submit" class="btn-link-action"
+                  title="Crea una copia editabile di questo task (utile per pattern '1 task per agente target')">
+            <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg> Clona
+          </button>
+        </form>
+        <a href="/tasks/{{ task.id }}/results" class="btn-link-action">
+          <svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> Risultati salvati
+        </a>
+      </div>
 
-  {# IMPORTANTE: gli h3 e i due div con id devono essere renderizzati QUI
-     (NON via include del wrapper, perche' lo wrapper duplicherebbe #job-status
-     come OOB swap-target). Il wrapper viene usato SOLO come response del
-     polling HTMX `/tasks/{id}/jobs`.
-     - first render: questo template rende h3 + div inline (con polling su
-       #jobs-history e dashboard renderizzato nel #job-status)
-     - update polling: la response (wrapper) rimpiazza #jobs-history outerHTML
-       e fa OOB swap su #job-status. Senza duplicazione. #}
-  {% set has_active = jobs | selectattr("status", "in", ["queued", "running"]) | list | length > 0 %}
-  <h3>Stato esecuzione corrente</h3>
-  <div id="job-status">
-    {% if latest_dashboard %}
-      {% with d = latest_dashboard %}
-        {% include "partials/job_dashboard.html" %}
-      {% endwith %}
-    {% else %}
-      <p class="muted">Nessuna esecuzione ancora lanciata. Premi "Esegui ora".</p>
-    {% endif %}
-  </div>
+      {# 5. Ultimi report (lazy via HTMX). #}
+      <div hx-get="/tasks/{{ task.id }}/recent-reports"
+           hx-trigger="load"
+           hx-swap="innerHTML"></div>
 
-  <h3>Cronologia job</h3>
-  <div id="jobs-history"
-       hx-get="/tasks/{{ task.id }}/jobs"
-       hx-trigger="every {% if has_active %}3{% else %}15{% endif %}s"
-       hx-swap="outerHTML">
-    {% include "partials/jobs_history.html" %}
+      {# 6. Audience snapshot (solo task outreach). #}
+      {% if task.target_asset_ids %}
+      <div class="audience-summary-card">
+        <svg class="icon" aria-hidden="true"><use href="#i-target"/></svg>
+        <strong>Audience snapshot</strong>:
+        <strong>{{ task.target_asset_ids|length }}</strong> asset selezionati
+        <details style="display:inline-block; margin-left:0.6rem">
+          <summary class="muted small">primi 20 ID</summary>
+          <code style="font-size:0.85rem">{{ task.target_asset_ids[:20] | join(', ') }}{% if task.target_asset_ids|length > 20 %}, …{% endif %}</code>
+        </details>
+        <a href="/tasks/{{ task.id }}/edit" class="btn-link-action btn-small" style="margin-left:0.6rem">
+          <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> Modifica audience
+        </a>
+      </div>
+      {% endif %}
+
+      {# 7. Stato esecuzione corrente. h3 + #job-status DEVONO stare qui
+         (NON dentro il wrapper) perche' il polling HTMX su /tasks/{id}/jobs
+         restituisce un wrapper che fa OOB swap su #job-status. Senza questo
+         h3+div inline il primo render avrebbe il dashboard duplicato. #}
+      {% set has_active = jobs | selectattr("status", "in", ["queued", "running"]) | list | length > 0 %}
+      <h3>Ultimo job</h3>
+      <div id="job-status">
+        {% if latest_dashboard %}
+          {% with d = latest_dashboard %}
+            {% include "partials/job_dashboard.html" %}
+          {% endwith %}
+        {% else %}
+          <p class="muted">Nessuna esecuzione ancora lanciata. Premi "Esegui ora".</p>
+        {% endif %}
+      </div>
+      {# Area separata da #job-status: i link "📜 log" del parent e dei sub-job
+         (e il "mostra log completo") fanno HTMX swap qui. Restando fuori da
+         #job-status, l'OOB swap del polling esterno (/tasks/{id}/jobs) non
+         puo' piu' cancellare il log come succedeva prima (incident 2026-05-23). #}
+      <div id="job-log-area"></div>
+    </div>
+
+    {# ============ PANEL: CRONOLOGIA ============ #}
+    <div class="task-tabs-panel task-tabs-panel-history">
+      <div id="jobs-history"
+           hx-get="/tasks/{{ task.id }}/jobs"
+           hx-trigger="every {% if has_active %}3{% else %}5{% endif %}s"
+           hx-swap="outerHTML">
+        {% include "partials/jobs_history.html" %}
+      </div>
+    </div>
   </div>
 </section>
 {% endblock %}

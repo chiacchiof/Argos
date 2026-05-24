@@ -1,0 +1,96 @@
+{# Wrapper per la tabella `/tasks` con polling HTMX adattivo.
+   Re-fetchato dall'endpoint `/tasks?_partial=1&<filtri>`. Lo swap outerHTML
+   sostituisce questo intero div ad ogni tick: badge live, righe evidenziate,
+   contatore in cima si aggiornano insieme.
+
+   Cadenza adattiva: 5s se almeno un task ha job attivi, niente polling a
+   riposo (= zero load su DB se il tenant non sta eseguendo nulla). #}
+{% from "partials/task_rating_badges.html" import status_badge, rating_stars, health_badge %}
+{% set poll_qs = [] %}
+{% if active_status_tag %}{% set _ = poll_qs.append('status_tag=' ~ active_status_tag) %}{% endif %}
+{% if active_type and active_type != 'all' %}{% set _ = poll_qs.append('type=' ~ active_type) %}{% endif %}
+{% if author_filter and author_filter != 'mine' %}{% set _ = poll_qs.append('author=' ~ author_filter) %}{% endif %}
+{% if filter_q %}{% set _ = poll_qs.append('q=' ~ filter_q) %}{% endif %}
+{% set _ = poll_qs.append('_partial=1') %}
+<div id="tasks-list-live"
+     {% if has_active %}
+     hx-get="/tasks?{{ poll_qs|join('&') }}"
+     hx-trigger="every 5s"
+     hx-swap="outerHTML"
+     {% endif %}>
+  {% if has_active %}
+  <div class="live-activity-banner">
+    <span class="live-pulse"></span>
+    <strong>{{ active_by_task|length }}</strong> task con job attivi
+    <small class="muted">(refresh ogni 5s)</small>
+  </div>
+  {% endif %}
+
+  {% if tasks %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>#</th><th>Nome</th><th>Stato</th><th>Rating</th><th>Health</th>
+        <th>Modalità</th><th>Modello</th><th>Cron</th><th>Aggiornato</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in tasks %}
+      {% set act = active_by_task.get(t.id) %}
+      {% set row_classes = [] %}
+      {% if t.disabled %}{% set _ = row_classes.append('row-disabled') %}{% endif %}
+      {% if act %}{% set _ = row_classes.append('row-active row-active-' ~ act.latest_status) %}{% endif %}
+      <tr{% if row_classes %} class="{{ row_classes|join(' ') }}"{% endif %}>
+        <td>{{ t.id }}</td>
+        <td>
+          {% if t.disabled %}<span class="disabled-badge" title="Task disabilitato: non puo' essere lanciato">🚫</span>{% endif %}
+          <a href="/tasks/{{ t.id }}">{{ t.name }}</a>
+        </td>
+        <td>
+          {% if act %}
+            <span class="status status-{{ act.latest_status }} live-badge" title="Job attivi: {{ act.n_running }} running, {{ act.n_queued }} queued, {{ act.n_paused }} paused">
+              {% if act.latest_status == 'running' %}▶ RUNNING{% elif act.latest_status == 'paused' %}⏸ PAUSED{% else %}⏳ QUEUED{% endif %}
+            </span>
+          {% endif %}
+          {{ status_badge(t.status_tag) }}
+        </td>
+        <td>{{ rating_stars(t.rating) }}</td>
+        <td>{{ health_badge(health_by_task.get(t.id)) }}</td>
+        <td><code>{{ t.agent_mode }}</code></td>
+        <td><code>{{ t.model }}</code></td>
+        <td><code>{{ t.cron or "—" }}</code></td>
+        <td><small>{{ t.updated_at }}</small></td>
+        <td class="row-actions">
+          <a href="/tasks/{{ t.id }}/edit" class="btn-icon btn-icon-brand" aria-label="Modifica task" title="Modifica configurazione task">
+            <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+          </a>
+          <form method="post" action="/tasks/{{ t.id }}/toggle-disabled" style="display:inline">
+            <input type="hidden" name="redirect_to" value="/">
+            {% if t.disabled %}
+              <button type="submit" class="btn-icon btn-icon-success" aria-label="Abilita task" title="Riabilita il task">
+                <svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>
+              </button>
+            {% else %}
+              <button type="submit" class="btn-icon btn-icon-danger" aria-label="Disabilita task" title="Disabilita il task: non potra' essere lanciato"
+                      onclick="return confirm('Disabilitare il task #{{ t.id }} \'{{ t.name|e }}\'? Non potra\' essere lanciato finche\' non lo riabiliti.');">
+                <svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg>
+              </button>
+            {% endif %}
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">
+    {% if filter_q %}
+      Nessun task corrisponde a "<strong>{{ filter_q }}</strong>".
+    {% elif active_status_tag or (active_type and active_type != 'all') %}
+      Nessun task con questo filtro. <a href="/">Mostra tutti</a>.
+    {% else %}
+      Nessun task. <a href="/tasks/new">Creane uno</a>.
+    {% endif %}
+  </p>
+  {% endif %}
+</div>

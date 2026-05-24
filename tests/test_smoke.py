@@ -166,8 +166,9 @@ def test_jsonl_results_viewer(authed_client, tmp_path):
 
     r = client.get(f"/tasks/{task_id}/results/run-1")
     assert r.status_code == 200
+    # Il link al viewer JSONL deve essere presente. Dal 2026-05 il template
+    # apre il viewer nello stesso tab (no `target="_blank"`).
     assert f"/tasks/{task_id}/results-view/run-1/profiles.jsonl" in r.text
-    assert 'target="_blank"' in r.text
 
     r = client.get(f"/tasks/{task_id}/results-view/run-1/profiles.jsonl?limit=2")
     assert r.status_code == 200

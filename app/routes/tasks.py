@@ -5,7 +5,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
-from .. import db, jobs
+from .. import db, jobs, storage
 from ..agent.extraction_templates import TEMPLATES, get_schema, list_templates
 from ..agent.llm_providers import (
     DEFAULT_PROVIDER,
@@ -88,6 +88,7 @@ async def index(
     type: str = "",
     author: str = "",
     q: str = "",
+    _partial: str = "",
 ):
     """Lista task. `author`:
        - `mine` (default per tenant_user): solo task creati dall'utente corrente
@@ -146,23 +147,33 @@ async def index(
         tasks = [t for t in tasks if _match(t)]
 
     from ..dashboard import compute_task_health_batch
-    health_by_task = compute_task_health_batch([t["id"] for t in tasks])
-    return templates.TemplateResponse(
-        request,
-        "tasks_list.html",
-        {
-            "tasks": tasks,
-            "health_by_task": health_by_task,
-            "active_status_tag": status_tag,
-            "active_type": active_type,
-            "task_type_tabs": TASK_TYPE_TABS,
-            "counts_by_type": counts_by_type,
-            "author_filter": author_norm,
-            "total_tenant": total_tenant,
-            "current_user_authenticated": current_uid is not None,
-            "filter_q": q_norm,
-        },
-    )
+    task_ids = [t["id"] for t in tasks]
+    health_by_task = compute_task_health_batch(task_ids)
+    # Batch query "job attivi" per riga: alimenta il badge live nella lista.
+    active_by_task = db.count_active_jobs_for_tasks(task_ids)
+    has_active = bool(active_by_task)
+    ctx = {
+        "tasks": tasks,
+        "health_by_task": health_by_task,
+        "active_by_task": active_by_task,
+        "has_active": has_active,
+        "active_status_tag": status_tag,
+        "active_type": active_type,
+        "task_type_tabs": TASK_TYPE_TABS,
+        "counts_by_type": counts_by_type,
+        "author_filter": author_norm,
+        "total_tenant": total_tenant,
+        "current_user_authenticated": current_uid is not None,
+        "filter_q": q_norm,
+    }
+    # `_partial=1`: usato dal polling HTMX della cronologia attiva — ritorna
+    # solo il wrapper della tabella (con il proprio hx-get di refresh), senza
+    # ri-renderizzare header/filtri/tab.
+    if _partial:
+        return templates.TemplateResponse(
+            request, "partials/tasks_list_table.html", ctx,
+        )
+    return templates.TemplateResponse(request, "tasks_list.html", ctx)
 
 
 def _build_qualified_filter_kwargs_from_form(form) -> dict:
@@ -682,6 +693,9 @@ def _form_to_dict(
     llm_credential_id: str = "",
     discovery_llm_credential_id: str = "",
     browser_llm_credential_id: str = "",
+    # Modalità destroy del runner qualifier (auto = hard delete, confirm =
+    # tag pending_destroy + conferma manuale a fine job standalone)
+    qualifier_destroy_mode: str = "auto",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -763,6 +777,12 @@ def _form_to_dict(
         ),
         "outreach_filter_source_follower_of": (outreach_filter_source_follower_of or "").strip() or None,
         "outreach_filter_tags": list(outreach_filter_tags or []),
+        # Qualifier-specific
+        "qualifier_destroy_mode": (
+            qualifier_destroy_mode.strip().lower()
+            if (qualifier_destroy_mode or "").strip().lower() in ("auto", "confirm")
+            else "auto"
+        ),
         # LLM credential refs (vedi /accounts/llm-keys)
         "llm_credential_id": (
             int(llm_credential_id) if str(llm_credential_id).strip().isdigit() else None
@@ -1014,6 +1034,7 @@ async def create_task(
     browser_llm_model: str = Form(""),
     browser_llm_api_key: str = Form(""),
     browser_llm_credential_id: str = Form(""),
+    qualifier_destroy_mode: str = Form("auto"),
     rating: str = Form(""),
     notes: str = Form(""),
     status_tag: str = Form(""),
@@ -1111,6 +1132,7 @@ async def create_task(
         llm_credential_id=llm_credential_id,
         discovery_llm_credential_id=discovery_llm_credential_id,
         browser_llm_credential_id=browser_llm_credential_id,
+        qualifier_destroy_mode=qualifier_destroy_mode,
     )
     try:
         validated = TaskIn(**payload)
@@ -1180,6 +1202,7 @@ async def update_task(
     browser_llm_model: str = Form(""),
     browser_llm_api_key: str = Form(""),
     browser_llm_credential_id: str = Form(""),
+    qualifier_destroy_mode: str = Form("auto"),
     rating: str = Form(""),
     notes: str = Form(""),
     status_tag: str = Form(""),
@@ -1302,6 +1325,7 @@ async def update_task(
         llm_credential_id=llm_credential_id,
         discovery_llm_credential_id=discovery_llm_credential_id,
         browser_llm_credential_id=browser_llm_credential_id,
+        qualifier_destroy_mode=qualifier_destroy_mode,
     )
     try:
         validated = TaskIn(**payload)
@@ -1525,6 +1549,9 @@ async def list_jsonl_artifacts(request: Request):
     items: list[dict] = []
     if RESULTS_DIR.exists():
         # struttura: data/results/<task_id>/<timestamp>/*.jsonl
+        # Skip filtri (richiesto 2026-05-23 per dropdown qualifier piu' pulita):
+        #   - task non piu' esistente OR cross-tenant (db.get_task ritorna None)
+        #   - file .jsonl vuoto (n_lines == 0): non serve come input upstream
         for task_dir in RESULTS_DIR.iterdir():
             if not task_dir.is_dir():
                 continue
@@ -1532,8 +1559,10 @@ async def list_jsonl_artifacts(request: Request):
                 tid = int(task_dir.name)
             except ValueError:
                 continue
-            t = db.get_task(tid)
-            task_name = t.get("name") if t else f"(task#{tid} eliminato)"
+            t = db.get_task(tid)  # tenant-filtered: None se eliminato o altro tenant
+            if not t:
+                continue
+            task_name = t.get("name")
             for run_dir in task_dir.iterdir():
                 if not run_dir.is_dir():
                     continue
@@ -1547,6 +1576,8 @@ async def list_jsonl_artifacts(request: Request):
                         )
                     except Exception:
                         n_lines = 0
+                    if n_lines == 0:
+                        continue  # file vuoto: nessun input utile per il downstream
                     items.append({
                         "path": str(f),
                         "task_id": tid,
@@ -1658,3 +1689,124 @@ async def task_jobs_partial(request: Request, task_id: int):
             "latest_dashboard": latest_dashboard,
         },
     )
+
+
+@router.post("/tasks/{task_id}/jobs/delete")
+async def delete_task_jobs(request: Request, task_id: int):
+    """Hard delete batch dei job selezionati: record DB + cartella FS.
+
+    Workflow:
+      1. Valida che il task esista (tenant-checked via `get_task`).
+      2. Legge `job_ids` dal form (multi-select dal bulk-form).
+      3. `db.delete_jobs` espande con i sub-job, rifiuta se ne trova di attivi.
+      4. Per ogni record cancellato pulisce il filesystem via
+         `storage.delete_job_artifact`.
+      5. Redirect 303 al task con query string informativa (la pagina mostra
+         un banner che legge `?deleted=`/`?blocked=`).
+    """
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+    form = await request.form()
+    raw_ids = form.getlist("job_ids")
+    job_ids = [int(x) for x in raw_ids if str(x).strip().lstrip("-").isdigit()]
+    if not job_ids:
+        return RedirectResponse(
+            url=f"/tasks/{task_id}?flash=Nessun+job+selezionato",
+            status_code=303,
+        )
+
+    result = db.delete_jobs(job_ids)
+    if result["active_blockers"]:
+        blockers = ",".join(
+            f"%23{b['id']}({b['status']})" for b in result["active_blockers"]
+        )
+        return RedirectResponse(
+            url=(
+                f"/tasks/{task_id}?flash="
+                f"Ferma+prima+i+job+attivi:+{blockers}"
+            ),
+            status_code=303,
+        )
+
+    n_records = len(result["deleted"])
+    n_fs = 0
+    for j in result["deleted"]:
+        rp = j.get("result_path")
+        if not rp:
+            continue
+        try:
+            if storage.delete_job_artifact(int(j["task_id"]), rp):
+                n_fs += 1
+        except Exception:
+            # Best-effort: il record DB è già sparito, non fail loud
+            continue
+
+    return RedirectResponse(
+        url=(
+            f"/tasks/{task_id}?flash="
+            f"Cancellati+{n_records}+job+%28{n_fs}+cartelle+su+FS%29"
+        ),
+        status_code=303,
+    )
+
+
+@router.get(
+    "/tasks/{task_id}/qualifier-destroy-confirm",
+    response_class=HTMLResponse,
+)
+async def qualifier_destroy_confirm_view(
+    request: Request, task_id: int, job_id: int = 0,
+):
+    """Pannello per confermare/annullare gli asset marcati `pending_destroy`
+    dal runner qualifier in modalita' `confirm`.
+    """
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+    from ..agent.runner_qualifier import _qualifier_slug
+    slug = _qualifier_slug(task)
+    assets = db.list_pending_destroy_assets(slug)
+    return templates.TemplateResponse(
+        request,
+        "qualifier_destroy_confirm.html",
+        {
+            "task": task,
+            "job_id": job_id,
+            "slug": slug,
+            "assets": assets,
+        },
+    )
+
+
+@router.post("/tasks/{task_id}/qualifier-destroy-confirm")
+async def qualifier_destroy_confirm_action(request: Request, task_id: int):
+    """Azione del pannello: `action=confirm` cancella fisicamente, `action=cancel`
+    rimuove il tag pending_destroy (asset torna disponibile)."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+    form = await request.form()
+    action = (form.get("action") or "").strip().lower()
+    if action not in ("confirm", "cancel"):
+        raise HTTPException(status_code=400, detail="azione non valida")
+
+    from ..agent.runner_qualifier import _qualifier_slug
+    slug = _qualifier_slug(task)
+    pending = db.list_pending_destroy_assets(slug)
+    asset_ids = [int(a["id"]) for a in pending]
+
+    if not asset_ids:
+        return RedirectResponse(
+            url=f"/tasks/{task_id}?flash=Nessun+asset+pending_destroy",
+            status_code=303,
+        )
+
+    if action == "confirm":
+        n = db.delete_assets_bulk(asset_ids)
+        msg = f"Cancellati+definitivamente+{n}+asset"
+    else:
+        n = db.clear_pending_destroy_tag(asset_ids, slug)
+        msg = f"Annullato+destroy+su+{n}+asset"
+
+    return RedirectResponse(url=f"/tasks/{task_id}?flash={msg}", status_code=303)

@@ -260,8 +260,14 @@ async def _run_agent_inner(
     # 1. Risorse e config LLM
     provider_key = task.get("llm_provider") or "ollama"
     try:
-        base_url = resolve_base_url(provider_key, task.get("llm_base_url"))
-        api_key = resolve_api_key(provider_key, task.get("llm_api_key"))
+        # resolve_credential supporta vault (FK credential_id) + fallback legacy.
+        from .llm_providers import resolve_credential
+        api_key, base_url, _ = resolve_credential(
+            task.get("llm_credential_id"),
+            provider_key,
+            project_key=task.get("llm_api_key"),
+            custom_base_url=task.get("llm_base_url"),
+        )
     except RuntimeError as e:
         jlog(f"ERRORE configurazione provider: {e}")
         db.update_job(job_id, status="error", error=str(e), finished_at=db.now_iso())
@@ -1138,7 +1144,9 @@ async def _run_agent_inner(
             log.debug("Site_explorer playbook write failed: %s", e)
 
     # Stage 2 — Playbook outcome: se avevamo applicato un playbook, registra esito
-    # (success se >0 asset, failure altrimenti). Auto-stale a 3 failure consecutive.
+    # (success se >0 asset, failure altrimenti). Auto-stale a 1 failure (soglia
+    # abbassata 2026-05-23: un playbook che produce 0 asset al riapplicarsi e'
+    # quasi sempre stantio, meglio invalidarlo subito).
     if playbook_id is not None and not stopped:
         try:
             outcome = db.bump_playbook_outcome(
@@ -1146,8 +1154,9 @@ async def _run_agent_inner(
             )
             if outcome == "stale":
                 jlog(
-                    f"  ⚠️ Playbook id={playbook_id} marcato STALE (3 failure "
-                    f"consecutive). Sara' ignorato finche' non rigenerato da browser_use."
+                    f"  ⚠️ Playbook id={playbook_id} marcato STALE (0 asset "
+                    f"prodotti al riuso). Il prossimo run su questo sito "
+                    f"ripartira' vergine."
                 )
         except Exception as e:
             log.debug("Playbook outcome bump failed: %s", e)

@@ -43,6 +43,24 @@ def _owner_display(row: Any) -> str:
 templates.env.filters["owner_display"] = _owner_display
 
 
+def _render_md(value: Any) -> str:
+    """Filter Jinja: renderizza una stringa markdown a HTML (CommonMark + tables +
+    strikethrough). `html=False` in MarkdownIt blocca tag inline → sanitization
+    by construction. L'output va wrappato in `<div class="md-prose">…</div>` per
+    lo stile, e usato con `| safe` perche' e' HTML.
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        from .markdown_render import render_markdown
+        return render_markdown(str(value))
+    except Exception:
+        return ""
+
+
+templates.env.filters["render_md"] = _render_md
+
+
 def _static_css_mtime() -> int:
     """mtime di static/style.css per cache-busting. Cambia ad ogni modifica del
     file; serializzato come int (secondi). Usato in base.html:

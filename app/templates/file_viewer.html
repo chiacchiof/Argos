@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Argos{% endblock %}
+{% block content %}
+<section class="file-viewer">
+  <div class="file-viewer-header">
+    <div>
+      <h2>{{ name }}</h2>
+      <p class="file-viewer-meta muted small">
+        <a href="{{ parent_url }}">← {{ parent_label }}</a>
+        &middot; <a href="/tasks/{{ task.id }}">{{ task.name }}</a>
+        &middot; <span class="kind-tag kind-{{ kind }}">{{ kind }}</span>
+        &middot; <span>{{ size }} byte</span>
+      </p>
+    </div>
+    <div class="file-viewer-actions">
+      <a class="btn-link-action" href="{{ download_url }}" download>
+        <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+        Download
+      </a>
+    </div>
+  </div>
+
+  {% if kind == "markdown" %}
+    <article class="md-prose">
+      {{ raw | render_md | safe }}
+    </article>
+  {% elif kind == "json" %}
+    {% if not json_ok %}
+    <p class="errors small">
+      <strong>JSON non valido:</strong> {{ json_error or "non parsabile" }}. Mostro il contenuto raw.
+    </p>
+    {% endif %}
+    <pre class="code-block"><code>{{ pretty }}</code></pre>
+  {% elif kind == "csv" %}
+    <p class="muted small">
+      Mostrate {{ csv.shown_rows }} righe di {{ csv.total_rows }}{% if csv.truncated %}
+        — <strong>tronc.</strong>, <a href="{{ download_url }}">scarica il CSV completo</a>{% endif %}.
+    </p>
+    {% if csv.headers or csv.rows %}
+    <div class="csv-preview-wrap">
+      <table class="data csv-preview">
+        {% if csv.headers %}
+        <thead>
+          <tr>{% for h in csv.headers %}<th>{{ h }}</th>{% endfor %}</tr>
+        </thead>
+        {% endif %}
+        <tbody>
+          {% for row in csv.rows %}
+          <tr>{% for c in row %}<td>{{ c }}</td>{% endfor %}</tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">CSV vuoto.</p>
+    {% endif %}
+  {% else %}
+    {# text / log / fallback #}
+    <pre class="log">{{ raw }}</pre>
+  {% endif %}
+</section>
+{% endblock %}

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 
-from .. import db, jobs
+from .. import db, jobs, storage
 from ..models import WorkflowIn
 from ..templates import templates
 
@@ -17,11 +17,17 @@ router = APIRouter()
 
 
 @router.get("/workflows", response_class=HTMLResponse)
-async def workflows_list(request: Request, author: str = "", q: str = ""):
+async def workflows_list(
+    request: Request,
+    author: str = "",
+    q: str = "",
+    _partial: str = "",
+):
     """Lista workflow. `author`:
        - `mine` (default per tenant_user): solo workflow creati dall'utente
        - `tenant` (default per super_admin): tutti i workflow visibili
     `q`: filtra per match testuale su name + description (case-insensitive).
+    `_partial=1`: ritorna solo il wrapper tabella (usato dal polling HTMX).
     """
     current_user = getattr(request.state, "current_user", None)
     is_super_admin = bool(current_user and current_user.is_super_admin)
@@ -42,7 +48,10 @@ async def workflows_list(request: Request, author: str = "", q: str = ""):
     # arricchisci con count di task / edges per workflow.
     # Batch: 1 query per TUTTI gli edge dei workflow filtrati (vs 1 query per
     # workflow, lento su DB remoto).
-    edges_by_wf = db.list_edges_by_workflow_ids([w["id"] for w in workflows])
+    workflow_ids = [w["id"] for w in workflows]
+    edges_by_wf = db.list_edges_by_workflow_ids(workflow_ids)
+    # Batch query: workflow_run attivi (queued/running) + N job attivi per ognuno.
+    active_by_wf = db.list_active_workflow_runs_for_workflows(workflow_ids)
     enriched = []
     for w in workflows:
         edges = edges_by_wf.get(int(w["id"]), [])
@@ -51,16 +60,21 @@ async def workflows_list(request: Request, author: str = "", q: str = ""):
             task_ids.add(e["from_task_id"])
             task_ids.add(e["to_task_id"])
         enriched.append({**w, "n_edges": len(edges), "n_tasks": len(task_ids)})
-    return templates.TemplateResponse(
-        request, "workflows_list.html",
-        {
-            "workflows": enriched,
-            "author_filter": author_norm,
-            "total_tenant": total_tenant,
-            "current_user_authenticated": current_uid is not None,
-            "filter_q": q_norm,
-        },
-    )
+    has_active = bool(active_by_wf)
+    ctx = {
+        "workflows": enriched,
+        "active_by_wf": active_by_wf,
+        "has_active": has_active,
+        "author_filter": author_norm,
+        "total_tenant": total_tenant,
+        "current_user_authenticated": current_uid is not None,
+        "filter_q": q_norm,
+    }
+    if _partial:
+        return templates.TemplateResponse(
+            request, "partials/workflows_list_table.html", ctx,
+        )
+    return templates.TemplateResponse(request, "workflows_list.html", ctx)
 
 
 @router.get("/workflows/new", response_class=HTMLResponse)
@@ -179,6 +193,114 @@ async def workflow_runs_partial(request: Request, workflow_id: int):
         request,
         "partials/workflow_runs_wrapper.html",
         {"workflow": w, **live},
+    )
+
+
+@router.get(
+    "/workflows/{workflow_id}/runs/{run_id}/jobs",
+    response_class=HTMLResponse,
+)
+async def workflow_run_jobs_partial(
+    request: Request, workflow_id: int, run_id: int,
+):
+    """Restituisce un partial con la lista dei job appartenenti a un singolo
+    workflow_run: task name, status, link al result_path, link al log.
+    Usato in HTMX expand dalla riga "Esecuzioni recenti" del detail.
+    Tenant-safe via `get_workflow` (404 cross-tenant) + `list_jobs_for_workflow_run`.
+    """
+    w = db.get_workflow(workflow_id)
+    if not w:
+        raise HTTPException(status_code=404, detail="workflow non trovato")
+    jobs_in_run = db.list_jobs_for_workflow_run(run_id)
+    # Recupero il nome del task per ogni job in un colpo solo (vs N query).
+    task_ids = sorted({int(j["task_id"]) for j in jobs_in_run if j.get("task_id")})
+    tasks_by_id = db.get_tasks_by_ids(task_ids) if task_ids else {}
+    enriched: list[dict] = []
+    for j in jobs_in_run:
+        tid = int(j["task_id"]) if j.get("task_id") else None
+        t = tasks_by_id.get(tid) if tid is not None else None
+        rp = j.get("result_path") or ""
+        rel_path = None
+        if rp and tid is not None:
+            norm = rp.replace("\\", "/")
+            marker = f"/results/{tid}/"
+            if marker in norm:
+                rel_path = norm.split(marker)[-1]
+        enriched.append({
+            "job_id": int(j["id"]),
+            "task_id": tid,
+            "task_name": (t or {}).get("name") or "(task eliminato)",
+            "status": j.get("status"),
+            "started_at": j.get("started_at"),
+            "finished_at": j.get("finished_at"),
+            "result_rel_path": rel_path,
+            "error": j.get("error"),
+        })
+    return templates.TemplateResponse(
+        request,
+        "partials/workflow_run_jobs.html",
+        {"workflow": w, "run_id": run_id, "jobs": enriched},
+    )
+
+
+@router.post("/workflows/{workflow_id}/runs/delete")
+async def delete_workflow_runs_action(request: Request, workflow_id: int):
+    """Hard delete batch dei workflow_runs selezionati + cascade sui job
+    associati (record DB + cartelle FS).
+
+    Workflow:
+      1. Valida che il workflow esista (tenant-safe via get_workflow).
+      2. Legge `run_ids` dal form bulk.
+      3. `db.delete_workflow_runs` espande con i jobs, rifiuta se trova run o
+         job attivi (queued/running/paused).
+      4. Per ogni job cancellato, pulisce il FS via storage.delete_job_artifact.
+      5. Redirect 303 al workflow detail con flash.
+    """
+    w = db.get_workflow(workflow_id)
+    if not w:
+        raise HTTPException(status_code=404, detail="workflow non trovato")
+    form = await request.form()
+    raw_ids = form.getlist("run_ids")
+    run_ids = [int(x) for x in raw_ids if str(x).strip().lstrip("-").isdigit()]
+    if not run_ids:
+        return RedirectResponse(
+            url=f"/workflows/{workflow_id}?flash=Nessun+run+selezionato",
+            status_code=303,
+        )
+
+    result = db.delete_workflow_runs(run_ids)
+    if result["active_blockers"]:
+        blockers = ",".join(
+            f"%23{b['id']}({b['status']},{b['kind']})"
+            for b in result["active_blockers"]
+        )
+        return RedirectResponse(
+            url=(
+                f"/workflows/{workflow_id}?flash="
+                f"Ferma+prima+i+run/job+attivi:+{blockers}"
+            ),
+            status_code=303,
+        )
+
+    n_runs = len(result["deleted_runs"])
+    n_jobs = len(result["deleted_jobs"])
+    n_fs = 0
+    for j in result["deleted_jobs"]:
+        rp = j.get("result_path")
+        if not rp:
+            continue
+        try:
+            if storage.delete_job_artifact(int(j["task_id"]), rp):
+                n_fs += 1
+        except Exception:
+            continue
+
+    return RedirectResponse(
+        url=(
+            f"/workflows/{workflow_id}?flash="
+            f"Cancellati+{n_runs}+run+%28{n_jobs}+job%2C+{n_fs}+cartelle+FS%29"
+        ),
+        status_code=303,
     )
 
 

@@ -137,6 +137,76 @@
     <p>📄 Report: <a href="/tasks/{{ d.task_id }}/results/{{ rel }}">{{ rel }}</a></p>
   {% endif %}
 
+  {% if d.subjobs %}
+  {# Albero parent + sub-job: il parent (questo job) sta in cima, i sub
+     indentati con `└─`. Ogni riga ha link a report (se artifact c'e') e
+     link "log" che fa HTMX swap nell'area `#job-log-area` SEPARATA dal
+     dashboard, cosi' il polling OOB di /tasks/{id}/jobs (che riswappa
+     #job-status ogni 5s) non puo' cancellare il log mostrato. #}
+  <details class="subjobs-rollup" open>
+    <summary>📂 Albero job &amp; sub-job ({{ d.subjobs|length }} sub)</summary>
+    <ul class="subjobs-rollup-list">
+      {# Riga parent (questo job) #}
+      <li class="subjobs-rollup-parent">
+        <span class="status status-{{ d.status }}">{{ d.status }}</span>
+        <strong>#{{ d.job_id }}</strong>
+        <span class="muted small">parent</span>
+        {% if d.result_path %}
+          {% set _norm = d.result_path.replace('\\','/') %}
+          {% set _marker = '/results/' ~ d.task_id|string ~ '/' %}
+          {% set _rel = _norm.split(_marker)[-1] %}
+          — <a href="/tasks/{{ d.task_id }}/results/{{ _rel }}">{{ _rel }}</a>
+        {% endif %}
+        <a class="subjobs-rollup-log-link"
+           href="/jobs/{{ d.job_id }}/status"
+           hx-get="/jobs/{{ d.job_id }}/status"
+           hx-target="#job-log-area"
+           hx-swap="innerHTML"
+           onclick="document.getElementById('job-log-area').scrollIntoView({behavior:'smooth',block:'nearest'}); return false;"
+           title="Mostra il log qui sotto">📜 log</a>
+      </li>
+      {# Righe sub-job #}
+      {% for s in d.subjobs %}
+      <li class="subjobs-rollup-sub">
+        <span class="job-tree-branch">└─</span>
+        <span class="status status-{{ s.status }}">{{ s.status }}</span>
+        <strong>{{ s.display_id }}</strong>
+        {% if s.result_rel_path %}
+          — <a href="/tasks/{{ d.task_id }}/results/{{ s.result_rel_path }}">{{ s.result_rel_path }}</a>
+        {% else %}
+          — <span class="muted">nessun artifact</span>
+        {% endif %}
+        {% if s.n_profiles is not none %}
+          <span class="muted small">· {{ s.n_profiles }} profili</span>
+        {% endif %}
+        <a class="subjobs-rollup-log-link"
+           href="/jobs/{{ s.id }}/status"
+           hx-get="/jobs/{{ s.id }}/status"
+           hx-target="#job-log-area"
+           hx-swap="innerHTML"
+           onclick="document.getElementById('job-log-area').scrollIntoView({behavior:'smooth',block:'nearest'}); return false;"
+           title="Mostra il log qui sotto">📜 log</a>
+        {% if s.error %}
+          <br><small class="errors">⚠ {{ s.error|truncate(140) }}</small>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  <style>
+    .subjobs-rollup { margin: 0.8rem 0; padding: 0.6rem 1rem; border: 1px solid var(--border, #444); border-radius: 6px; background: var(--surface-2, rgba(255,255,255,0.03)); }
+    .subjobs-rollup > summary { cursor: pointer; font-weight: 600; padding: 0.2rem 0; }
+    .subjobs-rollup-list { list-style: none; padding-left: 0; margin: 0.6rem 0 0; }
+    .subjobs-rollup-list li { padding: 0.3rem 0; border-bottom: 1px dashed var(--border, #444); }
+    .subjobs-rollup-list li:last-child { border-bottom: none; }
+    .subjobs-rollup-parent { font-weight: 500; }
+    .subjobs-rollup-sub { padding-left: 1.2rem !important; }
+    .subjobs-rollup-list .job-tree-branch { opacity: 0.6; margin-right: 0.3rem; font-family: monospace; }
+    .subjobs-rollup-log-link { margin-left: 0.6rem; font-size: 0.85em; opacity: 0.85; }
+    .subjobs-rollup-log-link:hover { opacity: 1; }
+  </style>
+  {% endif %}
+
   {% if d.master_summary_text %}
   {# Riepilogo generato da LLM al termine del parent job. Aggrega l'esito dei
      sub-job (uno per sito) + raccomandazioni concrete per il prossimo run. #}
@@ -152,8 +222,15 @@
   {% endif %}
 
   <p class="dashboard-footer">
-    <a href="/jobs/{{ d.job_id }}/status" hx-get="/jobs/{{ d.job_id }}/status"
-       hx-target="closest .dashboard-panel" hx-swap="outerHTML">📜 mostra log completo</a>
+    {# Swap su `#job-log-area` (div separato da #job-status, vedi task_detail.html).
+       Restando fuori dal target dell'OOB polling /tasks/{id}/jobs, il log
+       rimane visibile finche' l'utente non lo chiude o non lo sostituisce. #}
+    <a href="/jobs/{{ d.job_id }}/status"
+       hx-get="/jobs/{{ d.job_id }}/status"
+       hx-target="#job-log-area"
+       hx-swap="innerHTML"
+       onclick="document.getElementById('job-log-area').scrollIntoView({behavior:'smooth',block:'nearest'}); return false;"
+       title="Mostra il log qui sotto">📜 mostra log completo</a>
   </p>
 </div>
 {% endif %}

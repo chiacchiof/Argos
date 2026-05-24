@@ -51,8 +51,13 @@ async def _generate_reply(
 ) -> str:
     """Chiama l'LLM via OpenAI-compat REST per generare una risposta."""
     provider_key = task.get("llm_provider") or "ollama"
-    base_url = resolve_base_url(provider_key, task.get("llm_base_url"))
-    api_key = resolve_api_key(provider_key, task.get("llm_api_key"))
+    from .llm_providers import resolve_credential
+    api_key, base_url, _ = resolve_credential(
+        task.get("llm_credential_id"),
+        provider_key,
+        project_key=task.get("llm_api_key"),
+        custom_base_url=task.get("llm_base_url"),
+    )
     model = task["model"]
 
     system_prompt = task.get("responder_system_prompt") or (

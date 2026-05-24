@@ -88,62 +88,7 @@
     <a href="{{ chip_href('_unset') }}"     class="chip {% if st=='_unset' %}chip-active{% endif %}">non valutati</a>
   </div>
 
-  {% if tasks %}
-  <table class="data">
-    <thead>
-      <tr>
-        <th>#</th><th>Nome</th><th>Stato</th><th>Rating</th><th>Health</th>
-        <th>Modalità</th><th>Modello</th><th>Cron</th><th>Aggiornato</th><th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for t in tasks %}
-      <tr {% if t.disabled %}class="row-disabled"{% endif %}>
-        <td>{{ t.id }}</td>
-        <td>
-          {% if t.disabled %}<span class="disabled-badge" title="Task disabilitato: non puo' essere lanciato">🚫</span>{% endif %}
-          <a href="/tasks/{{ t.id }}">{{ t.name }}</a>
-        </td>
-        <td>{{ status_badge(t.status_tag) }}</td>
-        <td>{{ rating_stars(t.rating) }}</td>
-        <td>{{ health_badge(health_by_task.get(t.id)) }}</td>
-        <td><code>{{ t.agent_mode }}</code></td>
-        <td><code>{{ t.model }}</code></td>
-        <td><code>{{ t.cron or "—" }}</code></td>
-        <td><small>{{ t.updated_at }}</small></td>
-        <td class="row-actions">
-          <a href="/tasks/{{ t.id }}/edit" class="btn-icon btn-icon-brand" aria-label="Modifica task" title="Modifica configurazione task">
-            <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
-          </a>
-          <form method="post" action="/tasks/{{ t.id }}/toggle-disabled" style="display:inline">
-            <input type="hidden" name="redirect_to" value="/">
-            {% if t.disabled %}
-              <button type="submit" class="btn-icon btn-icon-success" aria-label="Abilita task" title="Riabilita il task">
-                <svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>
-              </button>
-            {% else %}
-              <button type="submit" class="btn-icon btn-icon-danger" aria-label="Disabilita task" title="Disabilita il task: non potra' essere lanciato"
-                      onclick="return confirm('Disabilitare il task #{{ t.id }} \'{{ t.name|e }}\'? Non potra' essere lanciato finche' non lo riabiliti.');">
-                <svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg>
-              </button>
-            {% endif %}
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="empty">
-    {% if filter_q %}
-      Nessun task corrisponde a "<strong>{{ filter_q }}</strong>".
-    {% elif active_status_tag or (active_type and active_type != 'all') %}
-      Nessun task con questo filtro. <a href="/">Mostra tutti</a>.
-    {% else %}
-      Nessun task. <a href="/tasks/new">Creane uno</a>.
-    {% endif %}
-  </p>
-  {% endif %}
+  {% include "partials/tasks_list_table.html" %}
   </div>
 </section>
 {% endblock %}

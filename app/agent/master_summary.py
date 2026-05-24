@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import db
-from .llm_providers import resolve_api_key, resolve_base_url
+from .llm_providers import resolve_credential
 from .ollama import chat_openai_compat
 
 
@@ -134,21 +134,54 @@ def _build_prompt(
         "aggiungere la chiave, poi sul task slot 'Browser LLM' scegli gpt-4o-mini.\n\n"
         "**P2 — HTTP 403 / 401 / 429 ripetuti**\n"
         "  Sintomo: 'FAIL: HTTP 403' su tutti gli URL del sito, anche dopo retry.\n"
-        "  Causa: il sito blocca scrapers via User-Agent blacklist, IP rate-limit, "
-        "geo-blocking, o WAF (Cloudflare entry-level).\n"
-        "  Fix utente: (1) verifica che HTTP_USER_AGENT in .env sia 'Mozilla/5.0 ...' "
-        "(default da 2026-05-23), non 'Argos/0.1'; (2) se gia' browser-like, passa "
-        "la modalita' del task a browser_use (Playwright reale bypassa 403 base); "
-        "(3) se neanche browser_use funziona, il sito ha anti-bot avanzato "
-        "(Cloudflare Turnstile, DataDome) — target non realizzabile senza proxy "
-        "residenziali + headed browser.\n\n"
-        "**P3 — Cloudflare Turnstile / DataDome challenge**\n"
-        "  Sintomo: log contiene 'Cloudflare', 'verification', 'challenge' o "
-        "'_cf_turnstile'. Spesso anche errori 'Just a moment...'.\n"
-        "  Causa: anti-bot ML-based, browser headless detectabile.\n"
-        "  Fix utente: serve browser headed (visibile) con stealth maxed, o "
-        "considerare un servizio anti-bot dedicato. Non risolvibile lato Argos "
-        "senza setup specifico.\n\n"
+        "  Causa: il sito blocca scrapers via IP rate-limit, geo-blocking, o "
+        "WAF (Cloudflare entry-level). Lo User-Agent di Argos e' gia' "
+        "browser-like (Chrome 120) dal 2026-05-23 — NON suggerire di "
+        "cambiarlo.\n"
+        "  Fix utente: (1) se il task e' su `auto_extract` o `bulk_extract`, "
+        "il fallback browser_use Playwright spesso bypassa 403 base — "
+        "verifica che sia abilitato; (2) se neanche browser_use funziona, il "
+        "sito ha anti-bot avanzato (vedi P3) — target non realizzabile senza "
+        "proxy residenziali + headed browser.\n\n"
+        "**P3 — Anti-bot avanzato (Cloudflare/DataDome) o DOM vuoto al browser**\n"
+        "  Sintomo (1): log contiene 'Cloudflare', 'verification', 'challenge' "
+        "o '_cf_turnstile'. Spesso anche errori 'Just a moment...'.\n"
+        "  Sintomo (2 — variante silenziosa, piu' frequente): nel log del "
+        "browser_use compaiono ripetutamente 'The page is currently empty', "
+        "'encountered an empty DOM', 'no interactive elements available', "
+        "'Page remained empty after waiting'. Il LLM continua a fare "
+        "`scroll`/`wait` senza mai chiamare `extract_structured_data` perche' "
+        "il DOM e' davvero vuoto (challenge bloccante). Spesso termina con "
+        "TIMEOUT dopo 510s.\n"
+        "  IMPORTANTE: NON confondere con P1. In P1 il DOM e' pieno e l'LLM "
+        "non genera JSON strict; in P3 il DOM e' VUOTO e l'LLM non ha nulla "
+        "da estrarre. Il fix di P1 (Browser LLM cloud) NON risolve P3.\n"
+        "  Causa: anti-bot ML-based che rileva e blocca browser headless. "
+        "Spesso si attiva dopo un primo run di scraping riuscito (il sito "
+        "memorizza il fingerprint e blocca i tentativi successivi).\n"
+        "  Fix utente: serve browser headed (visibile) con stealth maxed, "
+        "proxy residenziali, o cambiare IP. Non risolvibile lato Argos senza "
+        "setup specifico. NON suggerire 'cambia main LLM' o 'usa gpt-4o-mini' "
+        "per P3 — sono no-op irrilevanti.\n\n"
+        "**P9 — Sito non e' una directory di profili**\n"
+        "  Sintomo: il profiler riconosce il sito come `promising=yes/maybe`, "
+        "il site_explorer mappa con successo (fetch_page OK, link/pattern "
+        "rilevati), ma 0 asset estratti perche' i link 'profilo' che trova "
+        "puntano a pagine non-profilo (autori di articoli, sezioni staff con "
+        "5-6 redattori, pagine /contattaci/, ecc.). Il template "
+        "`profile_contacts` torna 'campi-chiave tutti vuoti'.\n"
+        "  Causa: l'utente ha messo come seed un sito generico di settore "
+        "(news, forum) sperando di trovare profili contattabili, ma il sito "
+        "NON e' una directory esposta di membri. GDPR ha chiuso quel pattern "
+        "su tutti i siti seri. Solo siti SPECIFICAMENTE pensati come "
+        "directory pubbliche espongono email/social di utenti.\n"
+        "  Fix utente: il problema NON e' la configurazione del task. E' la "
+        "STRATEGIA. Devi cambiare i seed_queries: cercare directory verticali "
+        "del settore (es. albo professionale, listing di settore con email "
+        "obbligatorie), usare `recon_social` (Instagram/Facebook con keyword "
+        "settoriale), oppure importare lead esistenti via CSV `/import` e "
+        "qualificarli. Lo scraping cieco di portali/news/forum non porta "
+        "lead utili.\n\n"
         "**P4 — Memory stuck / LLM loop**\n"
         "  Sintomo: log contiene 'Memory dell'agente identica per N step' o "
         "'early-stop'. Il modello continua a dire 'Partial Success — need to retry' "
@@ -190,28 +223,68 @@ def _build_prompt(
         "## 🎯 Esito globale\n"
         "Una riga: status (success / partial / failed) + N profili totali estratti "
         "+ N siti processati su N totali.\n\n"
-        "## 📍 Per sito\n"
-        "Una bullet per sito, formato `- **<host>**: <strategia usata> → "
-        "<n profili>. <1 frase di cosa e' andato>`.\n\n"
+        "## 📍 Esito per sub-job\n"
+        "UNA bullet per CIASCUN sub-job ricevuto, NELL'ORDINE in cui sono "
+        "elencati nel prompt. Formato esatto:\n"
+        "- **<display_id>** <host o nome sub-job> — <✅ OK | ⚠️ parziale | "
+        "❌ fallito>: <strategia usata> → <n profili>. <1 frase di cosa e' "
+        "andato bene o male, citando l'errore osservato>.\n"
+        "Devi coprire TUTTI i sub-job: non ometterne nessuno.\n\n"
         "## 🔍 Pattern problematici rilevati\n"
         "Per ogni pattern del catalogo riconosciuto, una bullet:\n"
         "- **[Codice pattern es. P1]** <nome breve>\n"
         "  - Sintomo osservato in questo run: <citazione log o 1 riga>\n"
+        "  - Sub-job affetti: <lista di display_id>\n"
         "  - Causa: <riga dal catalogo>\n"
         "  - **Fix consigliato**: <riga dal catalogo, adattata al contesto>\n\n"
+        "## ⚙️ Tuning configurazione consigliato\n"
+        "Concretamente: cosa cambierebbe l'esito del PROSSIMO run? Confronta "
+        "la configurazione attuale (vedi blocco 'Task' nel prompt: main LLM, "
+        "discovery LLM, browser LLM, agent_mode, max_iterations) con quello "
+        "che i pattern rilevati suggeriscono.\n"
+        "\n"
+        "REGOLA TASSATIVA (no-op detection): se il `<valore attuale>` LETTO "
+        "DAL BLOCCO TASK e' GIA' uguale al `<valore consigliato>`, NON "
+        "elencare quella riga. Significa che lo slot e' gia' configurato "
+        "bene, non serve cambiarlo. Esempi di errori da evitare:\n"
+        "- Task ha `browser LLM: openai/gpt-4o-mini`, NON scrivere 'da "
+        "openai/gpt-4o-mini a openai/gpt-4o-mini'. Tacere quello slot.\n"
+        "- Task ha `main LLM: openai/gpt-4o-mini` con OpenAI key attiva, NON "
+        "suggerire 'aggiungi Browser LLM cloud' — e' gia' attivo.\n"
+        "- Se TUTTI gli slot pertinenti sono adeguati, scrivi: "
+        "'_Configurazione gia' adeguata: la causa non e' nella config del "
+        "task. Vedi sezione Raccomandazioni concrete._'.\n"
+        "\n"
+        "REGOLA: se la diagnosi e' P3 (anti-bot/DOM vuoto) o P9 (sito non "
+        "directory di profili), il main LLM NON e' la causa. Non suggerire "
+        "main LLM cloud per quei pattern: e' un no-op che spreca soldi. Spiega "
+        "invece nella sezione Raccomandazioni che serve cambiare la "
+        "STRATEGIA, non il modello.\n"
+        "\n"
+        "Per ogni cambio EFFETTIVAMENTE diverso dal valore attuale, scrivi "
+        "UNA riga:\n"
+        "- **<slot>** (es. `main LLM`, `browser LLM`, `agent_mode`, "
+        "`max_iterations`): da `<valore attuale ESATTO dal blocco Task>` a "
+        "`<valore consigliato>` — <perche', massimo 1 frase>.\n"
+        "Solo cambiamenti AZIONABILI dalla UI Argos (slot del task).\n\n"
         "## 💡 Raccomandazioni concrete per il prossimo run\n"
-        "Lista ordinata per priorita' (alta → bassa), una per riga, AZIONABILE "
-        "(es. 'Cambia main LLM da X a Y in /tasks/N/edit', non 'considera un "
-        "modello migliore').\n\n"
+        "Azioni che esulano dalla sola configurazione: rivedere seed_queries, "
+        "escludere domini non scrapabili, aggiungere proxy residenziali, "
+        "segnalare bug Argos, ecc. Lista ordinata per priorita' (alta → "
+        "bassa). Se nulla da aggiungere oltre il tuning, scrivi: '_Nessuna "
+        "azione ulteriore — vedi sezione tuning sopra._'.\n\n"
         "═══════════════════════════════════════════════════════════════\n\n"
         "REGOLE:\n"
         "- Scrivi in italiano, tecnico ma comprensibile a un non-developer.\n"
         "- Se NON rilevi pattern problematici (task andato bene), scrivi nella "
         "sezione 'Pattern problematici rilevati': '_Nessun pattern noto. Run "
-        "pulito._' e nella sezione 'Raccomandazioni': '_Nessuna azione "
-        "richiesta._'.\n"
+        "pulito._'.\n"
         "- Non inventare codici pattern non in catalogo (P1-P8). Se vedi un "
         "errore nuovo, mettilo come 'P? — <nome>' con sintomo/causa/fix dedotti.\n"
+        "- NEL TUNING CONFIGURAZIONE: cita ESATTAMENTE i nomi degli slot del "
+        "task (`main LLM`, `discovery LLM`, `browser LLM`, `agent_mode`, "
+        "`max_iterations`) cosi' l'utente sa dove cliccare. Non dire 'il "
+        "modello': dilli quale slot.\n"
         "- NON ripetere i dati grezzi (numeri di step, timestamps, ecc.): "
         "sintetizza."
     )
@@ -275,13 +348,51 @@ async def generate_master_summary(parent_job_id: int) -> str | None:
             )
             return None
 
-        # Risolvi provider/model dal main del task (stesso pattern di
-        # _resolve_profiler_llm: se vuoi qualita' migliore, in futuro
-        # introduci summary_llm_* dedicati).
-        provider_key = (task.get("llm_provider") or "ollama").strip()
-        model = task.get("model") or "qwen3-coder:30b"
-        base_url = resolve_base_url(provider_key, task.get("llm_base_url"))
-        api_key = resolve_api_key(provider_key, task.get("llm_api_key"))
+        # Risoluzione provider/model con fallback a 2 livelli (2026-05-23):
+        #   1. PREFERENZA: se il task ha `browser_llm_*` configurato (cloud
+        #      capable, es. openai/gpt-4o-mini), USALO per il summary. Il
+        #      modello cloud rispetta meglio le regole anti-allucinazione del
+        #      prompt rispetto ai modelli ollama che tendono a rigurgitare il
+        #      catalogo P1-P9.
+        #   2. FALLBACK: se browser_llm non e' configurato OPPURE la sua
+        #      chiave non e' risolvibile (vault key cancellata, env var
+        #      mancante, provider sconosciuto), usa il main LLM del task
+        #      (tipicamente ollama qwen3-coder, gratis ma meno preciso). Cosi'
+        #      l'utente non resta MAI senza summary per un missing key.
+        # Costo: ~$0.003/summary su gpt-4o-mini, $0 su ollama.
+        def _resolve_summary_llm():
+            browser_provider = (task.get("browser_llm_provider") or "").strip()
+            browser_model = (task.get("browser_llm_model") or "").strip()
+            if browser_provider and browser_model:
+                try:
+                    api_key, base_url, _ = resolve_credential(
+                        task.get("browser_llm_credential_id"),
+                        browser_provider,
+                        project_key=task.get("browser_llm_api_key"),
+                        custom_base_url=(
+                            task.get("browser_llm_base_url")
+                            or task.get("llm_base_url")
+                        ),
+                    )
+                    return browser_provider, browser_model, api_key, base_url
+                except Exception as e:
+                    log.warning(
+                        "master_summary: browser_llm %s/%s non risolvibile (%s). "
+                        "Fallback al main LLM.",
+                        browser_provider, browser_model, e,
+                    )
+            # Fallback main LLM
+            main_provider = (task.get("llm_provider") or "ollama").strip()
+            main_model = task.get("model") or "qwen3-coder:30b"
+            api_key, base_url, _ = resolve_credential(
+                task.get("llm_credential_id"),
+                main_provider,
+                project_key=task.get("llm_api_key"),
+                custom_base_url=task.get("llm_base_url"),
+            )
+            return main_provider, main_model, api_key, base_url
+
+        provider_key, model, api_key, base_url = _resolve_summary_llm()
 
         messages = _build_prompt(task, parent_job, sub_jobs)
 

@@ -30,13 +30,27 @@ DEFAULT_QUALIFIER_PROMPT = (
     "Considera valido se ha almeno UN canale di contatto pubblico (email, whatsapp, "
     "telegram, sitoweb), un'identità riconoscibile (nome o handle) e contenuti reali "
     "in pagina. Scarta profili-fantasma, duplicati ovvi, pagine di categoria che "
-    "sono finite per errore qui."
+    "sono finite per errore qui.\n\n"
+    "Tre verdetti possibili:\n"
+    " - **keep** (qualified): lead valido per outreach, ha contatti pubblici e identità\n"
+    " - **reject** (rejected): non target ma il record ha valore (dato strutturato, "
+    "potrebbe rientrare con un altro qualifier o esser riconsiderato in futuro)\n"
+    " - **destroy** (destroyed): GARBAGE assoluto. Usalo SOLO se il record non ha "
+    "valore in nessun contesto. Esempi tipici: articolo/news scambiato per profilo "
+    "utente; pagina di categoria/elenco vuota; HTML scartato dal crawler senza dati; "
+    "duplicato esatto di un altro asset. NON usare destroy per 'rejection regolare' "
+    "(profili veri ma non target → quello è `reject`). `destroy` cancella "
+    "definitivamente il record dal database."
 )
 
 
 SCORE_RE = re.compile(r"score\s*[:=]\s*(\d+)", re.IGNORECASE)
 KEEP_RE = re.compile(r"\b(keep|valid|qualified|tieni|valido|si)\b", re.IGNORECASE)
 REJECT_RE = re.compile(r"\b(reject|skip|drop|invalid|scarta|no)\b", re.IGNORECASE)
+# `destroy` catturato esplicitamente: deve apparire come token a sé. Non usiamo
+# parole italiane libere per evitare match accidentali (es. 'distruggere' in una
+# motivazione lunga). L'LLM deve scrivere `decision: destroy` per attivarlo.
+DESTROY_RE = re.compile(r"\b(destroy|destroyed|elimina|distruggi)\b", re.IGNORECASE)
 
 
 async def _judge(
@@ -46,8 +60,13 @@ async def _judge(
 ) -> tuple[int, str, str]:
     """Ritorna (score 0-10, decision 'qualified'|'rejected', motivazione)."""
     provider_key = task.get("llm_provider") or "ollama"
-    base_url = resolve_base_url(provider_key, task.get("llm_base_url"))
-    api_key = resolve_api_key(provider_key, task.get("llm_api_key"))
+    from .llm_providers import resolve_credential
+    api_key, base_url, _ = resolve_credential(
+        task.get("llm_credential_id"),
+        provider_key,
+        project_key=task.get("llm_api_key"),
+        custom_base_url=task.get("llm_base_url"),
+    )
     model = task["model"]
 
     sys_prompt = DEFAULT_QUALIFIER_PROMPT
@@ -57,9 +76,9 @@ async def _judge(
     user_payload = (
         "Profilo da valutare:\n"
         + json.dumps(profile_obj, ensure_ascii=False, indent=2)[:4000]
-        + "\n\nRispondi in due righe ESATTAMENTE in questo formato:\n"
+        + "\n\nRispondi in tre righe ESATTAMENTE in questo formato:\n"
         "score: <0-10>\n"
-        "decision: <keep|reject>\n"
+        "decision: <keep|reject|destroy>\n"
         "reason: <una frase breve>"
     )
 
@@ -85,9 +104,21 @@ async def _judge(
     score = int(score_match.group(1)) if score_match else 5
     score = max(0, min(10, score))
 
-    if REJECT_RE.search(text) and not KEEP_RE.search(text):
+    # `destroy` ha priorità sugli altri verdict: se l'LLM dice "destroy"
+    # esplicitamente, vince anche se compaiono parole tipo "keep" nella reason.
+    # Cerco SOLO nella riga "decision:" per ridurre falsi positivi nella reason.
+    decision_line = ""
+    for line in text.splitlines():
+        if line.lower().lstrip().startswith("decision"):
+            decision_line = line
+            break
+    decision_scope = decision_line or text
+
+    if DESTROY_RE.search(decision_scope):
+        decision = "destroyed"
+    elif REJECT_RE.search(decision_scope) and not KEEP_RE.search(decision_scope):
         decision = "rejected"
-    elif KEEP_RE.search(text):
+    elif KEEP_RE.search(decision_scope):
         decision = "qualified"
     else:
         decision = "qualified" if score >= 5 else "rejected"
@@ -213,14 +244,32 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     run_dir.mkdir(parents=True, exist_ok=True)
     qualified_path = run_dir / "qualified.jsonl"
     rejected_path = run_dir / "rejected.jsonl"
+    destroyed_path = run_dir / "destroyed.jsonl"
 
     extra_prompt = (task.get("objective") or "").strip()
     q_slug = _qualifier_slug(task)
     jlog(f"Qualifier slug per tag su asset_tags: 'qualifier_{q_slug}' + 'qualifier_score_{q_slug}'")
 
+    # Modalità destroy:
+    # - 'auto' (default): hard delete immediato sugli asset destroyed
+    # - 'confirm': solo standalone, tag 'pending_destroy' + report finale UI
+    # - Forzato 'auto' se il job e' parte di un workflow_run (no UI nel mezzo)
+    cur_job_row = db.get_job(job_id)
+    in_workflow = bool(cur_job_row and cur_job_row.get("workflow_run_id"))
+    raw_mode = (task.get("qualifier_destroy_mode") or "auto").strip().lower()
+    if raw_mode not in ("auto", "confirm"):
+        raw_mode = "auto"
+    destroy_mode = "auto" if in_workflow else raw_mode
+    jlog(
+        f"Destroy mode: '{destroy_mode}' "
+        f"({'workflow → forced auto' if in_workflow else 'standalone'})."
+    )
+
     n_total = 0
     n_qualified = 0
     n_rejected = 0
+    n_destroyed = 0
+    n_pending_destroy = 0
     n_failed = 0
     stopped = False
 
@@ -234,14 +283,65 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         obj: dict[str, Any],
         asset_id: int | None,
         raw_str: str,
-        fq, fr,
+        fq, fr, fd,
     ) -> None:
-        nonlocal n_total, n_qualified, n_rejected, n_failed
+        nonlocal n_total, n_qualified, n_rejected, n_destroyed, n_pending_destroy, n_failed
         try:
             score, decision, reason = await _judge(task, obj, extra_prompt)
         except Exception as e:
             jlog(f"  ⚠️ judge failed: {type(e).__name__}: {e}")
             n_failed += 1
+            return
+
+        # === DESTROY branch ===
+        # `decision == "destroyed"`: il LLM ritiene il record garbage assoluto.
+        # Comportamento dipende da destroy_mode:
+        #   - 'auto': hard delete immediato (asset_tags cascade via FK)
+        #   - 'confirm': tag `qualifier_<slug>:pending_destroy` (+ score) e
+        #     stesso file destroyed.jsonl; l'utente decide a fine job dalla UI
+        # Solo applicabile quando asset_id esiste (cioe' upstream o shadow gia'
+        # creato — il fallback jsonl crea shadow asset, vedi sotto).
+        if decision == "destroyed":
+            line_out = json.dumps(
+                {
+                    **obj,
+                    "_qualifier_score": score,
+                    "_qualifier_decision": decision,
+                    "_qualifier_reason": reason,
+                    "_asset_id": asset_id,
+                    "_destroy_mode": destroy_mode,
+                },
+                ensure_ascii=False,
+            )
+            fd.write(line_out + "\n")
+            if asset_id is not None:
+                if destroy_mode == "auto":
+                    try:
+                        deleted = db.delete_asset(asset_id)
+                        if deleted:
+                            n_destroyed += 1
+                        else:
+                            jlog(
+                                f"  ⚠️ destroy: delete_asset({asset_id}) ha ritornato 0 "
+                                "(tenant mismatch? gia' eliminato?). Skip."
+                            )
+                    except Exception as e:
+                        jlog(f"  ⚠️ destroy delete failed for #{asset_id}: {e}")
+                else:
+                    # confirm mode: tag pending_destroy + score, non delete.
+                    # Reuso il tag standard `qualifier_<slug>` con valore
+                    # 'pending_destroy' cosi' rientra nelle query esistenti.
+                    try:
+                        db.set_asset_tag(asset_id, f"qualifier_{q_slug}", "pending_destroy")
+                        db.set_asset_tag(asset_id, f"qualifier_score_{q_slug}", str(score))
+                        db.update_asset_qualifier(asset_id, score, "rejected", notes=("DESTROY proposto: " + reason)[:300])
+                        n_pending_destroy += 1
+                    except Exception as e:
+                        jlog(f"  WARN pending_destroy tag failed for #{asset_id}: {e}")
+            else:
+                # Shadow path (no asset_id): non c'e' record DB da cancellare,
+                # il record vive solo nel jsonl. Conta come destroyed.
+                n_destroyed += 1
             return
 
         # Aggiorna asset (sorgente primaria). Se l'asset e' qualified E ha
@@ -344,7 +444,8 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             n_rejected += 1
 
     with qualified_path.open("w", encoding="utf-8") as fq, \
-         rejected_path.open("w", encoding="utf-8") as fr:
+         rejected_path.open("w", encoding="utf-8") as fr, \
+         destroyed_path.open("w", encoding="utf-8") as fd:
         if assets_to_judge:
             for asset in assets_to_judge:
                 if db.get_control_signal(job_id) == "stop":
@@ -362,11 +463,13 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     raw_str=asset.get("raw_json") or "",
                     fq=fq,
                     fr=fr,
+                    fd=fd,
                 )
                 if (n_total % 10) == 0:
                     jlog(
                         f"  progresso: {n_total} valutati ({n_qualified} qualified, "
-                        f"{n_rejected} rejected)"
+                        f"{n_rejected} rejected, {n_destroyed} destroyed, "
+                        f"{n_pending_destroy} pending)"
                     )
         elif use_fallback_jsonl:
             with Path(artifact).open(encoding="utf-8") as fin:
@@ -390,11 +493,13 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         raw_str=raw,
                         fq=fq,
                         fr=fr,
+                        fd=fd,
                     )
                     if (n_total % 10) == 0:
                         jlog(
                             f"  progresso: {n_total} valutati ({n_qualified} qualified, "
-                            f"{n_rejected} rejected)"
+                            f"{n_rejected} rejected, {n_destroyed} destroyed, "
+                            f"{n_pending_destroy} pending)"
                         )
 
     fmt = task.get("output_format") or "md"
@@ -408,13 +513,24 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             source_label = "tabella `assets`"
     else:
         source_label = f"profiles.jsonl `{artifact}`"
+    destroy_section = ""
+    if destroy_mode == "auto":
+        destroy_section = f"- **Destroyed (hard delete)**: {n_destroyed} (vedi `destroyed.jsonl`)\n"
+    elif n_pending_destroy or destroyed_path.stat().st_size > 0:
+        destroy_section = (
+            f"- **Pending destroy (in attesa di conferma manuale)**: "
+            f"{n_pending_destroy} (vedi `destroyed.jsonl`). Conferma o annulla "
+            f"da `/tasks/{task['id']}/qualifier-destroy-confirm?job_id={job_id}`.\n"
+        )
     report = (
         f"# Qualifier run {ts}\n\n"
         f"- **Task**: {task['name']} (#{task['id']})\n"
         f"- **Sorgente**: {source_label}\n"
+        f"- **Destroy mode**: {destroy_mode}\n"
         f"- **Profili totali valutati**: {n_total}\n"
         f"- **Qualified**: {n_qualified} (vedi `qualified.jsonl`)\n"
         f"- **Rejected**: {n_rejected} (vedi `rejected.jsonl`)\n"
+        f"{destroy_section}"
         f"- **Failed**: {n_failed}\n"
         f"- **Stato**: {'INTERROTTO' if stopped else 'Completato'}\n"
     )
@@ -425,5 +541,10 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     db.update_job(job_id, status=final_status, finished_at=db.now_iso(),
                   result_path=str(report_path))
     db.set_control_signal(job_id, None)
-    jlog(f"Qualifier concluso: {n_qualified}/{n_total} qualified.")
+    summary_parts = [f"{n_qualified}/{n_total} qualified"]
+    if n_destroyed:
+        summary_parts.append(f"{n_destroyed} destroyed")
+    if n_pending_destroy:
+        summary_parts.append(f"{n_pending_destroy} pending_destroy")
+    jlog("Qualifier concluso: " + ", ".join(summary_parts) + ".")
     return str(report_path)

@@ -28,7 +28,7 @@ from typing import Any, Callable
 from .. import db
 from ..config import RESULTS_DIR, settings
 from .extraction_templates import get_schema
-from .llm_providers import get_provider, resolve_api_key, resolve_base_url
+from .llm_providers import get_provider, resolve_api_key, resolve_base_url, resolve_credential
 from .ollama import maybe_add_keep_alive
 
 
@@ -292,22 +292,38 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
             provider_key = task.get("llm_provider") or "ollama"
             model_name = task["model"]
             api_key_override = task.get("llm_api_key")
+            credential_id = task.get("llm_credential_id")
+            custom_base_url = task.get("llm_base_url")
             role_label = "Provider LLM (fallback dopo mismatch browser_llm)"
         else:
             provider_key = browser_provider
             model_name = browser_model
             api_key_override = task.get("browser_llm_api_key")
+            credential_id = task.get("browser_llm_credential_id")
+            custom_base_url = task.get("browser_llm_base_url") or task.get("llm_base_url")
             role_label = "🖥️ Browser LLM (override)"
     else:
         provider_key = task.get("llm_provider") or "ollama"
         model_name = task["model"]
         api_key_override = task.get("llm_api_key")
+        credential_id = task.get("llm_credential_id")
+        custom_base_url = task.get("llm_base_url")
         role_label = "Provider LLM"
 
     provider_info = get_provider(provider_key)
     try:
-        base_url = resolve_base_url(provider_key, task.get("llm_base_url"))
-        api_key = resolve_api_key(provider_key, api_key_override)
+        # resolve_credential gestisce in priorità il vault (credential_id),
+        # con fallback su project_key legacy / env var. Prima di questo fix
+        # il runner usava direttamente resolve_api_key e IGNORAVA il
+        # credential_id linkato al task, crashando con "API key mancante"
+        # anche quando l'utente aveva configurato e linkato la chiave nel
+        # vault (incident 2026-05-23, job #201).
+        api_key, base_url, _used_cred_id = resolve_credential(
+            credential_id,
+            provider_key,
+            project_key=api_key_override,
+            custom_base_url=custom_base_url,
+        )
     except RuntimeError as e:
         jlog(f"ERRORE configurazione provider: {e}")
         db.update_job(job_id, status="error", error=str(e), finished_at=db.now_iso())
@@ -1352,7 +1368,7 @@ async def _write_site_playbook(
     import json as _json
     from urllib.parse import urlparse
     import httpx
-    from .llm_providers import resolve_api_key, resolve_base_url
+    from .llm_providers import resolve_credential
     from .runner_bulk_extract import _registrable_domain
 
     host = (urlparse(seed_url).hostname or "").lower()
@@ -1360,11 +1376,28 @@ async def _write_site_playbook(
     if not reg:
         return
 
+    use_browser_slot = bool(task.get("browser_llm_provider"))
     provider = (task.get("browser_llm_provider") or task.get("llm_provider") or "ollama").strip()
     model = (task.get("browser_llm_model") or task.get("model") or "qwen3.5:latest").strip()
+    credential_id = (
+        task.get("browser_llm_credential_id") if use_browser_slot
+        else task.get("llm_credential_id")
+    )
+    project_key = (
+        task.get("browser_llm_api_key") if use_browser_slot
+        else task.get("llm_api_key")
+    )
+    custom_base_url = (
+        task.get("browser_llm_base_url") if use_browser_slot
+        else None
+    ) or task.get("llm_base_url")
     try:
-        base_url = resolve_base_url(provider, task.get("llm_base_url"))
-        api_key = resolve_api_key(provider, task.get("browser_llm_api_key") or task.get("llm_api_key"))
+        api_key, base_url, _ = resolve_credential(
+            credential_id,
+            provider,
+            project_key=project_key,
+            custom_base_url=custom_base_url,
+        )
     except Exception as e:
         jlog(f"  ⚠️ Playbook write: impossibile risolvere LLM ({e}). Skip.")
         return

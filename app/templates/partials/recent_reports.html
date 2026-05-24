@@ -1,0 +1,31 @@
+{# Partial HTMX caricato in task_detail.html. Mostra gli ultimi N report
+   (report.md / master_summary.md / todo.md) ordinati per mtime desc. #}
+{% if items %}
+<div class="recent-reports">
+  <div class="recent-reports-head">
+    <svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>
+    <strong>Ultimi report</strong>
+    <a class="muted small" href="/tasks/{{ task.id }}/results">vedi tutti →</a>
+  </div>
+  <ul class="recent-reports-list">
+    {% for it in items %}
+    {% set view_url = "/tasks/" ~ task.id ~ "/file-view/" ~ it.rel %}
+    {% set dl_url = "/tasks/" ~ task.id ~ "/results/" ~ it.rel %}
+    <li class="recent-report-item">
+      <a class="recent-report-link" href="{{ view_url }}">
+        <span class="recent-report-name">{{ it.name }}</span>
+        {% if it.run_name %}
+        <span class="recent-report-run muted small">in {{ it.run_name }}</span>
+        {% endif %}
+        <span class="recent-report-meta muted small">
+          {{ it.mtime_iso }} · {{ it.size }} byte
+        </span>
+      </a>
+      <a class="btn-link-action btn-small" href="{{ dl_url }}" download title="Download">
+        <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

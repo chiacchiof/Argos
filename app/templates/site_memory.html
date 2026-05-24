@@ -142,10 +142,23 @@
       <span class="status-pill status-rejected">non-transferable</span>
     {% endif %}
     <span class="muted small">id={{ p.id }} · source={{ p.source_runner }} · hits={{ p.hits }} · succ={{ p.successes }} · fail={{ p.failures }}{% if is_super_admin %} · tenant={{ p.tenant_id or '—' }}{% endif %}</span>
-    <form method="post" action="/site_memory/playbook/{{ p.id }}/delete" style="display:inline; margin-left:auto"
-          onsubmit="return confirm('Cancellare il playbook di {{ p.registrable_domain }}?');">
-      <button type="submit" class="btn-danger-small">🗑️</button>
-    </form>
+    <div class="playbook-actions" style="margin-left:auto; display:flex; gap:.35rem;">
+      {% if p.status == 'active' %}
+      <form method="post" action="/site_memory/playbook/{{ p.id }}/disable" style="display:inline"
+            onsubmit="return confirm('Disabilitare il playbook di {{ p.registrable_domain }}? Non verrà più riapplicato, ma resta in DB (puoi riattivarlo).');">
+        <button type="submit" class="btn-link-small" title="Disabilita: il playbook non viene piu' riapplicato ma resta in DB (audit)">⏸ disabilita</button>
+      </form>
+      {% else %}
+      <form method="post" action="/site_memory/playbook/{{ p.id }}/reactivate" style="display:inline"
+            onsubmit="return confirm('Riattivare il playbook di {{ p.registrable_domain }}? Failures verrà azzerato.');">
+        <button type="submit" class="btn-link-small" title="Riattiva: il playbook torna utilizzabile nei prossimi run">▶ riattiva</button>
+      </form>
+      {% endif %}
+      <form method="post" action="/site_memory/playbook/{{ p.id }}/delete" style="display:inline"
+            onsubmit="return confirm('Cancellare il playbook di {{ p.registrable_domain }}?');">
+        <button type="submit" class="btn-danger-small" title="Cancella definitivamente (perde l'audit)">🗑️</button>
+      </form>
+    </div>
   </div>
   <pre class="playbook-text">{{ p.playbook_text }}</pre>
   {% if p.playbook_blockers %}

@@ -51,6 +51,10 @@ dependencies = [
   # Schema migrations (vedi SETUP_CLOUD_DB_TENANT.md sezione "Schema migrations").
   # init_db idempotente gestisce gli ADD COLUMN; Alembic gestisce rename/drop/data.
   "alembic>=1.13",
+  # Rendering markdown server-side per il file viewer (.md report dei task).
+  # html=False blocca tag inline → sanitization by construction, no bleach.
+  "markdown-it-py>=3.0",
+  "mdit-py-plugins>=0.4",
 ]
 
 [project.optional-dependencies]

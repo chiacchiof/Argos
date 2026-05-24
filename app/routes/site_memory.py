@@ -92,6 +92,39 @@ async def site_memory_delete_playbook(playbook_id: int, request: Request):
     return RedirectResponse(url="/site_memory", status_code=303)
 
 
+@router.post("/site_memory/playbook/{playbook_id}/disable")
+async def site_memory_disable_playbook(playbook_id: int):
+    """Cambia status a 'disabled': il playbook resta in DB (audit) ma non
+    viene piu' riapplicato nei prossimi run su quel dominio."""
+    n = db.set_site_playbook_status(playbook_id, "disabled")
+    return RedirectResponse(
+        url=f"/site_memory?_msg={'disabilitato' if n else 'gia+disabilitato'}+playbook+%23{playbook_id}",
+        status_code=303,
+    )
+
+
+@router.post("/site_memory/playbook/{playbook_id}/reactivate")
+async def site_memory_reactivate_playbook(playbook_id: int):
+    """Riattiva un playbook stale/disabled. Resetta `failures` a 0 cosi' il
+    primo riuso non lo ri-stale-isca immediatamente."""
+    n = db.set_site_playbook_status(playbook_id, "active")
+    # Reset failures (best-effort, query separata)
+    if n:
+        try:
+            with db.connect() as con:
+                con.execute(
+                    "UPDATE site_playbooks SET failures = 0, updated_at = %s "
+                    "WHERE id = %s",
+                    (db.now_iso(), playbook_id),
+                )
+        except Exception:
+            pass
+    return RedirectResponse(
+        url=f"/site_memory?_msg={'riattivato' if n else 'non+trovato'}+playbook+%23{playbook_id}",
+        status_code=303,
+    )
+
+
 @router.post("/site_memory/domain/delete")
 async def site_memory_delete_domain(domain: str = Form("")):
     """Cancella tutti i pattern + playbook di un singolo dominio."""

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db, jobs
 from ..dashboard import compute_dashboard
@@ -24,12 +24,85 @@ async def run_task(request: Request, task_id: int):
 
 @router.get("/jobs/{job_id}/status", response_class=HTMLResponse)
 async def job_status(request: Request, job_id: int):
+    """Status + log di un job.
+
+    Doppia modalita' di rendering:
+      - HTMX swap (header `HX-Request: true`): ritorna il partial spoglio,
+        usato per polling e swap inline nel dashboard.
+      - Full-page (link aperto in nuova tab dalla cronologia): ritorna la
+        pagina completa che estende `base.html` (header, nav, CSS).
+
+    Calcola anche il `display_id` `#parent.N` se il job e' un sub-job
+    (ha `triggered_by_job_id` valorizzato), replicando la stessa logica di
+    `_build_jobs_tree` (ordering by id ASC). Cosi' l'utente che apre il log
+    di un sub vede sia il DB id (#219) sia il display id contestualizzato
+    (#218.2) e ha un link "torna al parent" — niente piu' mismatch UX
+    (incident 2026-05-23: l'utente non riusciva a collegare la pagina
+    Job #219 al sub #218.2 della cronologia).
+    """
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job non trovato")
     task = db.get_task(job["task_id"])
+
+    display_id: str | None = None
+    parent_id: int | None = None
+    raw_parent = job.get("triggered_by_job_id")
+    if raw_parent:
+        try:
+            parent_id = int(raw_parent)
+        except (TypeError, ValueError):
+            parent_id = None
+        if parent_id:
+            try:
+                siblings = db.list_subjobs(parent_id)
+            except Exception:
+                siblings = []
+            siblings_sorted = sorted(siblings, key=lambda s: int(s["id"]))
+            for idx, s in enumerate(siblings_sorted, start=1):
+                if int(s["id"]) == int(job["id"]):
+                    display_id = f"#{parent_id}.{idx}"
+                    break
+
+    is_htmx = request.headers.get("HX-Request") == "true"
+    template_name = (
+        "partials/job_status.html" if is_htmx else "job_status_page.html"
+    )
     return templates.TemplateResponse(
-        request, "partials/job_status.html", {"job": job, "task": task}
+        request, template_name,
+        {
+            "job": job, "task": task,
+            "display_id": display_id, "parent_id": parent_id,
+        },
+    )
+
+
+@router.post("/jobs/{job_id}/regenerate-summary", response_class=HTMLResponse)
+async def regenerate_master_summary_endpoint(request: Request, job_id: int):
+    """Forza la rigenerazione del file `master_summary.md` per un parent job.
+
+    Utile quando il prompt del summary e' stato aggiornato (es. nuovi pattern
+    P9, regole anti-allucinazione) e il file salvato sul filesystem contiene
+    diagnosi obsolete. Sovrascrive il file esistente.
+
+    Ritorna un partial HTML con il messaggio risultato (usabile da HTMX) o
+    redirect 303 al task detail se chiamato da un form normale.
+    """
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job non trovato")
+    from ..agent.master_summary import generate_master_summary
+    new_path = await generate_master_summary(job_id)
+    task_id = int(job["task_id"])
+    if new_path:
+        msg = f"Master+summary+rigenerato+per+job+%23{job_id}"
+    else:
+        msg = (
+            f"Impossibile+rigenerare+summary+per+job+%23{job_id}+"
+            "(parent+senza+sub-job%2C+run_dir+mancante%2C+o+errore+LLM)"
+        )
+    return RedirectResponse(
+        url=f"/tasks/{task_id}?flash={msg}", status_code=303,
     )
 
 
