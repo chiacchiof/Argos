@@ -46,6 +46,245 @@
         </small>
       </div>
 
+      <section class="workflow-flowchart-panel" aria-labelledby="workflow-flowchart-title">
+        <div class="workflow-flowchart-header">
+          <h3 id="workflow-flowchart-title">
+            <svg class="icon" aria-hidden="true"><use href="#i-workflows"/></svg>
+            Flowchart del workflow
+          </h3>
+          <div class="workflow-flowchart-header-actions">
+            {% if workflow_graph.nodes %}
+              <span class="workflow-flowchart-count">{{ workflow_graph.nodes|length }} nodi / {{ workflow_graph.edges|length }} edge</span>
+            {% endif %}
+            <button type="button"
+                    class="btn-icon btn-icon-brand workflow-flowchart-add"
+                    {% if tasks|length < 2 %}disabled{% endif %}
+                    aria-label="Aggiungi edge dal flowchart"
+                    title="{% if tasks|length < 2 %}Servono almeno 2 task per creare un edge{% else %}Aggiungi edge{% endif %}"
+                    onclick="window.argosWorkflowOpenModal('workflow-add-edge-modal')">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+            </button>
+          </div>
+        </div>
+        {% if workflow_graph.nodes %}
+          <div class="workflow-flowchart-scroll">
+            <div class="workflow-flowchart-canvas"
+                 style="width: {{ workflow_graph.width }}px; height: {{ workflow_graph.height }}px;">
+              <svg class="workflow-flowchart-edges"
+                   viewBox="0 0 {{ workflow_graph.width }} {{ workflow_graph.height }}"
+                   width="{{ workflow_graph.width }}"
+                   height="{{ workflow_graph.height }}"
+                   role="group" aria-label="Edge del flowchart">
+                <defs>
+                  <marker id="workflow-arrow-enabled-{{ workflow.id }}" viewBox="0 0 10 10"
+                          refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" class="workflow-flowchart-arrow workflow-flowchart-arrow-enabled"/>
+                  </marker>
+                  <marker id="workflow-arrow-disabled-{{ workflow.id }}" viewBox="0 0 10 10"
+                          refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" class="workflow-flowchart-arrow workflow-flowchart-arrow-disabled"/>
+                  </marker>
+                </defs>
+                {% for edge in workflow_graph.edges %}
+                  <g class="workflow-flowchart-edge-group"
+                     role="button"
+                     tabindex="0"
+                     aria-label="Modifica edge {{ edge.from_name }} verso {{ edge.to_name }}"
+                     onclick="window.argosWorkflowOpenModal('workflow-edge-modal-{{ edge.id }}')"
+                     onkeydown="if(event.key === 'Enter' || event.key === ' '){ event.preventDefault(); window.argosWorkflowOpenModal('workflow-edge-modal-{{ edge.id }}'); }">
+                    <title>{{ edge.from_name }} -> {{ edge.to_name }}{% if edge.artifact %} ({{ edge.artifact }}){% endif %}</title>
+                    <path class="workflow-flowchart-edge {% if edge.enabled %}is-enabled{% else %}is-disabled{% endif %}"
+                          d="{{ edge.path }}"
+                          marker-end="url(#workflow-arrow-{% if edge.enabled %}enabled{% else %}disabled{% endif %}-{{ workflow.id }})"/>
+                    <path class="workflow-flowchart-edge-hit" d="{{ edge.path }}"/>
+                  </g>
+                {% endfor %}
+              </svg>
+              {% for node in workflow_graph.nodes %}
+                <button type="button"
+                        class="workflow-flowchart-node workflow-node-kind-{{ node.kind }}"
+                        style="left: {{ node.left }}px; top: {{ node.top }}px;"
+                        title="Configura nodo #{{ node.id }} - {{ node.name }} ({{ node.mode }})"
+                        aria-label="Configura nodo #{{ node.id }} {{ node.name }}"
+                        onclick="window.argosWorkflowOpenModal('workflow-node-modal-{{ node.id }}')">
+                  <span class="workflow-node-shape" aria-hidden="true">
+                    <svg class="icon"><use href="#{{ node.icon }}"/></svg>
+                  </span>
+                  <span class="workflow-node-body">
+                    <span class="workflow-node-name">{{ node.name }}</span>
+                    <span class="workflow-node-meta">
+                      <span class="workflow-node-id">#{{ node.id }}</span>
+                      <code>{{ node.mode }}</code>
+                      {% if node.outgoing_count %}
+                        <span class="workflow-node-fanout" title="{{ node.outgoing_count }} edge in uscita">→ {{ node.outgoing_count }}</span>
+                      {% endif %}
+                    </span>
+                  </span>
+                </button>
+              {% endfor %}
+            </div>
+          </div>
+        {% else %}
+          <p class="workflow-flowchart-empty muted">Nessun edge nel workflow.</p>
+        {% endif %}
+      </section>
+
+      <div id="workflow-add-edge-modal" class="modal-backdrop"
+           onclick="if(event.target === this) this.classList.remove('open');">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Aggiungi edge</h3>
+            <button type="button" class="btn-icon" aria-label="Chiudi"
+                    onclick="window.argosWorkflowCloseModal('workflow-add-edge-modal')">
+              <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+            </button>
+          </div>
+          <form method="post" action="/workflows/{{ workflow.id }}/edges" class="workflow-modal-form">
+            <label>Da (upstream)
+              <select name="from_task_id" required>
+                <option value="" selected>— scegli task upstream —</option>
+                {% for t in tasks %}
+                  <option value="{{ t.id }}">#{{ t.id }} — {{ t.name }} ({{ t.agent_mode }})</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>A (downstream)
+              <select name="to_task_id" required>
+                <option value="" selected>— scegli task downstream —</option>
+                {% for t in tasks %}
+                  <option value="{{ t.id }}">#{{ t.id }} — {{ t.name }} ({{ t.agent_mode }})</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Artifact da passare <span class="hint">(es. <code>profiles.jsonl</code>)</span>
+              <input type="text" name="pass_artifact" placeholder="profiles.jsonl">
+            </label>
+            <label class="workflow-modal-checkbox">
+              <input type="checkbox" name="enabled" checked> Edge abilitato subito
+            </label>
+            <div class="modal-actions">
+              <button type="button" class="btn-link"
+                      onclick="window.argosWorkflowCloseModal('workflow-add-edge-modal')">Annulla</button>
+              <button type="submit">
+                <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Crea edge
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {% for edge in workflow_graph.edges %}
+      <div id="workflow-edge-modal-{{ edge.id }}" class="modal-backdrop"
+           onclick="if(event.target === this) this.classList.remove('open');">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Edge #{{ edge.id }}</h3>
+            <button type="button" class="btn-icon" aria-label="Chiudi"
+                    onclick="window.argosWorkflowCloseModal('workflow-edge-modal-{{ edge.id }}')">
+              <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+            </button>
+          </div>
+          <p class="workflow-edge-modal-route">
+            <strong>{{ edge.from_name }}</strong>
+            <span>→</span>
+            <strong>{{ edge.to_name }}</strong>
+          </p>
+          <form method="post" action="/workflow_edges/{{ edge.id }}/artifact" class="workflow-modal-form">
+            <input type="hidden" name="redirect_to" value="/workflows/{{ workflow.id }}">
+            <label>Artifact da passare
+              <input type="text" name="pass_artifact" value="{{ edge.artifact }}" placeholder="profiles.jsonl">
+            </label>
+            <div class="modal-actions">
+              <button type="button" class="btn-link"
+                      onclick="window.argosWorkflowCloseModal('workflow-edge-modal-{{ edge.id }}')">Annulla</button>
+              <button type="submit">
+                <svg class="icon" aria-hidden="true"><use href="#i-save"/></svg> Salva artifact
+              </button>
+            </div>
+          </form>
+          <form method="post" action="/workflow_edges/{{ edge.id }}/delete"
+                class="workflow-edge-delete-form"
+                onsubmit="return confirm('Eliminare questo edge?');">
+            <input type="hidden" name="redirect_to" value="/workflows/{{ workflow.id }}">
+            <button type="submit" class="btn-danger-inline">
+              <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Elimina edge
+            </button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+
+      {% for node in workflow_graph.nodes %}
+      <div id="workflow-node-modal-{{ node.id }}" class="modal-backdrop"
+           onclick="if(event.target === this) this.classList.remove('open');">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Nodo #{{ node.id }}</h3>
+            <button type="button" class="btn-icon" aria-label="Chiudi"
+                    onclick="window.argosWorkflowCloseModal('workflow-node-modal-{{ node.id }}')">
+              <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+            </button>
+          </div>
+          <p class="workflow-edge-modal-route">
+            <strong>{{ node.name }}</strong>
+            <code>{{ node.mode }}</code>
+          </p>
+          <div class="workflow-node-modal-section">
+            <h4>Edge in uscita</h4>
+            <form method="post" action="/workflows/{{ workflow.id }}/edges" class="workflow-modal-form">
+              <input type="hidden" name="from_task_id" value="{{ node.id }}">
+              <label>A (downstream)
+                <select name="to_task_id" required>
+                  <option value="" selected>— scegli task downstream —</option>
+                  {% for t in tasks if t.id != node.id %}
+                    <option value="{{ t.id }}">#{{ t.id }} — {{ t.name }} ({{ t.agent_mode }})</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Artifact da passare <span class="hint">(es. <code>profiles.jsonl</code>)</span>
+                <input type="text" name="pass_artifact" value="{{ node.default_artifact }}" placeholder="profiles.jsonl">
+              </label>
+              <label class="workflow-modal-checkbox">
+                <input type="checkbox" name="enabled" checked> Edge abilitato subito
+              </label>
+              <div class="modal-actions">
+                <button type="submit">
+                  <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Aggiungi downstream
+                </button>
+              </div>
+            </form>
+          </div>
+          <div class="workflow-node-modal-section">
+            <h4>Nodo</h4>
+          <form method="post" action="/workflows/{{ workflow.id }}/nodes/{{ node.id }}/replace" class="workflow-modal-form">
+            <label>Sostituisci con task esistente
+              <select name="new_task_id" required>
+                <option value="" selected>— scegli task —</option>
+                {% for t in tasks if t.id != node.id %}
+                  <option value="{{ t.id }}">#{{ t.id }} — {{ t.name }} ({{ t.agent_mode }})</option>
+                {% endfor %}
+              </select>
+            </label>
+            <div class="modal-actions">
+              <button type="button" class="btn-link"
+                      onclick="window.argosWorkflowCloseModal('workflow-node-modal-{{ node.id }}')">Annulla</button>
+              <button type="submit">
+                <svg class="icon" aria-hidden="true"><use href="#i-shuffle"/></svg> Sostituisci nodo
+              </button>
+            </div>
+          </form>
+          </div>
+          <form method="post" action="/workflows/{{ workflow.id }}/nodes/{{ node.id }}/delete"
+                class="workflow-edge-delete-form"
+                onsubmit="return confirm('Rimuovere questo nodo dal workflow? Verranno eliminati tutti gli edge collegati.');">
+            <button type="submit" class="btn-danger-inline">
+              <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Rimuovi nodo dal workflow
+            </button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+
       <h3>📍 Tasks root del DAG</h3>
       {% if roots %}
         <ul>
@@ -143,4 +382,24 @@
     </div>
   </div>
 </section>
+<script>
+  window.argosWorkflowOpenModal = function (id) {
+    var modal = document.getElementById(id);
+    if (!modal) return;
+    modal.classList.add('open');
+    var focusTarget = modal.querySelector('select, input:not([type="hidden"]), textarea');
+    if (!focusTarget) focusTarget = modal.querySelector('button');
+    if (focusTarget) focusTarget.focus();
+  };
+  window.argosWorkflowCloseModal = function (id) {
+    var modal = document.getElementById(id);
+    if (modal) modal.classList.remove('open');
+  };
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    document.querySelectorAll('.modal-backdrop.open').forEach(function (modal) {
+      modal.classList.remove('open');
+    });
+  });
+</script>
 {% endblock %}

@@ -5,6 +5,8 @@ e eseguire come blocco unico (▶ Esegui workflow → lancia i task root).
 """
 from __future__ import annotations
 
+from urllib.parse import quote_plus
+
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
@@ -14,6 +16,14 @@ from ..models import WorkflowIn
 from ..templates import templates
 
 router = APIRouter()
+
+
+def _workflow_detail_url(workflow_id: int, *, flash: str | None = None, error: str | None = None) -> str:
+    if error:
+        return f"/workflows/{workflow_id}?error={quote_plus(error)}"
+    if flash:
+        return f"/workflows/{workflow_id}?flash={quote_plus(flash)}"
+    return f"/workflows/{workflow_id}"
 
 
 @router.get("/workflows", response_class=HTMLResponse)
@@ -159,15 +169,18 @@ async def workflow_detail(request: Request, workflow_id: int):
         raise HTTPException(status_code=404, detail="workflow non trovato")
     edges = db.list_edges(workflow_id=workflow_id)
     all_tasks = db.list_tasks()
-    tmap = {t["id"]: t for t in all_tasks}
+    tmap = {int(t["id"]): t for t in all_tasks}
     edges_enriched = []
     for e in edges:
+        from_id = int(e["from_task_id"])
+        to_id = int(e["to_task_id"])
         edges_enriched.append({
             **e,
-            "from_name": (tmap.get(e["from_task_id"]) or {}).get("name", f"#{e['from_task_id']}"),
-            "to_name": (tmap.get(e["to_task_id"]) or {}).get("name", f"#{e['to_task_id']}"),
+            "from_name": (tmap.get(from_id) or {}).get("name", f"#{from_id}"),
+            "to_name": (tmap.get(to_id) or {}).get("name", f"#{to_id}"),
         })
     roots = db.find_workflow_roots(workflow_id)
+    workflow_graph = _workflow_graph_view(edges_enriched, tmap)
     live = _workflow_live_view(workflow_id, edges)
     return templates.TemplateResponse(
         request,
@@ -177,6 +190,7 @@ async def workflow_detail(request: Request, workflow_id: int):
             "edges": edges_enriched,
             "tasks": all_tasks,
             "roots": roots,
+            "workflow_graph": workflow_graph,
             **live,
         },
     )
@@ -352,6 +366,209 @@ def _workflow_live_view(workflow_id: int, edges: list[dict]) -> dict:
     }
 
 
+def _workflow_graph_view(edges: list[dict], tasks_by_id: dict[int, dict]) -> dict:
+    """Build a compact left-to-right DAG layout for the workflow detail page."""
+    node_ids: set[int] = set()
+    edge_pairs: list[tuple[int, int]] = []
+    outgoing_counts: dict[int, int] = {}
+    incoming_counts: dict[int, int] = {}
+    default_artifacts: dict[int, str] = {}
+    for e in edges:
+        try:
+            from_id = int(e["from_task_id"])
+            to_id = int(e["to_task_id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        node_ids.add(from_id)
+        node_ids.add(to_id)
+        outgoing_counts[from_id] = outgoing_counts.get(from_id, 0) + 1
+        incoming_counts[to_id] = incoming_counts.get(to_id, 0) + 1
+        if e.get("pass_artifact") and not default_artifacts.get(from_id):
+            default_artifacts[from_id] = str(e["pass_artifact"])
+        if from_id != to_id:
+            edge_pairs.append((from_id, to_id))
+
+    if not node_ids:
+        return {
+            "nodes": [],
+            "edges": [],
+            "width": 0,
+            "height": 0,
+        }
+
+    ranks = _workflow_graph_ranks(node_ids, edge_pairs)
+    if ranks is None:
+        enabled_pairs = [
+            (int(e["from_task_id"]), int(e["to_task_id"]))
+            for e in edges
+            if e.get("enabled") and e.get("from_task_id") != e.get("to_task_id")
+        ]
+        ranks = _workflow_graph_ranks(node_ids, enabled_pairs)
+    if ranks is None:
+        ranks = {node_id: i for i, node_id in enumerate(sorted(node_ids))}
+
+    rank_values = sorted(set(ranks.values()))
+    compact_rank = {rank: i for i, rank in enumerate(rank_values)}
+    columns: dict[int, list[int]] = {i: [] for i in range(len(rank_values))}
+    for node_id in sorted(
+        node_ids,
+        key=lambda tid: (
+            compact_rank.get(ranks.get(tid, 0), 0),
+            str((tasks_by_id.get(tid) or {}).get("name") or "").lower(),
+            tid,
+        ),
+    ):
+        columns.setdefault(compact_rank.get(ranks.get(node_id, 0), 0), []).append(node_id)
+
+    node_w = 176
+    node_h = 84
+    gap_x = 88
+    gap_y = 24
+    pad = 18
+    n_cols = max(len(columns), 1)
+    max_rows = max((len(v) for v in columns.values()), default=1)
+    inner_h = max_rows * node_h + max(max_rows - 1, 0) * gap_y
+    width = (n_cols * node_w) + max(n_cols - 1, 0) * gap_x + pad * 2
+    height = inner_h + pad * 2
+
+    positioned: dict[int, dict] = {}
+    nodes: list[dict] = []
+    for col_idx in sorted(columns):
+        ids = columns[col_idx]
+        col_h = len(ids) * node_h + max(len(ids) - 1, 0) * gap_y
+        y0 = pad + max((inner_h - col_h) / 2, 0)
+        x = pad + col_idx * (node_w + gap_x)
+        for row_idx, node_id in enumerate(ids):
+            task = tasks_by_id.get(node_id) or {}
+            top = int(round(y0 + row_idx * (node_h + gap_y)))
+            left = int(round(x))
+            meta = _workflow_node_meta(task)
+            node = {
+                "id": node_id,
+                "name": task.get("name") or f"Task #{node_id}",
+                "mode": task.get("agent_mode") or "?",
+                "left": left,
+                "top": top,
+                "width": node_w,
+                "height": node_h,
+                "cx": left + node_w / 2,
+                "cy": top + node_h / 2,
+                "rank": col_idx,
+                "outgoing_count": outgoing_counts.get(node_id, 0),
+                "incoming_count": incoming_counts.get(node_id, 0),
+                "default_artifact": default_artifacts.get(node_id, ""),
+                **meta,
+            }
+            positioned[node_id] = node
+            nodes.append(node)
+
+    drawn_edges: list[dict] = []
+    for e in edges:
+        try:
+            from_id = int(e["from_task_id"])
+            to_id = int(e["to_task_id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        from_node = positioned.get(from_id)
+        to_node = positioned.get(to_id)
+        if not from_node or not to_node:
+            continue
+
+        same_rank = from_node["rank"] == to_node["rank"]
+        if same_rank:
+            source_above = from_node["top"] <= to_node["top"]
+            x1 = from_node["left"] + node_w / 2
+            y1 = from_node["top"] + (node_h if source_above else 0)
+            x2 = to_node["left"] + node_w / 2
+            y2 = to_node["top"] + (0 if source_above else node_h)
+            mid_y = (y1 + y2) / 2
+            path = f"M {x1:.1f} {y1:.1f} C {x1:.1f} {mid_y:.1f}, {x2:.1f} {mid_y:.1f}, {x2:.1f} {y2:.1f}"
+        else:
+            forward = from_node["left"] < to_node["left"]
+            if forward:
+                x1 = from_node["left"] + node_w
+                x2 = to_node["left"]
+            else:
+                x1 = from_node["left"]
+                x2 = to_node["left"] + node_w
+            y1 = from_node["top"] + node_h / 2
+            y2 = to_node["top"] + node_h / 2
+            dx = max(abs(x2 - x1) / 2, 42)
+            c1x = x1 + dx if forward else x1 - dx
+            c2x = x2 - dx if forward else x2 + dx
+            path = f"M {x1:.1f} {y1:.1f} C {c1x:.1f} {y1:.1f}, {c2x:.1f} {y2:.1f}, {x2:.1f} {y2:.1f}"
+
+        drawn_edges.append({
+            "id": e.get("id"),
+            "path": path,
+            "enabled": bool(e.get("enabled")),
+            "artifact": e.get("pass_artifact") or "",
+            "from_name": e.get("from_name") or f"#{from_id}",
+            "to_name": e.get("to_name") or f"#{to_id}",
+        })
+
+    return {
+        "nodes": nodes,
+        "edges": drawn_edges,
+        "width": int(width),
+        "height": int(height),
+    }
+
+
+def _workflow_graph_ranks(
+    node_ids: set[int],
+    edge_pairs: list[tuple[int, int]],
+) -> dict[int, int] | None:
+    adjacency: dict[int, list[int]] = {node_id: [] for node_id in node_ids}
+    indegree: dict[int, int] = {node_id: 0 for node_id in node_ids}
+    for from_id, to_id in edge_pairs:
+        if from_id not in node_ids or to_id not in node_ids:
+            continue
+        adjacency[from_id].append(to_id)
+        indegree[to_id] += 1
+
+    ranks = {node_id: 0 for node_id in node_ids}
+    ready = sorted(node_id for node_id, degree in indegree.items() if degree == 0)
+    visited: list[int] = []
+    while ready:
+        node_id = ready.pop(0)
+        visited.append(node_id)
+        for downstream_id in sorted(adjacency[node_id]):
+            ranks[downstream_id] = max(ranks[downstream_id], ranks[node_id] + 1)
+            indegree[downstream_id] -= 1
+            if indegree[downstream_id] == 0:
+                ready.append(downstream_id)
+                ready.sort()
+
+    if len(visited) != len(node_ids):
+        return None
+    return ranks
+
+
+def _workflow_node_meta(task: dict) -> dict:
+    mode = task.get("agent_mode") or "react"
+    scraper_icons = {
+        "auto_extract": "i-cpu",
+        "bulk_extract": "i-assets",
+        "browser_use": "i-eye",
+        "site_explorer": "i-search",
+        "recon_social": "i-target",
+    }
+    if mode in scraper_icons:
+        return {"kind": "scraper", "icon": scraper_icons[mode]}
+    if mode == "qualifier":
+        return {"kind": "qualifier", "icon": "i-qualified"}
+    if mode == "outreach":
+        return {"kind": "outreach", "icon": "i-mail"}
+    if mode == "outreach_social":
+        return {"kind": "outreach", "icon": "i-send"}
+    if mode == "outreach_whatsapp":
+        return {"kind": "outreach", "icon": "i-message"}
+    if mode == "responder":
+        return {"kind": "responder", "icon": "i-inbox"}
+    return {"kind": "agent", "icon": "i-cpu"}
+
+
 @router.post("/workflows/{workflow_id}/edges")
 async def create_edge(
     workflow_id: int,
@@ -435,6 +652,86 @@ async def delete_edge(edge_id: int, redirect_to: str = Form("/workflows")):
         raise HTTPException(status_code=404, detail="edge non trovato")
     db.delete_edge(edge_id)
     return RedirectResponse(url=redirect_to, status_code=303)
+
+
+@router.post("/workflow_edges/{edge_id}/artifact")
+async def update_edge_artifact(
+    edge_id: int,
+    pass_artifact: str = Form(""),
+    redirect_to: str = Form("/workflows"),
+):
+    # Lookup tenant-filtered: 404 se edge appartiene ad altro tenant.
+    if not db.get_edge(edge_id):
+        raise HTTPException(status_code=404, detail="edge non trovato")
+    db.update_edge_artifact(edge_id, pass_artifact)
+    return RedirectResponse(url=redirect_to, status_code=303)
+
+
+@router.post("/workflows/{workflow_id}/nodes/{task_id}/replace")
+async def replace_workflow_node_task(
+    workflow_id: int,
+    task_id: int,
+    new_task_id: str = Form(""),
+):
+    if not db.get_workflow(workflow_id):
+        raise HTTPException(status_code=404, detail="workflow non trovato")
+    if not new_task_id.strip():
+        return RedirectResponse(
+            url=_workflow_detail_url(workflow_id, error="Seleziona un task sostitutivo"),
+            status_code=303,
+        )
+    try:
+        new_id = int(new_task_id)
+    except ValueError:
+        return RedirectResponse(
+            url=_workflow_detail_url(workflow_id, error="ID task sostitutivo non valido"),
+            status_code=303,
+        )
+    if new_id == task_id:
+        return RedirectResponse(
+            url=_workflow_detail_url(workflow_id, flash="Nodo invariato"),
+            status_code=303,
+        )
+    if not db.get_task(new_id):
+        return RedirectResponse(
+            url=_workflow_detail_url(workflow_id, error=f"Task #{new_id} non esiste"),
+            status_code=303,
+        )
+    try:
+        changed = db.replace_workflow_node_task(workflow_id, task_id, new_id)
+    except ValueError as e:
+        return RedirectResponse(
+            url=_workflow_detail_url(workflow_id, error=str(e)),
+            status_code=303,
+        )
+    if changed <= 0:
+        return RedirectResponse(
+            url=_workflow_detail_url(workflow_id, error=f"Nodo task #{task_id} non trovato nel workflow"),
+            status_code=303,
+        )
+    return RedirectResponse(
+        url=_workflow_detail_url(workflow_id, flash=f"Nodo sostituito: #{task_id} -> #{new_id}"),
+        status_code=303,
+    )
+
+
+@router.post("/workflows/{workflow_id}/nodes/{task_id}/delete")
+async def delete_workflow_node(workflow_id: int, task_id: int):
+    if not db.get_workflow(workflow_id):
+        raise HTTPException(status_code=404, detail="workflow non trovato")
+    deleted_edges = db.delete_workflow_node(workflow_id, task_id)
+    if deleted_edges <= 0:
+        return RedirectResponse(
+            url=_workflow_detail_url(workflow_id, error=f"Nodo task #{task_id} non trovato nel workflow"),
+            status_code=303,
+        )
+    return RedirectResponse(
+        url=_workflow_detail_url(
+            workflow_id,
+            flash=f"Nodo #{task_id} rimosso dal workflow ({deleted_edges} edge eliminati)",
+        ),
+        status_code=303,
+    )
 
 
 @router.post("/workflows/{workflow_id}/run")

@@ -1000,6 +1000,268 @@ table.data td:has(> .kebab-menu[open]), .admin-table td:has(> .kebab-menu[open])
 #workflow-tab-config:checked ~ .task-tabs-panel-config,
 #workflow-tab-history:checked ~ .task-tabs-panel-history { display: block; }
 
+/* Workflow detail flowchart */
+.workflow-flowchart-panel {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.95rem 1rem 1rem;
+  margin: 0.9rem 0 1rem;
+  box-shadow: var(--shadow-sm);
+}
+.workflow-flowchart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.65rem;
+}
+.workflow-flowchart-header h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+}
+.workflow-flowchart-header .icon {
+  width: 18px;
+  height: 18px;
+  color: var(--brand-2);
+}
+.workflow-flowchart-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.workflow-flowchart-count {
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.workflow-flowchart-add:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.workflow-flowchart-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.15rem 0 0.45rem;
+}
+.workflow-flowchart-canvas {
+  position: relative;
+  min-width: 100%;
+}
+.workflow-flowchart-edges {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: auto;
+}
+.workflow-flowchart-edge-group {
+  cursor: pointer;
+  outline: none;
+}
+.workflow-flowchart-edge-group:focus-visible .workflow-flowchart-edge {
+  stroke-width: 3px;
+  filter: drop-shadow(0 0 4px var(--brand-border));
+}
+.workflow-flowchart-edge-group:hover .workflow-flowchart-edge.is-enabled {
+  stroke: var(--ai-hover);
+}
+.workflow-flowchart-edge-group:hover .workflow-flowchart-edge.is-disabled {
+  stroke: var(--fg-muted);
+  opacity: 0.75;
+}
+.workflow-flowchart-edge {
+  fill: none;
+  stroke-width: 2.25px;
+  opacity: 0.9;
+  pointer-events: none;
+}
+.workflow-flowchart-edge.is-enabled { stroke: var(--brand-2); }
+.workflow-flowchart-edge.is-disabled {
+  stroke: var(--border-strong);
+  stroke-dasharray: 7 7;
+  opacity: 0.55;
+}
+.workflow-flowchart-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18px;
+  pointer-events: stroke;
+}
+.workflow-flowchart-arrow-enabled { fill: var(--brand-2); }
+.workflow-flowchart-arrow-disabled { fill: var(--border-strong); opacity: 0.8; }
+.workflow-flowchart-node {
+  position: absolute;
+  z-index: 2;
+  width: 176px;
+  height: 84px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.68rem 0.7rem;
+  background: color-mix(in srgb, var(--surface-2) 74%, var(--surface-1));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--fg);
+  text-decoration: none;
+  text-align: left;
+  white-space: normal;
+  box-shadow: var(--shadow-sm);
+  font-weight: 500;
+  transition: border-color 0.12s, background 0.12s, transform 0.12s;
+}
+.workflow-flowchart-node:hover {
+  background: var(--surface-2);
+  border-color: var(--brand-border);
+  color: var(--fg-strong);
+  transform: translateY(-1px);
+}
+.workflow-node-shape {
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--fg-muted);
+  flex: 0 0 auto;
+}
+.workflow-node-shape .icon {
+  width: 18px;
+  height: 18px;
+}
+.workflow-node-kind-scraper .workflow-node-shape {
+  clip-path: polygon(18% 0, 82% 0, 100% 50%, 82% 100%, 18% 100%, 0 50%);
+  background: var(--ai-soft);
+  border-color: var(--ai-border);
+  color: var(--ai-hover);
+}
+.workflow-node-kind-qualifier .workflow-node-shape {
+  transform: rotate(45deg);
+  background: var(--success-soft);
+  border-color: var(--success-border);
+  color: var(--success);
+}
+.workflow-node-kind-qualifier .workflow-node-shape .icon { transform: rotate(-45deg); }
+.workflow-node-kind-outreach .workflow-node-shape {
+  border-radius: var(--radius-pill);
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+  color: var(--warn);
+}
+.workflow-node-kind-responder .workflow-node-shape {
+  border-radius: var(--radius-sm);
+  background: var(--brand-soft);
+  border-color: var(--brand-border);
+  color: var(--brand-2);
+}
+.workflow-node-kind-agent .workflow-node-shape {
+  border-radius: var(--radius-xs);
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--fg-muted);
+}
+.workflow-node-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.32rem;
+}
+.workflow-node-name {
+  min-height: 2.5em;
+  color: var(--fg-strong);
+  font-weight: 700;
+  font-size: 0.88rem;
+  line-height: 1.25;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.workflow-node-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.workflow-node-meta code {
+  max-width: 76px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.68rem;
+}
+.workflow-node-id {
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  flex: 0 0 auto;
+}
+.workflow-node-fanout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 20px;
+  padding: 0 0.35rem;
+  border-radius: var(--radius-pill);
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-2);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.workflow-flowchart-empty { margin: 0.25rem 0 0; }
+.workflow-node-modal-section {
+  padding: 0.85rem 0 0;
+  margin-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+.workflow-node-modal-section h4 {
+  margin: 0 0 0.65rem;
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.workflow-modal-form {
+  display: grid;
+  gap: 0.75rem;
+}
+.workflow-modal-form label {
+  margin: 0;
+}
+.workflow-modal-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.workflow-edge-modal-route {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  padding: 0.55rem 0.7rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.workflow-edge-modal-route span {
+  color: var(--brand-2);
+  font-weight: 700;
+}
+.workflow-edge-delete-form {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--danger-border);
+}
+
 /* Optional/collapsible blocks */
 details.optional-block, details.collapsible-section {
   margin: 0.8rem 0;

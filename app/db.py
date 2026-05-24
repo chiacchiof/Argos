@@ -2646,6 +2646,136 @@ def toggle_edge(edge_id: int, enabled: bool, tenant_id: Any = _UNSET) -> int:
         return int(cur.rowcount or 0)
 
 
+def update_edge_artifact(edge_id: int, pass_artifact: str | None, tenant_id: Any = _UNSET) -> int:
+    """Aggiorna l'artifact passato da un edge, con filtro tenant via workflow."""
+    tenant_id = _resolve_tenant(tenant_id)
+    artifact = (pass_artifact or "").strip() or None
+    with connect() as con:
+        if tenant_id is None:
+            cur = con.execute(
+                "UPDATE workflow_edges SET pass_artifact = %s WHERE id = %s",
+                (artifact, edge_id),
+            )
+        else:
+            cur = con.execute(
+                "UPDATE workflow_edges SET pass_artifact = %s WHERE id = %s "
+                "AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id = %s)",
+                (artifact, edge_id, tenant_id),
+            )
+        return int(cur.rowcount or 0)
+
+
+def replace_workflow_node_task(
+    workflow_id: int,
+    old_task_id: int,
+    new_task_id: int,
+    tenant_id: Any = _UNSET,
+) -> int:
+    """Sostituisce un task-node dentro un workflow riscrivendo gli edge incidenti."""
+    if old_task_id == new_task_id:
+        return 0
+
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            rows = con.execute(
+                "SELECT * FROM workflow_edges WHERE workflow_id = %s ORDER BY id",
+                (workflow_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT e.* FROM workflow_edges e "
+                "JOIN workflows w ON w.id = e.workflow_id "
+                "WHERE e.workflow_id = %s AND w.tenant_id = %s ORDER BY e.id",
+                (workflow_id, tenant_id),
+            ).fetchall()
+
+        edges = [dict(r) for r in rows]
+        involved_ids = {
+            int(e["id"])
+            for e in edges
+            if int(e["from_task_id"]) == old_task_id or int(e["to_task_id"]) == old_task_id
+        }
+        if not involved_ids:
+            return 0
+
+        seen_pairs: set[tuple[int, int]] = set()
+        enabled_pairs: list[tuple[int, int]] = []
+        transformed: list[tuple[dict[str, Any], int, int]] = []
+        for e in edges:
+            from_id = int(e["from_task_id"])
+            to_id = int(e["to_task_id"])
+            new_from_id = new_task_id if from_id == old_task_id else from_id
+            new_to_id = new_task_id if to_id == old_task_id else to_id
+            if new_from_id == new_to_id:
+                raise ValueError("La sostituzione creerebbe un self-edge")
+            pair = (new_from_id, new_to_id)
+            if pair in seen_pairs:
+                raise ValueError("La sostituzione creerebbe un edge duplicato")
+            seen_pairs.add(pair)
+            if bool(e.get("enabled")):
+                enabled_pairs.append(pair)
+            transformed.append((e, new_from_id, new_to_id))
+
+        if _edge_pairs_have_cycle(enabled_pairs):
+            raise ValueError("La sostituzione creerebbe un ciclo nel DAG")
+
+        placeholders = ",".join(["%s"] * len(involved_ids))
+        delete_args: list[Any] = [workflow_id, *sorted(involved_ids)]
+        if tenant_id is None:
+            con.execute(
+                f"DELETE FROM workflow_edges WHERE workflow_id = %s AND id IN ({placeholders})",
+                delete_args,
+            )
+        else:
+            con.execute(
+                f"DELETE FROM workflow_edges WHERE workflow_id = %s AND id IN ({placeholders}) "
+                "AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id = %s)",
+                [*delete_args, tenant_id],
+            )
+
+        for edge, from_id, to_id in transformed:
+            if int(edge["id"]) not in involved_ids:
+                continue
+            con.execute(
+                """
+                INSERT INTO workflow_edges
+                (workflow_id, from_task_id, to_task_id, trigger_event, pass_artifact, enabled, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    workflow_id,
+                    from_id,
+                    to_id,
+                    edge.get("trigger_event") or "on_done",
+                    edge.get("pass_artifact"),
+                    1 if bool(edge.get("enabled")) else 0,
+                    edge.get("created_at") or now_iso(),
+                ),
+            )
+        return len(involved_ids)
+
+
+def delete_workflow_node(workflow_id: int, task_id: int, tenant_id: Any = _UNSET) -> int:
+    """Rimuove un nodo dal workflow cancellando tutti gli edge collegati."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            cur = con.execute(
+                "DELETE FROM workflow_edges "
+                "WHERE workflow_id = %s AND (from_task_id = %s OR to_task_id = %s)",
+                (workflow_id, task_id, task_id),
+            )
+        else:
+            cur = con.execute(
+                "DELETE FROM workflow_edges "
+                "WHERE workflow_id = %s AND (from_task_id = %s OR to_task_id = %s) "
+                "AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id = %s)",
+                (workflow_id, task_id, task_id, tenant_id),
+            )
+        return int(cur.rowcount or 0)
+
+
 def get_edge(edge_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
     """Get un edge per id, tenant-filtered via JOIN sul workflow. Usato dalle
     route per fare lookup safe prima di toggle/delete."""
@@ -2663,6 +2793,33 @@ def get_edge(edge_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
                 (edge_id, tenant_id),
             ).fetchone()
     return dict(row) if row else None
+
+
+def _edge_pairs_have_cycle(edge_pairs: list[tuple[int, int]]) -> bool:
+    adj: dict[int, list[int]] = {}
+    nodes: set[int] = set()
+    for from_id, to_id in edge_pairs:
+        nodes.add(from_id)
+        nodes.add(to_id)
+        adj.setdefault(from_id, []).append(to_id)
+
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def visit(node_id: int) -> bool:
+        if node_id in visiting:
+            return True
+        if node_id in visited:
+            return False
+        visiting.add(node_id)
+        for downstream_id in adj.get(node_id, []):
+            if visit(downstream_id):
+                return True
+        visiting.remove(node_id)
+        visited.add(node_id)
+        return False
+
+    return any(visit(node_id) for node_id in nodes)
 
 
 def _would_create_cycle(workflow_id: int | None, from_task_id: int, to_task_id: int) -> bool:
