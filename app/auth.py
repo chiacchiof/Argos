@@ -178,6 +178,68 @@ def require_super_admin(
     return current_user
 
 
+_OPERATOR_AGENT_EDIT_PATH_RE = __import__("re").compile(
+    r"^/(tasks|workflows)/(\d+)"
+    r"(?:"
+    r"|/edit|/jobs|/runs"                       # view, edit form, lista run/job
+    r"|/append_asset_id|/remove_asset_id"       # audience asset editing
+    r"|/append_qualified_set"                   # audience qualified editing
+    r"|/promote_legacy_contacts"                # migra contact_ids -> asset_ids
+    r"|/edges|/nodes/\d+/replace|/nodes/\d+/delete"  # workflow graph editing
+    r")?/?$"
+)
+
+# Route ANCILLARY usate da task_form.html / workflow_form.html via HTMX al
+# caricamento o sulla compilazione dei campi. Tutte read-only. Devono essere
+# raggiungibili anche dall'operator quando edita un agente pubblicato, altrimenti
+# l'HTMX `hx-trigger="load"` riceve 307 → HX-Redirect → l'utente viene sbattuto
+# fuori dalla pagina edit appena caricata. Operazioni di lettura senza side-effects.
+_OPERATOR_EDIT_SUPPORT_PATHS = frozenset({
+    "/templates/extraction",
+    "/artifacts/jsonl",
+    "/providers/model-field",
+    "/providers/credential-field",
+    "/assets/search",
+    "/assets/tag_values",
+    "/assets/tag_keys",
+    "/api/models",
+})
+
+
+def _operator_can_pass_for_published_agent(request: Request) -> bool:
+    """Per route /tasks/{id}, /tasks/{id}/edit, /tasks/{id}/jobs (e analoghi
+    workflows), l'operator passa se il task/workflow e' `is_published_agent`.
+
+    Allarga anche alle route ANCILLARY del form edit (lista modelli, credenziali,
+    template estrazione, ecc.) che HTMX chiama al caricamento del form.
+
+    Estrae l'id direttamente dal path con regex perche' `request.path_params`
+    NON e' garantito essere popolato quando una dep e' applicata a livello router
+    (timing della dependency injection rispetto al path matching di Starlette).
+    """
+    from . import db  # late import per evitare circolare
+    path = request.url.path
+    # Ancillary read-only paths: passa sempre (l'operator gia' arrivato qui da
+    # un edit di agente pubblicato; queste route popolano dropdown e schema).
+    if path in _OPERATOR_EDIT_SUPPORT_PATHS:
+        return True
+    m = _OPERATOR_AGENT_EDIT_PATH_RE.match(path)
+    if not m:
+        return False
+    kind, obj_id_str = m.group(1), m.group(2)
+    try:
+        obj_id = int(obj_id_str)
+        if kind == "tasks":
+            t = db.get_task(obj_id)
+            return bool(t and t.get("is_published_agent"))
+        elif kind == "workflows":
+            w = db.get_workflow(obj_id)
+            return bool(w and w.get("is_published_agent"))
+    except Exception:
+        return False
+    return False
+
+
 def require_architect_or_admin(
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
@@ -186,33 +248,97 @@ def require_architect_or_admin(
     asset/llm-keys/social/settings/memoria sito. Bloccato per tenant_user
     (operator). Super-admin sempre OK.
 
-    UX: l'operator che capita su una rotta architect (es. bookmark vecchio,
-    URL digitato a mano) viene redirezionato a `/home` invece di vedere un 403
-    crudo. Per richieste HTMX usiamo `HX-Redirect` cosi' il client navigates.
+    Eccezione operator: l'operator puo' VEDERE e MODIFICARE i task/workflow
+    `is_published_agent=TRUE` (riusa la "ricetta" su target diversi). Tutto il
+    resto delle pagine architect (list /, /tasks/new, delete, clone, publish,
+    settings, ecc.) resta bloccato e lo redireziona a /home.
+
+    UX: l'operator che capita su una rotta architect non-permessa (es. bookmark
+    vecchio, URL digitato a mano) viene redirezionato a `/home` invece di vedere
+    un 403 crudo. Per richieste HTMX usiamo `HX-Redirect`.
     """
-    if not current_user.can_manage_architecture:
-        is_htmx = request.headers.get("HX-Request") == "true"
-        if current_user.is_operator:
-            # Redirect gentile a /home per l'operator
-            if is_htmx:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Operator non puo' accedere a questa sezione.",
-                    headers={"HX-Redirect": "/home"},
-                )
+    if current_user.can_manage_architecture:
+        return current_user
+    # Operator: permetti edit/view/jobs di agenti pubblicati.
+    if current_user.is_operator and _operator_can_pass_for_published_agent(request):
+        return current_user
+    is_htmx = request.headers.get("HX-Request") == "true"
+    if current_user.is_operator:
+        if is_htmx:
             raise HTTPException(
-                status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-                detail="Operator redirect",
-                headers={"Location": "/home"},
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operator non puo' accedere a questa sezione.",
+                headers={"HX-Redirect": "/home"},
             )
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Questa sezione e' riservata agli architetti. La tua utenza ha"
-                " accesso solo alla dashboard semplificata."
-            ),
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            detail="Operator redirect",
+            headers={"Location": "/home"},
         )
-    return current_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "Questa sezione e' riservata agli architetti. La tua utenza ha"
+            " accesso solo alla dashboard semplificata."
+        ),
+    )
+
+
+def can_edit_published_agent(user: "CurrentUser", task_or_workflow: dict) -> bool:
+    """Verifica se `user` puo' modificare un task o workflow.
+
+    Regole:
+    - super_admin: sempre OK
+    - tenant_architect: sempre OK (gestione architetturale completa)
+    - tenant_user (operator): OK SOLO se `is_published_agent=TRUE`
+      e same-tenant. Per agenti non pubblicati non vede nemmeno l'esistenza.
+    - anonymous: NO
+
+    Usato dalle route edit/save di tasks e workflows per consentire all'operator
+    di riconfigurare agenti pubblicati riutilizzandoli su target diversi.
+    """
+    if not user or not task_or_workflow:
+        return False
+    if user.is_super_admin:
+        return True
+    if user.is_architect:
+        return True
+    if user.is_operator:
+        # Tenant_user puo' editare SOLO agenti pubblicati. Same-tenant gia'
+        # garantito dal middleware (`db.list_*` filtra per tenant_id).
+        return bool(task_or_workflow.get("is_published_agent"))
+    return False
+
+
+def require_can_edit_agent_or_redirect(
+    request: Request,
+    task_or_workflow: dict,
+    current_user: "CurrentUser",
+) -> None:
+    """Solleva HTTPException 403/redirect se l'utente non puo' editare l'agente.
+
+    Per architect/super_admin: ok.
+    Per operator: ok solo se `is_published_agent=TRUE`. Altrimenti redirect a /home.
+    """
+    if can_edit_published_agent(current_user, task_or_workflow):
+        return
+    is_htmx = request.headers.get("HX-Request") == "true"
+    if current_user.is_operator:
+        if is_htmx:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Questo agente non e' modificabile (non pubblicato).",
+                headers={"HX-Redirect": "/home"},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            detail="Agente non modificabile",
+            headers={"Location": "/home"},
+        )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Non autorizzato a modificare questo task/workflow.",
+    )
 
 
 def require_operator(

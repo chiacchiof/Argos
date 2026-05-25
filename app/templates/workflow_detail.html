@@ -27,10 +27,13 @@
     {# ============ PANEL: CONFIGURAZIONE ============ #}
     <div class="task-tabs-panel task-tabs-panel-config">
 
-      {# Pubblica come agente operator (visibile nella dashboard /home dei tenant_user). #}
+      {# Pubblica come agente operator (visibile nella dashboard /home dei tenant_user).
+         Solo per architect/super_admin: la "vetrina" non e' editabile dall'operator. #}
+      {% if current_user and (current_user.is_architect or current_user.is_super_admin) %}
       {% with kind='workflow', agent_id=workflow.id, obj=workflow %}
         {% include "partials/publish_as_agent.html" %}
       {% endwith %}
+      {% endif %}
 
       <div class="actions">
         <form method="post" action="/workflows/{{ workflow.id }}/run" style="display:inline">

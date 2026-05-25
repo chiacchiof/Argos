@@ -217,8 +217,12 @@
   {% set current_user = request.state.current_user if request and request.state else None %}
   {% set req_path = request.url.path if request else '/' %}
 
-  <div class="app-shell{% if not current_user %} auth-mode{% endif %}">
-    {% if current_user %}
+  {# operator (tenant_user) usa la dashboard /home — qui dentro le pagine
+     architect (es. /tasks/{id}/edit per agente pubblicato) la sidebar non e'
+     utile e disorienta. La nascondiamo per loro: vedono solo la topbar + form. #}
+  {% set _hide_sidebar = current_user and current_user.is_operator %}
+  <div class="app-shell{% if not current_user %} auth-mode{% endif %}{% if _hide_sidebar %} no-sidebar{% endif %}">
+    {% if current_user and not _hide_sidebar %}
     <aside class="app-sidebar" aria-label="Navigazione principale">
       <a href="/" class="brand">
         <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></span>
@@ -284,9 +288,20 @@
       <header class="app-topbar">
         {% if current_user %}
         <div class="topbar-left">
+          {% if not _hide_sidebar %}
           <button type="button" class="sidebar-toggle" aria-label="Menu" onclick="document.body.classList.toggle('sidebar-open')">
             <span></span><span></span><span></span>
           </button>
+          {% else %}
+          {# Operator: link diretto alla dashboard al posto del toggle sidebar. #}
+          <a href="/home" class="brand" title="Torna alla dashboard">
+            <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></span>
+            <span class="brand-text">
+              <span class="brand-name">Argos</span>
+              <span class="brand-tag">torna alla dashboard</span>
+            </span>
+          </a>
+          {% endif %}
           <form id="topbar-search-form" class="topbar-search" role="search"
                 hx-get="/"
                 hx-trigger="input changed delay:300ms from:input[name='q'], search from:input[name='q']"

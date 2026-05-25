@@ -207,6 +207,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   min-height: 100vh;
 }
 
+/* Operator mode: sidebar nascosta su pagine architect (es. edit task), solo content. */
+.app-shell.no-sidebar {
+  grid-template-columns: 1fr;
+}
+
 /* Auth mode (login, password reset) — sidebar nascosta, layout centrato con glow */
 .app-shell.auth-mode {
   grid-template-columns: 1fr;
