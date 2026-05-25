@@ -182,8 +182,8 @@ _OPERATOR_AGENT_EDIT_PATH_RE = __import__("re").compile(
     r"^/(tasks|workflows)/(\d+)"
     r"(?:"
     r"|/edit|/jobs|/runs"                       # view, edit form, lista run/job
-    r"|/append_asset_id|/remove_asset_id"       # audience asset editing
-    r"|/append_qualified_set"                   # audience qualified editing
+    r"|/append_asset_id|/remove_asset_id|/clear_audience"  # audience asset editing
+    r"|/append_qualified_set|/append_assets_set"  # audience bulk editing (qualified|assets)
     r"|/promote_legacy_contacts"                # migra contact_ids -> asset_ids
     r"|/edges|/nodes/\d+/replace|/nodes/\d+/delete"  # workflow graph editing
     r")?/?$"

@@ -6213,3 +6213,223 @@ textarea.op-field-input { resize: vertical; min-height: 80px; }
     animation: none;
   }
 }
+
+/* Tabella sortable headers (/qualified, /assets). Click su intestazione →
+   ordina. Freccia ↓/↑ indica direzione attiva, ⇅ se non attivo. */
+.sortable-th { padding: 0; }
+.th-sort {
+  display: block;
+  padding: 0.5rem 0.7rem;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.th-sort:hover { background: var(--surface-2); }
+.th-sort.is-active { color: var(--brand-2); font-weight: 600; }
+.th-sort-arrow { opacity: 0.5; font-size: 0.85em; margin-left: 0.2em; }
+.th-sort.is-active .th-sort-arrow { opacity: 1; }
+
+/* ============================================================
+   Operator Agent Config (FASE B) — vista semplificata edit agenti pubblicati
+   ============================================================ */
+.op-agent-config {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 20px 80px;
+}
+.op-config-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.op-config-back {
+  flex-shrink: 0;
+}
+.op-config-title h1 {
+  font-family: Mulish, system-ui, sans-serif;
+  font-size: 1.75rem;
+  margin: 0;
+  font-weight: 700;
+  color: var(--op-fg-strong);
+  letter-spacing: -0.01em;
+}
+.op-config-subtitle {
+  margin: 4px 0 0;
+  color: var(--op-fg-muted);
+  font-size: 0.85rem;
+}
+.op-config-flash {
+  margin-left: 12px;
+  padding: 2px 8px;
+  background: rgba(52, 211, 153, 0.16);
+  color: var(--op-success);
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.op-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.op-config-card {
+  background: var(--op-surface);
+  border: 1px solid var(--op-border);
+  border-radius: var(--op-radius);
+  padding: 20px 22px;
+}
+.op-config-section-title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 8px;
+  color: var(--op-fg-strong);
+}
+.op-config-help {
+  font-size: 0.85rem;
+  color: var(--op-fg-muted);
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+.op-config-help a {
+  color: var(--op-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.op-config-desc {
+  font-size: 0.95rem;
+  color: var(--op-fg);
+  margin: 0;
+  line-height: 1.55;
+}
+.op-config-collapsible {
+  margin-top: 12px;
+}
+.op-config-collapsible summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--op-fg-muted);
+  padding: 4px 0;
+}
+.op-config-collapsible summary:hover { color: var(--op-fg); }
+.op-config-pre {
+  background: var(--op-code-bg);
+  padding: 12px 14px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: var(--op-fg);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.op-config-search {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--op-border);
+}
+.op-config-search label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--op-fg-muted);
+  margin-bottom: 6px;
+}
+.op-config-search input[type="search"] {
+  width: 100%;
+  max-width: 540px;
+  padding: 8px 12px;
+  background: var(--op-surface-2);
+  border: 1px solid var(--op-border-hover);
+  border-radius: 6px;
+  color: var(--op-fg);
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+.op-config-search input[type="search"]:focus,
+.op-config-search input[type="search"]:focus-visible {
+  outline: 0;
+  border-color: var(--op-accent);
+  box-shadow: none;
+}
+.op-config-bulk { margin-top: 12px; }
+.op-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.op-config-field span {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--op-fg-muted);
+}
+.op-config-field input[type="text"] {
+  padding: 8px 12px;
+  background: var(--op-surface-2);
+  border: 1px solid var(--op-border-hover);
+  border-radius: 6px;
+  color: var(--op-fg);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.9rem;
+  max-width: 320px;
+}
+.op-config-field input[type="text"]:focus,
+.op-config-field input[type="text"]:focus-visible {
+  outline: 0;
+  border-color: var(--op-accent);
+  box-shadow: none;
+}
+.op-config-advanced {
+  background: var(--op-surface-2);
+  border-style: dashed;
+}
+.op-config-advanced-link {
+  display: inline-block;
+}
+.op-config-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+.op-config-legacy-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 8px;
+}
+.op-config-legacy-icon {
+  font-size: 1.5em;
+  flex-shrink: 0;
+}
+.op-config-legacy-body {
+  flex: 1;
+  min-width: 0;
+}
+.op-config-legacy-body strong {
+  display: block;
+  font-size: 0.9rem;
+  color: var(--op-fg);
+  margin-bottom: 4px;
+}
+.op-config-legacy-body p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--op-fg-muted);
+  line-height: 1.4;
+}
+
+@media (max-width: 768px) {
+  .op-agent-config { padding: 16px 12px 80px; }
+  .op-config-card { padding: 16px; }
+  .op-config-head { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .op-config-title h1 { font-size: 1.45rem; }
+}

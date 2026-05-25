@@ -571,6 +571,105 @@ async def operator_agent_details_modal(
     )
 
 
+@router.get("/agents/{kind}/{agent_id}/operator-config", response_class=HTMLResponse)
+async def operator_agent_config_page(
+    request: Request, kind: str, agent_id: int,
+):
+    """Vista semplificata per riconfigurare un agente pubblicato.
+
+    Mostra solo i campi rilevanti per l'operator (audience, cron). Per tutto il
+    resto (prompt, LLM, schema estrazione...) c'e' un link alla vista architect
+    completa. Reuse del partial _audience_snapshot_table + endpoint
+    /assets/search per la search HTMX.
+    """
+    if kind not in ("task", "workflow"):
+        raise HTTPException(status_code=400, detail="kind invalido")
+    # Carica record reale per accedere a target_asset_ids, cron, objective.
+    if kind == "task":
+        agent = db.get_task(agent_id)
+    else:
+        agent = db.get_workflow(agent_id)
+    if not agent or not agent.get("is_published_agent"):
+        raise HTTPException(
+            status_code=404,
+            detail="Agente non trovato o non pubblicato",
+        )
+
+    # Snapshot audience (primi 50 asset selezionati).
+    audience_assets: list[dict] = []
+    aids = agent.get("target_asset_ids") or []
+    if aids and kind == "task":
+        first_50 = aids[:50]
+        try:
+            raw = db.get_assets_by_ids(first_50)
+            by_id = {a["id"]: a for a in raw}
+            audience_assets = [by_id[aid] for aid in first_50 if aid in by_id]
+        except Exception:
+            audience_assets = []
+
+    kind_label = "Workflow" if kind == "workflow" else "Task"
+    return templates.TemplateResponse(
+        request,
+        "operator/agent_config.html",
+        {
+            "agent": agent,
+            "kind": kind,
+            "kind_label": kind_label,
+            "audience_assets": audience_assets,
+            "task": agent if kind == "task" else None,  # for _audience_snapshot_table partial
+            "p": agent,  # idem (partial usa p.target_asset_ids)
+            "flash": request.query_params.get("_msg"),
+        },
+    )
+
+
+@router.post("/agents/{kind}/{agent_id}/operator-config")
+async def operator_agent_config_save(
+    request: Request,
+    kind: str,
+    agent_id: int,
+    cron: str = Form(""),
+):
+    """Salva i campi modificabili dall'operator (cron principalmente; il
+    target_asset_ids e' gia' aggiornato in real-time via append/remove HTMX)."""
+    if kind not in ("task", "workflow"):
+        raise HTTPException(status_code=400, detail="kind invalido")
+    # Carica per verificare ownership e pubblicazione.
+    if kind == "task":
+        agent = db.get_task(agent_id)
+    else:
+        agent = db.get_workflow(agent_id)
+    if not agent or not agent.get("is_published_agent"):
+        raise HTTPException(
+            status_code=404, detail="Agente non pubblicato o non trovato",
+        )
+    cron_clean = (cron or "").strip()
+    # Validazione cron base: vuoto = manuale; altrimenti deve avere 5 campi
+    if cron_clean:
+        parts = cron_clean.split()
+        if len(parts) != 5:
+            raise HTTPException(
+                status_code=400,
+                detail="Espressione cron invalida: servono 5 campi separati da spazio.",
+            )
+    # Update solo dei campi consentiti.
+    if kind == "task":
+        try:
+            db.update_task_cron(agent_id, cron_clean or None)
+        except AttributeError:
+            # Fallback se update_task_cron non esiste: usa update generico
+            with db.connect() as con:
+                con.execute(
+                    "UPDATE tasks SET cron = %s WHERE id = %s",
+                    (cron_clean or None, agent_id),
+                )
+    # Workflow non ha cron al momento (lo schedulano i task interni).
+    return RedirectResponse(
+        url=f"/agents/{kind}/{agent_id}/operator-config?_msg=Configurazione+salvata",
+        status_code=303,
+    )
+
+
 @router.get("/agents/{kind}/{agent_id}/launch", response_class=HTMLResponse)
 async def operator_agent_launch_modal(
     request: Request, kind: str, agent_id: int,

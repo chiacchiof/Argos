@@ -1,0 +1,146 @@
+{% extends "operator_base.html" %}
+
+{% block title %}Configura · {{ agent.display_name or agent.name }}{% endblock %}
+
+{% block content %}
+<section class="op-agent-config">
+  <header class="op-config-head">
+    <a href="/home" class="op-btn-secondary op-config-back" title="Torna alla dashboard">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle">
+        <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+      </svg>
+      Dashboard
+    </a>
+    <div class="op-config-title">
+      <h1>{{ agent.display_name or agent.name }}</h1>
+      <p class="op-config-subtitle">
+        {{ kind_label }}{% if agent.category %} · {{ agent.category }}{% endif %}
+        {% if flash %}<span class="op-config-flash">{{ flash }}</span>{% endif %}
+      </p>
+    </div>
+  </header>
+
+  {# Sezione 1: descrizione (read-only) #}
+  <section class="op-config-card">
+    <h2 class="op-config-section-title">📋 Cosa fa questo agente</h2>
+    <p class="op-config-desc">{{ agent.description or 'Nessuna descrizione fornita.' }}</p>
+    {% if agent.objective %}
+    <details class="op-config-collapsible">
+      <summary>Vedi obiettivo tecnico</summary>
+      <pre class="op-config-pre">{{ agent.objective }}</pre>
+    </details>
+    {% endif %}
+  </section>
+
+  {# Sezione 2: target audience (editable) — il fulcro per l'operator. #}
+  <form method="post" action="/agents/{{ kind }}/{{ agent.id }}/operator-config" class="op-config-form">
+
+    <section class="op-config-card">
+      <h2 class="op-config-section-title">🎯 Su cosa lavora questo agente</h2>
+      <p class="op-config-help">
+        Seleziona gli asset target. Puoi cercarli oppure importare un set qualificato dalla pagina <a href="/qualified?return_to_task={{ agent.id }}" target="_blank">/qualified</a>.
+      </p>
+
+      {# Snapshot lista target_asset_ids con remove inline (HTMX). #}
+      <div id="audience-snapshot-table">
+        {% include "_audience_snapshot_table.html" %}
+      </div>
+
+      {# Banner promozione contatti legacy: se il task ha target_contact_ids ma
+         vuoto target_asset_ids, suggeriamo la promozione (one-click). #}
+      {% if kind == 'task' and agent.target_contact_ids and (agent.target_contact_ids|length) > 0 %}
+      <div class="op-config-legacy-banner">
+        <span class="op-config-legacy-icon">📇</span>
+        <div class="op-config-legacy-body">
+          <strong>Questo task ha {{ agent.target_contact_ids|length }} contatti legacy</strong>
+          <p>Sono campi storici (<code>target_contact_ids</code>). Promuovili ad asset per gestirli come tutto il resto: ricerca, filtri, import da /qualified.</p>
+        </div>
+        <form method="post" action="/tasks/{{ agent.id }}/promote_legacy_contacts" style="margin:0">
+          <button type="submit" class="op-btn-secondary"
+                  onclick="return confirm('Promuovere {{ agent.target_contact_ids|length }} contatti ad asset? Operazione idempotente.');">
+            Promuovi ad asset
+          </button>
+        </form>
+      </div>
+      {% endif %}
+
+      {# Search HTMX per aggiungere singolo asset. #}
+      {% if kind == 'task' %}
+      <div class="op-config-search">
+        <label for="audience-search-input">🔎 Cerca asset da aggiungere</label>
+        <input type="search" id="audience-search-input"
+               placeholder="Min 2 caratteri (titolo, asset_type o tag value)..."
+               hx-get="/assets/search?callback=audienceAddAsset"
+               hx-trigger="keyup changed delay:300ms, search"
+               hx-target="#audience-search-results"
+               hx-swap="innerHTML"
+               name="q"
+               autocomplete="off">
+        <div id="audience-search-results"></div>
+      </div>
+
+      <div class="op-config-bulk">
+        <a href="/qualified?return_to_task={{ agent.id }}"
+           class="op-btn-secondary"
+           target="_blank">
+          📥 Importa set da /qualified (apre in nuova tab)
+        </a>
+      </div>
+      {% endif %}
+    </section>
+
+    {# Sezione 3: cron (editable) — solo per task con scheduling. #}
+    {% if kind == 'task' %}
+    <section class="op-config-card">
+      <h2 class="op-config-section-title">⏰ Pianificazione (cron)</h2>
+      <p class="op-config-help">
+        Espressione cron (5 campi: minuto ora giorno-mese mese giorno-settimana).
+        Esempi: <code>0 9 * * 1</code> = ogni lunedì alle 9. Lascia vuoto per esecuzione manuale.
+      </p>
+      <label class="op-config-field">
+        <span>Cron</span>
+        <input type="text" name="cron" value="{{ agent.cron or '' }}"
+               placeholder="0 9 * * 1"
+               pattern="[\s\d\*\/,\-\?LW#]+" maxlength="100">
+      </label>
+    </section>
+    {% endif %}
+
+    {# Sezione 4: avanzata (link a vista architect). #}
+    <section class="op-config-card op-config-advanced">
+      <h2 class="op-config-section-title">⚙️ Configurazione avanzata</h2>
+      <p class="op-config-help">
+        Per modificare prompt, modello LLM, schema estrazione e altri parametri tecnici,
+        apri la vista completa. Tutte le modifiche fatte qui sopra restano salvate.
+      </p>
+      <a href="/{{ 'workflows' if kind == 'workflow' else 'tasks' }}/{{ agent.id }}/edit"
+         class="op-btn-secondary op-config-advanced-link">
+        Apri vista completa →
+      </a>
+    </section>
+
+    <footer class="op-config-foot">
+      <a href="/home" class="op-btn-secondary">Annulla</a>
+      <button type="submit" class="op-btn-primary">💾 Salva configurazione</button>
+    </footer>
+  </form>
+</section>
+
+{# HTMX helper per add asset dalla search. #}
+<script>
+  window.__taskAudienceId = {{ agent.id }};
+  function audienceAddAsset(assetId) {
+    const tid = window.__taskAudienceId;
+    fetch(`/tasks/${tid}/append_asset_id?asset_id=${assetId}`, { method: 'POST' })
+      .then(r => r.text())
+      .then(html => {
+        document.getElementById('audience-snapshot-table').innerHTML = html;
+        const inp = document.getElementById('audience-search-input');
+        if (inp) inp.value = '';
+        const res = document.getElementById('audience-search-results');
+        if (res) res.innerHTML = '';
+      })
+      .catch(e => alert('Errore: ' + e));
+  }
+</script>
+{% endblock %}

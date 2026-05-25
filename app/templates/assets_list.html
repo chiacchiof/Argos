@@ -9,12 +9,14 @@
    facets per non azzerare lo stato del widget quando l'utente clicca un tag. #}
 {% macro assets_url(pairs) -%}
 /assets?
+{%- if return_to_task %}return_to_task={{ return_to_task }}&{% endif -%}
 {%- if filter_type %}asset_type={{ filter_type|urlencode }}&{% endif -%}
 {%- if filter_status %}status={{ filter_status|urlencode }}&{% endif -%}
 {%- if filter_task %}source_task_id={{ filter_task }}&{% endif -%}
 {%- if filter_q %}q={{ filter_q|urlencode }}&{% endif -%}
 {%- if has_contacts %}has_contacts=1&{% endif -%}
 {%- if has_social %}has_social=1&{% endif -%}
+{%- if has_social_platform %}has_social_platform={{ has_social_platform|urlencode }}&{% endif -%}
 {%- if tag_mode and tag_mode != 'and' %}tag_mode={{ tag_mode }}&{% endif -%}
 {%- if tag_mode == 'custom' and tag_expr %}tag_expr={{ tag_expr|urlencode }}&{% endif -%}
 {%- for k, v in pairs %}tag_key__{{ loop.index0 }}={{ k|urlencode }}&tag_value__{{ loop.index0 }}={{ v|urlencode }}&{% endfor -%}
@@ -47,6 +49,41 @@
   {% if request.query_params.get('flash') %}
   <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
   {% endif %}
+
+  {# Banner: stai aggiungendo asset al task X (quando arrivi da task_form). #}
+  {% if return_to_task %}
+  <div class="add-to-task-banner" style="background:var(--brand-soft);color:var(--brand-2);border:1px solid var(--brand-border);border-radius:6px;padding:0.8rem 1rem;margin-bottom:1rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
+    <div>
+      ℹ️ Stai aggiungendo asset al task
+      <a href="/tasks/{{ return_to_task }}/edit" style="color:inherit;font-weight:600">#{{ return_to_task }}</a>.
+      Componi i filtri come al solito, poi clicca <strong>Aggiungi al task</strong>.
+    </div>
+    <form action="/tasks/{{ return_to_task }}/append_assets_set" method="post" style="margin:0"
+          id="abulk-add-to-task-form"
+          onsubmit="if (window.abulkApplyToForm) window.abulkApplyToForm(this);">
+      {# Replica i filtri attivi come hidden inputs. Al submit, JS aggiunge
+         asset_ids[]/select_all_filtered=1 in base alla selezione corrente. #}
+      {% if filter_type %}<input type="hidden" name="asset_type" value="{{ filter_type }}">{% endif %}
+      {% if filter_status %}<input type="hidden" name="status" value="{{ filter_status }}">{% endif %}
+      {% if filter_task %}<input type="hidden" name="source_task_id" value="{{ filter_task }}">{% endif %}
+      {% if filter_q %}<input type="hidden" name="q" value="{{ filter_q }}">{% endif %}
+      <input type="hidden" name="tag_mode" value="{{ tag_mode }}">
+      {% if tag_expr %}<input type="hidden" name="tag_expr" value="{{ tag_expr }}">{% endif %}
+      {% for tk, tv in (filter_tags or []) %}
+        <input type="hidden" name="tag_key__{{ loop.index0 }}" value="{{ tk }}">
+        <input type="hidden" name="tag_value__{{ loop.index0 }}" value="{{ tv }}">
+      {% endfor %}
+      {% if has_contacts %}<input type="hidden" name="has_contacts" value="1">{% endif %}
+      {% if has_social %}<input type="hidden" name="has_social" value="1">{% endif %}
+      {% if has_social_platform %}<input type="hidden" name="has_social_platform" value="{{ has_social_platform }}">{% endif %}
+      <button type="submit" class="btn-primary" id="abulk-add-to-task-btn"
+              data-default-label="📦 Aggiungi tutti i {{ total }} filtrati al task"
+              {% if total == 0 %}disabled{% endif %}>
+        📦 Aggiungi tutti i {{ total }} filtrati al task
+      </button>
+    </form>
+  </div>
+  {% endif %}
   {% if request.query_params.get('imported') %}
   <div class="flash-ok">✅ Import completato: <strong>{{ request.query_params.get('imported') }}</strong> record processati.</div>
   {% endif %}
@@ -69,9 +106,15 @@
   <details class="filter-panel" {% if filter_type or filter_status or filter_tags_str or has_contacts or has_social %}open{% endif %}>
     <summary>🔎 Filtra asset</summary>
     <form method="get" action="/assets">
+      {# Preserva return_to_task + sort + has_social_platform quando l'utente
+         applica/cambia filtri (altrimenti il banner "Aggiungi al task" sparisce). #}
+      {% if return_to_task %}<input type="hidden" name="return_to_task" value="{{ return_to_task }}">{% endif %}
+      {% if has_social_platform %}<input type="hidden" name="has_social_platform" value="{{ has_social_platform }}">{% endif %}
+      {% if sort and sort != 'id' %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
+      {% if sort_dir and sort_dir != 'desc' %}<input type="hidden" name="sort_dir" value="{{ sort_dir }}">{% endif %}
       <div class="filter-grid">
         <label>Tipo asset
-          <select name="asset_type">
+          <select name="asset_type" onchange="this.form.submit()">
             <option value="">— tutti ({{ types_in_use | sum(attribute='count') }})</option>
             {% for t in types_in_use %}
             <option value="{{ t.asset_type }}" {% if t.asset_type == filter_type %}selected{% endif %}>
@@ -81,11 +124,34 @@
           </select>
         </label>
         <label>Stato
-          <select name="status">
+          <select name="status" onchange="this.form.submit()">
             <option value="">— tutti</option>
             {% for s in ["new", "qualified", "rejected", "archived"] %}
             <option value="{{ s }}" {% if s == filter_status %}selected{% endif %}>{{ s }}</option>
             {% endfor %}
+          </select>
+        </label>
+        {# Task generatore: uniforma con /qualified. #}
+        <label>Task generatore
+          <select name="source_task_id" onchange="this.form.submit()">
+            <option value="">— tutti —</option>
+            {% for t in (available_source_tasks or []) %}
+            <option value="{{ t.task_id }}" {% if filter_task == t.task_id %}selected{% endif %}>
+              #{{ t.task_id }} · {{ t.name }} ({{ t.count }})
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+        {# Su social: dropdown platform (IG/FB/TT/...). Uniforma con /qualified. #}
+        <label>Su social
+          <select name="has_social_platform" onchange="this.form.submit()">
+            <option value="">— tutti —</option>
+            <option value="instagram" {% if has_social_platform == 'instagram' %}selected{% endif %}>📷 Instagram</option>
+            <option value="facebook"  {% if has_social_platform == 'facebook'  %}selected{% endif %}>👥 Facebook</option>
+            <option value="tiktok"    {% if has_social_platform == 'tiktok'    %}selected{% endif %}>🎵 TikTok</option>
+            <option value="linkedin"  {% if has_social_platform == 'linkedin'  %}selected{% endif %}>💼 LinkedIn</option>
+            <option value="twitter"   {% if has_social_platform == 'twitter'   %}selected{% endif %}>🐦 Twitter/X</option>
+            <option value="youtube"   {% if has_social_platform == 'youtube'   %}selected{% endif %}>📺 YouTube</option>
           </select>
         </label>
       </div>
@@ -100,6 +166,7 @@
         <label class="check-inline"
                style="display:inline-flex !important; align-items:center; gap:0.4rem; margin:0; cursor:pointer; user-select:none; font-size:0.92em">
           <input type="checkbox" name="has_contacts" value="1"
+                 onchange="this.form.submit()"
                  style="margin:0"
                  {% if has_contacts %}checked{% endif %}>
           <span>📧 Solo con contatto (email / whatsapp / telegram)</span>
@@ -107,6 +174,7 @@
         <label class="check-inline"
                style="display:inline-flex !important; align-items:center; gap:0.4rem; margin:0; cursor:pointer; user-select:none; font-size:0.92em">
           <input type="checkbox" name="has_social" value="1"
+                 onchange="this.form.submit()"
                  style="margin:0"
                  {% if has_social %}checked{% endif %}>
           <span>📱 Solo con profili social</span>
@@ -130,9 +198,12 @@
       </details>
 
       <div class="filter-actions" style="margin-top:0.6rem">
-        <button type="submit" class="btn-primary">Applica filtri</button>
-        {% if filter_type or filter_status or filter_tags_str or has_contacts or has_social %}
-          <a href="/assets" class="btn-link">✕ Reset filtri</a>
+        {# Bottone "Applica" lasciato come fallback (es. dopo modifiche
+           manuali al tag widget che non triggera auto-submit). I dropdown
+           e le checkbox principali fanno gia' submit on-change. #}
+        <button type="submit" class="btn-secondary btn-small">Applica</button>
+        {% if filter_type or filter_status or filter_tags_str or has_contacts or has_social or has_social_platform or filter_task %}
+          <a href="/assets{% if return_to_task %}?return_to_task={{ return_to_task }}{% endif %}" class="btn-link">✕ Reset filtri</a>
         {% endif %}
       </div>
     </form>
@@ -468,6 +539,21 @@ window.exportToggleGroup = function (btn, on) {
       }
       _syncBtnFilteredVisualA(btnFiltered);
       if (flag) flag.value = assetsSelectAllFiltered ? '1' : '0';
+
+      // Bottone banner "Aggiungi al task #N": testo dinamico, default = tutti i filtrati.
+      const addBtn = document.getElementById('abulk-add-to-task-btn');
+      if (addBtn) {
+        if (assetsSelectAllFiltered) {
+          addBtn.textContent = `📦 Aggiungi tutti i ${TOTAL_ASSETS} filtrati al task`;
+          addBtn.disabled = TOTAL_ASSETS === 0;
+        } else if (sel > 0) {
+          addBtn.textContent = `📦 Aggiungi ${sel} selezionati al task`;
+          addBtn.disabled = false;
+        } else {
+          addBtn.textContent = addBtn.dataset.defaultLabel || `📦 Aggiungi tutti i ${TOTAL_ASSETS} filtrati al task`;
+          addBtn.disabled = TOTAL_ASSETS === 0;
+        }
+      }
     }
 
     if (all) all.addEventListener('change', () => {
@@ -495,6 +581,35 @@ window.exportToggleGroup = function (btn, on) {
     refresh();
   }
   document.querySelectorAll('[data-bulk-form]').forEach(wire);
+
+  // abulkApplyToForm(form): inietta asset_ids[] o select_all_filtered=1
+  // nel form passato. Usato dal banner "Aggiungi al task #N" (#abulk-add-to-task-form)
+  // che NON ha `data-bulk-form` (lo lega manualmente al submit).
+  window.abulkApplyToForm = function (form) {
+    if (!form) return;
+    form.querySelectorAll('[data-abulk-injected]').forEach(el => el.remove());
+    if (assetsSelectAllFiltered) {
+      const flag = document.createElement('input');
+      flag.type = 'hidden';
+      flag.name = 'select_all_filtered';
+      flag.value = '1';
+      flag.setAttribute('data-abulk-injected', '');
+      form.appendChild(flag);
+      return;
+    }
+    const checked = document.querySelectorAll('[data-bulk-row]:checked');
+    // Se nessuna spuntata, niente da iniettare: backend cade in "tutti filtrati"
+    // (via _build_assets_filter_kwargs_from_form + list_assets).
+    if (checked.length === 0) return;
+    checked.forEach(cb => {
+      const inp = document.createElement('input');
+      inp.type = 'hidden';
+      inp.name = 'asset_ids';
+      inp.value = cb.value;
+      inp.setAttribute('data-abulk-injected', '');
+      form.appendChild(inp);
+    });
+  };
 
   // Confirm + label generica per submit bulk (counts anche "all filtered")
   window.bulkConfirmDelete = function (form, label) {

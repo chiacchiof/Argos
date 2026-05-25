@@ -215,6 +215,12 @@ def _build_qualified_filter_kwargs_from_form(form) -> dict:
     if tag_mode == "custom" and not tag_expr:
         tag_mode = "and"
 
+    # Normalizza has_social_platform: solo whitelist platform supportate.
+    _hsp = (form.get("has_social_platform") or "").strip().lower()
+    has_social_platform = _hsp if _hsp in (
+        "instagram", "facebook", "tiktok", "linkedin", "twitter", "youtube"
+    ) else None
+
     return {
         "qualifier_slugs": qualifier_slugs,
         "status_filter": status,
@@ -225,6 +231,7 @@ def _build_qualified_filter_kwargs_from_form(form) -> dict:
         "extra_tag_filters": extra_tag_filters or None,
         "tag_mode": tag_mode,
         "tag_expr": tag_expr or None,
+        "has_social_platform": has_social_platform,
     }
 
 
@@ -401,18 +408,143 @@ async def task_qualifier_from_qualified(request: Request):
     )
 
 
+def _build_assets_filter_kwargs_from_form(form) -> dict:
+    """Estrae i filtri /assets da un mapping form POST. Pari a
+    _build_qualified_filter_kwargs_from_form ma senza qualifier_slugs/score_min
+    (la pagina /assets non li ha). Usato da `append_assets_set`."""
+    from .assets import _parse_extra_tag_filters_from_mapping
+
+    def _opt_int(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        try:
+            return int(s)
+        except (TypeError, ValueError):
+            return None
+
+    tag_mode = (form.get("tag_mode") or "and").strip().lower()
+    if tag_mode not in ("and", "or", "custom"):
+        tag_mode = "and"
+    tag_expr = (form.get("tag_expr") or "").strip()
+    extra_tag_filters = _parse_extra_tag_filters_from_mapping(form)
+    if tag_mode == "custom" and not tag_expr:
+        tag_mode = "and"
+
+    _hsp = (form.get("has_social_platform") or "").strip().lower()
+    has_social_platform = _hsp if _hsp in (
+        "instagram", "facebook", "tiktok", "linkedin", "twitter", "youtube"
+    ) else None
+
+    return {
+        "asset_type": (form.get("asset_type") or "").strip() or None,
+        "status": (form.get("status") or "").strip() or None,
+        "source_task_id": _opt_int(form.get("source_task_id")),
+        "search": (form.get("q") or "").strip() or None,
+        "tag_filters": extra_tag_filters or None,
+        "tag_mode": tag_mode,
+        "tag_expr": tag_expr or None,
+        "has_contacts": bool((form.get("has_contacts") or "").strip()),
+        "has_social": bool((form.get("has_social") or "").strip()),
+        "has_social_platform": has_social_platform,
+    }
+
+
+@router.post("/tasks/{task_id}/clear_audience")
+async def task_clear_audience(request: Request, task_id: int):
+    """Svuota completamente `target_asset_ids` del task. Idempotente.
+    Redirect alla pagina edit step 4 con flash di conferma."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+    n_before = len(task.get("target_asset_ids") or [])
+    db.update_task_target_asset_ids(task_id, [])
+    flash = f"Audience+svuotata+({n_before}+asset+rimossi)"
+    return RedirectResponse(
+        url=f"/tasks/{task_id}/edit?step=4&flash={flash}",
+        status_code=303,
+    )
+
+
+def _extract_audience_from_assets_form(form) -> list[int]:
+    """Estrae asset_ids da form `/assets` (varianti del flow di
+    `_extract_audience_from_form`). Due modi: checkbox esplicite o filtri."""
+    select_all_filtered = (form.get("select_all_filtered") or "").strip() == "1"
+    explicit_raw: list[str] = (
+        form.getlist("asset_ids") if hasattr(form, "getlist") else []
+    )
+    if explicit_raw and not select_all_filtered:
+        seen: set[int] = set()
+        ids: list[int] = []
+        for v in explicit_raw:
+            try:
+                i = int(v)
+            except (TypeError, ValueError):
+                continue
+            if i in seen:
+                continue
+            seen.add(i)
+            ids.append(i)
+        return ids
+    kw = _build_assets_filter_kwargs_from_form(form)
+    rows = db.list_assets(limit=_MAX_QUALIFIED_SNAPSHOT, offset=0, **kw)
+    return [r["id"] for r in rows]
+
+
+@router.post("/tasks/{task_id}/append_assets_set")
+async def task_append_assets_set(request: Request, task_id: int):
+    """Aggiunge UN set asset (filtri /assets o selezione checkbox) al
+    `target_asset_ids` del task. Union + dedup. Usato dal banner
+    /assets?return_to_task=X. A differenza di append_qualified_set, pesca da
+    TUTTI gli asset (non solo qualificati), perche' un task qualifier deve
+    VALUTARE asset ancora non qualificati."""
+    form = await request.form()
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+    new_ids = _extract_audience_from_assets_form(form)
+    if not new_ids:
+        flash = "Nessun+asset+aggiunto+(filtri+vuoti)."
+        return RedirectResponse(
+            url=f"/tasks/{task_id}/edit?step=4&flash={flash}",
+            status_code=303,
+        )
+    existing: list[int] = list(task.get("target_asset_ids") or [])
+    existing_set = set(existing)
+    added = 0
+    for aid in new_ids:
+        if aid in existing_set:
+            continue
+        existing.append(aid)
+        existing_set.add(aid)
+        added += 1
+    db.update_task_target_asset_ids(task_id, existing)
+    flash = f"{added}+asset+aggiunti+(audience+ora+a+{len(existing)})"
+    return RedirectResponse(
+        url=f"/tasks/{task_id}/edit?step=4&flash={flash}",
+        status_code=303,
+    )
+
+
 @router.post("/tasks/{task_id}/append_qualified_set")
 async def task_append_qualified_set(request: Request, task_id: int):
     """Aggiunge UN set qualificato (filtri /qualified) al `target_asset_ids` del
-    task. Union + dedup, conserva ordine (vecchi primi, nuovi in coda)."""
+    task. Union + dedup, conserva ordine (vecchi primi, nuovi in coda).
+
+    Due modi (gestiti da `_extract_audience_from_form`):
+    1) Selezione esplicita: l'utente ha spuntato checkbox `asset_ids[]` in tabella
+       → usa SOLO quelli, ignora i filtri.
+    2) "Tutti i filtrati": nessuna checkbox spuntata (o flag `select_all_filtered=1`)
+       → usa i filtri form per fetchare fino a _MAX_QUALIFIED_SNAPSHOT.
+    """
     form = await request.form()
     task = db.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="task non trovato")
 
-    kw = _build_qualified_filter_kwargs_from_form(form)
-    rows = db.list_qualified_assets(limit=_MAX_QUALIFIED_SNAPSHOT, offset=0, **kw)
-    new_ids = [r["id"] for r in rows]
+    new_ids, _kw = _extract_audience_from_form(form)
     if not new_ids:
         flash = "Nessun+asset+aggiunto+(filtri+vuoti)."
         return RedirectResponse(
@@ -433,9 +565,11 @@ async def task_append_qualified_set(request: Request, task_id: int):
     # data dict completo. Patch minimale via SQL diretto sarebbe meglio.
     db.update_task_target_asset_ids(task_id, existing)
 
+    # Redirect atterra direttamente sullo step 4 (Pipeline I/O) dove c'e'
+    # la sezione Audience asset, cosi' l'utente vede subito gli asset aggiunti.
     flash = f"{added}+asset+aggiunti+(audience+ora+a+{len(existing)})"
     return RedirectResponse(
-        url=f"/tasks/{task_id}/edit?flash={flash}",
+        url=f"/tasks/{task_id}/edit?step=4&flash={flash}",
         status_code=303,
     )
 

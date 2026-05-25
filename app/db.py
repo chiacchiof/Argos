@@ -4267,6 +4267,7 @@ def count_assets(
     tag_expr: str | None = None,
     has_contacts: bool = False,
     has_social: bool = False,
+    has_social_platform: str | None = None,
 ) -> int:
     """Conta gli asset matchando gli stessi filtri di `list_assets`.
 
@@ -4288,6 +4289,7 @@ def count_assets(
         tag_expr=tag_expr,
         has_contacts=has_contacts,
         has_social=has_social,
+        has_social_platform=has_social_platform,
         asset_status_col=status,
     )
     sql = "SELECT COUNT(*) FROM assets a" + where
@@ -4309,6 +4311,9 @@ def list_assets(
     tag_expr: str | None = None,
     has_contacts: bool = False,
     has_social: bool = False,
+    has_social_platform: str | None = None,
+    sort: str = "id",
+    sort_dir: str = "desc",
 ) -> list[dict[str, Any]]:
     """Lista asset (con tag combine and/or/custom, has_*). Helper condiviso
     con list_qualified_assets via `_qualified_assets_where_clause`."""
@@ -4326,9 +4331,17 @@ def list_assets(
         tag_expr=tag_expr,
         has_contacts=has_contacts,
         has_social=has_social,
+        has_social_platform=has_social_platform,
         asset_status_col=status,
     )
-    sql = "SELECT a.* FROM assets a" + where + " ORDER BY a.id DESC LIMIT %s OFFSET %s"
+    sort_col = _QUALIFIED_SORT_WHITELIST.get(
+        (sort or "id").lower().strip(), "a.id"
+    )
+    sort_dir_safe = "ASC" if (sort_dir or "").lower().strip() == "asc" else "DESC"
+    order_by = f" ORDER BY {sort_col} {sort_dir_safe}"
+    if sort_col != "a.id":
+        order_by += ", a.id DESC"
+    sql = "SELECT a.* FROM assets a" + where + order_by + " LIMIT %s OFFSET %s"
     args.append(limit)
     args.append(max(0, int(offset)))
     with connect() as con:
@@ -5049,6 +5062,7 @@ def _qualified_assets_where_clause(
     tag_expr: str | None = None,
     has_contacts: bool = False,
     has_social: bool = False,
+    has_social_platform: str | None = None,
     asset_status_col: str | None = None,
     require_qualified: bool = False,
 ) -> tuple[str, list[Any]]:
@@ -5174,7 +5188,29 @@ def _qualified_assets_where_clause(
     # has_social: social_json valorizzato con almeno una entry
     if has_social:
         where += " AND a.social_json IS NOT NULL AND a.social_json <> '' AND a.social_json <> '[]'"
+    # has_social_platform: cerca un'entry con `platform=<X>` nel social_json.
+    # social_json e' un array di dict (es. [{"platform":"instagram","handle":"..."}, ...]).
+    # Filtro testuale tollerante: matcha indipendentemente da spazi/quoting JSON.
+    if has_social_platform:
+        plat = str(has_social_platform).strip().lower()
+        if plat:
+            # Pattern flessibile: cattura "platform":"<X>" con o senza spazi
+            # (json.dumps default = no spaces; standard library a volte mette spazi).
+            where += (
+                " AND a.social_json IS NOT NULL"
+                " AND (LOWER(a.social_json) LIKE %s OR LOWER(a.social_json) LIKE %s)"
+            )
+            args.append(f'%"platform":"{plat}"%')
+            args.append(f'%"platform": "{plat}"%')
     return where, args
+
+
+_QUALIFIED_SORT_WHITELIST = {
+    "id": "a.id",
+    "asset_type": "a.asset_type",
+    "title": "a.title",
+    "created_at": "a.created_at",
+}
 
 
 def list_qualified_assets(
@@ -5192,6 +5228,9 @@ def list_qualified_assets(
     tag_expr: str | None = None,
     has_contacts: bool = False,
     has_social: bool = False,
+    has_social_platform: str | None = None,
+    sort: str = "id",
+    sort_dir: str = "desc",
 ) -> list[dict[str, Any]]:
     """Lista asset filtrati per qualifier (AND multipli) + score min + filtri extra.
 
@@ -5213,12 +5252,14 @@ def list_qualified_assets(
             extra_tag_filters, limit, offset, tenant_id=tenant_id,
             tag_mode=tag_mode, tag_expr=tag_expr,
             has_contacts=has_contacts, has_social=has_social,
+            has_social_platform=has_social_platform,
         )
         rows_r = list_qualified_assets(
             slugs, "rejected", score_min, asset_type, source_task_id, search,
             extra_tag_filters, limit, offset, tenant_id=tenant_id,
             tag_mode=tag_mode, tag_expr=tag_expr,
             has_contacts=has_contacts, has_social=has_social,
+            has_social_platform=has_social_platform,
         )
         # merge + dedup per id, limit
         seen: set[int] = set()
@@ -5233,12 +5274,24 @@ def list_qualified_assets(
         slugs, status_filter, score_min, asset_type, source_task_id, search,
         extra_tag_filters, tenant_id, tag_mode=tag_mode, tag_expr=tag_expr,
         has_contacts=has_contacts, has_social=has_social,
+        has_social_platform=has_social_platform,
         require_qualified=True,
     )
+    # Sort whitelisted (safe da SQL injection). Default: a.id DESC.
+    sort_col = _QUALIFIED_SORT_WHITELIST.get(
+        (sort or "id").lower().strip(), "a.id"
+    )
+    sort_dir_safe = "ASC" if (sort_dir or "").lower().strip() == "asc" else "DESC"
+    # Stabilizziamo l'ordine: secondary sort by id DESC per evitare jitter
+    # quando piu' record condividono lo stesso valore della colonna sort.
+    order_by = f" ORDER BY {sort_col} {sort_dir_safe}"
+    if sort_col != "a.id":
+        order_by += ", a.id DESC"
     sql = (
         "SELECT a.* FROM assets a"
         + where
-        + " ORDER BY a.id DESC LIMIT %s OFFSET %s"
+        + order_by
+        + " LIMIT %s OFFSET %s"
     )
     args.extend([limit, max(0, int(offset))])
     with connect() as con:
@@ -5276,6 +5329,7 @@ def count_qualified_assets(
     tag_expr: str | None = None,
     has_contacts: bool = False,
     has_social: bool = False,
+    has_social_platform: str | None = None,
 ) -> int:
     """Count con gli stessi filtri di list_qualified_assets. Per paginazione."""
     tenant_id = _resolve_tenant(tenant_id)
@@ -5308,6 +5362,7 @@ def count_qualified_assets(
         slugs, status_filter, score_min, asset_type, source_task_id, search,
         extra_tag_filters, tenant_id, tag_mode=tag_mode, tag_expr=tag_expr,
         has_contacts=has_contacts, has_social=has_social,
+        has_social_platform=has_social_platform,
         require_qualified=True,
     )
     sql = "SELECT COUNT(*) FROM assets a" + where

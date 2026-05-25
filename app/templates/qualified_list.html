@@ -29,8 +29,11 @@
       <a href="/tasks/{{ return_to_task }}/edit">#{{ return_to_task }}</a>.
       Componi i filtri come al solito, poi clicca <strong>Aggiungi al task</strong>.
     </div>
-    <form action="/tasks/{{ return_to_task }}/append_qualified_set" method="post" style="margin:0">
-      {# Replica tutti i filtri attivi come hidden inputs per il POST #}
+    <form action="/tasks/{{ return_to_task }}/append_qualified_set" method="post" style="margin:0"
+          id="qbulk-add-to-task-form"
+          onsubmit="if (window.qbulkApplyToForm) window.qbulkApplyToForm(this);">
+      {# Replica tutti i filtri attivi come hidden inputs per il POST.
+         Al submit, JS aggiunge asset_ids[]/select_all_filtered=1 in base alla selezione corrente. #}
       {% if selected_qualifiers %}<input type="hidden" name="qualifiers" value="{{ selected_qualifiers|join(',') }}">{% endif %}
       {% if filter_status %}<input type="hidden" name="status" value="{{ filter_status }}">{% endif %}
       {% if filter_score_min is not none %}<input type="hidden" name="score_min" value="{{ filter_score_min }}">{% endif %}
@@ -43,8 +46,11 @@
         <input type="hidden" name="tag_key__{{ loop.index0 }}" value="{{ tk }}">
         <input type="hidden" name="tag_value__{{ loop.index0 }}" value="{{ tv }}">
       {% endfor %}
-      <button type="submit" class="btn-primary" {% if total == 0 %}disabled{% endif %}>
-        📥 Aggiungi questi {{ total }} asset al task
+      {% if has_social_platform %}<input type="hidden" name="has_social_platform" value="{{ has_social_platform }}">{% endif %}
+      <button type="submit" class="btn-primary" id="qbulk-add-to-task-btn"
+              data-default-label="📥 Aggiungi tutti i {{ total }} filtrati al task"
+              {% if total == 0 %}disabled{% endif %}>
+        📥 Aggiungi tutti i {{ total }} filtrati al task
       </button>
     </form>
   </div>
@@ -136,9 +142,11 @@
   {% endif %}
   {# Search vive in topbar (base.html). Filtri avanzati nel form sotto. #}
   <form method="get" action="/qualified" id="qualified-form">
-    {# Preserva return_to_task + q dalla URL #}
+    {# Preserva return_to_task + q + sort dalla URL #}
     {% if return_to_task %}<input type="hidden" name="return_to_task" value="{{ return_to_task }}">{% endif %}
     {% if filter_search %}<input type="hidden" name="q" value="{{ filter_search }}">{% endif %}
+    {% if sort and sort != 'id' %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
+    {% if sort_dir and sort_dir != 'desc' %}<input type="hidden" name="sort_dir" value="{{ sort_dir }}">{% endif %}
 
     {# Filtri avanzati: collapsed di default, aperto se uno è attivo. #}
     {% set adv_count = (extra_tag_filters|length) + (1 if filter_score_min is not none else 0) + (1 if filter_type else 0) + (1 if filter_task else 0) + (selected_qualifiers|length) %}
@@ -216,6 +224,20 @@
           </button>
         </label>
 
+        {# Filtro Tipo asset: in primo piano (era dentro "Filtri avanzati" ma serve
+           sempre per restringere alle palestre/ristoranti/ig_profile/etc.). #}
+        <label style="display:flex; align-items:center; gap:0.4rem">
+          <span class="muted small">🏷️ Tipo:</span>
+          <select name="asset_type" onchange="this.form.submit()" style="padding:0.2rem 0.4rem">
+            <option value="">— tutti —</option>
+            {% for t in types_in_use %}
+              <option value="{{ t.asset_type }}" {% if t.asset_type == filter_type %}selected{% endif %}>
+                {{ t.asset_type }} ({{ t.count }})
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
         {# Macro-filtri "ha contatti" / "ha social": utili per ricerca rapida
            asset contattabili (almeno un canale outreach) o con presenza social. #}
         <label class="inline-checkbox" style="display:flex; align-items:center; gap:0.4rem">
@@ -234,6 +256,22 @@
           <span>📷 <strong>ha social</strong>
             <span class="muted small">(almeno un URL IG/FB/TT)</span>
           </span>
+        </label>
+
+        {# Dropdown filtro per piattaforma social specifica. Cerca nel social_json
+           un'entry con platform=<X>. Utile per task follower_scrape: il pre-filtro
+           dal task_form arriva qui come `?has_social_platform=instagram`. #}
+        <label style="display:flex; align-items:center; gap:0.4rem">
+          <span class="muted small">Su social:</span>
+          <select name="has_social_platform" onchange="this.form.submit()" style="padding:0.2rem 0.4rem">
+            <option value="">— tutti —</option>
+            <option value="instagram" {% if has_social_platform == 'instagram' %}selected{% endif %}>📷 Instagram</option>
+            <option value="facebook"  {% if has_social_platform == 'facebook'  %}selected{% endif %}>👥 Facebook</option>
+            <option value="tiktok"    {% if has_social_platform == 'tiktok'    %}selected{% endif %}>🎵 TikTok</option>
+            <option value="linkedin"  {% if has_social_platform == 'linkedin'  %}selected{% endif %}>💼 LinkedIn</option>
+            <option value="twitter"   {% if has_social_platform == 'twitter'   %}selected{% endif %}>🐦 Twitter/X</option>
+            <option value="youtube"   {% if has_social_platform == 'youtube'   %}selected{% endif %}>📺 YouTube</option>
+          </select>
         </label>
       </div>
 
@@ -355,16 +393,16 @@
           <input type="hidden" name="redirect_to" value="/qualified?{{ qs_base }}">
           <input type="hidden" name="select_all_filtered" value="0" id="qbulk-select-all-flag">
 
-          {# Bulk action bar: select-all + counter + bottoni d'azione + banner gmail-style #}
-          {% if not return_to_task %}
+          {# Bulk action bar: select-all + counter + bottoni d'azione.
+             Visibile SEMPRE: select-all + "Tutti i filtrati" + counter (servono
+             anche in modalita' return_to_task per scegliere quali asset aggiungere
+             al task). I bottoni di azione (rilancia/outreach/cancella/export)
+             invece sono nascosti quando return_to_task: in quella modalita' il
+             flow termina col bottone "Aggiungi al task" del banner in cima. #}
           <div class="bulk-action-bar qualified-bulk-bar">
             <label class="bulk-select-all-label">
               <input type="checkbox" id="qbulk-select-all"> Seleziona pagina
             </label>
-            {# Bottone "Tutti filtrati" sempre visibile (toggle).
-               Click → flag select_all_filtered=1 attivo (counter = TOTAL).
-               Re-click → annulla.
-               Disabilitato se total <= page_size (sarebbe equivalente al per-page). #}
             <button type="button" id="qbulk-select-all-filtered"
                     class="bulk-select-all-filtered-btn"
                     aria-pressed="false"
@@ -380,8 +418,8 @@
             </button>
             <span class="bulk-count" id="qbulk-count">0 selezionati</span>
 
-            {# Bottoni d'azione: grey-out se 0 selezionati. Click apre il modal,
-               che al submit eredita gli asset_ids via JS (window.qbulkApplyTo). #}
+            {# Bottoni d'azione: solo in modalita' standalone (no return_to_task). #}
+            {% if not return_to_task %}
             <button type="button" class="btn-secondary"
                     id="qbulk-btn-rilancia" disabled
                     title="Crea task qualifier per ri-valutare gli asset selezionati"
@@ -405,16 +443,32 @@
                     onclick="window.qbulkApplyTo('export-csv-modal'); document.getElementById('export-csv-modal').classList.add('open');">
               📥 Esporta CSV (<span data-qbulk-action-count>0</span>)
             </button>
+            {% endif %}
           </div>
-          {% endif %}
 
+        {# Macro per costruire un header cliccabile sortable. Toggle asc/desc se stai
+           gia' ordinando per quella colonna; altrimenti default desc. #}
+        {% macro sortable_th(col, label) %}
+          {% set is_active = (sort == col) %}
+          {% set next_dir = 'asc' if (is_active and sort_dir == 'desc') else 'desc' %}
+          {% set arrow = '↓' if (is_active and sort_dir == 'desc') else ('↑' if is_active else '⇅') %}
+          {% set base = qs_base if qs_base else '' %}
+          {% set sep = '&' if base else '' %}
+          <th class="sortable-th">
+            <a href="?{{ base }}{{ sep }}sort={{ col }}&sort_dir={{ next_dir }}"
+               class="th-sort {% if is_active %}is-active{% endif %}"
+               title="Ordina per {{ label }}">
+              {{ label }} <span class="th-sort-arrow">{{ arrow }}</span>
+            </a>
+          </th>
+        {% endmacro %}
         <table class="data assets-table">
           <thead>
             <tr>
               <th class="bulk-col"><span class="visually-hidden">Seleziona</span></th>
-              <th>#</th>
-              <th>Tipo</th>
-              <th>Titolo</th>
+              {{ sortable_th('id', '#') }}
+              {{ sortable_th('asset_type', 'Tipo') }}
+              {{ sortable_th('title', 'Titolo') }}
               <th>Contatti / Social</th>
               <th>Qualifier(s)</th>
               <th>Altri tag</th>
@@ -637,6 +691,34 @@ function qpmSnapshotState() {
   qpmOriginalState = Array.from(cbs).map(cb => ({ el: cb, checked: cb.checked }));
 }
 
+// Bug fix: il backend legge `qualifiers` come CSV string ("slug1,slug2"), MA
+// le N checkbox con name="qualifiers" inviano N parametri separati e FastAPI
+// con tipo str prende solo l'ultimo. Soluzione: al submit del form padre,
+// rimpiazziamo i singoli checkbox con UN SOLO hidden `qualifiers` che contiene
+// il CSV. Idempotente: rimuove eventuali hidden iniettati prima.
+(function() {
+  const form = document.getElementById('qualified-form');
+  if (!form) return;
+  form.addEventListener('submit', function() {
+    // Rimuovi residui di submit precedenti
+    form.querySelectorAll('[data-qpm-csv-injected]').forEach(el => el.remove());
+    const cbs = document.querySelectorAll(
+      '#qualifier-picker-list input[type=checkbox][name=qualifiers]:checked'
+    );
+    if (cbs.length === 0) return;  // nessun qualifier selezionato → niente da fare
+    // Disabilita name dei checkbox cosi' non vengono submitti separatamente
+    cbs.forEach(cb => { cb.dataset.qpmOriginalName = cb.name; cb.name = ''; });
+    // Inietta hidden CSV
+    const csv = Array.from(cbs).map(cb => cb.value).join(',');
+    const hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.name = 'qualifiers';
+    hidden.value = csv;
+    hidden.setAttribute('data-qpm-csv-injected', '');
+    form.appendChild(hidden);
+  });
+})();
+
 // Click su una card: sincronizza visivamente la classe 'qualifier-card-active'
 // (no submit del form: applica al click su "Applica").
 function qpmCardSync(checkbox) {
@@ -781,6 +863,22 @@ function selectAssetForQualifier(assetId) {
       if (b) b.disabled = effective === 0;
     });
 
+    // Bottone "Aggiungi al task #N" del banner return_to_task: testo dinamico
+    // in base a selezione corrente. Default = "tutti i N filtrati".
+    const addBtn = document.getElementById('qbulk-add-to-task-btn');
+    if (addBtn) {
+      if (selectAllFiltered) {
+        addBtn.textContent = `📥 Aggiungi tutti i ${TOTAL} filtrati al task`;
+        addBtn.disabled = TOTAL === 0;
+      } else if (sel > 0) {
+        addBtn.textContent = `📥 Aggiungi ${sel} selezionati al task`;
+        addBtn.disabled = false;
+      } else {
+        addBtn.textContent = addBtn.dataset.defaultLabel || `📥 Aggiungi tutti i ${TOTAL} filtrati al task`;
+        addBtn.disabled = TOTAL === 0;
+      }
+    }
+
     // Select-all checkbox: indeterminate / checked
     if (selectAll) {
       selectAll.checked = sel === rows.length && sel > 0;
@@ -830,6 +928,36 @@ function selectAssetForQualifier(assetId) {
     const sel = selectAllFiltered ? TOTAL : Array.from(rows).filter(c => c.checked).length;
     if (!sel) return false;
     return confirm(`Cancellare ${sel} ${label}${sel === 1 ? '' : 's'}? L'azione è permanente.`);
+  };
+
+  // qbulkApplyToForm(form): variante per form diretti (es. il banner
+  // "Aggiungi al task #N"). Stessa logica di qbulkApplyTo ma riceve il form
+  // direttamente invece di cercarlo dentro un modal.
+  window.qbulkApplyToForm = function (form) {
+    if (!form) return;
+    form.querySelectorAll('[data-qbulk-injected]').forEach(el => el.remove());
+    if (selectAllFiltered) {
+      const flag = document.createElement('input');
+      flag.type = 'hidden';
+      flag.name = 'select_all_filtered';
+      flag.value = '1';
+      flag.setAttribute('data-qbulk-injected', '');
+      form.appendChild(flag);
+    } else {
+      // Se nessuna checkbox spuntata, NON iniettare niente: il backend cade
+      // in modalita' "tutti i filtrati" via _extract_audience_from_form (default).
+      // Se invece almeno una spuntata: inietta asset_ids[].
+      const checked = Array.from(rows).filter(c => c.checked);
+      if (checked.length === 0) return;
+      checked.forEach(c => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = 'asset_ids';
+        inp.value = c.value;
+        inp.setAttribute('data-qbulk-injected', '');
+        form.appendChild(inp);
+      });
+    }
   };
 
   // qbulkApplyTo(modalId): copia la selezione attuale come hidden input nel
@@ -1117,6 +1245,7 @@ function selectAssetForQualifier(assetId) {
       {% endfor %}
       {% if has_contacts %}<input type="hidden" name="has_contacts" value="1">{% endif %}
       {% if has_social %}<input type="hidden" name="has_social" value="1">{% endif %}
+      {% if has_social_platform %}<input type="hidden" name="has_social_platform" value="{{ has_social_platform }}">{% endif %}
 
       {# Catalog dei campi (lo passa il route via context: `export_field_groups`). #}
       <div class="export-field-groups">

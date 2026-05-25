@@ -82,6 +82,10 @@ async def assets_list(
     tag_expr: str = "",
     has_contacts: str = "",
     has_social: str = "",
+    has_social_platform: str = "",
+    return_to_task: str = "",
+    sort: str = "id",
+    sort_dir: str = "desc",
     page: int = 1,
     per_page: int = _ASSETS_PAGE_SIZE,
 ):
@@ -107,6 +111,10 @@ async def assets_list(
             tag_expr_v = ""
     has_contacts_v = bool(has_contacts and has_contacts.strip())
     has_social_v = bool(has_social and has_social.strip())
+    _hsp_clean = (has_social_platform or "").strip().lower()
+    has_social_platform_v: str | None = _hsp_clean if _hsp_clean in (
+        "instagram", "facebook", "tiktok", "linkedin", "twitter", "youtube"
+    ) else None
     # Sanitize paginazione
     per_page = max(10, min(int(per_page or _ASSETS_PAGE_SIZE), 500))
     page = max(1, int(page or 1))
@@ -123,6 +131,7 @@ async def assets_list(
         tag_expr=tag_expr_v or None,
         has_contacts=has_contacts_v,
         has_social=has_social_v,
+        has_social_platform=has_social_platform_v,
         tenant_id=tenant_arg,
     )
     total_pages = max(1, (total + per_page - 1) // per_page)
@@ -131,6 +140,13 @@ async def assets_list(
         page = total_pages
         offset = (page - 1) * per_page
 
+    # Sort whitelist
+    sort_v = (sort or "id").strip().lower()
+    if sort_v not in ("id", "asset_type", "title", "created_at"):
+        sort_v = "id"
+    sort_dir_v = (sort_dir or "desc").strip().lower()
+    if sort_dir_v not in ("asc", "desc"):
+        sort_dir_v = "desc"
     assets = db.list_assets(
         asset_type=asset_type,
         status=status,
@@ -141,11 +157,20 @@ async def assets_list(
         tag_expr=tag_expr_v or None,
         has_contacts=has_contacts_v,
         has_social=has_social_v,
+        has_social_platform=has_social_platform_v,
+        sort=sort_v,
+        sort_dir=sort_dir_v,
         limit=per_page,
         offset=offset,
         tenant_id=tenant_arg,
     )
     types_in_use = db.list_asset_types_in_use()
+    # Task source list (filtro "Task generatore" — uniforma con /qualified).
+    # Qui only_qualified=False perche' /assets mostra anche asset non qualificati.
+    try:
+        available_source_tasks = db.list_distinct_asset_source_tasks(only_qualified=False)
+    except Exception:
+        available_source_tasks = []
     # Tag keys per il widget condiviso _tag_filter_widget.html (dropdown F1-F6).
     # Esclude qualifier_* (vivono in /qualified). Il vecchio facets panel è
     # stato rimosso: la discovery è già fornita dal count `(N)` nelle dropdown.
@@ -171,6 +196,8 @@ async def assets_list(
         qs_parts.append(f"tag_expr={quote(tag_expr_v)}")
     if has_contacts_v: qs_parts.append("has_contacts=1")
     if has_social_v: qs_parts.append("has_social=1")
+    if has_social_platform_v: qs_parts.append(f"has_social_platform={has_social_platform_v}")
+    if return_to_task: qs_parts.append(f"return_to_task={return_to_task}")
     if q_clean: qs_parts.append(f"q={quote(q_clean)}")
     if per_page != _ASSETS_PAGE_SIZE: qs_parts.append(f"per_page={per_page}")
     qs_base = "&".join(qs_parts)
@@ -191,8 +218,13 @@ async def assets_list(
             "tag_expr_error": tag_expr_error,
             "has_contacts": has_contacts_v,
             "has_social": has_social_v,
+            "has_social_platform": has_social_platform_v or "",
+            "return_to_task": _parse_optional_int(return_to_task),
+            "sort": sort_v,
+            "sort_dir": sort_dir_v,
             "types_in_use": types_in_use,
             "available_tag_keys": available_tag_keys,
+            "available_source_tasks": available_source_tasks,
             # paginazione
             "page": page,
             "per_page": per_page,
@@ -267,6 +299,9 @@ async def qualified_assets_list(
     return_to_task: str = "",
     has_contacts: str = "",
     has_social: str = "",
+    has_social_platform: str = "",
+    sort: str = "id",
+    sort_dir: str = "desc",
 ):
     """Tab Qualified: asset-centric con multi-select qualifier + filtri.
 
@@ -290,6 +325,19 @@ async def qualified_assets_list(
     extra_tag_filters = _parse_extra_tag_filters(request)
     has_contacts_v = bool(has_contacts and has_contacts.strip())
     has_social_v = bool(has_social and has_social.strip())
+    # Normalizza has_social_platform: accetta 'instagram'|'facebook'|'tiktok'|...
+    # vuoto/null = nessun filtro su platform specifica.
+    _hsp_clean = (has_social_platform or "").strip().lower()
+    has_social_platform_v: str | None = _hsp_clean if _hsp_clean in (
+        "instagram", "facebook", "tiktok", "linkedin", "twitter", "youtube"
+    ) else None
+    # Sort: whitelist colonne consentite (sicurezza SQL injection).
+    sort_v = (sort or "id").strip().lower()
+    if sort_v not in ("id", "asset_type", "title", "created_at"):
+        sort_v = "id"
+    sort_dir_v = (sort_dir or "desc").strip().lower()
+    if sort_dir_v not in ("asc", "desc"):
+        sort_dir_v = "desc"
     tag_mode_v = (tag_mode or "and").strip().lower()
     if tag_mode_v not in ("and", "or", "custom"):
         tag_mode_v = "and"
@@ -329,6 +377,7 @@ async def qualified_assets_list(
         tag_expr=tag_expr_v or None,
         has_contacts=has_contacts_v,
         has_social=has_social_v,
+        has_social_platform=has_social_platform_v,
         tenant_id=tenant_arg,
     )
     total_pages = max(1, (total + per_page_v - 1) // per_page_v)
@@ -350,6 +399,9 @@ async def qualified_assets_list(
         tag_expr=tag_expr_v or None,
         has_contacts=has_contacts_v,
         has_social=has_social_v,
+        has_social_platform=has_social_platform_v,
+        sort=sort_v,
+        sort_dir=sort_dir_v,
         tenant_id=tenant_arg,
     )
     # Parse social_json di ogni asset una volta sola (lo usa il template per
@@ -395,6 +447,8 @@ async def qualified_assets_list(
         qs_parts.append(f"tag_expr={_q(tag_expr_v, safe='')}")
     if has_contacts_v: qs_parts.append("has_contacts=1")
     if has_social_v: qs_parts.append("has_social=1")
+    if has_social_platform_v: qs_parts.append(f"has_social_platform={has_social_platform_v}")
+    if return_to_task: qs_parts.append(f"return_to_task={return_to_task}")
     if per_page_v != _QUALIFIED_PAGE_SIZE: qs_parts.append(f"per_page={per_page_v}")
     qs_base = "&".join(qs_parts)
 
@@ -420,6 +474,9 @@ async def qualified_assets_list(
             "return_to_task": _parse_optional_int(return_to_task),
             "has_contacts": has_contacts_v,
             "has_social": has_social_v,
+            "has_social_platform": has_social_platform_v or "",
+            "sort": sort_v,
+            "sort_dir": sort_dir_v,
             "page": page_v,
             "per_page": per_page_v,
             "total": total,

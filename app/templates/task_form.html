@@ -25,6 +25,17 @@
        /qualified in nuova tab e ritorna alla tab del form) il vecchio valore
        sovrascriverebbe quello nuovo. Vedi route `task_update`. #}
 
+    {# Flash banner: messaggio di conferma dopo append_qualified_set, ecc.
+       Legge `?flash=...` querystring. Si auto-dismiss dopo 6s via JS. #}
+    {% if request.query_params.get('flash') %}
+    <div id="wizard-flash" role="status"
+         style="margin:0 0 1rem;padding:0.7rem 0.95rem;background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.4);border-radius:6px;color:var(--success,#16a34a);font-size:0.9rem;display:flex;justify-content:space-between;align-items:center;gap:1rem">
+      <span>✅ {{ request.query_params.get('flash').replace('+', ' ') }}</span>
+      <button type="button" onclick="this.parentElement.remove()" style="background:none;border:0;color:inherit;cursor:pointer;font-size:1.2em;line-height:1;padding:0 0.3rem">×</button>
+    </div>
+    <script>setTimeout(function(){ var b=document.getElementById('wizard-flash'); if(b) b.remove(); }, 6000);</script>
+    {% endif %}
+
     {# Stepper bar (popolata da JS in base agli step visibili per la modalità) #}
     <nav id="wizard-stepper" class="wizard-stepper" aria-label="Configurazione task per fasi"></nav>
 
@@ -102,6 +113,21 @@
        STEP 2 — Target & Schema (seed, domini, schema, crawler bulk + discovery LLM)
        ============================================================ #}
     <section class="wizard-step" data-step="2" data-step-title="🔍 Target &amp; Schema">
+
+    {# Banner UX: chiarisce input vs output. Senza questo gli utenti confondono
+       il "Tipo asset prodotto" (OUTPUT) con i filtri "Tipo asset" che vedono
+       nelle liste target (filtri UI sull'INPUT). #}
+    <div class="io-banner" role="note" style="display:flex;gap:1rem;align-items:flex-start;padding:0.7rem 0.9rem;margin-bottom:1rem;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;line-height:1.4">
+      <span aria-hidden="true" style="font-size:1.2em">💡</span>
+      <div style="flex:1">
+        <strong>Come funziona questo step:</strong>
+        <span style="color:var(--fg-muted)">
+          <strong style="color:var(--brand-2)">INPUT</strong> = da dove peschi (seed URL, target asset selezionati).
+          <strong style="color:var(--brand-2)">OUTPUT</strong> = cosa produci (asset_type dei nuovi record).
+          I filtri "Tipo asset" che vedi nelle liste sono filtri di interfaccia (per ridurre la lista visibile), <em>non</em> il tipo prodotto.
+        </span>
+      </div>
+    </div>
 
     {# ============================================================
        SEZIONE 4: SCRAPING — seed queries, domini, max iter
@@ -192,7 +218,8 @@
       </label>
 
       <label style="margin-top:1rem">
-        🏷️ Tipo asset prodotto <span class="hint">(es. <code>ig_profile</code>, <code>palestra</code>, <code>follower</code>)</span>
+        🏭 Tipo asset OUTPUT
+        <span class="hint">— cosa <em>produrrà</em> questo task (es. <code>ig_profile</code>, <code>palestra</code>, <code>follower</code>). Cancella il campo e clicca per vedere i suggerimenti.</span>
         <input type="text" name="output_asset_type" maxlength="50"
                pattern="[a-z0-9_\-]{1,50}"
                value="{{ p.get('output_asset_type','') or '' }}"
@@ -519,12 +546,13 @@
        Quando non vuota: vince sui filtri legacy (sezione 6b) nei runner.
        ============================================================ #}
     <details class="collapsible-section dyn-section audience-section"
-             data-modes="outreach outreach_social outreach_whatsapp qualifier" open>
+             data-modes="outreach outreach_social outreach_whatsapp qualifier recon_social" open>
       <summary>
         🎯 Audience asset
         <span class="hint">
           ({{ (p.get('target_asset_ids') or [])|length }} selezionati —
           {% if p.get('agent_mode') == 'qualifier' %}asset DA VALUTARE
+          {% elif p.get('agent_mode') == 'recon_social' %}asset DA CUI partire (per follower_scrape: gli handle IG vengono letti dall'asset)
           {% else %}destinatari outreach{% endif %};
           se vuota, fallback ai filtri sotto)
         </span>
@@ -553,14 +581,55 @@
         <div id="audience-search-results"></div>
       </div>
 
-      {# Block 3: link a /qualified come bulk picker. #}
-      <div class="audience-bulk-add" style="margin-top:0.6rem">
-        <a href="/qualified?return_to_task={{ task.id }}"
+      {# Block 3: bulk picker. DUE vie:
+         - /qualified → solo asset gia' qualificati (ri-qualificare con altri tag,
+           o pescare audience pronte per outreach/recon)
+         - /assets   → TUTTI gli asset (per qualifier task: pescare candidate da
+           valutare per la prima volta)
+         Pre-filtro `has_social_platform` se follower_scrape (legato all'IG/FB/TT
+         del task — quando estenderemo il runner ad altre piattaforme basta
+         cambiare social_platform sul task). #}
+      {% set _is_follower_scrape = (p.get('agent_mode') == 'recon_social' and p.get('recon_mode') == 'follower_scrape') %}
+      {% set _target_plat = p.get('social_platform') or 'instagram' %}
+      {% set _qfilter = ('&has_social_platform=' ~ _target_plat) if _is_follower_scrape else '' %}
+      <div class="audience-bulk-add" style="margin-top:0.6rem;display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center">
+        <a href="/qualified?return_to_task={{ task.id }}{{ _qfilter }}"
            class="btn-secondary btn-small"
-           target="_blank">
-          📥 Aggiungi set da /qualified (apre picker in nuova tab)
+           target="_blank"
+           title="Solo asset gia' qualificati (con un qualifier_*). Adatto a outreach/recon o riqualificazione.">
+          📥 Da /qualified
         </a>
-        <span class="hint">torna a questo task per ritrovare l'audience unita.</span>
+        <a href="/assets?return_to_task={{ task.id }}{{ _qfilter }}"
+           class="btn-secondary btn-small"
+           target="_blank"
+           title="TUTTI gli asset del DB (anche non qualificati). Adatto a qualifier task per valutare nuove candidate.">
+          📦 Da /assets (tutti)
+        </a>
+        {# Svuota audience: utile per ricominciare la selezione da zero.
+           NB: NON usiamo un form annidato (HTML non lo permette: il browser
+           lo ignora e il submit andrebbe al form padre task-form). Usiamo
+           formaction/formmethod sul button per dirottare il submit di QUESTO
+           bottone all'endpoint clear_audience, ignorando l'action del form padre. #}
+        {% set _audience_count = (p.get('target_asset_ids') or [])|length %}
+        {% if _audience_count > 0 %}
+        <button type="submit"
+                formaction="/tasks/{{ task.id }}/clear_audience"
+                formmethod="post"
+                data-clear-count="{{ _audience_count }}"
+                onclick="return confirm('Svuotare l audience asset (' + this.dataset.clearCount + ' asset)? Il task resta ma riparti senza alcun asset selezionato.');"
+                class="btn-small btn-link"
+                style="color:var(--danger);border-color:var(--danger-border);background:var(--danger-soft)"
+                title="Rimuovi TUTTI gli asset selezionati (target_asset_ids = [])">
+          🗑️ Svuota audience ({{ _audience_count }})
+        </button>
+        {% endif %}
+        {% if _is_follower_scrape %}
+        <span class="hint" style="flex-basis:100%;font-weight:normal">
+          Pre-filtro attivo: asset con account <strong>{{ _target_plat }}</strong>
+        </span>
+        {% else %}
+        <span class="hint">apri in nuova tab, filtra, poi conferma; torna qui per vedere l'audience unita.</span>
+        {% endif %}
       </div>
 
       {# JS helper per HTMX add asset al task corrente. Definito qui (e non
@@ -607,9 +676,9 @@
        ============================================================ #}
     {% if legacy_contacts %}
     <details class="collapsible-section dyn-section audience-section"
-             data-modes="outreach outreach_social outreach_whatsapp" open>
+             data-modes="outreach outreach_social outreach_whatsapp recon_social">
       <summary>
-        🗂️ Contatti legacy
+        🗂️ Contatti legacy <span class="hint-tag">(legacy)</span>
         <span class="hint">
           ({{ legacy_contacts|length }} in target_contact_ids — fallback runtime,
           non visibili nella sezione asset; promuovi per gestione completa)
@@ -642,16 +711,19 @@
         </tbody>
       </table>
       {% if task and task.id %}
-      <form method="post" action="/tasks/{{ task.id }}/promote_legacy_contacts"
-            style="margin-top:0.6rem">
-        <button type="submit" class="btn-secondary btn-small">
+      {# NO form annidato (HTML non lo permette). formaction sul button. #}
+      <div style="margin-top:0.6rem">
+        <button type="submit" class="btn-secondary btn-small"
+                formaction="/tasks/{{ task.id }}/promote_legacy_contacts"
+                formmethod="post"
+                onclick="return confirm('Promuovere TUTTI i contatti legacy ad asset?');">
           📥 Promuovi tutti ad asset (sposta in target_asset_ids)
         </button>
         <span class="hint">
           crea un asset di tipo 'contact' per ognuno (se non già linkato),
           li sposta in target_asset_ids, svuota target_contact_ids.
         </span>
-      </form>
+      </div>
       {% endif %}
     </details>
     {% endif %}
@@ -1265,151 +1337,16 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
                   placeholder="fabio famoso&#10;paolo maugeri&#10;carlotta castoro">{{ seed_friends_text }}</textarea>
       </label>
 
-      {# === Target IG da contatti DB (solo follower_scrape) ===
-         Mostra una lista di contatti che hanno un URL Instagram nel
-         social_json. L'utente può spuntarli per usarli come "target accounts"
-         da cui scaricare i follower. Riusa `target_contact_ids` (lo stesso
-         campo usato per outreach_social, semantica polimorfa per agent_mode).
+      {# === Target IG via contatti DB — RIMOSSO (legacy) ===
+         La sezione che mostrava i contatti IG come target accounts
+         e usava `target_contact_ids` e stata RIMOSSA dal form.
+         Via raccomandata: usare la sezione "🎯 Audience asset" nello
+         step 4 "Pipeline I/O" con `target_asset_ids`. Il runner
+         follower_scrape supporta entrambi i campi (asset preferred).
+         Per task vecchi: la sezione "🗂️ Contatti legacy" nello step
+         4 resta visibile finche target_contact_ids non e svuotato
+         (con il bottone Promuovi).
          #}
-      {% set ig_contacts = contacts_by_platform.get('instagram', []) %}
-      {% set selected_ids_recon = p.get('target_contact_ids') or [] %}
-      {% set selected_set_recon = selected_ids_recon if selected_ids_recon is iterable else [] %}
-      <div style="margin-top:1.5rem;padding:0.8rem;border:1px solid var(--border);border-radius:6px;background:var(--surface-1);color:var(--fg)">
-        <strong>📇 Target IG da contatti del DB <span class="hint">(per <code>follower_scrape</code>)</span></strong>
-        <p class="muted small" style="margin:0.3rem 0 0.6rem 0">
-          Spunta i contatti Instagram di cui vuoi scaricare i follower. Per
-          ognuno il runner pesca l'handle IG dal <code>social_json</code> del
-          contatto e lo usa come target. <strong>Alternativa al seed</strong>
-          sopra: se selezioni contatti qui, gli handle vengono aggiunti
-          automaticamente alla lista dei target IG.
-          <br>Filtro: solo contatti con un URL <code>instagram.com</code>
-          nel campo <code>social_json</code>.
-        </p>
-        {% if ig_contacts %}
-          {# Asset_type distinct nei contatti IG (per popolare il filtro) #}
-          {% set ig_asset_types = (ig_contacts | map(attribute='asset_type') | unique | list | sort) %}
-
-          <div class="recon-target-filters" style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:center;margin-bottom:0.6rem;padding:0.5rem;background:var(--surface-2);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-            <label style="margin:0;display:inline-flex;align-items:center;gap:0.3rem">
-              <span class="hint">🏷️ Tipo asset:</span>
-              <select id="recon-ig-filter-type" style="padding:0.2rem 0.4rem;font-size:0.9rem">
-                <option value="">— tutti ({{ ig_contacts|length }}) —</option>
-                {% for at in ig_asset_types %}
-                  {% set cnt = (ig_contacts | selectattr('asset_type', 'equalto', at) | list | length) %}
-                  <option value="{{ at }}">{{ at }} ({{ cnt }})</option>
-                {% endfor %}
-              </select>
-            </label>
-            <label style="margin:0;display:inline-flex;align-items:center;gap:0.3rem;flex:1;min-width:200px">
-              <span class="hint">🔎 Cerca:</span>
-              <input type="search" id="recon-ig-filter-search"
-                     placeholder="nome, handle, tag value..."
-                     style="flex:1;padding:0.2rem 0.4rem;font-size:0.9rem">
-            </label>
-            <button type="button" class="btn-small" data-targets-toggle="all" data-target-platform="instagram">Tutti (visibili)</button>
-            <button type="button" class="btn-small btn-secondary" data-targets-toggle="none" data-target-platform="instagram">Nessuno</button>
-            <span class="muted small" data-targets-count="instagram">
-              {{ (ig_contacts | selectattr('id', 'in', selected_set_recon) | list | length) if selected_set_recon else 0 }}
-              / {{ ig_contacts | length }} selezionati
-            </span>
-          </div>
-
-          <div class="contact-targets-grid" id="recon-ig-targets-grid" style="max-height:380px;overflow-y:auto;border:1px solid var(--border);padding:0.4rem;background:var(--surface-1);color:var(--fg)">
-            {% for c in ig_contacts %}
-            {# Index searchable: nome + url + tag values (lowercase) #}
-            {% set search_idx = ((c.display_name or '') ~ ' ' ~ (c.url or '') ~ ' ' ~ (c.top_tags | map(attribute=1) | join(' ')))|lower %}
-            <label class="contact-target-row recon-ig-row"
-                   data-asset-type="{{ c.asset_type }}"
-                   data-search="{{ search_idx }}"
-                   style="display:block;padding:0.35rem 0.4rem;border-bottom:1px solid var(--border);cursor:pointer">
-              <div style="display:flex;align-items:start;gap:0.5rem">
-                <input type="checkbox" name="target_contact_ids" value="{{ c.id }}"
-                       data-target-checkbox="instagram"
-                       {% if c.id in selected_set_recon %}checked{% endif %}
-                       style="margin-top:0.25rem">
-                <div style="flex:1;min-width:0">
-                  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem">
-                    <strong>{{ c.display_name or c.url }}</strong>
-                    <span style="display:inline-block;background:var(--brand-soft);color:var(--brand-2);border:1px solid var(--brand-border);padding:0.1rem 0.4rem;border-radius:3px;font-size:0.75rem;white-space:nowrap"><code>{{ c.asset_type }}</code></span>
-                  </div>
-                  <small class="muted" style="display:block">
-                    #{{ c.id }} ·
-                    <a href="{{ c.url }}" target="_blank" rel="noopener" onclick="event.stopPropagation()">{{ c.url }}</a>
-                    {% if c.status %}· <code>{{ c.status }}</code>{% endif %}
-                  </small>
-                  {% if c.top_tags %}
-                  <div style="margin-top:0.15rem">
-                    {% for tk, tv in c.top_tags %}
-                    <span style="display:inline-block;background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);padding:0.08rem 0.4rem;border-radius:3px;margin-right:0.25rem;font-size:0.78rem"><strong>{{ tk }}:</strong> {{ tv|truncate(40, true, '…') }}</span>
-                    {% endfor %}
-                  </div>
-                  {% endif %}
-                </div>
-              </div>
-            </label>
-            {% endfor %}
-          </div>
-          <p class="muted small" style="margin-top:0.4rem">
-            💡 Usa il filtro <strong>Tipo asset</strong> per restringere e <strong>Cerca</strong>
-            per nome/handle/tag (es. cerca "Catania" se municipality:Catania è nei tag).
-            "Tutti" seleziona solo le righe attualmente visibili dopo i filtri.
-          </p>
-
-          <script>
-          (function () {
-            const grid = document.getElementById('recon-ig-targets-grid');
-            const fType = document.getElementById('recon-ig-filter-type');
-            const fSearch = document.getElementById('recon-ig-filter-search');
-            if (!grid || !fType || !fSearch) return;
-            const rows = Array.from(grid.querySelectorAll('.recon-ig-row'));
-            function apply() {
-              const t = fType.value.trim();
-              const s = fSearch.value.trim().toLowerCase();
-              let visibleN = 0;
-              rows.forEach(r => {
-                const atOk = !t || r.dataset.assetType === t;
-                const sOk = !s || (r.dataset.search || '').includes(s);
-                const show = atOk && sOk;
-                r.style.display = show ? '' : 'none';
-                if (show) visibleN++;
-              });
-            }
-            fType.addEventListener('change', apply);
-            fSearch.addEventListener('input', apply);
-            // Modifica "Tutti" per agire solo sulle righe visibili
-            const btnAll = grid.parentElement.querySelector('[data-targets-toggle="all"][data-target-platform="instagram"]');
-            const btnNone = grid.parentElement.querySelector('[data-targets-toggle="none"][data-target-platform="instagram"]');
-            if (btnAll) {
-              btnAll.addEventListener('click', (e) => {
-                e.preventDefault();
-                rows.forEach(r => {
-                  if (r.style.display !== 'none') {
-                    const cb = r.querySelector('input[type=checkbox]');
-                    if (cb) cb.checked = true;
-                  }
-                });
-              }, true);
-            }
-            if (btnNone) {
-              btnNone.addEventListener('click', (e) => {
-                e.preventDefault();
-                rows.forEach(r => {
-                  const cb = r.querySelector('input[type=checkbox]');
-                  if (cb) cb.checked = false;
-                });
-              }, true);
-            }
-          })();
-          </script>
-        {% else %}
-          <p class="muted small" style="margin:0">
-            Nessun contatto con URL <code>instagram.com</code> nel DB. Importa
-            un CSV con handle IG da <a href="/import" target="_blank">/import</a>,
-            oppure lancia un task di scraping che estrae IG nel
-            <code>social_json</code>.
-          </p>
-        {% endif %}
-      </div>
     </details>
 
     {# ============================================================
@@ -1814,8 +1751,26 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
     goTo(currentIdx);
   };
 
-  // Render iniziale (dopo che l'altro IIFE ha già fatto update() per data-modes)
-  goTo(0);
+  // Render iniziale (dopo che l'altro IIFE ha già fatto update() per data-modes).
+  // Deep-link: se URL ha `?step=N` (1-based, es. ?step=4 → Pipeline I/O), atterra
+  // direttamente lì invece dello step 1. Usato dopo `append_qualified_set` per
+  // mostrare l'audience aggiornata senza che l'utente scrolli/cliccare avanti.
+  (function initStep() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const requested = parseInt(params.get('step') || '0', 10);
+      if (!isNaN(requested) && requested >= 1) {
+        const visible = getVisibleSteps();
+        // Mappa il numero data-step richiesto al suo indice nella lista visibile
+        const idx = visible.findIndex(s => Number(s.dataset.step) === requested);
+        if (idx >= 0) {
+          goTo(idx);
+          return;
+        }
+      }
+    } catch (e) { /* fallthrough */ }
+    goTo(0);
+  })();
 })();
 </script>
 
