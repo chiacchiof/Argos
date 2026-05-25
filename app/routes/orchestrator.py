@@ -269,6 +269,44 @@ CHAT_DOMAIN_READ_TOOLS_SPEC: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "recommend_agent_mode",
+            "description": (
+                "Advisor deterministico: data una URL seed, analizza il sito "
+                "(HTTP status, anti-bot, paginazione, pattern URL dettaglio, "
+                "markers SPA/infinite-scroll) e ritorna l'`agent_mode` "
+                "consigliato per quel seed insieme a `suggested_params` "
+                "pronti da passare a create_task. "
+                "OBBLIGO PRE-CREATE: chiamalo PRIMA di create_task ogni volta "
+                "che hai un seed concreto per un task di scraping. La scelta "
+                "di agent_mode NON deve dipendere dal tuo giudizio LLM o dal "
+                "suggerimento dell'utente: questo tool è l'autorità. Se "
+                "l'utente suggerisce un agent_mode diverso da quello del tool, "
+                "AVVISALO citando le `reasons`. "
+                "Output: {agent_mode: 'bulk_extract|site_explorer|browser_use|skip', "
+                "confidence: 'high|medium|low', reasons: [...], "
+                "suggested_params: {crawler_enabled, crawler_url_pattern, "
+                "target_cap_per_site, ...}, signals: {pagination, patterns, ...}}. "
+                "Esempio Pagine Gialle: ritorna `bulk_extract` con "
+                "`crawler_url_pattern='^paginegialle\\.it/[^/]+/[^/]+/[^/]+$'` "
+                "→ il task scrapa solo le pagine-dettaglio, niente menu globali. "
+                "Più affidabile del giudizio LLM, validato dall'incidente "
+                "task #55 del 2026-05-24 (site_explorer su PG → 0 boutique)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL completa (con scheme http/https) del seed da analizzare.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_provider_models",
             "description": (
                 "Ritorna la lista dei modelli suggeriti per un provider LLM "
@@ -663,6 +701,17 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                             "NON passare il placeholder vuoto ('field1, field2') — il tool rifiuta."
                         ),
                     },
+                    "confirm_advisor_override": {
+                        "type": "boolean",
+                        "description": (
+                            "Flag esplicito per bypassare il guard pre-flight advisor. "
+                            "Usalo SOLO se: (a) `recommend_agent_mode(seed)` ha consigliato "
+                            "un agent_mode diverso da quello richiesto, (b) l'utente HA "
+                            "CONFERMATO esplicitamente in chat di voler procedere comunque. "
+                            "NON usarlo come scorciatoia per saltare l'advisor: il pre-flight "
+                            "è obbligatorio per task scraping con seed concreti."
+                        ),
+                    },
                     "input_artifact_path": {"type": "string"},
                     "message_subject": {"type": "string"},
                     "message_template": {
@@ -695,6 +744,26 @@ CHAT_DOMAIN_WRITE_TOOLS_SPEC: list[dict[str, Any]] = [
                     "crawler_max_depth": {
                         "type": "integer",
                         "description": "bulk_extract crawler: hop massimi dal seed (default 3).",
+                    },
+                    "crawler_url_pattern": {
+                        "type": "string",
+                        "description": (
+                            "bulk_extract crawler: regex Python che il crawler usa per "
+                            "decidere quali URL seguire (es. "
+                            "'^paginegialle\\.it/[^/]+/[^/]+/[^/]+$' restringe alle "
+                            "pagine-dettaglio di un slug a 3 segmenti). Ottenuto "
+                            "tipicamente da `recommend_agent_mode().suggested_params`."
+                        ),
+                    },
+                    "bulk_extraction_method": {
+                        "type": "string",
+                        "enum": ["llm_per_page", "css_selectors"],
+                        "description": (
+                            "bulk_extract: come estrarre i campi dalla pagina. "
+                            "'llm_per_page' (default) usa LLM per ogni pagina; "
+                            "'css_selectors' usa selettori CSS deterministici (richiede "
+                            "`bulk_css_selectors` valorizzato)."
+                        ),
                     },
                     "target_contact_ids": {
                         "type": "array",
@@ -2300,6 +2369,8 @@ async def _run_chat_tool(name: str, args: dict[str, Any]) -> str:
             return _tool_list_provider_models(args)
         if name == "inspect_url":
             return await _tool_inspect_url(args)
+        if name == "recommend_agent_mode":
+            return await _tool_recommend_agent_mode(args)
         if name == "get_site_intel":
             return _tool_get_site_intel(args)
         if name == "match_scraping_policies":
@@ -2510,6 +2581,65 @@ async def _tool_inspect_url(args: dict[str, Any]) -> str:
             "reason": f"errore durante l'ispezione: {type(e).__name__}: {e}",
         })
     return json.dumps({"ok": True, **result}, ensure_ascii=False)
+
+
+# Cache TTL per i verdetti dell'advisor. Popolata da `_tool_recommend_agent_mode`,
+# letta da `_tool_create_task` per il guard pre-flight. Globale-modulo, in-memory
+# (no DB): le analisi sono tecniche del sito, non PII, e ricalcolare a ogni
+# create_task pesa ~3-5s per URL (inspect_url + fetch 256KB + grouping).
+# TTL: 10 minuti. Sufficiente per coprire un turno orchestrator + qualche
+# ri-chiamata in update_task, senza tenere stale analysis se il sito cambia.
+_ADVISOR_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_ADVISOR_CACHE_TTL_S = 600
+_ADVISOR_CACHE_MAX_ENTRIES = 256
+
+
+def _advisor_cache_get(url: str) -> dict[str, Any] | None:
+    """Lookup cache: ritorna l'AgentModeAdvice.to_dict() se presente e fresco, None altrimenti."""
+    import time
+    entry = _ADVISOR_CACHE.get(url)
+    if entry is None:
+        return None
+    ts, payload = entry
+    if time.time() - ts > _ADVISOR_CACHE_TTL_S:
+        _ADVISOR_CACHE.pop(url, None)
+        return None
+    return payload
+
+
+def _advisor_cache_set(url: str, payload: dict[str, Any]) -> None:
+    """Salva l'advice in cache. Evict più vecchio se > max entries."""
+    import time
+    if len(_ADVISOR_CACHE) >= _ADVISOR_CACHE_MAX_ENTRIES:
+        # Evict the oldest entry (semplice, basta per la nostra scala)
+        oldest_url = min(_ADVISOR_CACHE.items(), key=lambda kv: kv[1][0])[0]
+        _ADVISOR_CACHE.pop(oldest_url, None)
+    _ADVISOR_CACHE[url] = (time.time(), payload)
+
+
+async def _tool_recommend_agent_mode(args: dict[str, Any]) -> str:
+    """Advisor deterministico: data una URL seed, ritorna l'agent_mode + suggested_params.
+    Popola anche la cache pre-flight letta da `_tool_create_task`.
+    Vedi `app.agent.agent_mode_advisor.recommend_agent_mode`."""
+    url = (args.get("url") or "").strip()
+    if not url:
+        return json.dumps({"ok": False, "reason": "url mancante"})
+    if not url.startswith(("http://", "https://")):
+        return json.dumps({
+            "ok": False,
+            "reason": f"URL deve iniziare con http:// o https://, ricevuto: {url!r}",
+        })
+    try:
+        from ..agent.agent_mode_advisor import recommend_agent_mode
+        advice = await recommend_agent_mode(url, timeout=12.0)
+    except Exception as e:
+        return json.dumps({
+            "ok": False,
+            "reason": f"errore durante l'analisi: {type(e).__name__}: {e}",
+        })
+    payload = advice.to_dict()
+    _advisor_cache_set(url, payload)
+    return json.dumps({"ok": True, **payload}, ensure_ascii=False)
 
 
 def _tool_list_provider_models(args: dict[str, Any]) -> str:
@@ -3191,6 +3321,93 @@ def _tool_create_task(args: dict[str, Any]) -> str:
                 ensure_ascii=False,
             )
 
+    # Guard pre-flight advisor: per task scraping con seed concreti,
+    # l'orchestrator DEVE aver chiamato `recommend_agent_mode(seed)` prima del
+    # create_task (vedi cache `_ADVISOR_CACHE`). Verifica che agent_mode richiesto
+    # sia compatibile con quello consigliato dall'advisor. Override possibile via
+    # `confirm_advisor_override=true` (per quando l'utente conferma esplicitamente
+    # una scelta diversa dall'advisor).
+    #
+    # Rationale: prima del fix (2026-05-24, task #55 PG fallito) la scelta di
+    # agent_mode dipendeva dal giudizio LLM, che è fragile. Ora la scelta è
+    # ingegnerizzata e l'orchestrator non può creare task scraping al buio.
+    pre_flight_seeds = [
+        str(s).strip() for s in (args.get("seed_queries") or [])
+        if str(s).strip().startswith(("http://", "https://"))
+    ]
+    needs_pre_flight = (
+        agent_mode in {"bulk_extract", "site_explorer", "browser_use"}
+        and len(pre_flight_seeds) > 0
+    )
+    override = bool(args.get("confirm_advisor_override"))
+    if needs_pre_flight and not override:
+        from ..agent.agent_mode_advisor import is_compatible_with_advice
+        first_seed = pre_flight_seeds[0]
+        cached = _advisor_cache_get(first_seed)
+        if cached is None:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": "pre_flight_required",
+                    "seed_to_inspect": first_seed,
+                    "user_action_required": (
+                        "Prima di create_task scraping con seed concreti DEVI chiamare "
+                        f"`recommend_agent_mode(url='{first_seed}')` per ottenere "
+                        "un agent_mode raccomandato deterministicamente. Il giudizio "
+                        "LLM da solo non basta: l'advisor analizza paginazione, "
+                        "pattern URL, anti-bot e ti dice quale agent_mode usare. "
+                        "Senza questo step, create_task viene rifiutato (incidente "
+                        "task #55 del 2026-05-24: site_explorer scelto per Pagine "
+                        "Gialle → 0 boutique estratti, era invece un caso bulk_extract). "
+                        "Dopo aver chiamato l'advisor, ripeti create_task con "
+                        "l'agent_mode + suggested_params suggeriti."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        advised_mode = (cached or {}).get("agent_mode", "")
+        if advised_mode == "skip":
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": "advisor_says_skip",
+                    "advisor_verdict": cached,
+                    "user_action_required": (
+                        f"L'advisor dice di SKIPPARE il seed `{first_seed}` "
+                        f"(motivi: {cached.get('reasons')}). "
+                        "Non creare il task: il seed è inaccessibile, bloccato o "
+                        "malformato. Avvisa l'utente e proponi un seed alternativo "
+                        "o agent_mode diverso (es. browser_use se anti-bot pesante). "
+                        "Per forzare comunque la creazione (sconsigliato), ripeti "
+                        "create_task con `confirm_advisor_override=true`."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if not is_compatible_with_advice(agent_mode, advised_mode):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": "agent_mode_mismatch_with_advisor",
+                    "requested_agent_mode": agent_mode,
+                    "advised_agent_mode": advised_mode,
+                    "advisor_verdict": cached,
+                    "user_action_required": (
+                        f"Hai chiesto `agent_mode='{agent_mode}'` ma l'advisor "
+                        f"per `{first_seed}` consiglia `{advised_mode}` "
+                        f"({cached.get('confidence')} confidence). Motivi: "
+                        f"{cached.get('reasons')}. Opzioni: "
+                        f"(A) usa l'agent_mode consigliato + i suggested_params "
+                        f"({cached.get('suggested_params')}) — consigliato; "
+                        f"(B) avvisa l'utente del mismatch e chiedi conferma "
+                        f"esplicita; (C) se l'utente conferma di voler comunque "
+                        f"`{agent_mode}`, ripeti create_task con "
+                        "`confirm_advisor_override=true`."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
     try:
         planned_kwargs: dict[str, Any] = dict(
             key=base_key[:60],
@@ -3217,6 +3434,13 @@ def _tool_create_task(args: dict[str, Any]) -> str:
             planned_kwargs["crawler_enabled"] = bool(args.get("crawler_enabled"))
         if args.get("crawler_max_depth") is not None:
             planned_kwargs["crawler_max_depth"] = max(1, int(args.get("crawler_max_depth") or 3))
+        if args.get("crawler_url_pattern") is not None:
+            v = str(args.get("crawler_url_pattern") or "").strip()
+            planned_kwargs["crawler_url_pattern"] = v or None
+        if args.get("bulk_extraction_method") is not None:
+            v = str(args.get("bulk_extraction_method") or "").strip()
+            if v in ("llm_per_page", "css_selectors"):
+                planned_kwargs["bulk_extraction_method"] = v
         # Audience selection (outreach_*)
         if args.get("target_contact_ids") is not None:
             planned_kwargs["target_contact_ids"] = [
@@ -4424,34 +4648,56 @@ def _chat_system_prompt(
         "  (d) Incidente di riferimento (2026-05-24, turno orchestrator id=58): con "
         "gpt-oss:20b il 3° create_task aveva JSON troncato → tool_error → il modello ha "
         "annunciato 3 task (47, 48, 49) ma solo 47 esisteva. Non ripetere quel pattern.\n\n"
-        "PRE-FLIGHT INSPECTION (regola tassativa quando l'utente fornisce URL specifiche):\n"
+        "PRE-FLIGHT OBBLIGATORIO (enforced dal codice — non opzionale):\n"
         "Quando l'utente menziona uno o piu' URL/domini concreti come seed per uno scraping, "
-        "pipeline pre-task in 3 step (chiamali in ordine, FERMATI al primo che da' un "
-        "segnale di stop):\n"
+        "pipeline pre-task in 4 step (chiamali in ordine, FERMATI al primo che da' un "
+        "segnale di stop). Lo step (3) è OBBLIGATORIO: il tool create_task rifiuta con "
+        "`pre_flight_required` se non è stato eseguito:\n"
         "  (0) `match_scraping_policies(url_or_domain)` per ciascun dominio: legge le "
         "regole policy salvate (manual/auto/community). Se ritorna una policy con "
         "`action='skip'` o `action='force_skip'`, SI FERMA QUI: NON creare il task, "
         "cita il `reason` della policy all'utente e proponi alternativa. Se ritorna "
-        "`action='force_browser'`, salta al passo 2 e forza agent_mode=browser_use.\n"
+        "`action='force_browser'`, salta al passo (3) e forza agent_mode=browser_use "
+        "(con `confirm_advisor_override=true` se l'advisor consiglia diversamente).\n"
         "  (1) `get_site_intel(domain)` PER OGNI dominio: legge la storia accumulata da "
         "Argos (success/fail counts, ultima strategia, blocchi noti). Se ritorna "
         "`intel.last_status='blocked'` o `fail_count > success_count` con un `last_seen_at` "
         "recente, AVVISA l'utente che il sito ha storia negativa e proponi alternativa "
         "(es. directory alternativa, recon_social) senza creare il task. Se ritorna "
         "`last_strategy_worked='X'`, riusa quella strategia. Se ritorna `intel=None` "
-        "(dominio mai visto), procedi al passo 2.\n"
-        "  (2) `inspect_url(url)` per probe HTTP live: ritorna `protection` (cloudflare/"
-        "datadome/None), `recommended_strategy`, `severity` (ok/warning/block). Usa il "
-        "verdict per (a) avvisare l'utente se un seed e' inutile/bloccato, (b) scegliere "
-        "agent_mode corretto.\n"
-        "Cita ALL'UTENTE i verdict di entrambi i tool nel messaggio (es. 'paginegialle.it: "
-        "mai testato in passato (no intel), probe live → 200 OK senza protezione "
-        "→ posso usare bulk_extract'). NON creare task su URL non ispezionati quando "
-        "l'utente ti ha dato URL specifiche.\n"
-        "Esempio pipeline COMPLETA per richiesta 'scrapa italiapokerclub.com':\n"
-        "  1. get_site_intel('italiapokerclub.com')\n"
-        "  2. inspect_url('https://italiapokerclub.com')\n"
-        "  3. Sintesi all'utente con verdict + proposta task O proposta alternative.\n\n"
+        "(dominio mai visto), procedi al passo (2).\n"
+        "  (2) `inspect_url(url)` per probe HTTP live (opzionale ma utile): ritorna "
+        "`protection` (cloudflare/datadome/None), `severity` (ok/warning/block). Usa il "
+        "verdict per avvisare l'utente se un seed è bloccato a livello HTTP.\n"
+        "  (3) **OBBLIGATORIO**: `recommend_agent_mode(url=seed)` per OGNI distinto "
+        "registrable_domain dei seed. È l'advisor deterministico che decide quale "
+        "agent_mode usare basandosi su segnali concreti: paginazione (`?page=N`), pattern "
+        "URL dettaglio, markers SPA/infinite-scroll, anti-bot. Ritorna "
+        "`{agent_mode, confidence, reasons, suggested_params}`. Esempio Pagine Gialle → "
+        "`{agent_mode: 'bulk_extract', confidence: 'medium', suggested_params: "
+        "{crawler_enabled: true, crawler_url_pattern: '^paginegialle\\.it/[^/]+/[^/]+/[^/]+$', "
+        "crawler_max_depth: 5}}`. PASSA `agent_mode` E `suggested_params` AL create_task "
+        "successivo. Senza questo step, create_task rifiuta con `pre_flight_required`.\n"
+        "REGOLE DI REAZIONE all'output dell'advisor:\n"
+        "  - `agent_mode='skip'` → NON creare il task. Avvisa l'utente del verdict e "
+        "proponi alternativa.\n"
+        "  - `confidence='high'` → fidati ciecamente dell'advisor. Usa esattamente "
+        "i suggested_params che ritorna.\n"
+        "  - `confidence='medium'/'low'` → procedi con l'agent_mode consigliato, ma "
+        "cita brevemente all'utente la confidence + il primo dei `reasons`.\n"
+        "  - L'advisor dice X ma l'utente nel prompt ha esplicitamente scritto Y (es. "
+        "'usa site_explorer'): se Y è un override consapevole, AVVISA l'utente del "
+        "disaccordo (es. 'l'advisor consiglia bulk_extract perché vede pattern URL "
+        "chiaro; tu hai chiesto site_explorer — sicuro?'). Se conferma, passa "
+        "`confirm_advisor_override=true` a create_task. ALTRIMENTI usa l'advised.\n"
+        "Cita ALL'UTENTE il verdict dell'advisor nel messaggio. NON creare task su URL "
+        "non analizzati quando l'utente ti ha dato URL specifiche.\n"
+        "Esempio pipeline COMPLETA per richiesta 'scrapa paginegialle.it/ricerca/X':\n"
+        "  1. match_scraping_policies('paginegialle.it')\n"
+        "  2. get_site_intel('paginegialle.it')\n"
+        "  3. recommend_agent_mode('https://paginegialle.it/ricerca/X/catania')\n"
+        "     → agent_mode='bulk_extract', suggested_params={crawler_enabled, crawler_url_pattern, ...}\n"
+        "  4. create_task(agent_mode='bulk_extract', seed_queries=[...], **suggested_params)\n\n"
         "Regole di reazione al verdict di inspect_url:\n"
         "- severity='block' (404, server error, anti-bot pesante con HTTP 4xx) → AVVERTI "
         "l'utente che quel seed non funzionera'. NON creare un task auto_extract/bulk_extract "
