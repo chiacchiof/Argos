@@ -83,7 +83,13 @@ async def lifespan(app: FastAPI):
         db_cloud.close_pool()
 
 
-app = FastAPI(title="Argos", lifespan=lifespan)
+app = FastAPI(
+    title="Argos",
+    lifespan=lifespan,
+    docs_url=None,        # disabilita Swagger UI: la app non e' un servizio API pubblico
+    redoc_url=None,       # disabilita ReDoc
+    openapi_url=None,     # niente schema OpenAPI esposto
+)
 
 
 # NOTA SULL'ORDINE DEI MIDDLEWARE:

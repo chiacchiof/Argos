@@ -1,7 +1,15 @@
 # Argos — Guida utente
 
-Questa guida e' rivolta all'utente standard di un tenant. Spiega che cos'e' la
-piattaforma, come si organizza il lavoro e come usare ogni pagina della UI.
+Questa guida copre **due profili di utente tenant**:
+
+1. **Operator** (`tenant_user`) — utente non tecnico. Vede una dashboard
+   semplificata con gli agenti pre-confezionati, una toolbox con
+   programmazione e cronologia, e una chat assistente. Sezione dedicata:
+   [UI Operator](#ui-operator).
+
+2. **Architect** (`tenant_architect`) — utente tecnico che costruisce gli
+   agenti, configura LLM, workflow, asset. Sezioni "classiche": Tasks,
+   Workflows, Assets, Qualified, Outreach, Inbox, Site Memory.
 
 Per le funzioni riservate al super-admin (creazione tenant, gestione utenti,
 filtri cross-tenant) vedi [ADMIN_GUIDE.md](ADMIN_GUIDE.md).
@@ -12,18 +20,20 @@ filtri cross-tenant) vedi [ADMIN_GUIDE.md](ADMIN_GUIDE.md).
 
 1. [Cos'e' Argos](#cose-argos)
 2. [Login e ruoli](#login-e-ruoli)
-3. [I 4 oggetti centrali](#i-4-oggetti-centrali)
-4. [Tasks — come creare e lanciare un'attivita'](#tasks)
-5. [Workflows — orchestrare task in cascata](#workflows)
-6. [Assets — il database centralizzato](#assets)
-7. [Qualified — selezionare audience dai risultati](#qualified)
-8. [Outreach — email, WhatsApp, social DM](#outreach)
-9. [Inbox — conversazioni con i contatti](#inbox)
-10. [Social Accounts — gli account "sender"](#social-accounts)
-11. [Orchestrator — la chat AI che pianifica](#orchestrator)
-12. [Site Memory — la memoria del framework](#site-memory)
-13. [Settings — chiavi LLM e account canali](#settings)
-14. [Glossario](#glossario)
+3. [UI Operator — dashboard semplificata](#ui-operator)
+4. [I 4 oggetti centrali](#i-4-oggetti-centrali)
+5. [Tasks — come creare e lanciare un'attivita'](#tasks)
+6. [Pubblicare un task / workflow come agente Operator](#pubblicare-come-agente)
+7. [Workflows — orchestrare task in cascata](#workflows)
+8. [Assets — il database centralizzato](#assets)
+9. [Qualified — selezionare audience dai risultati](#qualified)
+10. [Outreach — email, WhatsApp, social DM](#outreach)
+11. [Inbox — conversazioni con i contatti](#inbox)
+12. [Social Accounts — gli account "sender"](#social-accounts)
+13. [Orchestrator — la chat AI che pianifica](#orchestrator)
+14. [Site Memory — la memoria del framework](#site-memory)
+15. [Settings — chiavi LLM e account canali](#settings)
+16. [Glossario](#glossario)
 
 ---
 
@@ -55,15 +65,230 @@ Tutto questo lo configuri come **task** (singole attivita') o come **workflow**
 ## Login e ruoli
 
 - Vai a `/login`, inserisci email + password fornite dal tuo super-admin.
-- Dopo il login arrivi alla **dashboard** (`/`) con la lista dei tuoi task.
-- Per cambiare password o uscire: link in alto a destra.
+- Dopo il login arrivi alla **dashboard** appropriata al tuo ruolo
+  (vedi sotto).
+- Per cambiare password o uscire: clicca l'avatar in alto a destra → "Esci".
 
-Esistono due ruoli:
+Esistono **3 ruoli**:
 
-| Ruolo | Cosa vede |
-|---|---|
-| **tenant_user** | Solo i dati del proprio tenant. La maggior parte degli utenti rientra qui. |
-| **super_admin** | Tutti i tenant. Gestisce creazione tenant + utenti. Vedi [ADMIN_GUIDE.md](ADMIN_GUIDE.md). |
+| Ruolo | URL post-login | Cosa vede |
+|---|---|---|
+| **`tenant_user`** (operator) | `/home` | UI semplificata: griglia di "agenti" pronti, toolbox con stato live + agenda + storia, chat assistente. Non puo' creare task ne' modificare configurazioni. |
+| **`tenant_architect`** | `/` | UI completa attuale: tasks, workflows, assets, qualified, inbox, social, llm-keys, site_memory, settings. Costruisce gli agenti che gli operator useranno. |
+| **`super_admin`** | `/admin` | Tutto + gestione tenant + gestione utenti + filtri cross-tenant. Vedi [ADMIN_GUIDE.md](ADMIN_GUIDE.md). |
+
+Sotto al login le sezioni si dividono:
+
+- **Sei un Operator?** Salta direttamente a [UI Operator](#ui-operator).
+- **Sei un Architect?** Le sezioni che seguono (Tasks, Workflows, Assets, ecc.)
+  sono per te. Importante anche: [Pubblicare un task come agente Operator](#pubblicare-come-agente)
+  per esporre i task agli operator del tuo tenant.
+
+---
+
+<a id="ui-operator"></a>
+## UI Operator — dashboard semplificata
+
+URL: [`/home`](/home) (atterraggio automatico al login per gli operator)
+
+### Filosofia
+
+L'operator non costruisce gli agenti — li **usa**. La UI Operator non mostra
+mai termini come "task", "workflow", "agent_mode", "LLM", "credenziali". Tutto
+e' presentato come "agenti" gia' pronti, organizzati per categoria, che si
+"avviano" con un click + eventuali parametri.
+
+### Layout
+
+La dashboard ha due "plance" (canvas) affiancate:
+
+```
++-------------------------------------+----------------------+
+| Hero "Ciao, X. Cosa posso fare?"   |  🛠 STRUMENTI        |
++-------------------------------------+  [In corso][Agenda]  |
+| AGENTI DISPONIBILI                  |          [Storia]    |
+|                                     |                      |
+| Ricerca contatti                    | (tab corrente)       |
+| [agente] [agente] [agente] →        |                      |
+|                                     |                      |
+| Contatto e messaggi                 |                      |
+| [agente] [agente]                   |                      |
+|                                     |                      |
+| Analisi e qualifica                 |                      |
+| [agente] →                          |                      |
++-------------------------------------+----------------------+
+                                                  [💬 Chiedi] ← FAB chat
+```
+
+- **Canvas sinistra**: agenti raggruppati per categoria (Ricerca contatti,
+  Contatto e messaggi, Arricchimento dati, Analisi e qualifica, Risposte
+  automatiche, Altri). Ogni categoria mostra fino a 3 card alla volta;
+  per vedere le altre **scorri orizzontalmente** la riga (drag, swipe,
+  mouse wheel orizzontale, frecce tastiera dopo focus).
+- **Canvas destra (Strumenti)**: pannello sticky con 3 tab descritti sotto.
+
+### Card "agente"
+
+Ogni card mostra:
+- Icona + categoria (badge TASK in violetto o WORKFLOW in indaco)
+- Nome e descrizione user-friendly (decisi dall'architect quando pubblica)
+- Pulse blu in alto-sinistra se ci sono esecuzioni in corso
+- 2 bottoni: **Avvia** (lancia subito) e **Dettagli** (apre modal read-only)
+
+Click sulla card (fuori dai bottoni) → apre comunque il modal Dettagli.
+
+### Lancio agente
+
+1. Click **Avvia** → modal con (eventuali) parametri richiesti
+2. Compila i campi obbligatori (se previsti)
+3. Click **Avvia agente** → toast verde di conferma in basso a destra
+4. L'agente compare nel pannello **Strumenti → In corso** entro 3 secondi
+
+Alcuni agenti possono partire **senza parametri** — in quel caso il modal
+ha solo "Avviare {nome}?" con conferma.
+
+### Strumenti — Tab 1: In corso
+
+Mostra i job che stanno girando nel tuo tenant:
+
+- Nome agente + icona
+- **Timer durata** che si aggiorna ogni secondo (formato MM:SS)
+- **Barra di progresso** (indeterminate se non ci sono metriche, oppure
+  determinate con % e label di step)
+- **Stat snippet**: ultima riga rilevante del log (es. "12 contatti trovati")
+- Stato pill: `in esecuzione` / `in coda` / `in pausa`
+- Bottone **Dettagli** → modal con cronologia log + file generati
+
+Sotto, sezione **"Completati di recente"** con le ultime 3 esecuzioni
+terminate (ultimi 24h):
+
+- Badge stato (`✓ Completato` verde / `✗ Errore` rosso / `⊘ Annullato`)
+- Durata totale
+- Bottone **Risultati** → modal con file generati
+
+Polling automatico ogni 3 secondi. Quando un job termina mentre stai sulla
+pagina, ricevi un **toast notification** in basso a destra (`✓ Test Ricerca
+Web completato`).
+
+### Strumenti — Tab 2: Agenda
+
+Lista degli agenti **pianificati** (con cron expression valorizzata).
+Per ciascuno:
+- Nome agente
+- **Prossima esecuzione** in linguaggio naturale (es. "oggi alle 09:00",
+  "domani alle 14:00", "lun alle 09:00", "fra 3 giorni"). Calcolata con
+  croniter.
+- Bottone **Modifica** → modal scheduling pre-popolato
+
+Bottone in fondo: **+ Pianifica un agente** → modal per nuovo schedule:
+
+1. Scegli quale agente pianificare (dropdown)
+2. Scegli il preset cron friendly:
+   - "Ogni giorno alle 9:00"
+   - "Lun-Ven alle 9:00"
+   - "Lunedì alle 14:00"
+   - "Ogni 6 ore"
+   - "Il 1 del mese a mezzanotte"
+3. Oppure scrivi manualmente la cron expression nel campo (validata server-side)
+4. Click **Salva** → APScheduler attiva automaticamente la pianificazione
+
+Per **rimuovere** una pianificazione: apri il modal Modifica → click
+**Rimuovi pianificazione** (rosso). Lo schedule viene cancellato (cron=NULL)
+e l'agente non parte piu' automaticamente.
+
+### Strumenti — Tab 3: Storia
+
+Statistiche degli ultimi **7 giorni**:
+
+- KPI in alto: **N esecuzioni totali** e **% successo**
+- Bar chart: 7 colonne (1 per giorno, Lun-Dom) con stack di esecuzioni
+  completate (verde) ed errori (rosso). Hover su una barra per vedere il
+  dettaglio del giorno.
+
+Utile per capire a colpo d'occhio se la macchina sta lavorando bene oppure
+ci sono giornate con tanti errori da indagare.
+
+### Chat assistente (drawer)
+
+In basso a destra c'e' un **FAB rotondo "💬 Chiedi"**. Click → drawer
+slide-in da destra con la chat. Caratteristiche:
+
+- L'assistente sa cosa puoi fare nella dashboard, gli agenti disponibili,
+  e ti aiuta a scegliere quello giusto per il tuo obiettivo.
+- **Non puo' creare nuovi agenti** ne' modificare configurazioni — quello
+  e' lavoro dell'architect.
+- Chat **persistente** in DB: chiudi il drawer, riapri, ritrovi la
+  conversazione.
+- **Minimizza** col chevron `>` in alto: il drawer scompare ma il FAB
+  riappare per riaprirlo. Stato salvato in localStorage.
+- ESC chiude il drawer.
+- Suggerimenti pronti per cominciare ("Che agenti ho a disposizione?",
+  "Quale agente uso per trovare contatti?", "Come vedo i risultati?").
+
+### Nav top-bar Operator
+
+- **Dashboard** → `/home`
+- **Lead** → `/leads` (tutti i contatti/profili estratti)
+- **Qualificati** → `/leads/qualified` (audience pronte per outreach)
+- **Messaggi** → `/messages` (inbox del tenant)
+- Avatar a destra → dropdown con tuo nome + email + tenant + **Esci**
+
+### Pagina Lead (`/leads` e `/leads/qualified`)
+
+Vista **read-only** dei contatti/profili generati dagli agenti del tenant.
+Stessi filtri della pagina architect:
+
+- **Ricerca testuale** full-text (nome, email, titolo)
+- **Tipo asset** (ig_profile, business_page, ecc.)
+- **Stato** (nuovo, qualificato, scartato, archiviato)
+- **Score minimo** per qualificati (1-10)
+- **Filtro qualifier** (quale qualifier ha marcato l'asset)
+- **Solo con contatti** / **Solo con social** (toggle)
+- **Tag avanzati**: 6 slot key=value in AND o OR, con autocomplete delle
+  chiavi tag in uso (collassabile in `▸ Filtri avanzati per tag`)
+
+Ogni lead e' una card con:
+- Titolo + sottotitolo + tipo
+- Chip per ogni canale contatto (email, WhatsApp, Telegram, link profilo)
+- Badge stato colorato
+- Data di creazione
+- Bottone **Opt-out** → con conferma, marca il lead come "da non contattare"
+  (outreach_status='optedout'). I lead opt-out vengono mostrati con opacita'
+  ridotta + badge `⊘ Opt-out` e non vengono mai piu' contattati dagli agenti
+  di outreach.
+
+Paginazione 60 per pagina, preserva i filtri.
+
+### Pagina Messaggi (`/messages`)
+
+Inbox semplificata: thread di conversazione con i contatti raggiunti dagli
+agenti outreach. Filtri minimi: canale (email/WA/Telegram/IG/...) + stato
+(aperti/con risposta/opt-out).
+
+Click su un thread → cronologia completa + form di reply.
+
+### Risultati di un agente (modal dettagli job)
+
+Click **Dettagli** o **Risultati** su un job (live o completato) → modal
+con:
+
+- Header: badge stato + durata + numero esecuzione
+- **Box errore** rosso se il job e' in stato error
+- **Lista file generati**: report.md, profiles.jsonl, qualified.csv, log...
+  - Bottone **Apri** per i file visualizzabili (md/json/csv/txt/log)
+  - Bottone **Download** per altri formati
+- **Tail del log**: ultime 20 righe del log per debug visivo
+
+Click **Apri** su un file → modal viewer dedicato:
+
+- **Markdown** → reso a HTML (titoli, code blocks, tabelle, link)
+- **JSON / JSONL** → pretty-printed con highlighting
+- **CSV** → tabella con sticky header
+- **TXT / log** → testo monospace
+- Bottoni in fondo: `← Torna ai dettagli` e `Scarica`
+
+Tutto questo riusa gli stessi viewer della pagina architect ma in stile
+operator (modal in-page, no sidebar).
 
 ---
 
@@ -145,6 +370,103 @@ Nella lista principale puoi filtrare per:
 - **Status_tag**: il task ha esito positivo / negativo / in corso.
 - **Author**: "I miei task" (default) vs "Tutto il tenant".
 - **Search**: ricerca testuale su nome + objective + agent_mode.
+
+Nella lista dei task, quelli pubblicati come agente Operator mostrano un
+badge `🤖 agente` accanto al nome (idem per workflow nella lista
+[`/workflows`](/workflows)).
+
+---
+
+<a id="pubblicare-come-agente"></a>
+## Pubblicare un task / workflow come agente Operator
+
+I tuoi colleghi con ruolo `tenant_user` (operator) **non vedono** la lista
+task. Vedono solo la dashboard [`/home`](/home) con gli **"agenti pubblicati"**.
+Per esporre un task o workflow agli operator, devi pubblicarlo esplicitamente.
+
+### Come pubblicare
+
+1. Apri il detail del task: `/tasks/{id}` (o del workflow: `/workflows/{id}`)
+2. Cerca il box `▸ Non pubblicato` sopra "⚙️ Configurazione" — espandilo
+3. ☑ Spunta **"Mostra questo task come agente nella dashboard operator"**
+4. Compila i 5 campi della "carta d'identita' Operator":
+
+| Campo | Esempio | Note |
+|---|---|---|
+| **Nome visibile** | "Trova clienti farmacia" | Quello che l'operator legge sulla card. User-friendly, niente gergo. |
+| **Categoria** | "Ricerca contatti" | Dropdown: Ricerca contatti / Contatto e messaggi / Arricchimento dati / Analisi e qualifica / Risposte automatiche / Altri |
+| **Icona** | 🎯 Target | Dropdown con icone Lucide preconfezionate |
+| **Descrizione** | "Cerca farmacie nella citta indicata con email pubbliche" | 1-2 frasi senza gergo tecnico, max 240 char |
+| **Parametri richiesti al lancio (JSON)** | (vedi sotto) | Schema dei campi che l'operator deve compilare prima del lancio |
+
+5. Click **Salva pubblicazione** → badge `✓ Pubblicato come agente`
+6. Per ritirare: bottone **Ritira pubblicazione** sotto il form (rosso)
+
+### Schema parametri JSON
+
+Il campo "Parametri richiesti al lancio" e' una lista JSON che descrive i
+campi del modal di Avvio. Esempio:
+
+```json
+[
+  {
+    "name": "city",
+    "type": "text",
+    "label": "Citta",
+    "required": true,
+    "placeholder": "es. Milano"
+  },
+  {
+    "name": "max_results",
+    "type": "number",
+    "label": "Numero massimo risultati",
+    "default": "50"
+  },
+  {
+    "name": "country",
+    "type": "select",
+    "label": "Paese",
+    "options": ["it", "fr", "de"],
+    "default": "it"
+  }
+]
+```
+
+Tipi supportati al MVP: `text`, `textarea`, `number`, `select` (con
+`options`), `checkbox`.
+
+**Lascia `[]`** (lista vuota) se l'agente non ha parametri runtime — il
+modal mostrera' solo "Avviare {nome}?" e basta.
+
+### Workflow
+
+Per i workflow il flusso e' identico (stessa form nella tab Configurazione
+del detail workflow). L'icona di default suggerita e' `🔀 Workflow` ma puoi
+sceglierne un'altra. I workflow pubblicati appaiono nella griglia Operator
+con badge `WORKFLOW` (indaco) invece di `TASK` (violetto).
+
+### Esecuzione dal lato Operator
+
+Quando l'operator clicca **Avvia** sulla card:
+
+1. Il modal di lancio mostra solo i campi che hai dichiarato in `agent_input_schema`.
+2. L'operator compila + click "Avvia agente".
+3. Il sistema crea un job. **Importante**: il job eredita `created_by_user_id`
+   dal task (cioe' DA TE, l'architect), non dall'operator. Cosi' il runner
+   usa le tue credenziali LLM e i tuoi account email/social, non quelli
+   dell'operator (che ne ha zero).
+4. L'operator vede il progresso nel pannello "Lavoro in corso".
+5. A fine job, l'operator vede toast `✓ Completato` o `✗ Errore`.
+
+I file generati (`report.md`, `profiles.jsonl`, ecc.) sono nella stessa
+cartella `data/results/{task_id}/` come per le tue esecuzioni.
+
+### Tip
+
+Mantieni la libreria dei tuoi agenti pubblicati **piccola e curata**.
+Meglio 5 agenti pubblicati che fanno bene una cosa che 50 agenti
+sperimentali. Gli agenti pubblicati sono il "menu" che presenti
+all'operator: vanno scelti con attenzione.
 
 ---
 
@@ -516,13 +838,18 @@ Vedi sopra in [Social Accounts](#social-accounts).
 |---|---|
 | **tenant** | Un'azienda / cliente isolato. I dati di un tenant non sono visibili agli altri. |
 | **super_admin** | Utente con accesso cross-tenant. Gestisce creazione tenant + utenti. |
-| **tenant_user** | Utente normale. Vede solo il suo tenant. |
+| **tenant_architect** | Utente tecnico del tenant. Costruisce task/workflow, pubblica agenti, configura LLM. Vede UI completa a `/`. |
+| **tenant_user** (operator) | Utente non tecnico del tenant. Vede solo gli agenti pubblicati dall'architect. UI semplificata a `/home`. |
+| **agente pubblicato** | Task o workflow marcato `is_published_agent=TRUE` con metadata user-friendly (nome, descrizione, icona, parametri JSON). E' quello che vede l'operator nella dashboard. |
+| **toolbox** | La canvas destra della dashboard operator. 3 tab: In corso (live jobs), Agenda (scheduling cron), Storia (analytics 7gg). |
 | **task** | Unita' di lavoro autonoma con un agente AI. |
 | **workflow** | DAG di task in cascata. |
 | **job** | Una singola esecuzione (run) di un task. |
-| **asset** | Riga di dato strutturato (profilo / contatto / link). |
+| **asset** | Riga di dato strutturato (profilo / contatto / link). Per l'operator si chiama "lead". |
 | **audience** | Set di asset selezionati per un outreach. |
-| **agent_mode** | Il "motore" di un task (browser_use / bulk_extract / qualifier / ...). |
+| **opt-out** | Marca un asset come `outreach_status='optedout'`: nessun agente outreach lo contatta piu'. Bottone su ogni card lead. |
+| **cron** | Espressione di scheduling ricorrente (es. `0 9 * * *` = ogni giorno alle 9:00). Settata sul task da Agenda Operator o da task detail Architect. |
+| **agent_mode** | Il "motore" di un task (browser_use / bulk_extract / qualifier / ...). Nascosto all'operator. |
 | **runner** | Il codice Python che esegue un agent_mode. |
 | **provider/model** | LLM scelto per il task (ollama+qwen / openai+gpt-4o-mini / ...). |
 | **qualifier** | Task che marca asset come qualified/rejected con score 1-10. |
@@ -530,9 +857,11 @@ Vedi sopra in [Social Accounts](#social-accounts).
 | **inbox thread** | Una conversazione (canale + contatto). |
 | **site memory** | Memoria persistente per dominio (pattern, playbook, intelligence, policy). |
 | **community pool** | Pool cross-tenant di intelligence/policy condivise (opt-in via flag). |
-| **orchestrator** | Chat AI che pianifica + crea task automaticamente. |
+| **orchestrator** | Chat AI che pianifica + crea task automaticamente. Per operator: solo lettura, no creazione. |
 | **artifact passing** | Meccanismo che permette al task downstream di ricevere output del task upstream in un workflow. |
 | **playbook** | Istruzioni testuali "come si estrae da X" scritte da un agente potente per uno debole. |
+| **FAB** | Floating Action Button: il bottone tondo "💬 Chiedi" in basso a destra che apre la chat assistente dell'operator. |
+| **canvas** | Plancia di lavoro: i container con background + bordo + ombra che separano sezioni della dashboard operator (sinistra: agenti, destra: toolbox). |
 
 ---
 

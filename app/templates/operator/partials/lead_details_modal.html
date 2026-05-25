@@ -1,0 +1,166 @@
+{# Modal dettaglio lead (read-only) — caricato da HTMX click sulla card.
+   Variabili: asset (dict), asset_tags (list di {tag_key,tag_value}),
+   socials (list di {platform,handle/url,...}), source_task (dict|None). #}
+<div class="op-modal-backdrop" onclick="if(event.target===this) opCloseModal()">
+  <div class="op-modal op-modal-lead" role="dialog" aria-modal="true" aria-labelledby="op-lead-title">
+
+    <header class="op-modal-head">
+      <span class="op-modal-icon">
+        {% if asset.asset_type and 'profile' in asset.asset_type %}👤
+        {% elif asset.asset_type and 'business' in asset.asset_type %}🏢
+        {% else %}📋{% endif %}
+      </span>
+      <div class="op-modal-head-text">
+        <div class="op-modal-kind-row">
+          {% if asset.asset_type %}<span class="op-modal-category">{{ asset.asset_type }}</span>{% endif %}
+          {% if asset.outreach_status == 'optedout' %}
+            <span class="op-lead-status op-lead-status-optout">⊘ Opt-out</span>
+          {% elif asset.status %}
+            <span class="op-lead-status op-lead-status-{{ asset.status }}">{{ asset.status }}</span>
+          {% endif %}
+        </div>
+        <h2 id="op-lead-title">{{ asset.title or asset.profile_url or 'Lead #' ~ asset.id }}</h2>
+        {% if asset.subtitle %}
+        <p class="op-modal-subtitle">{{ asset.subtitle }}</p>
+        {% endif %}
+      </div>
+      <button type="button" class="op-modal-close" onclick="opCloseModal()" aria-label="Chiudi">
+        <svg><use href="#op-i-close"/></svg>
+      </button>
+    </header>
+
+    <div class="op-modal-body">
+
+      {# Sezione 1: contatti #}
+      <section class="op-details-section">
+        <h3>Contatti</h3>
+        <dl class="op-details-list">
+          {% if asset.email %}
+          <dt>Email</dt><dd><a href="mailto:{{ asset.email }}" class="op-link">{{ asset.email }}</a></dd>
+          {% endif %}
+          {% if asset.whatsapp %}
+          <dt>WhatsApp</dt><dd>{{ asset.whatsapp }}{% if asset.whatsapp_consent == 'optedout' %} <span class="op-lead-status op-lead-status-optout">opt-out</span>{% endif %}</dd>
+          {% endif %}
+          {% if asset.telegram %}
+          <dt>Telegram</dt><dd>{{ asset.telegram }}</dd>
+          {% endif %}
+          {% if asset.profile_url %}
+          <dt>Profilo</dt><dd><a href="{{ asset.profile_url }}" target="_blank" rel="noopener" class="op-link">{{ asset.profile_url }}</a></dd>
+          {% endif %}
+          {% if asset.phone %}
+          <dt>Telefono</dt><dd>{{ asset.phone }}</dd>
+          {% endif %}
+          {% if not (asset.email or asset.whatsapp or asset.telegram or asset.profile_url or asset.phone) %}
+          <dt>—</dt><dd class="op-details-muted">Nessun contatto registrato.</dd>
+          {% endif %}
+        </dl>
+      </section>
+
+      {# Sezione 2: social #}
+      {% if socials %}
+      <section class="op-details-section">
+        <h3>Social</h3>
+        <ul class="op-job-files">
+          {% for s in socials %}
+          <li class="op-job-file">
+            <span class="op-job-file-icon">
+              {% if s.platform == 'instagram' %}📷
+              {% elif s.platform == 'tiktok' %}🎵
+              {% elif s.platform == 'facebook' %}👥
+              {% elif s.platform == 'linkedin' %}💼
+              {% else %}🔗{% endif %}
+            </span>
+            <span class="op-job-file-name">
+              {{ s.platform or 'social' }}{% if s.handle %} · {{ s.handle }}{% endif %}
+              {% if s.followers %}<span class="op-job-file-size">{{ s.followers }} follower</span>{% endif %}
+            </span>
+            {% if s.url %}
+            <a href="{{ s.url }}" target="_blank" rel="noopener" class="op-btn-mini">Apri</a>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
+
+      {# Sezione 3: tag #}
+      {% if asset_tags %}
+      <section class="op-details-section">
+        <h3>Tag ({{ asset_tags|length }})</h3>
+        <div class="op-lead-tags">
+          {% for t in asset_tags %}
+          <span class="op-lead-tag-chip">
+            <strong>{{ t.tag_key }}</strong>
+            <span class="op-lead-tag-eq">=</span>
+            <span>{{ t.tag_value }}</span>
+          </span>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+
+      {# Sezione 4: origine #}
+      <section class="op-details-section">
+        <h3>Origine</h3>
+        <dl class="op-details-list">
+          {% if source_task %}
+          <dt>Agente di origine</dt><dd>{{ source_task.name }} <code>#{{ source_task.id }}</code></dd>
+          {% endif %}
+          {% if asset.created_at %}
+          <dt>Creato il</dt><dd>{{ asset.created_at[:16] | replace('T', ' ') }}</dd>
+          {% endif %}
+          {% if asset.updated_at %}
+          <dt>Ultimo aggiornamento</dt><dd>{{ asset.updated_at[:16] | replace('T', ' ') }}</dd>
+          {% endif %}
+        </dl>
+      </section>
+
+      {# Sezione 5: outreach status #}
+      {% if asset.outreach_status or asset.last_contacted_at %}
+      <section class="op-details-section">
+        <h3>Stato outreach</h3>
+        <dl class="op-details-list">
+          {% if asset.outreach_status %}
+          <dt>Status</dt><dd><code>{{ asset.outreach_status }}</code></dd>
+          {% endif %}
+          {% if asset.last_contacted_at %}
+          <dt>Ultimo contatto</dt><dd>{{ asset.last_contacted_at[:16] | replace('T', ' ') }}</dd>
+          {% endif %}
+        </dl>
+      </section>
+      {% endif %}
+
+      {# Sezione 6: dati raw (per power user, collapsed) #}
+      {% if asset.raw_json %}
+      <details class="op-details-section">
+        <summary><h3 style="display:inline; margin:0;">Dati grezzi <small class="op-details-muted" style="font-weight: normal">(JSON)</small></h3></summary>
+        <pre class="op-job-log" style="max-height: 300px;">{{ asset.raw_json }}</pre>
+      </details>
+      {% endif %}
+
+    </div>
+
+    <footer class="op-modal-foot">
+      <button type="button" class="op-btn-secondary" onclick="opCloseModal()">Chiudi</button>
+      {% if asset.outreach_status != 'optedout' %}
+      <form method="post" action="/leads/{{ asset.id }}/optout" style="display:inline"
+            onsubmit="return confirm('Escludere questo lead dall\\'outreach?');">
+        <button type="submit" class="op-btn-secondary" style="color: var(--op-error); border-color: rgba(248,113,113,0.3);">
+          ⊘ Opt-out
+        </button>
+      </form>
+      {% endif %}
+    </footer>
+  </div>
+</div>
+
+<script>
+  (function() {
+    window.opCloseModal = function() {
+      var c = document.getElementById('op-modal-container');
+      if (c) c.innerHTML = '';
+    };
+    function esc(e) { if (e.key === 'Escape') window.opCloseModal(); }
+    document.addEventListener('keydown', esc, { once: true });
+  })();
+</script>

@@ -748,11 +748,36 @@ CREATE TABLE IF NOT EXISTS messages (
 -- ============================================================
 -- Orchestrator chat
 -- ============================================================
+-- ============================================================
+-- Chat conversations (operator UI: piu' thread paralleli per utente)
+-- Definita PRIMA di orchestrator_messages perche' quest'ultima ha una FK
+-- nullable su chat_conversations.id. Limite 5 attive per utente enforced
+-- lato applicazione (MAX_CHAT_CONVERSATIONS_PER_USER).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS chat_conversations (
+  id BIGSERIAL PRIMARY KEY,
+  tenant_id BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL DEFAULT 'Nuova conversazione',
+  is_active INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+  last_message_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chat_conv_user ON chat_conversations(user_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_conv_tenant ON chat_conversations(tenant_id);
+
+-- ============================================================
+-- Orchestrator messages
+-- conversation_id IS NULL = chat legacy/architect (singolo thread per tenant).
+-- conversation_id != NULL = appartiene a una chat_conversations operator.
+-- ============================================================
 CREATE TABLE IF NOT EXISTS orchestrator_messages (
   id BIGSERIAL PRIMARY KEY,
   role TEXT NOT NULL,
   body TEXT NOT NULL,
   metadata_json TEXT,
+  conversation_id BIGINT REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL
 );
 
@@ -6530,39 +6555,147 @@ def save_channel_config(
 # Orchestrator persistent chat
 # ===========================================================================
 
+def _is_user_operator(user_id: int) -> bool:
+    """Lookup veloce: ritorna True se l'utente ha role='tenant_user'."""
+    if user_id is None:
+        return False
+    with connect() as con:
+        r = con.execute(
+            "SELECT role FROM users WHERE id = %s", (user_id,)
+        ).fetchone()
+    return bool(r and r["role"] == "tenant_user")
+
+
+def _uses_chat_conversations(user_id: int) -> bool:
+    """Ritorna True se l'utente ha conversation scoping attivo (operator OR
+    architect). I super_admin restano sulla chat legacy globale (NULL)."""
+    if user_id is None:
+        return False
+    with connect() as con:
+        r = con.execute(
+            "SELECT role FROM users WHERE id = %s", (user_id,)
+        ).fetchone()
+    return bool(r and r["role"] in ("tenant_user", "tenant_architect"))
+
+
+def _auto_resolve_operator_conversation(user_id: int, tenant_id: int) -> int | None:
+    """Per un user operator, ritorna l'id della conversation attiva (auto-creando
+    la prima se nessuna esiste). Ritorna None in caso di errore."""
+    try:
+        with connect() as con:
+            r = con.execute(
+                "SELECT id FROM chat_conversations "
+                "WHERE user_id = %s AND tenant_id = %s AND is_active = 1 "
+                "ORDER BY id DESC LIMIT 1",
+                (user_id, tenant_id),
+            ).fetchone()
+            if r:
+                return int(r["id"])
+        # Nessuna attiva → autocrea la prima (titolo "Conversazione 1")
+        return create_chat_conversation(
+            user_id, title="Conversazione 1", tenant_id=tenant_id
+        )
+    except Exception:
+        log.exception("auto-resolve operator conversation failed")
+        return None
+
+
 def add_orchestrator_message(
     role: str,
     body: str,
     metadata: dict[str, Any] | None = None,
     *,
     tenant_id: Any = _UNSET,
+    conversation_id: int | None = None,
+    user_id: Any = _UNSET,
 ) -> int:
+    """Inserisce un messaggio nella chat dell'orchestrator.
+
+    Comportamento conversation_id:
+    - Esplicito (int): salva nella conversation indicata.
+    - Esplicito None (default): auto-rileva. Se l'utente corrente
+      (`current_user_id()`) e' operator (`role='tenant_user'`), risolve la sua
+      conversation attiva (o ne crea una). Altrimenti = chat legacy (NULL).
+
+    `user_id` opzionale: se _UNSET, legge dal ContextVar (`current_user_id()`).
+    """
     tenant_id = _resolve_tenant(tenant_id)
+    if user_id is _UNSET:
+        user_id = current_user_id()
+    # Auto-resolve conversation_id per utenti con scope conversation (operator
+    # e architect). Super_admin restano sulla chat legacy (conversation_id NULL).
+    if conversation_id is None and user_id is not None and tenant_id is not None:
+        if _uses_chat_conversations(user_id):
+            conversation_id = _auto_resolve_operator_conversation(user_id, tenant_id)
     payload = json.dumps(metadata or {})
     with connect() as con:
         cur = con.execute(
             """
-            INSERT INTO orchestrator_messages (role, body, metadata_json, tenant_id, created_at)
-            VALUES (%s, %s, %s, %s, %s) RETURNING id
+            INSERT INTO orchestrator_messages
+              (role, body, metadata_json, tenant_id, conversation_id, user_id, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
-            (role, body, payload, tenant_id, now_iso()),
+            (role, body, payload, tenant_id, conversation_id, user_id, now_iso()),
         )
+        # Se associato a una conversation, aggiorna last_message_at.
+        if conversation_id is not None:
+            con.execute(
+                "UPDATE chat_conversations SET last_message_at = %s WHERE id = %s",
+                (now_iso(), conversation_id),
+            )
         return int(cur.fetchone()['id'])
 
 
 def list_orchestrator_messages(
-    limit: int = 100, tenant_id: Any = _UNSET
+    limit: int = 100,
+    tenant_id: Any = _UNSET,
+    conversation_id: Any = _UNSET,
 ) -> list[dict[str, Any]]:
+    """Ritorna i messaggi della chat orchestrator.
+
+    Comportamento `conversation_id`:
+    - Esplicito int: ritorna solo i messaggi di quella conversation.
+    - Esplicito None: ritorna SOLO i messaggi legacy (conversation_id IS NULL).
+    - `_UNSET` (default): auto-detect. Se l'utente corrente e' operator,
+      ritorna i messaggi della sua conversation attiva (vuoto se nessuna).
+      Altrimenti = chat legacy (NULL).
+    """
     tenant_id = _resolve_tenant(tenant_id)
+    if conversation_id is _UNSET:
+        uid = current_user_id()
+        if uid is not None and tenant_id is not None and _uses_chat_conversations(uid):
+            # Operator / architect: risolvi la conversation attiva (NON auto-creare in list)
+            with connect() as con:
+                r = con.execute(
+                    "SELECT id FROM chat_conversations "
+                    "WHERE user_id = %s AND tenant_id = %s AND is_active = 1 "
+                    "ORDER BY id DESC LIMIT 1",
+                    (uid, tenant_id),
+                ).fetchone()
+            conversation_id = int(r["id"]) if r else -1  # -1 = nessuna conv → 0 risultati
+        else:
+            conversation_id = None  # super_admin/legacy
     with connect() as con:
-        if tenant_id is None:
+        if isinstance(conversation_id, int) and conversation_id > 0:
             rows = con.execute(
-                "SELECT * FROM orchestrator_messages ORDER BY id DESC LIMIT %s",
+                "SELECT * FROM orchestrator_messages WHERE conversation_id = %s "
+                "ORDER BY id DESC LIMIT %s",
+                (conversation_id, limit),
+            ).fetchall()
+        elif isinstance(conversation_id, int) and conversation_id < 0:
+            # Operator senza conversation attiva → no messaggi
+            rows = []
+        elif tenant_id is None:
+            rows = con.execute(
+                "SELECT * FROM orchestrator_messages "
+                "WHERE conversation_id IS NULL "
+                "ORDER BY id DESC LIMIT %s",
                 (limit,),
             ).fetchall()
         else:
             rows = con.execute(
-                "SELECT * FROM orchestrator_messages WHERE tenant_id = %s "
+                "SELECT * FROM orchestrator_messages "
+                "WHERE tenant_id = %s AND conversation_id IS NULL "
                 "ORDER BY id DESC LIMIT %s",
                 (tenant_id, limit),
             ).fetchall()
@@ -6577,15 +6710,192 @@ def list_orchestrator_messages(
     return out
 
 
-def clear_orchestrator_messages(tenant_id: Any = _UNSET) -> None:
+def clear_orchestrator_messages(
+    tenant_id: Any = _UNSET,
+    conversation_id: int | None = None,
+) -> None:
+    """Svuota la chat. Se `conversation_id` specificato, cancella solo i messaggi
+    di quella conversation. Altrimenti cancella la chat legacy del tenant
+    (conversation_id IS NULL)."""
     tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
+        if conversation_id is not None:
+            con.execute(
+                "DELETE FROM orchestrator_messages WHERE conversation_id = %s",
+                (conversation_id,),
+            )
+            return
         if tenant_id is None:
-            con.execute("DELETE FROM orchestrator_messages")
+            con.execute("DELETE FROM orchestrator_messages WHERE conversation_id IS NULL")
         else:
             con.execute(
-                "DELETE FROM orchestrator_messages WHERE tenant_id = %s", (tenant_id,)
+                "DELETE FROM orchestrator_messages "
+                "WHERE tenant_id = %s AND conversation_id IS NULL",
+                (tenant_id,),
             )
+
+
+# ---------------------------------------------------------------------------
+# Chat conversations (UI operator: piu' thread paralleli per utente)
+# ---------------------------------------------------------------------------
+
+MAX_CHAT_CONVERSATIONS_OPERATOR = 5
+MAX_CHAT_CONVERSATIONS_ARCHITECT = 20
+# Alias legacy (alcuni route lo importano col vecchio nome). Equivalente a operator.
+MAX_CHAT_CONVERSATIONS_PER_USER = MAX_CHAT_CONVERSATIONS_OPERATOR
+
+
+def _max_chat_conversations_for_role(user_id: int) -> int:
+    """Risolve il limite di conversazioni in base al ruolo dell'utente.
+    Default = limite operator (5) se ruolo sconosciuto."""
+    with connect() as con:
+        r = con.execute(
+            "SELECT role FROM users WHERE id = %s", (user_id,)
+        ).fetchone()
+    if not r:
+        return MAX_CHAT_CONVERSATIONS_OPERATOR
+    if r["role"] == "tenant_architect":
+        return MAX_CHAT_CONVERSATIONS_ARCHITECT
+    return MAX_CHAT_CONVERSATIONS_OPERATOR
+
+
+def list_chat_conversations(user_id: int, tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    """Lista le conversazioni dell'utente, ordinate dalla piu' recente.
+    Include `message_count` per ogni conversation."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT c.id, c.title, c.is_active, c.created_at, c.last_message_at,
+                   COALESCE((SELECT COUNT(*) FROM orchestrator_messages m
+                             WHERE m.conversation_id = c.id), 0) AS message_count
+            FROM chat_conversations c
+            WHERE c.user_id = %s AND c.tenant_id = %s
+            ORDER BY COALESCE(c.last_message_at, c.created_at) DESC
+            """,
+            (user_id, tenant_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_chat_conversation(conv_id: int, user_id: int) -> dict[str, Any] | None:
+    """Recupera una conversation per ID, ma SOLO se appartiene all'utente
+    indicato. Ritorna None altrimenti (sicurezza: non si possono toccare le
+    conversation di altri utenti)."""
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM chat_conversations WHERE id = %s AND user_id = %s",
+            (conv_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_active_chat_conversation(user_id: int, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    """Ritorna la conversation attiva dell'utente, oppure None se nessuna."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM chat_conversations "
+            "WHERE user_id = %s AND tenant_id = %s AND is_active = 1 "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, tenant_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def count_chat_conversations(user_id: int, tenant_id: Any = _UNSET) -> int:
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM chat_conversations "
+            "WHERE user_id = %s AND tenant_id = %s",
+            (user_id, tenant_id),
+        ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def create_chat_conversation(
+    user_id: int,
+    title: str = "Nuova conversazione",
+    *,
+    tenant_id: Any = _UNSET,
+) -> int:
+    """Crea una nuova conversation per l'utente e la setta come attiva (tutte
+    le altre dello stesso utente vengono settate is_active=0).
+
+    Solleva ValueError se l'utente ha gia' MAX_CHAT_CONVERSATIONS_PER_USER conversazioni.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    if tenant_id is None:
+        raise ValueError("tenant_id richiesto per create_chat_conversation")
+    max_convs = _max_chat_conversations_for_role(user_id)
+    n = count_chat_conversations(user_id, tenant_id=tenant_id)
+    if n >= max_convs:
+        raise ValueError(
+            f"Limite di {max_convs} conversazioni raggiunto. "
+            "Elimina una conversazione esistente prima di crearne una nuova."
+        )
+    title_clean = (title or "Nuova conversazione").strip()[:120] or "Nuova conversazione"
+    with connect() as con:
+        # Disattiva tutte le altre conversazioni dell'utente.
+        con.execute(
+            "UPDATE chat_conversations SET is_active = 0 "
+            "WHERE user_id = %s AND tenant_id = %s",
+            (user_id, tenant_id),
+        )
+        cur = con.execute(
+            "INSERT INTO chat_conversations "
+            "(tenant_id, user_id, title, is_active, created_at, last_message_at) "
+            "VALUES (%s, %s, %s, 1, %s, %s) RETURNING id",
+            (tenant_id, user_id, title_clean, now_iso(), now_iso()),
+        )
+        return int(cur.fetchone()["id"])
+
+
+def activate_chat_conversation(conv_id: int, user_id: int, tenant_id: Any = _UNSET) -> bool:
+    """Setta `conv_id` come attiva per l'utente (e disattiva le altre).
+    Ritorna True se trovata, False altrimenti."""
+    tenant_id = _resolve_tenant(tenant_id)
+    conv = get_chat_conversation(conv_id, user_id)
+    if conv is None:
+        return False
+    with connect() as con:
+        con.execute(
+            "UPDATE chat_conversations SET is_active = 0 "
+            "WHERE user_id = %s AND tenant_id = %s",
+            (user_id, tenant_id),
+        )
+        con.execute(
+            "UPDATE chat_conversations SET is_active = 1 WHERE id = %s",
+            (conv_id,),
+        )
+    return True
+
+
+def rename_chat_conversation(conv_id: int, user_id: int, new_title: str) -> bool:
+    """Rinomina una conversation. Ritorna True se aggiornata."""
+    title_clean = (new_title or "").strip()[:120]
+    if not title_clean:
+        return False
+    with connect() as con:
+        cur = con.execute(
+            "UPDATE chat_conversations SET title = %s "
+            "WHERE id = %s AND user_id = %s RETURNING id",
+            (title_clean, conv_id, user_id),
+        )
+        return cur.fetchone() is not None
+
+
+def delete_chat_conversation(conv_id: int, user_id: int) -> bool:
+    """Elimina una conversation (e i suoi messaggi via CASCADE). Ritorna True
+    se eliminata. Se era l'attiva, l'utente resta senza conversation attiva
+    (il caller decide se crearne una nuova subito)."""
+    with connect() as con:
+        cur = con.execute(
+            "DELETE FROM chat_conversations WHERE id = %s AND user_id = %s RETURNING id",
+            (conv_id, user_id),
+        )
+        return cur.fetchone() is not None
 
 
 # ===========================================================================

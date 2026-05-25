@@ -20,9 +20,9 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
-from .. import db, jobs
+from .. import db, export_csv, jobs
 from ..auth import require_operator
 from ..templates import templates
 
@@ -332,6 +332,7 @@ def _build_live_panel_data(tenant_id: int | None = None) -> tuple[list[dict], li
 async def operator_home(
     request: Request,
     _partial: str = "",
+    tab: str = "live",
 ):
     """Dashboard operator: hero + agenti per categoria + pannello live.
 
@@ -343,8 +344,14 @@ async def operator_home(
     agenda = _build_agenda_data(tenant_id=tenant_id)
     history = _build_history_data(tenant_id=tenant_id)
 
+    # Normalizza tab valida (default 'live')
+    active_tab = (tab or "live").strip().lower()
+    if active_tab not in ("live", "agenda", "history"):
+        active_tab = "live"
+
     if _partial == "live":
-        # Solo il pannello live (polling 3s — solo Tab 1 va aggiornato live).
+        # Solo il pannello toolbox (polling 3s). Preserviamo la tab attiva
+        # passata dal client per evitare flickering al re-swap.
         return templates.TemplateResponse(
             request,
             "operator/partials/live_panel.html",
@@ -353,6 +360,7 @@ async def operator_home(
                 "recent_finished": recent_finished,
                 "agenda": agenda,
                 "history": history,
+                "active_tab": active_tab,
             },
         )
 
@@ -362,6 +370,8 @@ async def operator_home(
         chat_history = db.list_orchestrator_messages(limit=30)
     except Exception:
         chat_history = []
+    # Capabilities del modello orchestrator per UI drawer (file allegati).
+    chat_capabilities = _operator_chat_capabilities()
     return templates.TemplateResponse(
         request,
         "operator/home.html",
@@ -371,10 +381,33 @@ async def operator_home(
             "recent_finished": recent_finished,
             "agenda": agenda,
             "history": history,
+            "active_tab": active_tab,
             "n_agents": len(agents),
             "chat_history": chat_history,
+            "chat_capabilities": chat_capabilities,
         },
     )
+
+
+def _operator_chat_capabilities() -> dict:
+    """Risolve le capabilities del modello orchestrator per la UI operator.
+    Riusa la logica di routes.orchestrator. Fallback safe se import fallisce."""
+    try:
+        from .orchestrator import (
+            _chat_model_capabilities,
+            _saved_orchestrator_config,
+        )
+        cfg = _saved_orchestrator_config()
+        provider = cfg.get("llm_provider") or "ollama"
+        model = cfg.get("planner_model") or ""
+        return _chat_model_capabilities(provider, model)
+    except Exception:
+        return {
+            "web": False,
+            "files": False,
+            "actions": False,
+            "files_reason": "Capabilities non disponibili.",
+        }
 
 
 # ===========================================================================
@@ -1005,6 +1038,214 @@ async def operator_leads_qualified(
             "is_qualified_view": True,
         },
     )
+
+
+@router.get("/leads/{asset_id}/details", response_class=HTMLResponse)
+async def operator_lead_details_modal(request: Request, asset_id: int):
+    """Modal read-only con i dettagli completi di un asset/lead.
+    Riusa get_asset + tag fetch + decode social_json."""
+    asset = db.get_asset(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Lead non trovato")
+
+    # Tag dell'asset (lista key/value coppie)
+    asset_tags: list[dict] = []
+    try:
+        with db.connect() as con:
+            rows = con.execute(
+                "SELECT tag_key, tag_value FROM asset_tags WHERE asset_id = %s "
+                "ORDER BY tag_key",
+                (asset_id,),
+            ).fetchall()
+            asset_tags = [dict(r) for r in rows]
+    except Exception:
+        pass
+
+    # Decode social_json
+    socials: list[dict] = []
+    try:
+        import json as _json
+        raw = asset.get("social_json") or ""
+        if raw:
+            parsed = _json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(parsed, list):
+                socials = [x for x in parsed if isinstance(x, dict)]
+            elif isinstance(parsed, dict):
+                socials = [parsed]
+    except Exception:
+        pass
+
+    # Source task name (se presente)
+    source_task = None
+    try:
+        if asset.get("source_task_id"):
+            t = db.get_task(int(asset["source_task_id"]))
+            if t:
+                source_task = {"id": t["id"], "name": t.get("name") or t.get("agent_display_name")}
+    except Exception:
+        pass
+
+    return templates.TemplateResponse(
+        request,
+        "operator/partials/lead_details_modal.html",
+        {
+            "asset": asset,
+            "asset_tags": asset_tags,
+            "socials": socials,
+            "source_task": source_task,
+        },
+    )
+
+
+_EXPORT_MAX = 50000  # cap per non saturare memoria/timeout
+
+
+def _csv_filename(prefix: str) -> str:
+    ts = db.now_iso()[:19].replace(":", "").replace("-", "")
+    return f"{prefix}_{ts}.csv"
+
+
+@router.get("/leads/export.csv")
+async def operator_leads_export_csv(
+    request: Request,
+    q: str | None = None,
+    asset_type: str | None = None,
+    status: str | None = None,
+    source_task_id: str | None = None,
+    has_contacts: str = "",
+    has_social: str = "",
+    tag_mode: str = "and",
+):
+    """Export CSV dei lead filtrati per operator (vista /leads).
+    Riusa gli stessi filtri della pagina lista, ritorna fino a _EXPORT_MAX righe."""
+    search = (q or "").strip() or None
+    type_filter = (asset_type or "").strip() or None
+    status_filter = (status or "").strip() or None
+    source_task_id_v = _parse_optional_int(source_task_id)
+    has_contacts_v = bool(has_contacts and has_contacts.strip())
+    has_social_v = bool(has_social and has_social.strip())
+    tag_mode_v = (tag_mode or "and").strip().lower()
+    if tag_mode_v not in ("and", "or"):
+        tag_mode_v = "and"
+    tag_filters = _parse_lead_tag_filters(request.query_params)
+    try:
+        assets = db.list_assets(
+            asset_type=type_filter,
+            status=status_filter,
+            source_task_id=source_task_id_v,
+            tag_filters=tag_filters or None,
+            search=search,
+            tag_mode=tag_mode_v,
+            has_contacts=has_contacts_v,
+            has_social=has_social_v,
+            limit=_EXPORT_MAX,
+            offset=0,
+        )
+    except Exception:
+        log.exception("operator leads export failed")
+        assets = []
+    if not assets:
+        raise HTTPException(status_code=400, detail="Nessun lead da esportare (filtri vuoti).")
+    fields = list(export_csv.DEFAULT_FIELDS)
+    gen = export_csv.render_assets_csv(assets, fields, tags_mode="flat")
+    return StreamingResponse(
+        gen,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{_csv_filename("leads_export")}"'},
+    )
+
+
+@router.get("/leads/qualified/export.csv")
+async def operator_leads_qualified_export_csv(
+    request: Request,
+    q: str | None = None,
+    qualifiers: str = "",
+    score_min: str = "",
+    asset_type: str | None = None,
+    source_task_id: str | None = None,
+    status: str = "qualified",
+    has_contacts: str = "",
+    has_social: str = "",
+    tag_mode: str = "and",
+):
+    """Export CSV degli audience qualificati per operator (vista /leads/qualified)."""
+    search = (q or "").strip() or None
+    qualifier_slugs = [s.strip() for s in (qualifiers or "").split(",") if s.strip()]
+    if status not in ("qualified", "rejected", "both"):
+        status = "qualified"
+    score_min_v = _parse_optional_int(score_min)
+    type_filter = (asset_type or "").strip() or None
+    source_task_id_v = _parse_optional_int(source_task_id)
+    has_contacts_v = bool(has_contacts and has_contacts.strip())
+    has_social_v = bool(has_social and has_social.strip())
+    tag_mode_v = (tag_mode or "and").strip().lower()
+    if tag_mode_v not in ("and", "or"):
+        tag_mode_v = "and"
+    tag_filters = _parse_lead_tag_filters(request.query_params)
+    try:
+        assets = db.list_qualified_assets(
+            qualifier_slugs=qualifier_slugs,
+            status_filter=status,
+            score_min=score_min_v,
+            asset_type=type_filter,
+            source_task_id=source_task_id_v,
+            search=search,
+            extra_tag_filters=tag_filters or None,
+            tag_mode=tag_mode_v,
+            has_contacts=has_contacts_v,
+            has_social=has_social_v,
+            limit=_EXPORT_MAX,
+            offset=0,
+        )
+    except Exception:
+        log.exception("operator qualified export failed")
+        assets = []
+    if not assets:
+        raise HTTPException(status_code=400, detail="Nessun audience da esportare.")
+    fields = list(export_csv.DEFAULT_FIELDS)
+    gen = export_csv.render_assets_csv(assets, fields, tags_mode="flat")
+    return StreamingResponse(
+        gen,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{_csv_filename("qualified_export")}"'},
+    )
+
+
+@router.get("/leads/tag_values", response_class=HTMLResponse)
+async def operator_tag_values_htmx(
+    request: Request,
+    key: str = "",
+    scope: str = "assets",
+    asset_type: str = "",
+    q: str = "",
+    format: str = "datalist",
+):
+    """Endpoint HTMX per la cascata dropdown tag_value (read-only operator).
+    Stessa logica di /assets/tag_values architect ma sotto require_operator.
+    """
+    key = (key or "").strip().lower()
+    fmt = (format or "datalist").strip().lower()
+    if not key:
+        return HTMLResponse("")
+    at = (asset_type or "").strip() or None
+    q_clean = (q or "").strip() or None
+    try:
+        values = db.list_distinct_tag_values_for_assets(
+            key, limit=200, asset_type=at, q=q_clean,
+        )
+    except Exception:
+        values = []
+    parts: list[str] = []
+    if fmt != "datalist":
+        parts.append('<option value="">— seleziona —</option>')
+    for v in values:
+        val = (v.get("value") or "").replace('"', "&quot;").replace("<", "&lt;")
+        n = v.get("count", 0)
+        if fmt == "datalist":
+            parts.append(f'<option value="{val}" label="{val} ({n})">')
+        else:
+            parts.append(f'<option value="{val}">{val} ({n})</option>')
+    return HTMLResponse("".join(parts))
 
 
 @router.post("/leads/{asset_id}/optout")

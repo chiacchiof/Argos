@@ -5,8 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <title>{% block title %}Argos{% endblock %}</title>
   <script>
-    // Force dark mode per operator UI (il design e' tarato su dark).
-    document.documentElement.setAttribute('data-theme', 'dark');
+    // Carica tema salvato (chiave condivisa con architect: 'argos-theme').
+    // Default: dark. Persistito in localStorage da opToggleTheme().
+    (function () {
+      try {
+        var t = localStorage.getItem('argos-theme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.setAttribute('data-theme', t);
+        } else {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -74,6 +86,16 @@
         <polyline points="16 17 21 12 16 7"/>
         <line x1="21" y1="12" x2="9" y2="12"/>
       </symbol>
+      <symbol id="op-i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4"/>
+        <line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/>
+        <line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/>
+        <line x1="4.93" y1="4.93" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"/>
+        <line x1="4.93" y1="19.07" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.07" y2="4.93"/>
+      </symbol>
+      <symbol id="op-i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/>
+      </symbol>
       <symbol id="op-i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
       </symbol>
@@ -99,6 +121,11 @@
         <a href="/leads/qualified" class="op-nav-link {% if request.url.path.startswith('/leads/qualified') %}is-active{% endif %}">Qualificati</a>
         <a href="/messages" class="op-nav-link {% if request.url.path.startswith('/messages') %}is-active{% endif %}">Messaggi</a>
       </nav>
+      <button type="button" class="op-theme-toggle" onclick="opToggleTheme()"
+              title="Cambia tema chiaro/scuro" aria-label="Cambia tema">
+        <svg class="op-theme-icon op-theme-icon-sun" aria-hidden="true"><use href="#op-i-sun"/></svg>
+        <svg class="op-theme-icon op-theme-icon-moon" aria-hidden="true"><use href="#op-i-moon"/></svg>
+      </button>
       {% if current_user %}
       <details class="op-user-menu">
         <summary>
@@ -232,6 +259,15 @@
     window.opMinimizeDrawer = function() {
       console.log('[drawer] minimize clicked');
       window.opCloseDrawer();
+    };
+
+    // Toggle tema chiaro/scuro. Stessa chiave 'argos-theme' usata dall'architect
+    // base.html: cosi' se lo stesso utente passa fra le due UI il tema resta.
+    window.opToggleTheme = function() {
+      var html = document.documentElement;
+      var next = (html.getAttribute('data-theme') === 'light') ? 'dark' : 'light';
+      html.setAttribute('data-theme', next);
+      try { localStorage.setItem('argos-theme', next); } catch (e) {}
     };
 
     // Restore state al caricamento pagina

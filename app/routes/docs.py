@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 
-from ..markdown_render import render_markdown
+from ..markdown_render import render_docs_markdown
 from ..templates import templates
 
 
@@ -93,7 +93,7 @@ async def docs_view(request: Request, name: str):
         log.error("Errore lettura guida %s: %s", name, exc)
         raise HTTPException(status_code=500, detail="Errore lettura guida")
 
-    html = render_markdown(md_src)
+    html = render_docs_markdown(md_src)
     return templates.TemplateResponse(
         request,
         "docs_view.html",

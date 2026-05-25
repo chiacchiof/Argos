@@ -9,38 +9,42 @@
    Per preservare la tab selezionata anche su full-reload, salviamo in
    localStorage.
 #}
+{% set _active_tab = active_tab if (active_tab is defined and active_tab in ('live','agenda','history')) else 'live' %}
 <aside class="op-canvas op-canvas-side"
-       hx-get="/home?_partial=live"
+       hx-get="/home?_partial=live&tab={{ _active_tab }}"
        hx-trigger="every 3s"
        hx-swap="outerHTML"
+       data-active-tab="{{ _active_tab }}"
        aria-labelledby="op-canvas-side-title">
 
   <h2 id="op-canvas-side-title" class="op-canvas-title">
     🛠 Strumenti
   </h2>
 
-  {# Radio buttons nascosti che controllano la tab attiva via CSS :checked #}
+  {# Radio buttons nascosti — il server passa la tab attiva via query param,
+     cosi' al re-swap del polling il radio giusto e' GIA' checked dal server
+     (no flickering da JS-side restore). #}
   <input type="radio" name="op-tab" id="op-tab-live" class="op-tabs-radio"
-         {% if not (active_tab is defined and active_tab) or active_tab == 'live' %}checked{% endif %}>
+         {% if _active_tab == 'live' %}checked{% endif %}>
   <input type="radio" name="op-tab" id="op-tab-agenda" class="op-tabs-radio"
-         {% if active_tab is defined and active_tab == 'agenda' %}checked{% endif %}>
+         {% if _active_tab == 'agenda' %}checked{% endif %}>
   <input type="radio" name="op-tab" id="op-tab-history" class="op-tabs-radio"
-         {% if active_tab is defined and active_tab == 'history' %}checked{% endif %}>
+         {% if _active_tab == 'history' %}checked{% endif %}>
 
   <nav class="op-tabs-nav" aria-label="Strumenti operatore">
-    <label for="op-tab-live" class="op-tabs-tab" onclick="opSaveTab('live')">
+    <label for="op-tab-live" class="op-tabs-tab" onclick="opSetTab('live', this)">
       {% if live_jobs %}<span class="op-pulse" aria-hidden="true"></span>{% endif %}
       <span>In corso</span>
       {% if live_jobs %}<span class="op-tabs-badge">{{ live_jobs|length }}</span>{% endif %}
     </label>
-    <label for="op-tab-agenda" class="op-tabs-tab" onclick="opSaveTab('agenda')">
+    <label for="op-tab-agenda" class="op-tabs-tab" onclick="opSetTab('agenda', this)">
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
       </svg>
       <span>Agenda</span>
       {% if agenda %}<span class="op-tabs-badge op-tabs-badge-muted">{{ agenda|length }}</span>{% endif %}
     </label>
-    <label for="op-tab-history" class="op-tabs-tab" onclick="opSaveTab('history')">
+    <label for="op-tab-history" class="op-tabs-tab" onclick="opSetTab('history', this)">
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
       </svg>
@@ -241,16 +245,46 @@
 </aside>
 
 <script>
-  // Persistenza tab attiva
-  window.opSaveTab = function(name) {
+  // Tab switching: aggiorna localStorage + aggiorna l'URL del polling HTMX
+  // perche' al prossimo re-swap il server renderizzi gia' la tab giusta
+  // (no flickering). Il radio :checked e' gia' applicato dal label click.
+  window.opSetTab = function(name, label) {
     try { localStorage.setItem('argos.operator.tab', name); } catch(e) {}
+    // Aggiorna l'hx-get dell'aside contenente questo label, cosi' il prossimo
+    // polling chiede la tab corrente al server.
+    var aside = label && label.closest('aside.op-canvas-side');
+    if (aside) {
+      aside.setAttribute('hx-get', '/home?_partial=live&tab=' + encodeURIComponent(name));
+      aside.setAttribute('data-active-tab', name);
+      // Notifica HTMX del cambiamento di attributi (best-effort)
+      if (window.htmx && window.htmx.process) {
+        try { window.htmx.process(aside); } catch(e) {}
+      }
+    }
   };
-  // Restore on load
+
+  // Restore on first load: se nel localStorage c'e' una tab diversa da quella
+  // resa dal server, switcha (richiede 1 round-trip ma poi e' stabile).
   (function() {
     try {
-      var saved = localStorage.getItem('argos.operator.tab') || 'live';
-      var el = document.getElementById('op-tab-' + saved);
-      if (el) el.checked = true;
+      var saved = localStorage.getItem('argos.operator.tab');
+      if (!saved) return;
+      var aside = document.querySelector('aside.op-canvas-side');
+      var serverTab = aside && aside.getAttribute('data-active-tab');
+      if (saved && saved !== serverTab) {
+        var radio = document.getElementById('op-tab-' + saved);
+        if (radio) {
+          radio.checked = true;
+          // Riallinea il polling URL
+          if (aside) {
+            aside.setAttribute('hx-get', '/home?_partial=live&tab=' + encodeURIComponent(saved));
+            aside.setAttribute('data-active-tab', saved);
+            if (window.htmx && window.htmx.process) {
+              try { window.htmx.process(aside); } catch(e) {}
+            }
+          }
+        }
+      }
     } catch(e) {}
   })();
 

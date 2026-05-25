@@ -71,6 +71,14 @@
     </form>
 
     <aside class="orchestrator-panel">
+      <div class="orchestrator-chat-shell">
+        {# Sidebar verticale con le conversazioni (visibile solo per architect:
+           super_admin usa la chat legacy senza scoping). #}
+        {% if chat_conversations is defined and current_user and current_user.is_architect %}
+        {% with conversations = chat_conversations, max_conversations = chat_conversations_max %}
+          {% include "partials/chat_conversations_sidebar.html" %}
+        {% endwith %}
+        {% endif %}
       <section id="orchestrator-chat" class="orchestrator-chat">
         <div class="chat-head">
           <div class="chat-agent">
@@ -165,6 +173,7 @@
           </div>
         </form>
       </section>
+      </div>{# /orchestrator-chat-shell #}
 
       {% if plan %}
         <article class="plan-card">

@@ -1,0 +1,120 @@
+{# Sidebar verticale con la lista conversazioni della chat orchestrator.
+   Variabili: conversations (list), max_conversations (int).
+   Stile: ChatGPT-like, persistente a sinistra della chat principale.
+   Usato dalla pagina architect /orchestrator. #}
+<aside class="arc-chat-sidebar" id="arc-chat-sidebar">
+  <header class="arc-chat-sidebar-head">
+    <span class="arc-chat-sidebar-title">Conversazioni</span>
+    <span class="arc-chat-sidebar-count">{{ conversations|length }}/{{ max_conversations }}</span>
+  </header>
+
+  {% if conversations|length < max_conversations %}
+  <form method="post" action="/orchestrator/conversations/new" class="arc-chat-sidebar-new-form">
+    <button type="submit" class="arc-chat-sidebar-new" title="Crea nuova conversazione">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+      Nuova conversazione
+    </button>
+  </form>
+  {% else %}
+  <div class="arc-chat-sidebar-limit" title="Elimina una conversazione per crearne una nuova">
+    ⚠ Limite {{ max_conversations }} raggiunto
+  </div>
+  {% endif %}
+
+  {% if conversations %}
+  <ul class="arc-chat-sidebar-list">
+    {% for c in conversations %}
+    <li class="arc-chat-sidebar-item {% if c.is_active %}is-active{% endif %}">
+      <form method="post" action="/orchestrator/conversations/{{ c.id }}/activate" class="arc-chat-sidebar-pick">
+        <button type="submit" class="arc-chat-sidebar-link" title="Attiva questa conversazione">
+          <span class="arc-chat-sidebar-item-title"
+                data-conv-id="{{ c.id }}"
+                data-conv-title="{{ c.title }}"
+                onclick="arcStartRename(event, this)"
+                title="Clicca per rinominare">{{ c.title }}</span>
+          <span class="arc-chat-sidebar-item-meta">
+            {% if c.message_count %}{{ c.message_count }} msg{% else %}vuota{% endif %}
+            {% if c.last_message_at %} · {{ c.last_message_at[:10] }}{% endif %}
+          </span>
+        </button>
+      </form>
+      <form method="post" action="/orchestrator/conversations/{{ c.id }}/delete" class="arc-chat-sidebar-del-form"
+            onsubmit="return confirm('Eliminare definitivamente questa conversazione e tutti i suoi messaggi?');">
+        <button type="submit" class="arc-chat-sidebar-del" title="Elimina conversazione" aria-label="Elimina">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/>
+            <path d="M10 11v6M14 11v6"/>
+          </svg>
+        </button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="arc-chat-sidebar-empty">Nessuna conversazione. Scrivi un messaggio per iniziare.</p>
+  {% endif %}
+</aside>
+
+<script>
+  // Rename inline del titolo conversazione: click sul titolo → sostituisce con
+  // input editabile. Enter o blur = salva (POST /rename); Esc = annulla.
+  // Defined idempotently: HTMX puo' ricaricare la sidebar.
+  if (typeof window.arcStartRename !== 'function') {
+    window.arcStartRename = function(event, span) {
+      event.preventDefault();
+      event.stopPropagation();
+      var convId = span.getAttribute('data-conv-id');
+      var oldTitle = span.getAttribute('data-conv-title') || span.textContent.trim();
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.value = oldTitle;
+      input.maxLength = 120;
+      input.className = 'arc-chat-sidebar-item-title-input';
+      span.style.display = 'none';
+      span.parentNode.insertBefore(input, span);
+      input.focus();
+      input.select();
+      var committed = false;
+      function cleanup() {
+        if (input.parentNode) input.parentNode.removeChild(input);
+        span.style.display = '';
+      }
+      function cancel() { committed = true; cleanup(); }
+      function commit() {
+        if (committed) return;
+        committed = true;
+        var newTitle = (input.value || '').trim();
+        cleanup();
+        if (!newTitle || newTitle === oldTitle) return;
+        var fd = new FormData();
+        fd.append('title', newTitle);
+        fetch('/orchestrator/conversations/' + convId + '/rename', {
+          method: 'POST',
+          body: fd,
+          redirect: 'follow',
+          credentials: 'same-origin'
+        }).then(function(resp) {
+          if (resp.ok || resp.redirected) {
+            // Aggiorna in-place senza reload per UX migliore.
+            span.textContent = newTitle;
+            span.setAttribute('data-conv-title', newTitle);
+          } else {
+            alert('Rinomina fallita. Riprova.');
+          }
+        }).catch(function() {
+          alert('Errore di rete durante la rinomina.');
+        });
+      }
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+      });
+      // Impedisce che il click sull'input scateni l'activate del form parent.
+      input.addEventListener('click', function(e) { e.stopPropagation(); });
+      input.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+    };
+  }
+</script>

@@ -106,6 +106,55 @@ def init_db() -> None:
         raise
 
 
+def _ensure_chat_conversation_columns(conn: Any) -> None:
+    """Idempotente: aggiunge conversation_id + user_id su orchestrator_messages,
+    con relative FK. Necessario per DB pre-esistenti che non hanno queste colonne
+    nel CREATE TABLE originale (SCHEMA_SQL aggiornato include gia' le colonne
+    per i DB nuovi)."""
+    conn.execute(
+        "ALTER TABLE orchestrator_messages "
+        "ADD COLUMN IF NOT EXISTS conversation_id BIGINT"
+    )
+    conn.execute(
+        "ALTER TABLE orchestrator_messages "
+        "ADD COLUMN IF NOT EXISTS user_id BIGINT"
+    )
+    # Aggiungi FK se non gia' presenti. PG non ha "ADD CONSTRAINT IF NOT EXISTS"
+    # quindi usiamo savepoint per ignorare il duplicate.
+    for fk_name, sql in [
+        (
+            "orchestrator_messages_conversation_id_fkey",
+            "ALTER TABLE orchestrator_messages ADD CONSTRAINT "
+            "orchestrator_messages_conversation_id_fkey "
+            "FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) "
+            "ON DELETE CASCADE",
+        ),
+        (
+            "orchestrator_messages_user_id_fkey",
+            "ALTER TABLE orchestrator_messages ADD CONSTRAINT "
+            "orchestrator_messages_user_id_fkey "
+            "FOREIGN KEY (user_id) REFERENCES users(id) "
+            "ON DELETE SET NULL",
+        ),
+    ]:
+        row = conn.execute(
+            "SELECT 1 FROM pg_constraint WHERE conname = %s", (fk_name,)
+        ).fetchone()
+        if row:
+            continue
+        conn.execute("SAVEPOINT _ensure_fk")
+        try:
+            conn.execute(sql)
+            conn.execute("RELEASE SAVEPOINT _ensure_fk")
+        except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT _ensure_fk")
+            log.exception("FK %s non aggiunta — proseguo senza", fk_name)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orchestrator_msg_conv "
+        "ON orchestrator_messages(conversation_id, id)"
+    )
+
+
 def _ensure_role_check_constraint(conn: Any) -> None:
     """Re-crea il CHECK constraint su `users.role` per ammettere tre ruoli.
     Idempotente: NO-OP se il constraint corrente gia' include 'tenant_architect'.

@@ -47,6 +47,172 @@ from ..templates import templates
 
 router = APIRouter()
 
+
+# ===========================================================================
+# Chat conversations (UI operator: piu' thread paralleli per utente)
+# ===========================================================================
+
+def _resolve_operator_conversation(user: Any) -> tuple[int | None, int | None]:
+    """Per un utente operator, ritorna `(conversation_id, user_id)` della
+    conversation attiva. Se l'operator non ha conversation, ne crea una "Conversazione 1".
+    Per architect/super_admin ritorna (None, user.id) → comportamento legacy
+    (chat globale per tenant, no conversation scoping).
+
+    Sicuro da chiamare da qualsiasi punto: errori vengono ingoiati e ritornati
+    come (None, user.id) per non rompere la chat.
+    """
+    if not user:
+        return (None, None)
+    uid = getattr(user, "id", None)
+    if not getattr(user, "is_operator", False):
+        return (None, uid)
+    try:
+        conv = db.get_active_chat_conversation(uid, tenant_id=user.tenant_id)
+        if conv is not None:
+            return (int(conv["id"]), uid)
+        # Auto-crea prima conversation
+        conv_id = db.create_chat_conversation(
+            uid, title="Conversazione 1", tenant_id=user.tenant_id
+        )
+        return (int(conv_id), uid)
+    except Exception:
+        # Caso limite (es. 5 conversazioni gia' tutte non-attive): salviamo
+        # in modalita' legacy senza conv_id per non bloccare la chat.
+        return (None, uid)
+
+
+def _save_chat_message(
+    user: Any,
+    role: str,
+    body: str,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    """Wrapper su db.add_orchestrator_message che auto-determina conversation_id
+    e user_id per l'operator. Per architect equivale a add_orchestrator_message
+    senza conversation (chat legacy)."""
+    conv_id, uid = _resolve_operator_conversation(user)
+    return db.add_orchestrator_message(
+        role, body, metadata=metadata,
+        conversation_id=conv_id, user_id=uid,
+    )
+
+
+def _chat_conv_user(request: Request) -> Any:
+    """Ritorna l'utente se ha scope conversation (operator o architect),
+    altrimenti None. I super_admin restano sulla chat legacy globale."""
+    user = getattr(request.state, "current_user", None)
+    if not user:
+        return None
+    if getattr(user, "is_operator", False) or getattr(user, "is_architect", False):
+        return user
+    return None
+
+
+def _chat_conv_max(user: Any) -> int:
+    """Limite massimo conversazioni in base al ruolo."""
+    if getattr(user, "is_architect", False):
+        return db.MAX_CHAT_CONVERSATIONS_ARCHITECT
+    return db.MAX_CHAT_CONVERSATIONS_OPERATOR
+
+
+def _chat_conv_redirect_url(user: Any) -> str:
+    """Dove redirigere dopo create/activate/delete (architect → /orchestrator,
+    operator → /home)."""
+    if getattr(user, "is_architect", False):
+        return "/orchestrator#orchestrator-chat"
+    return "/home"
+
+
+@router.get("/orchestrator/conversations", response_class=HTMLResponse)
+async def orchestrator_conversations_list(request: Request):
+    """Frammento HTMX: lista delle conversazioni. Serve template diverso per
+    operator (panel HTMX nel drawer) vs architect (sidebar verticale)."""
+    user = _chat_conv_user(request)
+    if user is None:
+        return HTMLResponse("", status_code=204)
+    convs = db.list_chat_conversations(user.id, tenant_id=user.tenant_id)
+    template_name = (
+        "partials/chat_conversations_sidebar.html"
+        if getattr(user, "is_architect", False)
+        else "operator/partials/chat_conversations_list.html"
+    )
+    return templates.TemplateResponse(
+        request,
+        template_name,
+        {
+            "conversations": convs,
+            "max_conversations": _chat_conv_max(user),
+        },
+    )
+
+
+@router.post("/orchestrator/conversations/new")
+async def orchestrator_conversations_new(request: Request):
+    """Crea una nuova conversation. Errore 409 se limite raggiunto."""
+    user = _chat_conv_user(request)
+    if user is None:
+        return HTMLResponse("Non autorizzato", status_code=403)
+    max_convs = _chat_conv_max(user)
+    n = db.count_chat_conversations(user.id, tenant_id=user.tenant_id)
+    if n >= max_convs:
+        return HTMLResponse(
+            f"Limite di {max_convs} conversazioni raggiunto. "
+            "Elimina una conversazione esistente prima di crearne una nuova.",
+            status_code=409,
+        )
+    try:
+        title = f"Conversazione {n + 1}"
+        db.create_chat_conversation(user.id, title=title, tenant_id=user.tenant_id)
+    except ValueError as e:
+        return HTMLResponse(str(e), status_code=409)
+    return RedirectResponse(url=_chat_conv_redirect_url(user), status_code=303)
+
+
+@router.post("/orchestrator/conversations/{conv_id}/activate")
+async def orchestrator_conversations_activate(request: Request, conv_id: int):
+    user = _chat_conv_user(request)
+    if user is None:
+        return HTMLResponse("Non autorizzato", status_code=403)
+    ok = db.activate_chat_conversation(conv_id, user.id, tenant_id=user.tenant_id)
+    if not ok:
+        return HTMLResponse("Conversazione non trovata", status_code=404)
+    return RedirectResponse(url=_chat_conv_redirect_url(user), status_code=303)
+
+
+@router.post("/orchestrator/conversations/{conv_id}/delete")
+async def orchestrator_conversations_delete(request: Request, conv_id: int):
+    """Elimina una conversation. Se era l'attiva, ne attiva un'altra (la piu' recente)."""
+    user = _chat_conv_user(request)
+    if user is None:
+        return HTMLResponse("Non autorizzato", status_code=403)
+    target = db.get_chat_conversation(conv_id, user.id)
+    if target is None:
+        return HTMLResponse("Conversazione non trovata", status_code=404)
+    was_active = bool(target.get("is_active"))
+    db.delete_chat_conversation(conv_id, user.id)
+    if was_active:
+        remaining = db.list_chat_conversations(user.id, tenant_id=user.tenant_id)
+        if remaining:
+            db.activate_chat_conversation(remaining[0]["id"], user.id, tenant_id=user.tenant_id)
+    return RedirectResponse(url=_chat_conv_redirect_url(user), status_code=303)
+
+
+@router.post("/orchestrator/conversations/{conv_id}/rename")
+async def orchestrator_conversations_rename(
+    request: Request, conv_id: int, title: str = Form("")
+):
+    user = _chat_conv_user(request)
+    if user is None:
+        return HTMLResponse("Non autorizzato", status_code=403)
+    new_title = (title or "").strip()[:120]
+    if not new_title:
+        return HTMLResponse("Titolo richiesto", status_code=400)
+    ok = db.rename_chat_conversation(conv_id, user.id, new_title)
+    if not ok:
+        return HTMLResponse("Conversazione non trovata", status_code=404)
+    return RedirectResponse(url=_chat_conv_redirect_url(user), status_code=303)
+
+
 CHAT_FILE_MAX_BYTES = 5 * 1024 * 1024
 CHAT_FILE_CONTEXT_CHARS = 40_000
 CHAT_HISTORY_FILE_CONTEXT_CHARS = 8_000
@@ -1363,9 +1529,23 @@ async def _context(
         "plan": plan,
         "plan_b64": plan_b64,
         "chat_messages": db.list_orchestrator_messages(limit=80),
+        "chat_conversations": _arc_chat_conversations(request),
+        "chat_conversations_max": db.MAX_CHAT_CONVERSATIONS_ARCHITECT,
         "error": error,
         "flash": request.query_params.get("flash"),
     }
+
+
+def _arc_chat_conversations(request: Request) -> list[dict]:
+    """Lista delle conversazioni dell'architect (sidebar /orchestrator).
+    Ritorna [] per super_admin/operator."""
+    user = getattr(request.state, "current_user", None)
+    if not user or not getattr(user, "is_architect", False):
+        return []
+    try:
+        return db.list_chat_conversations(user.id, tenant_id=user.tenant_id)
+    except Exception:
+        return []
 
 
 def _planner_model_warning(model: str) -> str | None:
@@ -1801,7 +1981,27 @@ async def orchestrator_chat_stream(
 
 
 @router.post("/orchestrator/chat/clear")
-async def orchestrator_chat_clear():
+async def orchestrator_chat_clear(request: Request):
+    """Pulisci chat.
+
+    - Operator / architect: elimina la conversation corrente + crea nuova vuota
+      (la nuova prende lo slot, quindi non sfora il limite).
+    - Super_admin: cancella la chat legacy globale (comportamento storico).
+    """
+    user = _chat_conv_user(request)
+    if user is not None:
+        conv = db.get_active_chat_conversation(user.id, tenant_id=user.tenant_id)
+        if conv:
+            db.delete_chat_conversation(int(conv["id"]), user.id)
+        try:
+            n = db.count_chat_conversations(user.id, tenant_id=user.tenant_id)
+            db.create_chat_conversation(
+                user.id, title=f"Conversazione {n + 1}", tenant_id=user.tenant_id
+            )
+        except ValueError:
+            pass
+        return RedirectResponse(url=_chat_conv_redirect_url(user), status_code=303)
+    # Super_admin (legacy): cancella chat globale
     db.clear_orchestrator_messages()
     return RedirectResponse(url="/orchestrator#orchestrator-chat", status_code=303)
 
