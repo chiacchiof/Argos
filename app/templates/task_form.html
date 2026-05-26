@@ -66,19 +66,18 @@
 
       <label>
         <strong>Modalità agente</strong>
+        {# Select pilotato da app/agent/mode_schemas.py (single source of truth).
+           Optgroup per famiglia: Scraping / Recon / Audience / Processing / Outreach.
+           Le opzioni con runner_status != 'production' mostrano un badge. #}
         <select name="agent_mode" id="agent-mode-select">
           {% set mode = p.get('agent_mode','react') %}
-          <option value="react" {% if mode=='react' %}selected{% endif %}>react — ricerca leggera HTTP+DDG</option>
-          <option value="browser_use" {% if mode=='browser_use' %}selected{% endif %}>browser_use — scraping con browser reale (agentico)</option>
-          <option value="bulk_extract" {% if mode=='bulk_extract' %}selected{% endif %}>bulk_extract — scraping massivo deterministico (lista URL)</option>
-          <option value="auto_extract" {% if mode=='auto_extract' %}selected{% endif %}>auto_extract — agente decide la strategia per ogni sito (consigliato per liste eterogenee)</option>
-          <option value="site_explorer" {% if mode=='site_explorer' %}selected{% endif %}>site_explorer — il LLM mappa il sito (categorie/listing/paginazione), poi il runner estrae deterministicamente</option>
-          <option value="qualifier" {% if mode=='qualifier' %}selected{% endif %}>qualifier — LLM filtra/scora contatti</option>
-          <option value="outreach" {% if mode=='outreach' %}selected{% endif %}>outreach — invio email/telegram</option>
-          <option value="outreach_social" {% if mode=='outreach_social' %}selected{% endif %}>outreach_social — DM via Instagram/TikTok (browser stealth + Playwright)</option>
-          <option value="outreach_whatsapp" {% if mode=='outreach_whatsapp' %}selected{% endif %}>outreach_whatsapp — DM WhatsApp (Motore A browser + Motore B Cloud API)</option>
-          <option value="recon_social" {% if mode=='recon_social' %}selected{% endif %}>recon_social — navigazione profili social con account loggato (READ-ONLY)</option>
-          <option value="responder" {% if mode=='responder' %}selected{% endif %}>responder — auto-reply LLM ai messaggi inbound</option>
+          {% for fam_key, fam_label, mode_list in mode_families %}
+          <optgroup label="{{ fam_label }}">
+            {% for s in mode_list %}
+            <option value="{{ s.mode }}" {% if mode==s.mode %}selected{% endif %}>{{ s.label }}{% if s.runner_status != 'production' %} [{{ s.runner_status }}]{% endif %}</option>
+            {% endfor %}
+          </optgroup>
+          {% endfor %}
         </select>
         <small class="hint mode-hint" data-mode-hint>Scegli la modalità: il form si adatterà automaticamente.</small>
       </label>
@@ -130,25 +129,42 @@
     </div>
 
     {# ============================================================
-       SEZIONE 4: SCRAPING — seed queries, domini, max iter
-       Solo per react / browser_use
+       SEZIONE 4a: INPUT / SEED — visibile per le modalità che hanno un
+       input "seed" (5 scraping + recon_social). Label/hint cambiano in
+       base alla modalità (vedi dyn-label / dyn-hint).
+       Per l'intent audience (topic+demografia senza URL) l'orchestrator
+       crea un workflow standard react→auto_extract→qualifier (regola 11
+       in app/orchestrator.py); audience_discovery non è più un mode.
        ============================================================ #}
     <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer recon_social">
-      <summary>Configurazione di ricerca</summary>
+      <summary>Input / seed</summary>
 
       <label>
         <span class="dyn-label"
-              data-label-react="Seed queries"
+              data-label-react="Query di ricerca"
               data-label-browseruse="Seed URL"
               data-label-bulkextract="URL da processare"
-              data-label-autoextract="Lista siti da analizzare">Seed</span>
+              data-label-autoextract="Lista siti da analizzare"
+              data-label-siteexplorer="URL iniziale del sito"
+              data-label-reconsocial="URL profili o handle target">Seed</span>
         <span class="hint dyn-hint"
               data-hint-react="Una query DuckDuckGo per riga. Se vuoto l'agente le deduce dall'obiettivo."
               data-hint-browseruse="Una URL completa per riga (es. <code>https://example.com/categoria/1</code>). Ognuna è una sessione browser-use indipendente."
               data-hint-bulkextract="Una URL completa per riga. Verranno unite agli URL trovati nell'<code>Input artifact path</code> (se presente). Dedup automatico."
-              data-hint-autoextract="Una URL home per riga. Per ogni sito l'agente decide automaticamente la strategia (bulk_extract / browser_use / skip).">(una per riga, opzionale)</span>
+              data-hint-autoextract="Una URL home per riga. Per ogni sito l'agente decide automaticamente la strategia (bulk_extract / browser_use / skip)."
+              data-hint-siteexplorer="UN solo URL — la home o sezione alta del sito. Il runner mappa il sito a partire da lì."
+              data-hint-reconsocial="Una URL profilo per riga (es. <code>https://www.facebook.com/mario.rossi</code>) <strong>oppure</strong> un handle (es. <code>@mario.rossi</code>). Per nomi-amici (resolved contro friend/following list dell'account loggato) usa il campo dedicato nella sezione &laquo;Configurazione recon social&raquo; sotto.">(una per riga, opzionale)</span>
         <textarea name="seed_queries" rows="4">{% if p.get('seed_queries') %}{% if p.seed_queries is string %}{{ p.seed_queries }}{% else %}{{ p.seed_queries | join("\n") }}{% endif %}{% endif %}</textarea>
       </label>
+    </details>
+
+    {# ============================================================
+       SEZIONE 4b: FILTRI & LIMITI — solo per le 5 modalità scraping.
+       recon_social NON ha senso filtrare per dominio (è sempre facebook.com/
+       instagram.com/tiktok.com); audience_discovery non lo usa.
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer">
+      <summary>Filtri &amp; limiti</summary>
 
       <div class="row">
         <label>Domini consentiti <span class="hint">(uno per riga, vuoto = tutti)</span>
@@ -953,6 +969,31 @@
     </div>
 
     {# ============================================================
+       SEZIONE OUTREACH COMMON — campi condivisi fra outreach_social e
+       outreach_whatsapp (intent + esempi stile). Estratta 2026-05-26 dal
+       refactor mode_schemas per evitare duplicazione.
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="outreach_social outreach_whatsapp" open>
+      <summary>📨 Messaggio outreach <span class="hint">(intent + stile, comune a social e WhatsApp)</span></summary>
+
+      <label>Obiettivo / intent dell'outreach
+        <span class="hint">Spiega <strong>chi sei</strong> e <strong>cosa offri</strong>. Usato dall'LLM per personalizzare ogni messaggio.</span>
+        <textarea name="outreach_intent" rows="3"
+                  placeholder="Es. Sono un consulente di content optimization, offro alle creator del settore una review gratuita del profilo per aumentare engagement.">{{ p.get('outreach_intent', '') }}</textarea>
+      </label>
+
+      <label>Esempi di stile
+        <span class="hint">(uno per blocco, separati da una riga <code>---</code>. L'LLM li userà come <em>ispirazione di tono</em>, NON come template letterale.)</span>
+        <textarea name="message_template_variants" rows="8"
+                  placeholder="Ciao Sara, ho dato un'occhiata al tuo profilo e mi piace molto come strutturi le foto. Volevo proporti una piccola review gratis del tuo posizionamento. Ti va di parlarne?
+---
+Hey! Sono X, lavoro con creator come te per migliorare la presenza online. Ho qualche idea specifica per il tuo profilo, se ti interessa ti scrivo i dettagli.
+---
+Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il tuo. Volevo proporti una consulenza breve, gratuita.">{{ p.get('message_template_variants', '') }}</textarea>
+      </label>
+    </details>
+
+    {# ============================================================
        SEZIONE 8b: CONFIGURAZIONE OUTREACH SOCIAL (Instagram / TikTok)
        ============================================================ #}
     <details class="collapsible-section dyn-section" data-modes="outreach_social">
@@ -1010,17 +1051,9 @@
          checkbox da contacts_by_platform). Sostituita da "🎯 Audience asset"
          (target_asset_ids snapshot) in sezione 6a. #}
 
-      <label>Obiettivo dell'outreach <span class="hint">(cosa offri, chi sei, perché contatti)</span>
-        <textarea name="outreach_intent" rows="3" placeholder="Es. Sono un consulente di content optimization, offro alle creator del settore una review gratuita del profilo per aumentare engagement.">{{ p.get('outreach_intent', '') }}</textarea>
-      </label>
-
-      <label>Esempi di stile <span class="hint">(uno per blocco, separati da una riga <code>---</code>. L'LLM li userà come <em>ispirazione di tono</em>, NON come template letterale.)</span>
-        <textarea name="message_template_variants" rows="10" placeholder="Ciao Sara, ho dato un'occhiata al tuo profilo e mi piace molto come strutturi le foto. Volevo proporti una piccola review gratis del tuo posizionamento. Ti va di parlarne?
----
-Hey! Sono X, lavoro con creator come te per migliorare la presenza online. Ho qualche idea specifica per il tuo profilo, se ti interessa ti scrivo i dettagli.
----
-Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il tuo. Volevo proporti una consulenza breve, gratuita, sulla strategia contenuti.">{{ p.get('message_template_variants', '') }}</textarea>
-      </label>
+      {# REFACTOR 2026-05-26: outreach_intent + message_template_variants estratti
+         in sezione condivisa "📨 Messaggio outreach (comune)" subito sopra.
+         Vedi data-modes="outreach_social outreach_whatsapp" su quella sezione. #}
 
       <details class="optional-block">
         <summary>Limiti e velocità <span class="hint">(parametri anti-ban)</span></summary>
@@ -1133,18 +1166,10 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
         {% endif %}
       </fieldset>
 
-      <label>Obiettivo / intent dell'outreach
-        <span class="hint">Spiega chi sei e cosa offri. Usato dall'LLM per personalizzare ogni messaggio.</span>
-        <textarea name="outreach_intent" rows="3"
-                  placeholder="Es. Sono un consulente di marketing locale, propongo a piccoli ristoranti una review gratuita della loro presenza online.">{{ p.get('outreach_intent', '') }}</textarea>
-      </label>
-
-      <label>Esempi di stile <span class="hint">(uno per blocco, separati da <code>---</code>. L'LLM li userà come ispirazione di tono.)</span>
-        <textarea name="message_template_variants" rows="6"
-                  placeholder="Ciao Marco, ho visto il tuo ristorante online e mi piace molto. Volevo proporti una review gratuita della tua presenza digitale. Ti va di sentirci?
----
-Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche idea per migliorare visibilità su Google e social. Vi interessa una chiacchierata?">{{ p.get('message_template_variants', '') }}</textarea>
-      </label>
+      {# REFACTOR 2026-05-26: outreach_intent + message_template_variants estratti
+         in sezione condivisa "📨 Messaggio outreach (comune)" sopra le sezioni
+         outreach_social / outreach_whatsapp. Vedi data-modes="outreach_social
+         outreach_whatsapp" su quella sezione. #}
 
       {# SEZIONE RIMOSSA: era "📋 Contatti da contattare" (target_contact_ids
          checkbox da contacts_with_whatsapp). Sostituita da "🎯 Audience asset"
@@ -1599,10 +1624,11 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
 </section>
 
 {# ============================================================
-   JS: show/hide sezioni + label/hint dinamici basati su agent_mode
-   Pochi righe vanilla, no librerie. I valori dei campi nascosti vengono
-   comunque inviati al server (così se l'utente cambia idea non li perde).
+   JS: show/hide sezioni + label/hint dinamici basati su agent_mode.
+   MODE_SCHEMAS è il dump JSON di app/agent/mode_schemas.py (single source of
+   truth lato server) — letto dal route via context `mode_schemas_json`.
    ============================================================ #}
+<script>window.MODE_SCHEMAS = {{ mode_schemas_json | safe }};</script>
 <script>
 (function () {
   const sel = document.getElementById('agent-mode-select');
@@ -1637,22 +1663,10 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
       if (txt) el.innerHTML = txt;
     });
 
-    // Hint sopra il selettore di modalità
+    // Hint sopra il selettore di modalità — letto dal SSOT mode_schemas.
     const modeHint = document.querySelector('[data-mode-hint]');
-    const modeHints = {
-      react: "Loop ReAct con DDG: trova info via HTTP. Veloce, niente browser.",
-      browser_use: "Pilota un browser reale (Chromium): scrolla, clicca, gestisce JS. Per scraping serio.",
-      bulk_extract: "Scraping massivo deterministico (HTTP+readability+LLM). 1 chiamata LLM per URL. Per cataloghi grandi e siti statici.",
-      auto_extract: "Per ogni sito della lista, un profiler LLM decide la strategia (bulk_extract o browser_use) o salta se non promettente. Consigliato per liste eterogenee di siti.",
-      site_explorer: "Architettura 2-fasi: il LLM fa SOLO il mapping del sito (identifica categorie, listing, paginazione e li accoda). Poi il runner prende il controllo e estrae deterministicamente, fetch_page+extract_target su ogni URL fresco di ogni listing, fino al cap target o all'esaurimento della queue. Niente loop LLM-driven che si pianta a metà. Perfetto per siti listing→dettaglio (immobili, e-commerce, directory, profili).",
-      qualifier: "Legge un profiles.jsonl e filtra i contatti via LLM, scorando 0-10.",
-      outreach: "Manda email/telegram ai contatti qualified. Usa il template che definisci sotto.",
-      outreach_social: "DM via Instagram/TikTok/Facebook con browser stealth + Playwright. LLM rephrase per messaggi personalizzati.",
-      outreach_whatsapp: "DM WhatsApp con doppio motore: A (browser su web.whatsapp.com — cold outreach, viola ToS) + B (Meta Cloud API — opt-in + template). Engine selector automatico per contatto.",
-      recon_social: "Naviga profili social (FB/IG/TikTok) con un tuo account loggato in modalità READ-ONLY (no like/commenta/DM/follow). Per ogni URL nel seed estrae bio + post visibili + classifica via LLM. Vedi caveat GDPR/ToS.",
-      responder: "Risponde automaticamente ai messaggi inbound usando un LLM. Opt-out detection inclusa."
-    };
-    if (modeHint && modeHints[mode]) modeHint.textContent = modeHints[mode];
+    const schema = (window.MODE_SCHEMAS || {})[mode];
+    if (modeHint && schema && schema.hint) modeHint.textContent = schema.hint;
   }
 
   sel.addEventListener('change', () => { update(); if (window.refreshWizard) window.refreshWizard(); });

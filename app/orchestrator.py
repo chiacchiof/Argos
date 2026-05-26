@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from . import db, jobs
 from .agent.extraction_templates import get_schema, list_templates
 from .agent.llm_providers import get_provider, resolve_api_key, resolve_base_url
+from .agent.mode_schemas import validate_payload as _validate_mode_payload
 from .agent.ollama import list_models as ollama_list_models, maybe_add_keep_alive
 from .config import settings
 
@@ -114,53 +115,90 @@ PLANNER_TOOLS_SPEC: list[dict[str, Any]] = [
 _PLANNER_MANUAL = """\
 MANUALE OPERATIVO ARGOS (per pianificare task e workflow)
 
-== Le 8 modalita di agente ==
+== Le 11 modalita di agente ==
 
-[react]
+[react]   famiglia: scraping
 Ricerca web leggera: DuckDuckGo + fetch HTTP + readability. Niente browser.
 Quando: sintesi/mini-report da fonti aperte, ricerche generiche.
 Campi rilevanti: objective, max_iterations (default 10), model (Ollama locale).
+seed_queries: query DuckDuckGo testuali, una per riga (NON URL).
 Output: report .md/.txt in data/results/. Niente profiles.jsonl.
 
-[bulk_extract]
+[bulk_extract]   famiglia: scraping
 HTTP + readability + 1 LLM call per URL, opzionale crawler BFS statico dal seed con auto-detect pattern URL via 1 LLM discovery.
 Quando: lista o pattern di URL noti su sito statico (cataloghi, listini, directory, e-commerce piccoli). Anche partendo dalla home con crawler ON.
 Campi rilevanti: seed_queries (URL iniziali), extraction_template, allowed_domains, max_iterations (200), crawler_enabled+crawler_max_depth (3-5) se serve scoprire pagine partendo dalla home.
+seed_queries: URL completi (es. https://shop.x.com/categoria/y), uno per riga.
 Output: profiles.jsonl.
 
-[browser_use]
+[browser_use]   famiglia: scraping
 Browser Chromium reale via browser-use, supporta JS, login, scroll, click, anti-bot leggero. Lento (~4-6h per sito grande) e costoso (~$5-10).
 Quando: il brief dice javascript/dinamico/login/scroll/click/cloudflare/anti-bot, oppure sai che HTTP statico non basta.
 Campi rilevanti: seed_queries, extraction_template, allowed_domains, max_iterations (30+).
+seed_queries: URL completi, una sessione browser-use per ciascuna.
 Output: profiles.jsonl.
 
-[auto_extract]
+[auto_extract]   famiglia: scraping
 Profiler iniziale (1 LLM call per sito) + dispatch automatico fra bulk_extract / site_explorer / browser_use / skip per ogni dominio. Fallback bidirezionale (bulk<->site_explorer, browser_use->site_explorer) se la strategia primaria produce 0 profili.
 Quando: lista eterogenea di siti diversi, non sai a priori se sono statici/dinamici/multi-livello.
 Campi rilevanti: seed_queries (lista URL siti), extraction_template, allowed_domains, max_iterations (200+).
+seed_queries: URL home dei siti, uno per riga.
 Output: profiles.jsonl.
 
-[site_explorer]
+[site_explorer]   famiglia: scraping
 Mapping LLM (3-5 step) + Extraction runner-driven deterministico. Il LLM fa SOLO la fase di mapping: 1-3 fetch_page per capire la struttura, poi enqueue_listings([...]) e start_extraction(summary). Il runner pop-pa la queue e fa extract_target su ogni URL fresco (LLM extractor economico). Auto-discovery paginazione (?p=N, /page/N, /it/...) e dedup canonical cross-lingua.
 Tool LLM aggiuntivo: discover_via_browser(url, scrolls, target_pattern_hint) per siti infinite-scroll — apre Chromium headless, scrolla N volte, raccoglie centinaia/migliaia di URL DOM-finali, accoda al direct_target_queue. Zero token LLM (deterministico), ~10-30s.
 Auto-discovery FORZATA: se target_cap_per_site=0 OPPURE l'objective contiene una keyword-trigger ("tutti i profili", "tutti i target", "tutti gli annunci", "tutti i prodotti", "tutto il sito", "centinaia", "migliaia", "infinite scroll", "tutti i contatti", "tutta la lista"), il runner chiama discover_urls_via_scroll(seed, scrolls=30) PRIMA del primo turno LLM. Soluzione al caso in cui il LLM ignorerebbe l'infinite scroll.
 Quando: siti listing→dettaglio multi-livello (yescasa, pcase: la home non linka i target), siti con sub-domain come slug profilo, siti infinite-scroll/lazy-load (camgirl, social feed, news feed). Anche unbounded ("indicizza tutto il sito").
 Campi rilevanti: seed_queries (UN solo URL, la home o sezione alta), extraction_template (obbligatorio), max_iterations (30-50), target_cap_per_site (30-100 oppure 0 per unbounded — cap interno di sicurezza 5000), model (preferibilmente code-tuned: qwen3-coder:30b locale, oppure gpt-4o-mini cloud).
+seed_queries: UN solo URL — la home o sezione alta del sito.
 Output: profiles.jsonl.
 
-[qualifier]
+[recon_social]   famiglia: recon
+Naviga profili social (FB / IG / TikTok) con un account loggato dell'utente in modalita READ-ONLY (no like/commenta/DM/follow). Estrae bio, post visibili, classifica via LLM.
+Quando: il brief chiede di "profilare X profili IG", "analizzare follower di @account", "leggere i post di un utente", oppure fornisce direttamente URL/handle di profili da analizzare.
+2 sub-modes (recon_mode):
+  - url_driven (R1): itera su URL profili / nomi friend nel seed_queries; per ogni elemento apre il profilo e ne estrae i dati.
+  - follower_scrape: per ogni handle nel seed_queries naviga al profilo target, apre la lista follower, enumera fino a recon_max_targets_per_day, e per ciascun follower fa recon completo.
+Campi rilevanti: seed_queries (URL profili OPPURE handle), seed_queries_friends (solo nomi amici), recon_mode, recon_social_account_id (obbligatorio: account loggato), social_platform, recon_max_targets_per_day (default 50), speed_profile (safe/balanced/aggressive).
+seed_queries: URL profili (https://www.facebook.com/mario.rossi) o handle (@mario.rossi). NON keyword di shopping/topic — quello e' audience_discovery.
+Output: profiles.jsonl con bio + interessi + sub-pagine.
+Vincolo: viola ToS Meta/TikTok (rischio ban account loggato). Caveat GDPR/ePrivacy. risk_level=medium.
+
+[ALIAS] audience_discovery (rimosso 2026-05-26)
+Non e' piu' un agent_mode separato: lo scaffolding e' stato eliminato perche'
+il runner concreto richiedeva troppa logica nuova. Quando il brief descrive
+audience+demografia senza URL/handle (es. "persone 45-60 anni interessate a
+magliette vintage anni 80"), USA UN WORKFLOW STANDARD a 3 task con runner
+esistenti — vedi REGOLA 11 sotto e ESEMPIO 7. NON creare task con
+agent_mode='audience_discovery': il valore non e' piu' valido nello schema.
+
+[qualifier]   famiglia: processing
 Legge profiles.jsonl in input, valuta ogni profilo via LLM, produce qualified.jsonl.
 Quando: filtrare lead validi prima di outreach, scorare per pertinenza.
 Campi rilevanti: input_artifact_path (collegato via edge upstream), objective (criteri di filtro), model.
 Output: qualified.jsonl.
 
-[outreach]   RISCHIOSO
+[outreach]   famiglia: outreach   RISCHIOSO
 Invia email/telegram ai contatti in qualified.jsonl rispettando opt-out.
-Quando: il brief chiede esplicitamente messaggi/email/contattare/campagna.
+Quando: il brief chiede esplicitamente messaggi/email/contattare/campagna SU EMAIL O TELEGRAM (per IG/TT/FB usa outreach_social, per WA usa outreach_whatsapp).
 Campi rilevanti: input_artifact_path, message_subject, message_template, message_channels (es. ["email"]).
 Vincolo: SEMPRE preceduto da qualifier upstream, oppure warning esplicito + risk_level=high.
 
-[responder]   RISCHIOSO
+[outreach_social]   famiglia: outreach   RISCHIOSO
+DM via Instagram / TikTok / Facebook con browser stealth + Playwright. LLM rephrase per messaggi personalizzati.
+Quando: il brief chiede esplicitamente DM su IG/TT/FB.
+Campi rilevanti: social_platform ("instagram"/"tiktok"/"facebook"), outreach_intent (chi sei + cosa offri), message_template_variants (esempi di stile multipli, separati da "---"), target_asset_ids (audience pre-selezionata), social_account_id (opzionale, default pool active).
+Output: dm_audit.jsonl + entry in dm_log table.
+Vincolo: warning consenso obbligatorio + risk_level=high. Account social DEDICATI (mai personali). ARGOS_SECRET deve essere settato in .env per cifrare credenziali.
+
+[outreach_whatsapp]   famiglia: outreach   RISCHIOSO
+DM WhatsApp con doppio motore: A (browser su web.whatsapp.com — cold outreach, viola ToS) + B (Meta Cloud API — opt-in + template).
+Quando: il brief chiede esplicitamente WhatsApp / WA / chat business.
+Campi rilevanti: outreach_intent, message_template_variants, target_asset_ids, whatsapp_account_id (Motore A) o whatsapp_api_config_id (Motore B), whatsapp_engine_preference (auto/force_A/force_B), whatsapp_dry_run.
+Vincolo: Motore A viola ToS Meta (rischio ban). warning consenso + risk_level=high. Motore B richiede opt-in.
+
+[responder]   famiglia: outreach   RISCHIOSO
 Auto-reply su messaggi inbound (email/telegram).
 Quando: brief chiede di rispondere automaticamente a chi scrive.
 Campi rilevanti: responder_system_prompt.
@@ -195,6 +233,14 @@ Site_explorer e browser_use salvano un playbook in site_playbooks a fine job riu
    - Task 2: `auto_extract` con `seed_queries=[]` (l'utente popolera' manualmente dopo la run di react).
    - **NON creare un edge** tra i due task: react produce un report .md, non un file di seed; il passaggio degli URL e' manuale.
    - Aggiungi al piano un warning chiaro che spiega il passaggio manuale all'utente.
+11. **Shopping/audience intent senza URL ne' handle**: se il brief descrive CHI cercare con shopping intent / topic interest / demografia ("persone interessate a X", "audience 45-60 per Y", "community su Z", "chi compra W") MA non contiene URL ne' handle social specifici, NON usare `recon_social` — quel runner richiede URL profili o nomi-amici reali e crasha in 0 secondi su keyword generiche (caso reale: task #49 con seed `"magliette anni 80"` su `recon_social/url_driven` e' morto in zero secondi perche' `search_user_by_name` di FB ha cercato letteralmente un utente di nome "magliette anni 80", trovando 0 match).
+   Soluzione canonica: produci un **workflow a 3 task** con runner esistenti (vedi ESEMPIO 7):
+   - Task 1 `react` — objective "scopri venue/community/forum/marketplace dove questa audience si raccoglie", produce un report .md di URL.
+   - Task 2 `auto_extract` con `seed_queries=[]` — l'utente popolera' manualmente i seed con gli URL trovati dal task 1 dopo aver letto il report. extraction_template tipicamente `profile_contacts`.
+   - Task 3 `qualifier` — objective "tieni solo profili che matchano il filtro demografico/topic dell'audience target" (riprodurre nel criterio la demografia esatta del brief: eta, geografia, interesse).
+   Edges: task2 → task3 con pass_artifact `profiles.jsonl`. NON mettere edge fra task1 e task2 (react produce un report, non un file di seed: l'utente popola manualmente).
+   Warning obbligatorio nel piano: "Pipeline audience discovery in 3 step. Lancia prima `discover`, poi popola seed_queries di `extract` con gli URL dal report, poi lancia. Il filtro demografico (eta/geo/topic) e' applicato dal `qualifier` finale."
+   run_after_create=false (richiede passaggio manuale seed dopo task1).
 
 == Tool disponibili (chiamali se servono) ==
 - list_extraction_templates() per scegliere il template giusto.
@@ -369,6 +415,77 @@ Plan:
   "edges": []
 }
 Nota: target_cap_per_site=0 attiva la modalita unbounded; le parole "TUTTI i profili" + "infinite scroll" nell'objective sono keyword-trigger che attivano l'auto-discovery FORZATA via Chromium nel runner. NON riformulare l'objective in modo neutro: la keyword esatta e' parte del meccanismo.
+
+ESEMPIO 7 (audience intent senza URL: workflow react -> auto_extract -> qualifier)
+Brief: "Trovami persone tra 45 e 60 anni interessate a magliette anni 80, italiane, attive sui social"
+Plan:
+{
+  "title": "Audience: appassionati magliette anni 80 (45-60, IT)",
+  "summary": "Workflow 3-step: react scopre venue/community dove la nicchia si raccoglie, auto_extract estrae profili dai venue, qualifier filtra per eta 45-60 + interesse magliette anni 80.",
+  "risk_level": "low",
+  "assumptions": [
+    "Audience identificabile su forum vintage, gruppi Facebook di nostalgia, community Reddit/r-italiana, marketplace di vintage.",
+    "Lo schema profile_contacts cattura i campi pubblici (nome, eta dichiarata, location, bio, link social)."
+  ],
+  "warnings": [
+    "Pipeline audience discovery in 3 step. Lancia prima 'discover', poi leggi il report e copia gli URL dei venue piu' pertinenti in 'extract.seed_queries', poi lancia il workflow. Il filtro demografico (45-60 anni, italiani, interesse vintage anni 80) e' applicato dal qualifier finale."
+  ],
+  "run_after_create": false,
+  "tasks": [
+    {"key": "discover", "name": "Scoperta community vintage anni 80 IT",
+     "agent_mode": "react",
+     "objective": "Cerca e produci un elenco di URL di forum, gruppi Facebook pubblici, community Reddit, marketplace e blog italiani dove si discute di magliette vintage anni 80 e moda anni 80. Per ogni fonte: URL canonico + breve nota di rilevanza + stima del target demografico (eta).",
+     "max_iterations": 15},
+    {"key": "extract", "name": "Estrazione profili dalle community scoperte",
+     "agent_mode": "auto_extract",
+     "objective": "Estrai profili pubblici (nome, bio, eta se dichiarata, location, contatti) dalle community e marketplace scoperti nello step di discovery.",
+     "seed_queries": [],
+     "extraction_template": "profile_contacts",
+     "max_iterations": 200},
+    {"key": "qualifier", "name": "Filtro audience 45-60 IT vintage80",
+     "agent_mode": "qualifier",
+     "objective": "Tieni SOLO profili con: (a) eta dichiarata o inferibile fra 45 e 60 anni, (b) localizzazione italiana, (c) interesse esplicito per moda/cultura/oggetti anni 80 (post, bio, gruppi a cui partecipano). Scarta articoli, pagine vuote, profili commerciali o duplicati.",
+     "max_iterations": 10}
+  ],
+  "edges": [
+    {"from_key": "extract", "to_key": "qualifier", "pass_artifact": "profiles.jsonl"}
+  ]
+}
+Nota: NESSUN edge fra `discover` (react) e `extract` (auto_extract) — react produce un report .md, non un file di seed. L'utente popola manualmente i seed di `extract` dopo aver letto il report. Questo workflow sostituisce il vecchio anti-pattern di forzare `recon_social` con keyword di shopping (task #49 fallito 2026-05-26).
+
+ESEMPIO 8 (recon_social url_driven: profili specifici con URL/handle)
+Brief: "Analizza i profili Instagram di @creator_a, @creator_b e @creator_c per capire interessi e tono"
+Plan:
+{
+  "title": "Recon IG creator A/B/C",
+  "summary": "recon_social url_driven READ-ONLY sui 3 profili IG forniti, estrae bio + post + interessi.",
+  "risk_level": "medium",
+  "assumptions": [
+    "Account Instagram loggato disponibile in /social/accounts.",
+    "Gli handle sono profili pubblici (la recon su privati richiede follow)."
+  ],
+  "warnings": [
+    "recon_social viola i ToS Instagram: rischio ban dell'account loggato. Caveat GDPR/ePrivacy per profilazione."
+  ],
+  "run_after_create": false,
+  "tasks": [{
+    "key": "recon", "name": "Recon profili IG creator A/B/C",
+    "agent_mode": "recon_social",
+    "recon_mode": "url_driven",
+    "social_platform": "instagram",
+    "objective": "Estrai bio + ultimi post visibili + classifica interessi/tono per ciascun profilo.",
+    "seed_queries": [
+      "https://www.instagram.com/creator_a/",
+      "https://www.instagram.com/creator_b/",
+      "https://www.instagram.com/creator_c/"
+    ],
+    "extraction_template": "profile_interests",
+    "max_iterations": 30,
+    "speed_profile": "safe"
+  }],
+  "edges": []
+}
+Nota: seed_queries contiene URL completi (o, in alternativa, handle tipo @creator_a) — MAI keyword generiche o topic. Per topic/audience usa audience_discovery (esempio 7).
 """
 
 
@@ -1283,6 +1400,18 @@ def _validate_llm_plan(
         if t.agent_mode in {"bulk_extract", "auto_extract", "browser_use"} and not t.seed_queries:
             warn(f"Task '{t.key}' ({t.agent_mode}): manca seed URL, da completare prima del lancio.")
 
+    # Validazione via SSOT mode_schemas: errors = required mancanti, warnings =
+    # check semantici specifici (es. seed di recon_social che non sembra URL).
+    # Entrambi vengono presentati all'utente come warning nel piano. Gli error
+    # bloccano il save in execute_plan (vedi _validate_mode_payload chiamato
+    # poi prima di db.create_task).
+    for t in tasks:
+        _errs, _warns = _validate_mode_payload(t.model_dump())
+        for e in _errs:
+            warn(f"Task '{t.key}': {e}")
+        for w in _warns:
+            warn(f"Task '{t.key}': {w}")
+
     for t in tasks:
         if t.agent_mode == "outreach":
             upstream_qualifier = any(
@@ -1325,6 +1454,23 @@ def execute_plan(
     if run_now and plan.has_risky_modes and not confirm_risky:
         raise ValueError(
             "Il piano contiene outreach/responder: conferma esplicitamente la messaggistica prima del lancio."
+        )
+
+    # Hard-validate prima del save: rifiutiamo task con schema invalido per
+    # evitare di creare in DB record malformati (es. outreach_social senza
+    # social_platform, audience_discovery senza brief). Gli errori arrivano
+    # dal SSOT mode_schemas e sono già stati mostrati come warning durante
+    # l'approvazione del piano; qui sono un safety net.
+    schema_errors: list[str] = []
+    for task in plan.tasks:
+        _errs, _warns_ignored = _validate_mode_payload(task.model_dump())
+        for e in _errs:
+            schema_errors.append(f"task '{task.key}': {e}")
+    if schema_errors:
+        raise ValueError(
+            "Schema invalido per uno o più task: "
+            + "; ".join(schema_errors)
+            + ". Correggi il piano e rilancia."
         )
 
     created: dict[str, int] = {}
