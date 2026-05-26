@@ -14,24 +14,18 @@ Niente Docker, niente Postgres locale: il DB è centralizzato in cloud (Neon), a
 
 1. Scarica l'ultima release `argos-vX.Y.Z.zip` dalla pagina GitHub Releases (link nel banner dell'app o ti viene inviato).
 2. Estrai il contenuto in una cartella stabile, es. `C:\Apps\Argos\`.
-3. Apri **PowerShell** in quella cartella (Shift + tasto destro nello sfondo → "Apri finestra PowerShell qui").
-4. **Sblocca gli script** (Windows marca i file estratti da uno zip scaricato come "provenienti da internet"):
-   ```powershell
-   Get-ChildItem -Path .\scripts\ -Recurse | Unblock-File
-   ```
-   Se è la prima volta in assoluto che esegui `.ps1` su questo PC, una tantum:
-   ```powershell
-   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-   ```
-5. Lancia l'installer:
+3. **Lancia l'installer** — modo consigliato: doppio click su `install.bat` nella cartella radice. Si apre una finestra che esegue tutti gli step.
+
+   In alternativa, da PowerShell aperta in quella cartella (Shift + tasto destro → "Apri finestra PowerShell qui"):
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\scripts\install_client.ps1
    ```
-6. Lo script ti chiederà la **DATABASE_URL** (la connection string Postgres / Neon). Te la fornisce Ferdinando. Esempio:
+   Il `-ExecutionPolicy Bypass` vale solo per quel processo: non modifica le policy del sistema. `install.bat` fa la stessa cosa in automatico.
+4. Lo script ti chiederà la **DATABASE_URL** (la connection string Postgres / Neon). Te la fornisce Ferdinando. Esempio:
    ```
    postgresql://neondb_owner:la-tua-password@ep-xxx.aws.neon.tech/neondb?sslmode=require
    ```
-7. Al termine vedrai "Setup completato!". Per avviare l'app, **fai doppio click su `start.bat`** nella cartella radice del progetto. Si aprirà una finestra che attiva la venv e lancia il server.
+5. Al termine vedrai "Setup completato!". Per avviare l'app, **fai doppio click su `start.bat`** nella cartella radice del progetto. Si aprirà una finestra che attiva la venv e lancia il server.
 
    In alternativa, da PowerShell:
    ```powershell
@@ -40,7 +34,7 @@ Niente Docker, niente Postgres locale: il DB è centralizzato in cloud (Neon), a
    ```
    (la venv va attivata ogni volta che apri un nuovo terminale — `start.bat` lo fa al posto tuo. Su installazioni pre-rebrand il comando si chiama `agentscraper` ed è ancora installato come alias legacy.)
 
-8. Apri il browser su <http://127.0.0.1:8000> → vedi la pagina di login.
+6. Apri il browser su <http://127.0.0.1:8000> → vedi la pagina di login.
 
 > **Suggerimento**: crea un collegamento di `start.bat` sul desktop (tasto destro → "Crea collegamento" → trascina sul desktop) così avvii Argos come una normale app Windows.
 
@@ -61,11 +55,13 @@ Vedrai nell'header un banner giallo:
 2. Scarica il nuovo zip dalla release.
 3. **Importante**: prima di estrarre, fai un **backup** della cartella `data\` (contiene config locali).
 4. Estrai il nuovo zip sopra la cartella attuale, **sovrascrivendo** i file. Il `.env` e `data\` NON vengono toccati (sono ignorati dallo zip).
-5. Apri PowerShell nella cartella, **sblocca i nuovi file** (servono perché vengono dallo zip) e lancia:
+5. **Lancia l'updater** — modo consigliato: doppio click su `update.bat` nella cartella radice.
+
+   In alternativa, da PowerShell aperta nella cartella:
    ```powershell
-   Get-ChildItem -Path .\scripts\ -Recurse | Unblock-File
-   .\scripts\update_client.ps1
+   powershell -ExecutionPolicy Bypass -File .\scripts\update_client.ps1
    ```
+   `update.bat` gestisce l'ExecutionPolicy in automatico, non serve sbloccare i file uno per uno.
 6. Quando lo script finisce, vai nel terminale dove gira `agentscraper`, premi **Ctrl+C** per fermarlo, poi rilancia:
    ```powershell
    agentscraper
@@ -75,13 +71,15 @@ Vedrai nell'header un banner giallo:
 ## Troubleshooting
 
 ### "PSSecurityException / UnauthorizedAccess: il file non è firmato digitalmente"
-Lo script `.ps1` è marcato come "internet" perché viene da uno zip scaricato. Sblocca i file con:
-```powershell
-Get-ChildItem -Path .\scripts\ -Recurse | Unblock-File
-```
-Oppure lancia con bypass per quella sola invocazione:
+Stai lanciando lo script `.ps1` direttamente da PowerShell senza bypass. Soluzione più semplice: **usa i wrapper `install.bat` / `update.bat`** dalla root del progetto (doppio click), che bypassano l'ExecutionPolicy solo per quel processo.
+
+Se proprio vuoi lanciare lo .ps1 a mano:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install_client.ps1
+```
+oppure sblocca i file una volta sola (rimuove il flag "internet" dallo zip):
+```powershell
+Get-ChildItem -Path .\scripts\ -Recurse | Unblock-File
 ```
 
 ### "L'app non parte: ImportError"

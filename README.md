@@ -286,8 +286,9 @@ python scripts/db.py promote    # applica head NEON (con safety checks)
 
 Per distribuire l'app a colleghi/clienti su PC diversi: zip release da GitHub + script PowerShell. Vedi `scripts/CLIENT_INSTALL.md` per la guida completa.
 
-- **Primo install**: scarica zip release → `.\scripts\install_client.ps1` (9 step interattivi: Python check, venv, pip install, Playwright, .env scaffolding, prompt DSN, test connessione).
-- **Update**: estrai zip nuovo sopra l'esistente → `.\scripts\update_client.ps1`.
+- **Primo install**: scarica zip release → doppio click su `install.bat` (oppure `powershell -ExecutionPolicy Bypass -File .\scripts\install_client.ps1`). 9 step interattivi: Python check, venv, pip install, Playwright, .env scaffolding, prompt DSN, test connessione.
+- **Update**: estrai zip nuovo sopra l'esistente → doppio click su `update.bat` (oppure `powershell -ExecutionPolicy Bypass -File .\scripts\update_client.ps1`).
+- I file `.bat` sono wrapper che bypassano la PowerShell ExecutionPolicy per quel solo processo: il cliente non deve modificare le policy del sistema né sbloccare i file uno per uno.
 - **Banner di aggiornamento in-app**: opzionale; attivalo settando `GITHUB_REPO=owner/repo` (+ `GITHUB_TOKEN` se repo privato) in `.env`. Senza queste variabili nessuna chiamata HTTP e nessun banner. Quando attivo, l'app al boot fa check GitHub API (`releases/latest`) cache 6h e mostra banner giallo se è disponibile una versione più recente.
 
 ---

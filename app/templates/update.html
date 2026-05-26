@@ -43,9 +43,11 @@
       <li>Scarica l'ultimo zip dalla pagina delle release: <a href="{% if release %}{{ release.html_url }}{% else %}#{% endif %}" target="_blank" rel="noopener">GitHub Releases</a>.</li>
       <li>Estrai il contenuto sopra la cartella attuale di Argos (sovrascrivi i file).
         <br><small>I file <code>.env</code> e tutta la cartella <code>data/</code> NON vengono toccati.</small></li>
-      <li>Apri PowerShell nella cartella del progetto ed esegui:
-        <pre style="background: var(--surface-2); color: var(--fg); border:1px solid var(--border); padding: 0.7rem; border-radius: 4px;">.\scripts\update_client.ps1</pre>
-        Lo script aggiornerà le dipendenze Python, riapplicherà i browser di Playwright se ce ne sono di nuovi, e ti dirà quando è pronto.</li>
+      <li>Lancia l'updater. Modo consigliato: <strong>doppio click su <code>update.bat</code></strong> nella cartella del progetto.
+        <br><small>In alternativa, da PowerShell nella stessa cartella:</small>
+        <pre style="background: var(--surface-2); color: var(--fg); border:1px solid var(--border); padding: 0.7rem; border-radius: 4px;">powershell.exe -ExecutionPolicy Bypass -File .\scripts\update_client.ps1</pre>
+        <small>Il flag <code>-ExecutionPolicy Bypass</code> serve perché Windows blocca di default gli script non firmati; vale solo per quel processo, non cambia le policy del sistema. <code>update.bat</code> fa la stessa cosa in automatico.</small>
+        <br><small>Lo script aggiornerà le dipendenze Python, riapplicherà i browser di Playwright se ce ne sono di nuovi, e ti dirà quando è pronto.</small></li>
       <li>Ferma <code>argos</code> (Ctrl+C nella console dove gira) e rilancia <code>argos</code>.</li>
       <li>Rientra nell'app — la pill di versione in alto a destra deve mostrare la nuova.</li>
     </ol>
