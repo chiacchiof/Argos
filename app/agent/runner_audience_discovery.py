@@ -146,6 +146,7 @@ async def _llm_deduce_keywords(
     }
     maybe_add_keep_alive(payload, llm_base_url)
 
+    finish_reason = None
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.post(
@@ -155,9 +156,24 @@ async def _llm_deduce_keywords(
             )
             r.raise_for_status()
             data = r.json()
-            txt = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+            choice = data.get("choices", [{}])[0]
+            txt = (choice.get("message", {}).get("content", "") or "").strip()
+            finish_reason = choice.get("finish_reason")
     except Exception as e:
         jlog(f"⚠️ LLM keyword deduction fail: {e}")
+        return []
+
+    # Heuristica thinking-mode: content vuoto + finish_reason='length' (Ollama
+    # OpenAI compat layer non espone message.thinking, lo butta via). Modelli
+    # qwen3.6, qwen3-thinking, deepseek-r1, ecc. cadono qui se max_tokens basso.
+    if not txt and finish_reason == "length":
+        jlog(
+            f"❌ Il modello '{llm_model}' sembra essere in thinking-mode "
+            "(content vuoto + finish_reason=length). Ollama OpenAI compat non "
+            "espone message.thinking. Cambia il modello del task a un "
+            "non-thinking: qwen3-coder:30b o gpt-oss:20b locale, oppure "
+            "gpt-4o-mini cloud. Vedi _PLANNER_MANUAL sezione 'Scelta del campo model'."
+        )
         return []
 
     # Strip <think> tags + estrai primo array JSON
@@ -225,6 +241,7 @@ async def _llm_score_profile(
     }
     maybe_add_keep_alive(payload, llm_base_url)
 
+    finish_reason = None
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.post(
@@ -234,10 +251,19 @@ async def _llm_score_profile(
             )
             r.raise_for_status()
             data = r.json()
-            txt = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+            choice = data.get("choices", [{}])[0]
+            txt = (choice.get("message", {}).get("content", "") or "").strip()
+            finish_reason = choice.get("finish_reason")
     except Exception as e:
         jlog(f"⚠️ LLM score fail: {e}")
         return 0, "llm_error"
+
+    if not txt and finish_reason == "length":
+        jlog(
+            f"❌ Score: il modello '{llm_model}' sembra thinking-mode "
+            "(content vuoto + finish_reason=length). Cambia il modello del task."
+        )
+        return 0, "thinking_mode_detected"
 
     txt = re.sub(r"<think>[\s\S]*?</think>", "", txt, flags=re.IGNORECASE).strip()
     m = re.search(r"\{[^{}]*\"score\"[^{}]*\}", txt, flags=re.DOTALL)

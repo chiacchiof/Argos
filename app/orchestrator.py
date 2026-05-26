@@ -156,7 +156,7 @@ seed_queries: UN solo URL — la home o sezione alta del sito.
 Output: profiles.jsonl.
 
 [recon_social]   famiglia: recon
-Naviga profili social (FB / IG / TikTok) con un account loggato dell'utente in modalita READ-ONLY (no like/commenta/DM/follow). Estrae bio, post visibili, classifica via LLM.
+Naviga profili social (FB / IG / TikTok) con un account loggato dell'utente in modalita READ-ONLY (no like/commenta/DM/follow). Estrae bio, post visibili, classifica via LLM. model: non-thinking obbligatorio (qwen3-coder:30b locale o gpt-4o-mini cloud).
 Quando: il brief chiede di "profilare X profili IG", "analizzare follower di @account", "leggere i post di un utente", oppure fornisce direttamente URL/handle di profili da analizzare.
 2 sub-modes (recon_mode):
   - url_driven (R1): itera su URL profili / nomi friend nel seed_queries; per ogni elemento apre il profilo e ne estrae i dati.
@@ -169,7 +169,7 @@ Vincolo: viola ToS Meta/TikTok (rischio ban account loggato). Caveat GDPR/ePriva
 [audience_discovery]   famiglia: audience   BETA (v1 solo Facebook)
 Agente ReAct che pilota un account Facebook loggato per scoprire profili che matchano un brief NL (topic+demografia). Naviga FB tramite barra ricerca, gruppi tematici, friends-of-friends partendo da anchor opzionali. READ-ONLY (no like/commenta/DM/follow). Riusa il "recon profilo completo" gia' esistente per estrarre bio/post/score per ciascun candidato.
 Quando: il brief descrive CHI cercare con shopping intent / topic interest / demografia ("persone interessate a X", "audience 45-60 per Y") e l'utente ha un account FB loggato disponibile. NON usare per profili specifici con URL/handle noti — quello e' recon_social/url_driven. NON usare se l'utente vuole solo "trovare siti/community" (= react).
-Campi rilevanti: objective (brief NL del target audience, OBBLIGATORIO — l'agente lo legge per generare query di ricerca e scorare i candidati), seed_queries (anchor profili FB opzionali, URL o handle), social_platform="facebook" (v1 solo FB), recon_social_account_id (account FB loggato, obbligatorio), recon_max_targets_per_day (cap audience da salvare, default 50), recon_score_threshold (score min 0-10 per save_match, default 6), speed_profile (safe/balanced/aggressive), refresh_policy_days (dedup), extraction_template ("profile_interests" consigliato).
+Campi rilevanti: objective (brief NL del target audience, OBBLIGATORIO — l'agente lo legge per generare query di ricerca e scorare i candidati), seed_queries (anchor profili FB opzionali, URL o handle), social_platform="facebook" (v1 solo FB), recon_social_account_id (account FB loggato, obbligatorio), recon_max_targets_per_day (cap audience da salvare, default 50), recon_score_threshold (score min 0-10 per save_match, default 6), speed_profile (safe/balanced/aggressive), refresh_policy_days (dedup), extraction_template ("profile_interests" consigliato), model (OBBLIGATORIO non-thinking: qwen3-coder:30b locale o gpt-4o-mini cloud — vedi "Scelta del campo model" sotto).
 seed_queries: anchor profili FB (URL https://www.facebook.com/... o @handle), una per riga. OPZIONALE — se vuoto l'agente parte solo dalla search bar + gruppi tematici.
 Output: asset_type='social_profile' con tag audience_match_task:<id>, audience_score:N, audience_reason:..., source_audience_discovery=true.
 Vincolo: viola ToS Meta (rischio ban). Caveat GDPR/ePrivacy. risk_level=medium. Usa account warmup sacrificabile, mai personale.
@@ -177,7 +177,7 @@ Vincolo: viola ToS Meta (rischio ban). Caveat GDPR/ePrivacy. risk_level=medium. 
 [qualifier]   famiglia: processing
 Legge profiles.jsonl in input, valuta ogni profilo via LLM, produce qualified.jsonl.
 Quando: filtrare lead validi prima di outreach, scorare per pertinenza.
-Campi rilevanti: input_artifact_path (collegato via edge upstream), objective (criteri di filtro), model.
+Campi rilevanti: input_artifact_path (collegato via edge upstream), objective (criteri di filtro), model (non-thinking: qwen3-coder:30b locale o gpt-4o-mini cloud).
 Output: qualified.jsonl.
 
 [outreach]   famiglia: outreach   RISCHIOSO
@@ -218,6 +218,51 @@ Tutti i runner di scraping (bulk_extract / site_explorer / auto_extract) consult
 - refresh_policy_days=-1 -> "sempre re-extract"
 Il check usa source_url_canonical -> dedup cross-lingua (/it/ ≡ /en/) e cross-paginazione (?p=0 ≡ no-query).
 Site_explorer e browser_use salvano un playbook in site_playbooks a fine job riuscito -> al run successivo sullo stesso dominio il LLM mapping legge la mappa pre-armata e risparmia 2-3 step.
+
+== Scelta del campo `model` per modalita ==
+
+Il default Pydantic e' `qwen3.5:latest` ma e' un fallback povero. SEMPRE settare `model` esplicitamente per il task in base alla modalita, secondo queste regole:
+
+GRUPPO A — JSON structured output (richiede modello non-thinking, code-tuned):
+  `audience_discovery`, `recon_social`, `qualifier`, `site_explorer`,
+  `bulk_extract`, `auto_extract`.
+  Il runner deve parsare JSON dall'output LLM. Modelli "thinking" (qwen3.6,
+  qwen3-thinking, deepseek-r1, ecc.) mettono tutto il ragionamento in
+  `message.thinking` invisibile via OpenAI compat → `content` resta VUOTO
+  → fase fallita silenziosamente (vedi job #160 del task #49 fallito
+  2026-05-26: qwen3.6:27b ha ritornato 0 keyword, runner saved 0 profili).
+  Scelte consigliate:
+    - locale: `qwen3-coder:30b` (preferito), `gpt-oss:20b`, `deepseek-coder:6.7b`
+    - cloud: `gpt-4o-mini` (preferito per affidabilita), `gpt-4o`
+  NON usare: `qwen3.6:*`, `qwen3.5-thinking`, `deepseek-r1`, qualunque modello
+  con suffix `-thinking` o che documenti "extended thinking".
+
+GRUPPO B — ragionamento aperto / report NL (modelli chat OK, anche thinking):
+  `react`, `responder`.
+  Il runner usa l'LLM per generare prosa (report.md, auto-reply) o per
+  iterare con DDG. Output non strutturato → anche modelli thinking-mode
+  vanno bene (anzi spesso meglio di code-tuned per il tono).
+  Scelte consigliate:
+    - locale: `qwen3.5:latest`, `qwen3.6:27b`, `llama3.1:8b`, `mistral:latest`
+    - cloud: `gpt-4o-mini`, `claude-3-5-sonnet`
+
+GRUPPO C — tool-calling complesso (richiede CAPABLE cloud o local 20B+):
+  `browser_use`.
+  browser-use fa tool-call multipli sul DOM. Modelli locali < 20B falliscono.
+  Scelte consigliate:
+    - locale: `gpt-oss:20b`, `qwen3-coder:30b`
+    - cloud: `gpt-4o-mini` (preferito), `gpt-4o`, `claude-3-5-sonnet`
+
+GRUPPO D — generazione messaggi creativi (modelli chat con tono naturale):
+  `outreach_social`, `outreach_whatsapp`.
+  L'LLM genera DM personalizzati basati su `outreach_intent` + esempi di stile.
+  Scelte consigliate:
+    - locale: `qwen3.5:latest`, `mistral:latest`
+    - cloud: `gpt-4o-mini`, `claude-3-5-sonnet`
+  Per outreach base (`outreach`) il modello NON e' usato (solo template-fill).
+
+Regola di fallback se non sai: usa `qwen3-coder:30b` (locale) o `gpt-4o-mini`
+(cloud). Sono i piu' versatili e funzionano per tutti i mode A/B/C/D.
 
 == Regole di consistency ==
 1. outreach o responder => SEMPRE almeno un warning di consenso esplicito + risk_level="high".
@@ -442,6 +487,8 @@ Plan:
     "social_platform": "facebook",
     "objective": "Trova profili Facebook di persone tra 45 e 60 anni, italiane, interessate a magliette vintage anni 80 e moda/cultura anni 80. Segnali positivi: post su collezionismo abbigliamento, mercatini vintage, gruppi nostalgia anni 80, like a pagine di moda vintage. Esplora gruppi tematici, friends-of-friends dell'anchor paolo maugeri, e search FB per keyword vintage80/moda80.",
     "seed_queries": ["https://www.facebook.com/paolo.maugeri"],
+    "model": "qwen3-coder:30b",
+    "llm_provider": "ollama",
     "extraction_template": "profile_interests",
     "recon_max_targets_per_day": 50,
     "recon_score_threshold": 6,
