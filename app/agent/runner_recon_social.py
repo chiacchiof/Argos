@@ -780,15 +780,22 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         # follower (cap N) e sostituisci il seed con la lista espansa di URL
         # follower.
         if recon_mode == "follower_scrape":
-            if account_platform != "instagram":
-                msg = (f"recon_mode='follower_scrape' è implementato solo per Instagram. "
-                       f"L'account selezionato è {account_platform}.")
+            # Multi-platform dispatch: verifica che il modulo per la platform
+            # corrente abbia `enumerate_followers_of_target`. Lo stesso slug
+            # `follower_scrape` ora gira su IG (full prod) / FB (beta) / TT (beta).
+            recon_module = _RECON_BY_PLATFORM.get(account_platform)
+            if not recon_module or not hasattr(recon_module, "enumerate_followers_of_target"):
+                msg = (f"recon_mode='follower_scrape': platform={account_platform!r} "
+                       f"non ha 'enumerate_followers_of_target' implementato.")
                 jlog(f"❌ {msg}")
                 db.update_job(job_id, status="error", error=msg, finished_at=db.now_iso())
                 return ""
+            if account_platform != "instagram":
+                jlog(f"⚠️ follower_scrape su {account_platform}: implementazione BETA, "
+                     f"selettori potrebbero cambiare. Per IG l'implementazione e' rodata.")
 
-            # Pesca anche dagli asset selezionati: estrai handle/URL IG dal
-            # social_json dell'asset e aggiungili al seed di target.
+            # Pesca anche dagli asset selezionati: estrai handle/URL della platform
+            # corrente dal social_json dell'asset e aggiungili al seed di target.
             extra_from_assets: list[str] = []
             # Dedup target_asset_ids (o legacy target_contact_ids) preservando ordine.
             target_aids_raw = task.get("target_asset_ids") or task.get("target_contact_ids") or []
@@ -805,7 +812,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             if len(target_aids) < len(target_aids_raw):
                 jlog(f"  dedup target_asset_ids: {len(target_aids_raw)} -> {len(target_aids)} unici")
             if target_aids:
-                jlog(f"Recupero handle IG da {len(target_aids)} asset selezionati...")
+                jlog(f"Recupero handle {account_platform} da {len(target_aids)} asset selezionati...")
                 for aid in target_aids:
                     try:
                         a = db.get_asset(int(aid))
@@ -819,21 +826,21 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         arr = _json.loads(sj) if sj else []
                     except Exception:
                         arr = []
-                    ig_entry = next(
-                        (e for e in arr if isinstance(e, dict) and e.get("platform") == "instagram"),
+                    plat_entry = next(
+                        (e for e in arr if isinstance(e, dict) and e.get("platform") == account_platform),
                         None,
                     )
-                    if not ig_entry:
+                    if not plat_entry:
                         continue
                     handle_or_url = (
-                        ig_entry.get("handle")
-                        or ig_entry.get("url")
+                        plat_entry.get("handle")
+                        or plat_entry.get("url")
                         or ""
                     ).strip()
                     if handle_or_url:
                         extra_from_assets.append(handle_or_url)
                         jlog(f"  + asset#{aid} {a.get('display_name') or a.get('title')!r} -> {handle_or_url}")
-                jlog(f"  {len(extra_from_assets)} handle IG aggiunti dagli asset")
+                jlog(f"  {len(extra_from_assets)} handle {account_platform} aggiunti dagli asset")
 
             # Combina seed testuale + asset
             combined_targets = list(seed) + [
@@ -848,23 +855,41 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
 
             cap_per_target = int(task.get("recon_max_targets_per_day") or 100)
             expanded_seed: list[tuple[str, str, str | None]] = []
+            # Helper: estrai handle dal target (URL o handle libero) usando
+            # il modulo della platform attiva.
+            _handle_extractor = (
+                getattr(recon_module, "_ig_username_from_url", None)
+                or getattr(recon_module, "_tt_handle_from_url", None)
+                or getattr(recon_module, "_fb_handle_from_url", None)
+                or getattr(recon_module, "_normalize_fb_profile_url", None)
+            )
+            # Regex handle valido per platform: IG/TT max 30 char a-z0-9_.;
+            # FB e' piu' permissivo (anche numerico) ma usiamo regex larga.
+            handle_regex = re.compile(
+                r"^[A-Za-z0-9._\-]{1,80}$" if account_platform == "facebook"
+                else r"^[A-Za-z0-9._]{1,30}$"
+            )
             for _, target_entry, _ in combined_targets:
-                # Estrai handle IG dal target (URL o handle libero)
+                # Estrai handle dal target (URL o handle libero) usando il modulo
+                # della platform attiva.
                 te = (target_entry or "").strip().lstrip("@")
-                if te.startswith(("http://", "https://")):
-                    handle_from_url = instagram_recon._ig_username_from_url(te)
-                    target_handle = handle_from_url or ""
-                elif re.match(r"^[A-Za-z0-9._]{1,30}$", te):
+                target_handle = ""
+                if te.startswith(("http://", "https://")) and _handle_extractor:
+                    try:
+                        h = _handle_extractor(te)
+                    except Exception:
+                        h = None
+                    target_handle = h or ""
+                elif handle_regex.match(te):
                     target_handle = te
-                else:
-                    target_handle = ""
                 if not target_handle:
-                    jlog(f"  ⚠️ Skip '{target_entry}': handle IG non estrabile")
+                    jlog(f"  ⚠️ Skip '{target_entry}': handle {account_platform} non estrabile")
                     continue
-                jlog(f"📥 Enumero follower di @{target_handle} (cap={cap_per_target})...")
-                audit.log_event("FOLLOWERS_ENUM_START", target=target_handle, cap=cap_per_target)
+                jlog(f"📥 Enumero follower di @{target_handle} su {account_platform} (cap={cap_per_target})...")
+                audit.log_event("FOLLOWERS_ENUM_START", target=target_handle,
+                                platform=account_platform, cap=cap_per_target)
                 try:
-                    followers = await instagram_recon.enumerate_followers_of_target(
+                    followers = await recon_module.enumerate_followers_of_target(
                         page, safe, target_handle,
                         cap=cap_per_target, jlog=jlog,
                         debug_dir=run_dir / "follower_lists",

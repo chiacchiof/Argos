@@ -366,3 +366,223 @@ def match_friend(name_query: str, following_list: dict[str, str]) -> tuple[str, 
             if cognome in friend_name:
                 return (friend_name, url)
     return None
+
+
+# ---------------------------------------------------------------------------
+# FOLLOWER ENUMERATION (per recon_mode="follower_scrape")
+# ---------------------------------------------------------------------------
+
+async def enumerate_followers_of_target(
+    page: "Page",
+    safe,
+    target_handle: str,
+    *,
+    cap: int = 100,
+    jlog=None,
+    debug_dir=None,
+) -> list[dict[str, str]]:
+    """Enumera i FOLLOWER di un account TikTok target.
+
+    BETA — implementazione basata sul layout TikTok 2025. TikTok ha protezioni
+    anti-bot aggressive: la lista follower si apre in una modale che richiede
+    login attivo e potrebbe scattare captcha/checkpoint frequentemente.
+
+    Flow:
+    1. Naviga al profilo target https://www.tiktok.com/@<handle>
+    2. Click sul link 'Followers' nel header del profilo (apre modale)
+    3. Aspetta che la modale carichi (presenza di anchor user)
+    4. Scroll dentro la modale fino a cap o fine lista
+
+    Ritorna list di {handle, display_name, profile_url}. Best-effort.
+    """
+    def _log(msg: str) -> None:
+        log.info("[tt-followers] %s", msg)
+        if jlog:
+            jlog(msg)
+
+    target = (target_handle or "").strip().lstrip("@")
+    if not target or not re.match(r"^[A-Za-z0-9._]{1,30}$", target):
+        _log(f"  ❌ target_handle non valido: {target!r}")
+        return []
+
+    profile_url = f"https://www.tiktok.com/@{target}"
+    _log(f"goto {profile_url}")
+    try:
+        await safe.safe_goto(profile_url, label=f"tt_target_{target}")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=12_000)
+        except Exception:
+            pass
+        await asyncio.sleep(random.uniform(3.0, 5.0))
+    except Exception as e:
+        _log(f"  goto fail: {e}")
+        return []
+
+    # Debug screenshot iniziale
+    if debug_dir is not None:
+        try:
+            from pathlib import Path as _P
+            dd = _P(str(debug_dir))
+            dd.mkdir(parents=True, exist_ok=True)
+            safe_n = re.sub(r"[^A-Za-z0-9_]+", "_", target)[:60]
+            await page.screenshot(path=str(dd / f"tt_profile_initial_{safe_n}.png"))
+        except Exception:
+            pass
+
+    # Click sul link "Followers" del profilo. TikTok layout 2025:
+    # `strong[data-e2e="followers-count"]` con anchor parent o sibling con
+    # title "Followers". Strategia: cerchiamo elementi che contengono "follower"
+    # nel testo o data-e2e="followers".
+    follower_link_selectors = [
+        'strong[data-e2e="followers-count"]',
+        'a[href*="/followers"]',
+        'div:has-text("Followers")[role="link"]',
+        'span:has-text("Followers")',
+        '[data-e2e*="follower"]',
+    ]
+    clicked = False
+    for sel in follower_link_selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=2_000):
+                await loc.click(timeout=5_000)
+                _log(f"  click su link follower: {sel!r}")
+                clicked = True
+                break
+        except Exception:
+            continue
+    if not clicked:
+        _log(f"  ⚠️ link 'follower' non trovato per @{target}. "
+             f"Profilo privato o layout TikTok cambiato.")
+        if debug_dir is not None:
+            try:
+                from pathlib import Path as _P
+                dd = _P(str(debug_dir))
+                safe_n = re.sub(r"[^A-Za-z0-9_]+", "_", target)[:60]
+                await page.screenshot(path=str(dd / f"tt_no_followlink_{safe_n}.png"))
+            except Exception:
+                pass
+        return []
+
+    # Aspetta modale (TikTok renderizza la lista in un overlay)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=6_000)
+    except Exception:
+        pass
+    await asyncio.sleep(random.uniform(2.0, 3.5))
+
+    # Container della lista follower
+    modal_selectors = [
+        'div[role="dialog"]',
+        'div[data-e2e="follower-list"]',
+        'div[class*="DivUserListContainer"]',
+        'div[class*="DivModalContainer"]',
+    ]
+    container = None
+    used_sel = None
+    for sel in modal_selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=3_000):
+                container = loc
+                used_sel = sel
+                _log(f"  modale follower trovata: {sel!r}")
+                break
+        except Exception:
+            continue
+    if container is None:
+        _log(f"  ⚠️ modale follower non visibile per @{target}")
+        return []
+
+    followers: list[dict[str, str]] = []
+    seen_handles: set[str] = set()
+
+    # Selettori per gli item nella modale: anchor a profilo /@<handle>
+    item_selectors = [
+        f'{used_sel} a[href*="/@"]',
+        f'{used_sel} a[href^="/"]',
+        'a[data-e2e*="user-name"]',
+    ]
+
+    max_scrolls = max(10, cap // 8)
+    last_count = 0
+    stagnant_rounds = 0
+
+    for scroll_idx in range(max_scrolls):
+        anchors_found: list[tuple[str, str]] = []
+        for sel in item_selectors:
+            try:
+                els = await page.locator(sel).all()
+            except Exception:
+                continue
+            if not els:
+                continue
+            for el in els[:cap * 3]:
+                try:
+                    href = await el.get_attribute("href", timeout=500)
+                except Exception:
+                    href = None
+                if not href:
+                    continue
+                full_url = href if href.startswith("http") else f"https://www.tiktok.com{href}"
+                handle = _tt_handle_from_url(full_url)
+                if not handle:
+                    continue
+                try:
+                    name = (await el.text_content(timeout=500)) or ""
+                    name = name.strip()
+                except Exception:
+                    name = ""
+                anchors_found.append((handle, full_url, name))
+            if anchors_found:
+                break
+
+        for handle, full_url, name in anchors_found:
+            if handle in seen_handles:
+                continue
+            if handle == target:
+                continue  # skip il target stesso
+            seen_handles.add(handle)
+            followers.append({
+                "handle": handle,
+                "display_name": name or handle,
+                "profile_url": full_url,
+            })
+            if len(followers) >= cap:
+                break
+
+        current_count = len(followers)
+        _log(f"  scroll {scroll_idx + 1}/{max_scrolls}: {current_count} follower (cap={cap})")
+
+        if current_count >= cap:
+            break
+        if current_count == last_count:
+            stagnant_rounds += 1
+            if stagnant_rounds >= 3:
+                _log("  ⏹ stop: 3 scroll senza nuovi follower")
+                break
+        else:
+            stagnant_rounds = 0
+        last_count = current_count
+
+        # Scroll dentro la modale: TikTok usa virtual scroll, lo simuliamo
+        # scrollando l'elemento container.
+        try:
+            await container.evaluate("el => el.scrollTop = el.scrollHeight")
+        except Exception:
+            try:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            except Exception:
+                pass
+        await asyncio.sleep(random.uniform(2.0, 3.5))
+
+    _log(f"  ✓ enumerati {len(followers)} follower di @{target}")
+    if debug_dir is not None:
+        try:
+            from pathlib import Path as _P
+            dd = _P(str(debug_dir))
+            safe_n = re.sub(r"[^A-Za-z0-9_]+", "_", target)[:60]
+            await page.screenshot(path=str(dd / f"tt_followers_final_{safe_n}.png"))
+        except Exception:
+            pass
+    return followers

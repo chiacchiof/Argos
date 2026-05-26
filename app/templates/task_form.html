@@ -1228,18 +1228,22 @@ Buongiorno, mi chiamo X. Lavoro con piccoli locali come il vostro. Ho qualche id
         {% set rmode = p.get('recon_mode') or 'url_driven' %}
         <select name="recon_mode">
           <option value="url_driven"  {% if rmode=='url_driven' %}selected{% endif %}>url_driven (R1) — lista URL → extract</option>
-          <option value="follower_scrape" {% if rmode=='follower_scrape' %}selected{% endif %}>follower_scrape — per ogni account IG nel seed scarica i suoi follower (cap N) ed estrae profilo di ciascuno</option>
+          <option value="follower_scrape" {% if rmode=='follower_scrape' %}selected{% endif %}>follower_scrape — scarica i follower di account target (IG ✅ / FB 🚧 beta / TikTok 🚧 beta)</option>
           <option value="exploration" {% if rmode=='exploration' %}selected{% endif %} disabled>exploration (R2) — agente ReAct (backlog B-014, NON disponibile)</option>
         </select>
         <span class="hint">
           <code>url_driven</code>: per ogni URL/nome nel "Seed", apre il profilo e ne
           estrae i dati.
-          <br><code>follower_scrape</code> (solo Instagram, account loggato richiesto):
-          per ogni handle nel "Seed" naviga al profilo target, apre i suoi follower,
+          <br><code>follower_scrape</code> (account loggato richiesto): per ogni
+          handle nel "Seed" naviga al profilo target, apre la lista follower,
           enumera fino al cap ("Max profili/giorno" sotto, default 50), e per ciascun
           follower fa il recon completo (bio, interessi, sub-pagine). Iniezione
           <code>source_follower_of</code> nel JSON di output.
-          <strong>⚠️ Viola ToS Instagram</strong> — rischio ban dell'account loggato.
+          <br>Supporto attuale: <strong>Instagram</strong> (produzione, testato),
+          <strong>Facebook</strong> e <strong>TikTok</strong> (beta, selettori
+          best-effort — potrebbero richiedere aggiustamenti se Meta/ByteDance
+          cambiano DOM).
+          <strong>⚠️ Viola ToS</strong> di tutte le piattaforme — rischio ban dell'account loggato.
         </span>
       </label>
 

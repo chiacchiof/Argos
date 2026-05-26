@@ -986,3 +986,228 @@ def match_friend(name_query: str, friend_list: dict[str, str]) -> tuple[str, str
             if cognome in friend_name:
                 return (friend_name, url)
     return None
+
+
+# ---------------------------------------------------------------------------
+# FOLLOWER ENUMERATION (per recon_mode="follower_scrape")
+# ---------------------------------------------------------------------------
+
+def _fb_handle_from_url(profile_url: str) -> str | None:
+    """Estrae l'identifier FB da un profile URL.
+
+    Per profili con username: `carlotta.castoro` da
+    https://www.facebook.com/carlotta.castoro.
+    Per profili numerici: ritorna l'id come stringa (es. `100012345678`)
+    da https://www.facebook.com/profile.php?id=100012345678.
+
+    Ritorna None se l'URL non e' un profilo FB valido.
+    """
+    norm = _normalize_fb_profile_url(profile_url)
+    if not norm:
+        return None
+    try:
+        p = urlparse(norm)
+    except Exception:
+        return None
+    if p.path.startswith("/profile.php"):
+        m = re.search(r"id=(\d+)", p.query or "")
+        return m.group(1) if m else None
+    parts = [s for s in (p.path or "/").split("/") if s]
+    return parts[0] if parts else None
+
+
+def _fb_followers_url(target_identifier: str) -> str:
+    """Costruisce l'URL della pagina follower per un target FB.
+
+    `target_identifier` puo' essere:
+    - username (es. 'carlotta.castoro') → /carlotta.castoro/followers
+    - id numerico (es. '100012345678') → /profile.php?id=X&sk=followers
+    """
+    ident = (target_identifier or "").strip().lstrip("@")
+    if ident.isdigit():
+        return f"https://www.facebook.com/profile.php?id={ident}&sk=followers"
+    return f"https://www.facebook.com/{ident}/followers"
+
+
+async def enumerate_followers_of_target(
+    page: "Page",
+    safe,
+    target_handle: str,
+    *,
+    cap: int = 100,
+    jlog=None,
+    debug_dir=None,
+) -> list[dict[str, str]]:
+    """Enumera i FOLLOWER pubblici di un profilo FB target.
+
+    BETA — implementazione basata sul layout FB 2025. Selettori CSS multipli
+    come fallback; FB cambia DOM spesso, quindi alcuni potrebbero fallire.
+
+    Flow:
+    1. Naviga a /<username>/followers (o profile.php?id=X&sk=followers).
+    2. Aspetta che la lista carichi (presenza di anchor link a profili).
+    3. Scroll infinito fino a `cap` follower estratti o fine lista.
+    4. Estrae anchor con href ai profili e display_name dallo span.
+
+    Limiti noti:
+    - Se il target ha privacy "amici" sulla lista follower, ritorna [].
+    - Account FB con bloccol/2FA → page goto fail (gestito).
+    - 'People you may know' ha selettori simili a follower: filtriamo
+      controllando heading/contenuto del container.
+
+    Ritorna list di {handle, display_name, profile_url}. Best-effort.
+    """
+    def _log(msg: str) -> None:
+        log.info("[fb-followers] %s", msg)
+        if jlog:
+            jlog(msg)
+
+    target = (target_handle or "").strip().lstrip("@")
+    if not target:
+        _log("  ❌ target_handle vuoto")
+        return []
+
+    url = _fb_followers_url(target)
+    _log(f"goto {url}")
+    try:
+        await safe.safe_goto(url, label=f"fb_followers_{target}")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=12_000)
+        except Exception:
+            pass
+        await asyncio.sleep(random.uniform(2.5, 4.0))
+    except Exception as e:
+        _log(f"  goto fail: {e}")
+        return []
+
+    # Debug screenshot iniziale
+    if debug_dir is not None:
+        try:
+            from pathlib import Path as _P
+            dd = _P(str(debug_dir))
+            dd.mkdir(parents=True, exist_ok=True)
+            safe_n = re.sub(r"[^A-Za-z0-9_]+", "_", target)[:60]
+            await page.screenshot(path=str(dd / f"fb_followers_initial_{safe_n}.png"))
+        except Exception:
+            pass
+
+    # Check accesso negato / privacy: pattern noti FB
+    try:
+        body_text = (await page.locator("body").text_content(timeout=2_000)) or ""
+    except Exception:
+        body_text = ""
+    if _is_fb_error_page(body_text):
+        _log(f"  ❌ pagina inaccessibile per @{target} (privacy / inesistente / login required)")
+        return []
+
+    # Selettori candidate per il container della lista follower. FB usa
+    # role="main" con div annidati; cerchiamo il container che contiene
+    # almeno N anchor a profili. Strategia robusta.
+    main_locator = page.locator('div[role="main"]').first
+    try:
+        await main_locator.wait_for(state="visible", timeout=8_000)
+    except Exception:
+        _log("  ⚠️ main container non trovato — fallback su body")
+
+    followers: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+
+    # Selettori per gli ITEM follower. FB renderizza ogni item come anchor
+    # con href al profilo + span con display name. Cerchiamo anchor che
+    # puntano a profili (non a foto/eventi/post).
+    item_selectors = [
+        'div[role="main"] a[role="link"][href]:not([href*="/photo"]):not([href*="/posts"]):not([href*="?comment"])',
+        'div[role="main"] a[href^="/"]:not([href*="/photo"]):not([href*="/posts"])',
+        'div[aria-label*="ollower"] a[href]',
+        'div[aria-label*="eguaci"] a[href]',
+    ]
+
+    max_scrolls = max(8, cap // 10)  # +/- 10 follower per scroll
+    last_count = 0
+    stagnant_rounds = 0
+
+    for scroll_idx in range(max_scrolls):
+        # Estrai gli anchor visibili
+        anchors_found: list[tuple[str, str]] = []  # (href, display_name)
+        for sel in item_selectors:
+            try:
+                els = await page.locator(sel).all()
+            except Exception:
+                continue
+            if not els:
+                continue
+            for el in els[:cap * 3]:  # raccogliamo extra per filtraggio
+                try:
+                    href = await el.get_attribute("href", timeout=500)
+                except Exception:
+                    href = None
+                if not href:
+                    continue
+                # Filtro: solo profili (URL FB normalizzabile)
+                full_url = href if href.startswith("http") else f"https://www.facebook.com{href}"
+                normalized = _normalize_fb_profile_url(full_url)
+                if not normalized:
+                    continue
+                # Display name: testo interno dell'anchor
+                try:
+                    name = (await el.text_content(timeout=500)) or ""
+                    name = name.strip()
+                except Exception:
+                    name = ""
+                if not _is_plausible_name(name):
+                    # nome vuoto o "Vedi tutto" / "Mostra altro" — skip
+                    continue
+                anchors_found.append((normalized, name))
+            if anchors_found:
+                break  # primo selettore che pesca qualcosa wins
+
+        # Dedup + aggiungi a `followers`
+        for normalized_url, name in anchors_found:
+            if normalized_url in seen_urls:
+                continue
+            # Filtro: skip il profilo target stesso
+            if _fb_handle_from_url(normalized_url) == target:
+                continue
+            seen_urls.add(normalized_url)
+            handle = _fb_handle_from_url(normalized_url) or ""
+            followers.append({
+                "handle": handle,
+                "display_name": name,
+                "profile_url": normalized_url,
+            })
+            if len(followers) >= cap:
+                break
+
+        current_count = len(followers)
+        _log(f"  scroll {scroll_idx + 1}/{max_scrolls}: {current_count} follower (cap={cap})")
+
+        if current_count >= cap:
+            break
+
+        # Detect stagnation: se 3 scroll consecutivi senza nuovi follower → stop
+        if current_count == last_count:
+            stagnant_rounds += 1
+            if stagnant_rounds >= 3:
+                _log("  ⏹ stop: 3 scroll senza nuovi follower")
+                break
+        else:
+            stagnant_rounds = 0
+        last_count = current_count
+
+        # Scroll giù
+        try:
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        except Exception:
+            pass
+        await asyncio.sleep(random.uniform(1.5, 2.8))
+
+    _log(f"  ✓ enumerati {len(followers)} follower di @{target}")
+    if debug_dir is not None:
+        try:
+            from pathlib import Path as _P
+            dd = _P(str(debug_dir))
+            safe_n = re.sub(r"[^A-Za-z0-9_]+", "_", target)[:60]
+            await page.screenshot(path=str(dd / f"fb_followers_final_{safe_n}.png"))
+        except Exception:
+            pass
+    return followers
