@@ -25,10 +25,29 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Mulish:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="icon" href="/favicon.ico?v={{ static_asset_mtime('brand/favicon.ico') }}" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png?v={{ static_asset_mtime('brand/favicon-32.png') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/apple-touch-icon.png?v={{ static_asset_mtime('brand/apple-touch-icon.png') }}">
+  <link rel="manifest" href="/static/brand/site.webmanifest?v={{ static_asset_mtime('brand/site.webmanifest') }}">
+  <meta name="theme-color" content="#080d1e">
   <link rel="stylesheet" href="/static/style.css?v={{ static_css_mtime() }}">
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="/static/argos_loader.js?v={{ static_asset_mtime('argos_loader.js') }}" defer></script>
 </head>
 <body class="app-body">
+  <div class="argos-loading-oracle" data-argos-loader aria-hidden="true" role="status">
+    <div class="argos-loader-card">
+      <div class="argos-loader-mark" aria-hidden="true">
+        <svg class="argos-loader-ring" viewBox="0 0 80 80" focusable="false">
+          <circle class="argos-loader-ring-track" cx="40" cy="40" r="34"></circle>
+          <circle class="argos-loader-ring-fill" cx="40" cy="40" r="34"></circle>
+        </svg>
+        <span class="argos-loader-orbit-dot"></span>
+        <img src="/static/brand/favicon-96.png" alt="">
+      </div>
+      <p data-argos-loader-text>Argos apre cento occhi sui segnali.</p>
+    </div>
+  </div>
   {# Sprite SVG icons (Lucide-inspired). #}
   <svg width="0" height="0" style="position:absolute;overflow:hidden" aria-hidden="true" focusable="false">
     <defs>
@@ -225,7 +244,7 @@
     {% if current_user and not _hide_sidebar %}
     <aside class="app-sidebar" aria-label="Navigazione principale">
       <a href="/" class="brand">
-        <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></span>
+        <span class="brand-mark"><img class="brand-mark-img" src="/static/brand/app-icon-512.png" alt="" width="36" height="36"></span>
         <span class="brand-text">
           <span class="brand-name">Argos</span>
           <span class="brand-tag">i cento occhi sui tuoi lead</span>
@@ -295,7 +314,7 @@
           {% else %}
           {# Operator: link diretto alla dashboard al posto del toggle sidebar. #}
           <a href="/home" class="brand" title="Torna alla dashboard">
-            <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></span>
+            <span class="brand-mark"><img class="brand-mark-img" src="/static/brand/app-icon-512.png" alt="" width="36" height="36"></span>
             <span class="brand-text">
               <span class="brand-name">Argos</span>
               <span class="brand-tag">torna alla dashboard</span>
@@ -346,7 +365,7 @@
         </div>
         {% else %}
         <a href="/" class="brand">
-          <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></span>
+          <span class="brand-mark"><img class="brand-mark-img" src="/static/brand/app-icon-512.png" alt="" width="36" height="36"></span>
           <span class="brand-text">
             <span class="brand-name">Argos</span>
             <span class="brand-tag">i cento occhi sui tuoi lead</span>

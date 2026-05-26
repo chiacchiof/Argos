@@ -131,11 +131,22 @@ def test_operator_can_access_messages(setup_users):
 
 
 def test_architect_blocked_from_operator_home(setup_users):
-    """Architect su /home → 403 (UI semplificata e' per operator)."""
+    """Architect su /home → redirect 307 a `/` (UX gentile: architect ha la
+    UI completa, viene mandato alla sua dashboard task invece di vedere un
+    403 crudo). Storicamente il test si aspettava 403, ma la UX e' stata
+    cambiata in 307 redirect per non disorientare gli architect che
+    inciampano sul vecchio URL /home (vedi auth.require_operator)."""
     from app.main import app
     client = TestClient(app)
     with client:
         client.post("/login", data={"email": "arch@op", "password": "pw"},
                    follow_redirects=False)
-        r = client.get("/home")
-        assert r.status_code == 403
+        r = client.get("/home", follow_redirects=False)
+        # Architect: 307 redirect verso / (la sua dashboard)
+        assert r.status_code == 307, (
+            f"Atteso 307 redirect, ottenuto {r.status_code}. "
+            f"Body[:200]: {r.text[:200]}"
+        )
+        assert r.headers.get("location") == "/", (
+            f"Atteso redirect a /, ottenuto {r.headers.get('location')!r}"
+        )

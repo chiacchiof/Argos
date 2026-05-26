@@ -76,3 +76,18 @@ def _static_css_mtime() -> int:
 # render del template — utile in dev con uvicorn --reload che NON ricarica
 # moduli Python quando solo la CSS cambia. Overhead minimo (1 stat() per page).
 templates.env.globals["static_css_mtime"] = _static_css_mtime
+
+
+def _static_asset_mtime(path: str) -> int:
+    """mtime di un asset dentro static/ per cache-busting mirato."""
+    try:
+        root = Path(__file__).resolve().parent.parent / "static"
+        asset = (root / path.lstrip("/")).resolve()
+        if root.resolve() not in asset.parents and asset != root.resolve():
+            return 0
+        return int(asset.stat().st_mtime)
+    except Exception:
+        return 0
+
+
+templates.env.globals["static_asset_mtime"] = _static_asset_mtime
