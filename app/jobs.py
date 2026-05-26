@@ -426,6 +426,11 @@ async def _run_job(job_id: int, task_id: int) -> None:
             from .agent.runner_recon_social import run_agent as run_rs
             # Apre Chromium persistent → proactor thread su Windows.
             await _run_in_proactor_thread(lambda: run_rs(task, job_id), job_id)
+        elif mode == "audience_discovery":
+            from .agent.runner_audience_discovery import run_agent as run_ad
+            # Stesso pattern di recon_social: Chromium persistent loggato →
+            # proactor thread su Windows.
+            await _run_in_proactor_thread(lambda: run_ad(task, job_id), job_id)
         elif mode == "qualifier":
             from .agent.runner_qualifier import run_agent as run_q
             await run_q(task, job_id)
