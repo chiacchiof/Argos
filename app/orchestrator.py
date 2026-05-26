@@ -28,6 +28,7 @@ AgentMode = Literal[
     "outreach_whatsapp",
     "responder",
     "recon_social",
+    "audience_discovery",
 ]
 
 AutonomyLevel = Literal["advisor", "builder", "supervised", "autonomous"]
@@ -115,7 +116,7 @@ PLANNER_TOOLS_SPEC: list[dict[str, Any]] = [
 _PLANNER_MANUAL = """\
 MANUALE OPERATIVO ARGOS (per pianificare task e workflow)
 
-== Le 11 modalita di agente ==
+== Le 12 modalita di agente ==
 
 [react]   famiglia: scraping
 Ricerca web leggera: DuckDuckGo + fetch HTTP + readability. Niente browser.
@@ -165,13 +166,13 @@ seed_queries: URL profili (https://www.facebook.com/mario.rossi) o handle (@mari
 Output: profiles.jsonl con bio + interessi + sub-pagine.
 Vincolo: viola ToS Meta/TikTok (rischio ban account loggato). Caveat GDPR/ePrivacy. risk_level=medium.
 
-[ALIAS] audience_discovery (rimosso 2026-05-26)
-Non e' piu' un agent_mode separato: lo scaffolding e' stato eliminato perche'
-il runner concreto richiedeva troppa logica nuova. Quando il brief descrive
-audience+demografia senza URL/handle (es. "persone 45-60 anni interessate a
-magliette vintage anni 80"), USA UN WORKFLOW STANDARD a 3 task con runner
-esistenti — vedi REGOLA 11 sotto e ESEMPIO 7. NON creare task con
-agent_mode='audience_discovery': il valore non e' piu' valido nello schema.
+[audience_discovery]   famiglia: audience   BETA (v1 solo Facebook)
+Agente ReAct che pilota un account Facebook loggato per scoprire profili che matchano un brief NL (topic+demografia). Naviga FB tramite barra ricerca, gruppi tematici, friends-of-friends partendo da anchor opzionali. READ-ONLY (no like/commenta/DM/follow). Riusa il "recon profilo completo" gia' esistente per estrarre bio/post/score per ciascun candidato.
+Quando: il brief descrive CHI cercare con shopping intent / topic interest / demografia ("persone interessate a X", "audience 45-60 per Y") e l'utente ha un account FB loggato disponibile. NON usare per profili specifici con URL/handle noti — quello e' recon_social/url_driven. NON usare se l'utente vuole solo "trovare siti/community" (= react).
+Campi rilevanti: objective (brief NL del target audience, OBBLIGATORIO — l'agente lo legge per generare query di ricerca e scorare i candidati), seed_queries (anchor profili FB opzionali, URL o handle), social_platform="facebook" (v1 solo FB), recon_social_account_id (account FB loggato, obbligatorio), recon_max_targets_per_day (cap audience da salvare, default 50), recon_score_threshold (score min 0-10 per save_match, default 6), speed_profile (safe/balanced/aggressive), refresh_policy_days (dedup), extraction_template ("profile_interests" consigliato).
+seed_queries: anchor profili FB (URL https://www.facebook.com/... o @handle), una per riga. OPZIONALE — se vuoto l'agente parte solo dalla search bar + gruppi tematici.
+Output: asset_type='social_profile' con tag audience_match_task:<id>, audience_score:N, audience_reason:..., source_audience_discovery=true.
+Vincolo: viola ToS Meta (rischio ban). Caveat GDPR/ePrivacy. risk_level=medium. Usa account warmup sacrificabile, mai personale.
 
 [qualifier]   famiglia: processing
 Legge profiles.jsonl in input, valuta ogni profilo via LLM, produce qualified.jsonl.
@@ -234,13 +235,16 @@ Site_explorer e browser_use salvano un playbook in site_playbooks a fine job riu
    - **NON creare un edge** tra i due task: react produce un report .md, non un file di seed; il passaggio degli URL e' manuale.
    - Aggiungi al piano un warning chiaro che spiega il passaggio manuale all'utente.
 11. **Shopping/audience intent senza URL ne' handle**: se il brief descrive CHI cercare con shopping intent / topic interest / demografia ("persone interessate a X", "audience 45-60 per Y", "community su Z", "chi compra W") MA non contiene URL ne' handle social specifici, NON usare `recon_social` — quel runner richiede URL profili o nomi-amici reali e crasha in 0 secondi su keyword generiche (caso reale: task #49 con seed `"magliette anni 80"` su `recon_social/url_driven` e' morto in zero secondi perche' `search_user_by_name` di FB ha cercato letteralmente un utente di nome "magliette anni 80", trovando 0 match).
-   Soluzione canonica: produci un **workflow a 3 task** con runner esistenti (vedi ESEMPIO 7):
-   - Task 1 `react` — objective "scopri venue/community/forum/marketplace dove questa audience si raccoglie", produce un report .md di URL.
-   - Task 2 `auto_extract` con `seed_queries=[]` — l'utente popolera' manualmente i seed con gli URL trovati dal task 1 dopo aver letto il report. extraction_template tipicamente `profile_contacts`.
-   - Task 3 `qualifier` — objective "tieni solo profili che matchano il filtro demografico/topic dell'audience target" (riprodurre nel criterio la demografia esatta del brief: eta, geografia, interesse).
-   Edges: task2 → task3 con pass_artifact `profiles.jsonl`. NON mettere edge fra task1 e task2 (react produce un report, non un file di seed: l'utente popola manualmente).
-   Warning obbligatorio nel piano: "Pipeline audience discovery in 3 step. Lancia prima `discover`, poi popola seed_queries di `extract` con gli URL dal report, poi lancia. Il filtro demografico (eta/geo/topic) e' applicato dal `qualifier` finale."
-   run_after_create=false (richiede passaggio manuale seed dopo task1).
+   Soluzione canonica: produci un **task singolo `audience_discovery`** (vedi ESEMPIO 7). Il runner agentico naviga FB loggato cercando audience matching il brief.
+   - `objective` = brief NL completo (topic + demografia + segnali di interesse). L'agente lo usa per generare query FB e per scorare i candidati.
+   - `social_platform` = "facebook" (v1 supporta solo FB).
+   - `recon_social_account_id` = account FB loggato (obbligatorio — l'utente lo configura in /social/accounts). Se nessun account FB attivo esiste, AVVERTI nel warning di crearne uno prima.
+   - `seed_queries` = lista opzionale di anchor profili FB (URL/handle di amici che fanno parte dell'audience target). Se l'utente menziona amici/conoscenti come riferimento, mettili qui; altrimenti lascia vuoto.
+   - `recon_max_targets_per_day` = cap audience da raccogliere (default 50, alza se l'utente chiede esplicitamente piu' profili).
+   - `extraction_template` = "profile_interests".
+   - `speed_profile` = "safe" di default (anti-ban).
+   Warning obbligatorio: "audience_discovery e' una modalita BETA che viola i ToS Facebook. Usa un account warmup sacrificabile, mai personale. v1 supporta solo Facebook (Instagram/TikTok in roadmap)."
+   risk_level=medium.
 
 == Tool disponibili (chiamali se servono) ==
 - list_extraction_templates() per scegliere il template giusto.
@@ -416,42 +420,37 @@ Plan:
 }
 Nota: target_cap_per_site=0 attiva la modalita unbounded; le parole "TUTTI i profili" + "infinite scroll" nell'objective sono keyword-trigger che attivano l'auto-discovery FORZATA via Chromium nel runner. NON riformulare l'objective in modo neutro: la keyword esatta e' parte del meccanismo.
 
-ESEMPIO 7 (audience intent senza URL: workflow react -> auto_extract -> qualifier)
-Brief: "Trovami persone tra 45 e 60 anni interessate a magliette anni 80, italiane, attive sui social"
+ESEMPIO 7 (audience intent senza URL: audience_discovery task singolo, agente FB)
+Brief: "Trovami persone tra 45 e 60 anni interessate a magliette anni 80, italiane, partendo dal mio amico paolo maugeri che e' nel target"
 Plan:
 {
   "title": "Audience: appassionati magliette anni 80 (45-60, IT)",
-  "summary": "Workflow 3-step: react scopre venue/community dove la nicchia si raccoglie, auto_extract estrae profili dai venue, qualifier filtra per eta 45-60 + interesse magliette anni 80.",
-  "risk_level": "low",
+  "summary": "audience_discovery con anchor paolo maugeri: agente FB loggato naviga search/gruppi/friends-of-friends cercando profili matching brief.",
+  "risk_level": "medium",
   "assumptions": [
-    "Audience identificabile su forum vintage, gruppi Facebook di nostalgia, community Reddit/r-italiana, marketplace di vintage.",
-    "Lo schema profile_contacts cattura i campi pubblici (nome, eta dichiarata, location, bio, link social)."
+    "Account Facebook loggato disponibile in /social/accounts.",
+    "L'utente ha indicato un anchor (paolo maugeri) che fa parte dell'audience target.",
+    "Lo schema profile_interests cattura interessi/hobby/gruppi visibili."
   ],
   "warnings": [
-    "Pipeline audience discovery in 3 step. Lancia prima 'discover', poi leggi il report e copia gli URL dei venue piu' pertinenti in 'extract.seed_queries', poi lancia il workflow. Il filtro demografico (45-60 anni, italiani, interesse vintage anni 80) e' applicato dal qualifier finale."
+    "audience_discovery e' una modalita BETA che viola i ToS Facebook. Usa un account warmup sacrificabile, mai personale. v1 supporta solo Facebook (Instagram/TikTok in roadmap)."
   ],
   "run_after_create": false,
-  "tasks": [
-    {"key": "discover", "name": "Scoperta community vintage anni 80 IT",
-     "agent_mode": "react",
-     "objective": "Cerca e produci un elenco di URL di forum, gruppi Facebook pubblici, community Reddit, marketplace e blog italiani dove si discute di magliette vintage anni 80 e moda anni 80. Per ogni fonte: URL canonico + breve nota di rilevanza + stima del target demografico (eta).",
-     "max_iterations": 15},
-    {"key": "extract", "name": "Estrazione profili dalle community scoperte",
-     "agent_mode": "auto_extract",
-     "objective": "Estrai profili pubblici (nome, bio, eta se dichiarata, location, contatti) dalle community e marketplace scoperti nello step di discovery.",
-     "seed_queries": [],
-     "extraction_template": "profile_contacts",
-     "max_iterations": 200},
-    {"key": "qualifier", "name": "Filtro audience 45-60 IT vintage80",
-     "agent_mode": "qualifier",
-     "objective": "Tieni SOLO profili con: (a) eta dichiarata o inferibile fra 45 e 60 anni, (b) localizzazione italiana, (c) interesse esplicito per moda/cultura/oggetti anni 80 (post, bio, gruppi a cui partecipano). Scarta articoli, pagine vuote, profili commerciali o duplicati.",
-     "max_iterations": 10}
-  ],
-  "edges": [
-    {"from_key": "extract", "to_key": "qualifier", "pass_artifact": "profiles.jsonl"}
-  ]
+  "tasks": [{
+    "key": "audience", "name": "Audience FB: magliette anni 80 (45-60, IT)",
+    "agent_mode": "audience_discovery",
+    "social_platform": "facebook",
+    "objective": "Trova profili Facebook di persone tra 45 e 60 anni, italiane, interessate a magliette vintage anni 80 e moda/cultura anni 80. Segnali positivi: post su collezionismo abbigliamento, mercatini vintage, gruppi nostalgia anni 80, like a pagine di moda vintage. Esplora gruppi tematici, friends-of-friends dell'anchor paolo maugeri, e search FB per keyword vintage80/moda80.",
+    "seed_queries": ["https://www.facebook.com/paolo.maugeri"],
+    "extraction_template": "profile_interests",
+    "recon_max_targets_per_day": 50,
+    "recon_score_threshold": 6,
+    "speed_profile": "safe",
+    "refresh_policy_days": 7
+  }],
+  "edges": []
 }
-Nota: NESSUN edge fra `discover` (react) e `extract` (auto_extract) — react produce un report .md, non un file di seed. L'utente popola manualmente i seed di `extract` dopo aver letto il report. Questo workflow sostituisce il vecchio anti-pattern di forzare `recon_social` con keyword di shopping (task #49 fallito 2026-05-26).
+Nota: il brief sostituisce il vecchio anti-pattern di forzare `recon_social/url_driven` con keyword di shopping (task #49 fallito 2026-05-26 perche' `search_user_by_name` di FB cercava letteralmente "magliette anni 80" come nome utente). Qui invece il runner agentico audience_discovery legge il brief, genera query FB, esplora gruppi/friends, e per ogni candidato lo scora — salva solo quelli con score >= recon_score_threshold.
 
 ESEMPIO 8 (recon_social url_driven: profili specifici con URL/handle)
 Brief: "Analizza i profili Instagram di @creator_a, @creator_b e @creator_c per capire interessi e tono"

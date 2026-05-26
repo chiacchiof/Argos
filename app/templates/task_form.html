@@ -95,13 +95,15 @@
               data-label-browseruse="Obiettivo / cosa cercare"
               data-label-qualifier="Criterio di filtro / scoring"
               data-label-outreach="Note descrittive (opzionale)"
-              data-label-responder="Note descrittive (opzionale)">Obiettivo</span>
+              data-label-responder="Note descrittive (opzionale)"
+              data-label-audiencediscovery="Brief audience target">Obiettivo</span>
         <span class="hint dyn-hint"
               data-hint-react="Cosa deve trovare l'agente, in linguaggio naturale."
               data-hint-browseruse="Cosa cerca l'agente nel browser. Combinato con lo schema di estrazione."
               data-hint-qualifier="Criterio LLM per decidere se un profilo è valido (es. 'tieni solo profili con email pubblica e descrizione narrativa')."
               data-hint-outreach="Memo per te, non usato dall'agente. Le istruzioni effettive sono in template/subject/canali."
-              data-hint-responder="Memo per te, non usato dall'agente. Le istruzioni effettive sono nel system prompt sotto.">(cosa cerca, come deve produrre il report)</span>
+              data-hint-responder="Memo per te, non usato dall'agente. Le istruzioni effettive sono nel system prompt sotto."
+              data-hint-audiencediscovery="Descrivi CHI vuoi trovare in linguaggio naturale: topic/nicchia + demografia (età, geografia, segnali di interesse). L'agente legge questo brief per generare query di ricerca FB, scegliere gruppi tematici, e scorare ogni profilo candidato. Es. <em>'Persone 45-60 anni interessate a magliette vintage anni 80, italiane, attive su gruppi di nostalgia anni 80 e moda vintage. Segnali positivi: post su collezionismo abbigliamento, vintage market, anni 80'</em>.">(cosa cerca, come deve produrre il report)</span>
         <textarea name="objective" rows="5" required>{{ p.get('objective','') }}</textarea>
       </label>
     </details>
@@ -130,13 +132,12 @@
 
     {# ============================================================
        SEZIONE 4a: INPUT / SEED — visibile per le modalità che hanno un
-       input "seed" (5 scraping + recon_social). Label/hint cambiano in
-       base alla modalità (vedi dyn-label / dyn-hint).
-       Per l'intent audience (topic+demografia senza URL) l'orchestrator
-       crea un workflow standard react→auto_extract→qualifier (regola 11
-       in app/orchestrator.py); audience_discovery non è più un mode.
+       input "seed" (5 scraping + recon_social + audience_discovery).
+       Label/hint cambiano in base alla modalità (vedi dyn-label / dyn-hint).
+       Per audience_discovery il seed sono "anchor profili" opzionali
+       (punti di partenza per l'esplorazione, non destinatari).
        ============================================================ #}
-    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer recon_social">
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer recon_social audience_discovery">
       <summary>Input / seed</summary>
 
       <label>
@@ -146,16 +147,23 @@
               data-label-bulkextract="URL da processare"
               data-label-autoextract="Lista siti da analizzare"
               data-label-siteexplorer="URL iniziale del sito"
-              data-label-reconsocial="URL profili o handle target">Seed</span>
+              data-label-reconsocial="URL profili o handle target"
+              data-label-audiencediscovery="Anchor profili FB (opzionale)">Seed</span>
         <span class="hint dyn-hint"
               data-hint-react="Una query DuckDuckGo per riga. Se vuoto l'agente le deduce dall'obiettivo."
               data-hint-browseruse="Una URL completa per riga (es. <code>https://example.com/categoria/1</code>). Ognuna è una sessione browser-use indipendente."
               data-hint-bulkextract="Una URL completa per riga. Verranno unite agli URL trovati nell'<code>Input artifact path</code> (se presente). Dedup automatico."
               data-hint-autoextract="Una URL home per riga. Per ogni sito l'agente decide automaticamente la strategia (bulk_extract / browser_use / skip)."
               data-hint-siteexplorer="UN solo URL — la home o sezione alta del sito. Il runner mappa il sito a partire da lì."
-              data-hint-reconsocial="Una URL profilo per riga (es. <code>https://www.facebook.com/mario.rossi</code>) <strong>oppure</strong> un handle (es. <code>@mario.rossi</code>). Per nomi-amici (resolved contro friend/following list dell'account loggato) usa il campo dedicato nella sezione &laquo;Configurazione recon social&raquo; sotto.">(una per riga, opzionale)</span>
+              data-hint-reconsocial="Una URL profilo per riga (es. <code>https://www.facebook.com/mario.rossi</code>) <strong>oppure</strong> un handle (es. <code>@mario.rossi</code>). Per nomi-amici (resolved contro friend/following list dell'account loggato) usa il campo dedicato nella sezione &laquo;Configurazione recon social&raquo; sotto."
+              data-hint-audiencediscovery="URL o handle FB di profili da usare come <strong>punti di partenza</strong> per l'esplorazione (NON sono destinatari — l'agente parte da qui per scoprire altri profili simili tramite friends-of-friends, gruppi condivisi, ecc.). Lascia vuoto per partire solo dalla barra di ricerca FB + gruppi tematici dedotti dall'obiettivo. Es. <code>https://www.facebook.com/paolo.maugeri</code>.">(una per riga, opzionale)</span>
         <textarea name="seed_queries" rows="4">{% if p.get('seed_queries') %}{% if p.seed_queries is string %}{{ p.seed_queries }}{% else %}{{ p.seed_queries | join("\n") }}{% endif %}{% endif %}</textarea>
       </label>
+
+      {# Banner BETA + caveat ToS per audience_discovery. #}
+      <div class="dyn-section" data-modes="audience_discovery" style="margin-top:0.7rem;padding:0.7rem 0.9rem;background:var(--warn-soft);border:1px solid var(--warn-border);border-radius:4px;font-size:0.85rem;line-height:1.4">
+        ⚠️ <strong>BETA — solo Facebook in v1</strong>: il runner usa l'account FB loggato (campo «Account social» sotto) per navigare in modalità READ-ONLY su FB cercando profili che matchano l'obiettivo. Viola i ToS Meta: rischio ban dell'account. Caveat GDPR/ePrivacy come per <code>recon_social</code>. Instagram/TikTok arriveranno in v2.
+      </div>
     </details>
 
     {# ============================================================
@@ -202,8 +210,8 @@
     {# ============================================================
        SEZIONE 5: SCHEMA DI ESTRAZIONE — solo browser_use
        ============================================================ #}
-    <details class="collapsible-section extraction-fieldset dyn-section" data-modes="browser_use bulk_extract auto_extract site_explorer recon_social">
-      <summary>Schema di estrazione <span class="hint dyn-hint" data-hint-reconsocial="Per <code>recon_social</code> usa &laquo;Profili social &mdash; interessi&raquo;: estrae hobby/interessi/gruppi dal contenuto visibile."></span></summary>
+    <details class="collapsible-section extraction-fieldset dyn-section" data-modes="browser_use bulk_extract auto_extract site_explorer recon_social audience_discovery">
+      <summary>Schema di estrazione <span class="hint dyn-hint" data-hint-reconsocial="Per <code>recon_social</code> usa &laquo;Profili social &mdash; interessi&raquo;: estrae hobby/interessi/gruppi dal contenuto visibile." data-hint-audiencediscovery="Per <code>audience_discovery</code> usa &laquo;Profili social &mdash; interessi&raquo;: l'agente lo applica ai profili FB che identifica come matching."></span></summary>
 
       {% set selected_template = p.get('extraction_template') or 'profile_contacts' %}
       <label>Template di partenza
@@ -919,7 +927,7 @@
     {# ============================================================
        SEZIONE 9: PROVIDER LLM — tutti tranne outreach (outreach è solo template-fill)
        ============================================================ #}
-    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer qualifier responder outreach_social outreach_whatsapp recon_social">
+    <details class="collapsible-section dyn-section" data-modes="react browser_use bulk_extract auto_extract site_explorer qualifier responder outreach_social outreach_whatsapp recon_social audience_discovery">
       <summary>Modello LLM <span class="hint dyn-hint" data-modes-hint="outreach_social">(per outreach_social: usato per generare messaggi DM personalizzati — Qwen locale consigliato per $0)</span></summary>
 
       <label>Provider
@@ -1376,6 +1384,97 @@ Buongiorno, mi chiamo X e contatto solo profili che trovo davvero curati come il
          4 resta visibile finche target_contact_ids non e svuotato
          (con il bottone Promuovi).
          #}
+    </details>
+
+    {# ============================================================
+       SEZIONE 8e: AUDIENCE DISCOVERY — solo audience_discovery
+       Riusa le colonne DB di recon_social (recon_social_account_id,
+       recon_max_targets_per_day, speed_profile, refresh_policy_days,
+       recon_score_threshold) per evitare ALTER TABLE. UI dedicata
+       perché alcuni concetti cambiano semanticamente:
+       - "Max profili" = audience da raccogliere (non da scansionare)
+       - "Score minimo" = soglia per save_match nel runner ReAct
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="audience_discovery">
+      <summary>🎯 Configurazione audience discovery <span class="hint">(agente FB loggato — esplorazione READ-ONLY)</span></summary>
+
+      <div class="warning-box" style="background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);border-radius:4px;padding:0.6rem 0.8rem;margin-bottom:0.8rem">
+        ⚠️ <strong>v1 = solo Facebook</strong>. Il runner agentico naviga FB loggato cercando profili che matchano l'obiettivo (brief NL nel campo «Obiettivo» dello Step 1). Viola ToS Meta — usa un account warmup, mai personale. Caveat GDPR/ePrivacy per profilazione automatica.
+      </div>
+
+      <label>Piattaforma
+        {# v1 solo FB. Lasciato select per estensione futura IG/TikTok. #}
+        <select name="social_platform">
+          <option value="facebook" {% if not p.get('social_platform') or p.get('social_platform') == 'facebook' %}selected{% endif %}>Facebook (v1)</option>
+          <option value="instagram" disabled>Instagram (v2, TBD)</option>
+          <option value="tiktok"    disabled>TikTok (v2, TBD)</option>
+        </select>
+      </label>
+
+      <label>Account Facebook loggato
+        {% set ad_acc = p.get('recon_social_account_id') %}
+        <select name="recon_social_account_id">
+          <option value="" {% if not ad_acc %}selected{% endif %}>— seleziona un account FB —</option>
+          {% for a in (recon_accounts or []) %}
+            {% if a.platform == 'facebook' %}
+            <option value="{{ a.id }}" {% if ad_acc == a.id %}selected{% endif %}
+                    {% if a.status != 'active' %}disabled{% endif %}>
+              #{{ a.id }} · {{ a.platform }} / {{ a.username }} · <span class="muted">{{ a.status }}</span>
+              {% if a.status != 'active' %} ⚠️{% endif %}
+            </option>
+            {% endif %}
+          {% endfor %}
+        </select>
+        <span class="hint">
+          Account Facebook loggato usato dall'agente per navigare FB (search bar, gruppi,
+          friends-of-friends). Gestisci gli account in
+          <a href="/social/accounts" target="_blank">/social/accounts</a>. Se l'unico account
+          attivo è banned/warmup, il task fallisce subito.
+        </span>
+      </label>
+
+      <div class="row">
+        <label>Max profili audience da raccogliere
+          <input type="number" name="recon_max_targets_per_day" min="1" max="5000"
+                 value="{{ p.get('recon_max_targets_per_day', 50) }}">
+          <span class="hint">
+            Cap di sicurezza: il runner si ferma quando ha salvato N profili matched.
+            Default 50. ⚠️ <strong>&gt;500</strong> aumenta significativamente il rischio
+            ban — usa con account warmup sacrificabile.
+          </span>
+        </label>
+
+        <label>Score minimo per save_match (0-10)
+          <input type="number" name="recon_score_threshold" min="0" max="10"
+                 value="{{ p.get('recon_score_threshold', 6) }}">
+          <span class="hint">
+            L'LLM assegna uno score 0-10 ad ogni profilo candidato in base a quanto
+            matcha il brief. Profili con score &lt; soglia vengono scartati. Default 6.
+          </span>
+        </label>
+      </div>
+
+      <label style="margin-top:0.8rem">
+        ⚡ Profilo velocità (anti-ban)
+        {% set sp_ad = p.get('speed_profile') or 'safe' %}
+        <select name="speed_profile">
+          <option value="safe"       {% if sp_ad=='safe' %}selected{% endif %}>Safe (default) — pause 30-180s tra azioni. Rischio ban: BASSO</option>
+          <option value="balanced"   {% if sp_ad=='balanced' %}selected{% endif %}>Balanced — ~40% più veloce: pause 15-60s. Rischio: BASSO/MEDIO</option>
+          <option value="aggressive" {% if sp_ad=='aggressive' %}selected{% endif %}>Aggressive — ~65% più veloce: pause 10-30s. Rischio: MEDIO/ALTO</option>
+        </select>
+        <span class="hint">Gap tra azioni FB consecutive. Stesso parametro di <code>recon_social</code>.</span>
+      </label>
+
+      <label style="margin-top:0.8rem">
+        ♻️ Refresh policy (giorni) <span class="hint">(dedup profili già visti dall'audience discovery)</span>
+        <input type="number" name="refresh_policy_days" min="-1" max="365"
+               value="{{ p.get('refresh_policy_days', 7) }}">
+        <span class="hint">
+          <strong>N&gt;0</strong>: skip profili già in DB visti negli ultimi N giorni (default 7).
+          <strong>0</strong>: skip se esiste in DB (mai re-scrape).
+          <strong>-1</strong>: sempre re-scrape (ignora dedup).
+        </span>
+      </label>
     </details>
 
     {# ============================================================

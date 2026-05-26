@@ -31,10 +31,11 @@ SeedKind = Literal[
     "start_url",        # UN solo URL home (site_explorer)
     "recon_targets",    # URL profili social o nomi friend (recon_social/url_driven)
     "target_handles",   # handle social degli account target (recon_social/follower_scrape)
+    "anchor_profiles",  # profili FB di partenza opzionali per audience_discovery
 ]
 
 
-Family = Literal["scraping", "recon", "processing", "outreach"]
+Family = Literal["scraping", "recon", "audience", "processing", "outreach"]
 
 
 # Campi sempre ammessi (identità, LLM main, output, scheduling, valutazione).
@@ -226,6 +227,29 @@ MODE_SCHEMAS: dict[str, ModeSchema] = {
             "max_iterations",
         ),
     ),
+    "audience_discovery": ModeSchema(
+        mode="audience_discovery",
+        family="audience",
+        label="audience_discovery — esplora FB loggato cercando audience per brief NL",
+        hint="Agente ReAct che pilota un account Facebook loggato per scoprire profili che matchano un brief NL (topic + demografia). Cerca su FB tramite barra ricerca, gruppi tematici, friends-of-friends partendo da anchor opzionali. READ-ONLY (no like/commenta/DM/follow).",
+        seed_kind="anchor_profiles",
+        seed_label="Anchor profili FB (opzionale)",
+        seed_hint="URL o handle di profili FB da usare come <strong>punti di partenza</strong> per l'esplorazione (es. amici reali dell'account loggato che fanno parte dell'audience target). Se vuoto, l'agente parte solo dalla search bar e dai gruppi tematici dedotti dal brief. Es. <code>https://www.facebook.com/paolo.maugeri</code> o <code>@paolo.maugeri</code>.",
+        required=("objective", "social_platform", "recon_social_account_id"),
+        optional=(
+            "seed_queries",  # anchor profiles (URL/handle), opzionale
+            "target_asset_ids",  # asset anchor opzionali
+            "recon_max_targets_per_day",  # cap audience da raccogliere
+            "speed_profile",  # safe/balanced/aggressive (riusa recon)
+            "refresh_policy_days",  # dedup profili già visti
+            "extraction_template",
+            "extraction_schema",
+            "output_asset_type",
+            "max_iterations",  # cap step LLM
+            "recon_score_threshold",  # score minimo per save_match
+        ),
+        runner_status="beta",
+    ),
     "qualifier": ModeSchema(
         mode="qualifier",
         family="processing",
@@ -333,12 +357,13 @@ MODE_SCHEMAS: dict[str, ModeSchema] = {
 
 
 # Ordine famiglie nel <select> agent_mode (top-down).
-FAMILIES: tuple[Family, ...] = ("scraping", "recon", "processing", "outreach")
+FAMILIES: tuple[Family, ...] = ("scraping", "recon", "audience", "processing", "outreach")
 
 
 FAMILY_LABELS: dict[Family, str] = {
     "scraping": "Scraping & ricerca",
     "recon": "Recon social",
+    "audience": "Audience discovery",
     "processing": "Processing",
     "outreach": "Outreach & responder",
 }
@@ -365,6 +390,7 @@ def get_schema(mode: str) -> ModeSchema:
 DEFAULT_SEED_KIND_PER_FAMILY: dict[Family, SeedKind] = {
     "scraping": "search_queries",
     "recon": "recon_targets",
+    "audience": "anchor_profiles",
     "processing": "search_queries",  # placeholder, qualifier non usa seed
     "outreach": "search_queries",     # placeholder, outreach* non usa seed
 }
