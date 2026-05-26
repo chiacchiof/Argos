@@ -45,6 +45,7 @@ from .. import db
 from ..config import RESULTS_DIR
 from .llm_providers import resolve_api_key, resolve_base_url
 from .ollama import maybe_add_keep_alive
+from .run_reporter import RunReporter
 from .social import facebook_audience, facebook_recon
 from .social.crypto_creds import is_configured
 from .social.safe_browser import ReconAudit, SafeBrowser, is_recon_disabled
@@ -480,6 +481,12 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     report_path = run_dir / "report.md"
     audit = ReconAudit(run_dir, screenshot_every_n=10, enabled_screenshots=True)
     audit.log_event("RUN_START", job_id=job_id, account_id=account["id"], brief=brief[:200])
+    # RunReporter: produce report.md arricchito alla fine (con diagnostica
+    # & suggerimenti basati sulle metriche per-fase registrate sotto).
+    reporter = RunReporter(task, job_id, run_dir)
+    reporter.add_output("profiles.jsonl", "1 riga JSON per profilo matched salvato")
+    reporter.add_output("recon_audit_log.jsonl", "log strutturato eventi del run")
+    reporter.add_output("screenshots/", "screenshot periodici (anti-ban + debug)")
 
     # ---- 6. Browser persistent ----
     sess_dir = account.get("session_dir") or (Path("data/social_sessions") / account["uuid"])
@@ -511,15 +518,18 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         # Fase 1: deduzione keyword dal brief (1 LLM call)
         # ============================================================
         jlog("─── Fase 1: deduzione keyword dal brief ───")
+        p_keywords = reporter.start_phase("keywords", description="Deduzione keyword dal brief (1 LLM call)")
         keywords = await _llm_deduce_keywords(
             brief, llm_base_url=llm_base_url, llm_api_key=llm_api_key,
             llm_model=llm_model, jlog=jlog,
         )
         if not keywords:
             jlog("⚠️ Nessuna keyword dedotta dall'LLM. Procedo solo con anchor friends-of.")
+            reporter.end_phase(p_keywords, status="empty", items_in=1, items_out=0, keywords=[])
         else:
             jlog(f"Keyword dedotte ({len(keywords)}): {keywords}")
             keywords_used = keywords
+            reporter.end_phase(p_keywords, status="ok", items_in=1, items_out=len(keywords), keywords=keywords)
         audit.log_event("KEYWORDS_DEDUCED", keywords=keywords)
 
         # ============================================================
@@ -527,6 +537,11 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         # ============================================================
         if anchor_urls:
             jlog(f"─── Fase 2: friends-of per {len(anchor_urls)} anchor ───")
+            p_anchor = reporter.start_phase(
+                "anchor_friends",
+                description=f"friends-of per {len(anchor_urls)} anchor profili",
+            )
+            n_friends_total = 0
             for anchor in anchor_urls:
                 if saved_count >= max_targets:
                     break
@@ -539,12 +554,20 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         if f["url"] not in seen_urls:
                             seen_urls.add(f["url"])
                             candidates_pool.append({**f, "source": f"friends_of:{anchor}"})
+                            n_friends_total += 1
                     audit.log_event("FRIENDS_OF_DONE", anchor=anchor, n_friends=len(friends))
                 except Exception as e:
                     jlog(f"  ⚠️ friends_of_profile error: {e}")
                 await sleep_with_jitter()
+            reporter.end_phase(
+                p_anchor,
+                status="ok" if n_friends_total > 0 else "empty",
+                items_in=len(anchor_urls),
+                items_out=n_friends_total,
+            )
         else:
             jlog("─── Fase 2: nessun anchor → salto ───")
+            reporter.skip_phase("anchor_friends", reason="nessun anchor profile nel seed")
 
         # ============================================================
         # Fase 3: search_groups per ogni keyword
@@ -552,6 +575,10 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         groups_pool: list[dict[str, Any]] = []
         if keywords:
             jlog(f"─── Fase 3: search_groups per {len(keywords)} keyword ───")
+            p_sg = reporter.start_phase(
+                "search_groups",
+                description=f"search_groups per {len(keywords)} keyword",
+            )
             for kw in keywords:
                 if saved_count >= max_targets:
                     break
@@ -567,11 +594,27 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     jlog(f"  ⚠️ search_groups error: {e}")
                 await sleep_with_jitter()
             jlog(f"Gruppi totali dedup: {len(groups_pool)}")
+            reporter.end_phase(
+                p_sg,
+                status="ok" if groups_pool else "empty",
+                items_in=len(keywords),
+                items_out=len(groups_pool),
+            )
+        else:
+            reporter.skip_phase("search_groups", reason="nessuna keyword da Fase 1")
 
         # ============================================================
         # Fase 4: per ogni gruppo, raccogli autori post recenti
         # ============================================================
         if groups_pool:
+            jlog(f"─── Fase 4: open_group per {min(10, len(groups_pool))} gruppi (cap interno) ───")
+            p_og = reporter.start_phase(
+                "open_groups",
+                description="raccolta autori post dai primi 10 gruppi",
+            )
+            n_authors_added = 0
+            zero_author_groups = 0
+            n_groups_to_open = min(10, len(groups_pool))
             # Cap a 10 gruppi al max (per non superare anti-ban budget)
             for g in groups_pool[:10]:
                 if saved_count >= max_targets or len(candidates_pool) >= max_targets * 3:
@@ -582,20 +625,43 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                         page, g["url"], scrolls=8, limit=30, jlog=jlog,
                     )
                     groups_explored.append(g["url"])
+                    added_this_group = 0
                     for m in members:
                         if m["url"] not in seen_urls:
                             seen_urls.add(m["url"])
                             candidates_pool.append({**m, "source": f"group:{g['url']}"})
+                            n_authors_added += 1
+                            added_this_group += 1
+                    if added_this_group == 0:
+                        zero_author_groups += 1
                     audit.log_event("OPEN_GROUP_DONE", group=g["url"], n_members=len(members))
                 except Exception as e:
                     jlog(f"  ⚠️ open_group error: {e}")
                 await sleep_with_jitter()
+            reporter.end_phase(
+                p_og,
+                status="ok" if n_authors_added > 0 else "empty",
+                items_in=n_groups_to_open,
+                items_out=n_authors_added,
+                zero_author_groups=zero_author_groups,
+                groups_total_in_pool=len(groups_pool),
+            )
+        else:
+            reporter.skip_phase("open_groups", reason="nessun gruppo da Fase 3")
 
         jlog(f"─── Fase 5: scoring di {len(candidates_pool)} candidati ───")
 
         # ============================================================
         # Fase 5: dedup vs DB + apri profilo + LLM score + save_match
         # ============================================================
+        p_sc = reporter.start_phase(
+            "scoring",
+            description="dedup + extract_profile + LLM score + save",
+        )
+        score_distribution: list[int] = []
+        n_skipped_low = 0
+        n_skipped_dedup = 0
+        n_extract_fail = 0
         for i, cand in enumerate(candidates_pool):
             if saved_count >= max_targets:
                 jlog(f"Cap audience raggiunto ({max_targets}), stop scoring.")
@@ -614,6 +680,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     if db.has_recent_asset(cand_url, output_asset_type, max_age_days=refresh_days):
                         jlog(f"  ⏭️ skip: già in DB recente (refresh={refresh_days}d)")
                         audit.log_event("SKIP_RECENT_ASSET", url=cand_url)
+                        n_skipped_dedup += 1
                         continue
                 except Exception as e:
                     jlog(f"  ⚠️ has_recent_asset error (procedo): {e}")
@@ -626,6 +693,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             except Exception as e:
                 jlog(f"  ⚠️ extract_profile error: {e}")
                 audit.log_event("EXTRACT_FAIL", url=cand_url, error=str(e)[:200])
+                n_extract_fail += 1
                 continue
 
             # LLM score
@@ -636,6 +704,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             )
             jlog(f"  score: {score}/10 — {reason[:80]}")
             audit.log_event("PROFILE_SCORED", url=cand_url, score=score, reason=reason[:200])
+            score_distribution.append(score)
 
             if score >= score_threshold:
                 asset_id = _save_match_to_db_and_jsonl(
@@ -656,8 +725,21 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     audit.log_event("MATCH_SAVED", url=cand_url, asset_id=asset_id, score=score)
             else:
                 jlog(f"  ⏭️ skip: score {score} < threshold {score_threshold}")
+                n_skipped_low += 1
 
             await sleep_with_jitter()
+
+        reporter.end_phase(
+            p_sc,
+            status="ok",
+            items_in=len(candidates_pool),
+            items_out=saved_count,
+            saved=saved_count,
+            skipped_low_score=n_skipped_low,
+            skipped_dedup=n_skipped_dedup,
+            extract_fail=n_extract_fail,
+            score_distribution=score_distribution,
+        )
 
     finally:
         if context:
@@ -671,32 +753,18 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             except Exception:
                 pass
 
-    # ---- 7. Report markdown ----
+    # ---- 7. Report arricchito via RunReporter ----
+    # Registra metriche aggregate finali (le fasi si sono auto-popolate sopra).
+    reporter.add_metric("saved_count", saved_count)
+    reporter.add_metric("candidates_scoperti", len(candidates_pool))
+    reporter.add_metric("anchor_profili_usati", len(anchor_urls))
+    reporter.add_metric("gruppi_esplorati", len(groups_explored))
+    reporter.add_metric("keyword_dedotte", keywords_used)
+    reporter.add_metric("speed_profile", f"{speed} (pause {pause_min}-{pause_max}s)")
+    reporter.add_metric("account_fb", f"#{account['id']} {account.get('username')!r}")
+    reporter.set_final_status("ok")
     try:
-        lines = [
-            f"# Audience discovery — task #{task['id']}",
-            "",
-            f"**Brief**: {brief}",
-            "",
-            f"**Account FB**: #{account['id']} `{account.get('username')}`",
-            f"**Speed profile**: {speed} (pause {pause_min}-{pause_max}s)",
-            "",
-            "## Risultati",
-            "",
-            f"- Profili matched salvati: **{saved_count}** / cap {max_targets}",
-            f"- Candidati scoperti: {len(candidates_pool)}",
-            f"- Keyword dedotte: {keywords_used}",
-            f"- Anchor profili usati: {len(anchor_urls)}",
-            f"- Gruppi esplorati: {len(groups_explored)}",
-            "",
-            "## File output",
-            "",
-            f"- `profiles.jsonl` — {saved_count} righe (1 per match)",
-            "- `recon_audit_log.jsonl` — log azioni (filename ereditato da ReconAudit)",
-            "",
-            f"_Generated at {datetime.now(timezone.utc).isoformat()}_",
-        ]
-        report_path.write_text("\n".join(lines), encoding="utf-8")
+        reporter.write(report_path)
     except Exception as e:
         jlog(f"⚠️ report write fail: {e}")
 

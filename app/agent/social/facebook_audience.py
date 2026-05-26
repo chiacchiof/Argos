@@ -78,6 +78,29 @@ FRIENDS_LINKS_SELECTORS = [
 # === Helpers privati ===
 
 _GROUP_URL_RE = re.compile(r"^/groups/([A-Za-z0-9.\-_]+)(?:/|$|\?)")
+_GROUP_USER_RE = re.compile(r"^/groups/[^/]+/user/(\d+)/?")
+
+
+def _normalize_author_url(href: str) -> str | None:
+    """Versione "tollerante" di facebook_recon._normalize_fb_profile_url:
+    accetta anche il formato `/groups/<gid>/user/<uid>/` tipico dei post
+    nei gruppi (FB linka l'autore al "member-of-group" invece che al
+    profilo globale). Ritorna sempre l'URL profilo globale
+    `https://www.facebook.com/profile.php?id=<uid>` quando può estrarre
+    l'uid; altrimenti delega al normalizer standard.
+    """
+    if not href:
+        return None
+    try:
+        p = urlparse(href)
+    except Exception:
+        return None
+    path = p.path or "/"
+    m = _GROUP_USER_RE.match(path)
+    if m:
+        uid = m.group(1)
+        return f"https://www.facebook.com/profile.php?id={uid}"
+    return facebook_recon._normalize_fb_profile_url(href)
 
 
 def _normalize_group_url(href: str) -> str | None:
@@ -352,8 +375,19 @@ async def open_group_and_collect_members(
     seen_urls: set[str] = set()
 
     # Per ogni post nel feed, raccogliamo:
-    # - URL autore (primo link a profilo nel post)
+    # - URL autore (cercato prima nei heading h2/h3/strong, poi fallback generico)
     # - Testo del post (per snippet)
+    # In un post di gruppo l'autore appare in formato vario: profilo globale
+    # (/vanity o /profile.php?id=N) oppure "member-of-group"
+    # (/groups/<gid>/user/<uid>/) — _normalize_author_url gestisce entrambi.
+    AUTHOR_LINK_SELECTORS_IN_POST = [
+        'h2 a[role="link"]',
+        'h3 a[role="link"]',
+        'h4 a[role="link"]',
+        'strong a[role="link"]',
+        # Fallback: tutti i link role=link che puntano a FB o relativi
+        'a[role="link"][href*="facebook.com"], a[role="link"][href^="/"]',
+    ]
     for sel in GROUP_POST_CONTAINERS:
         try:
             posts = page.locator(sel)
@@ -364,31 +398,38 @@ async def open_group_and_collect_members(
             for i in range(min(n_posts, 100)):
                 try:
                     post = posts.nth(i)
-                    # Primo link a profilo dentro il post (= autore)
-                    author_links = post.locator('a[role="link"][href*="facebook.com"], a[role="link"][href^="/"]')
-                    n_links = await author_links.count()
                     author_url = None
                     author_name = None
-                    for j in range(min(n_links, 10)):
-                        try:
-                            a = author_links.nth(j)
-                            href = await a.get_attribute("href") or ""
-                            txt = (await a.text_content() or "").strip()
-                            if not href:
-                                continue
-                            # Costruisci absolute URL se relativo
-                            if href.startswith("/"):
-                                href = "https://www.facebook.com" + href
-                            norm = facebook_recon._normalize_fb_profile_url(href)
-                            if not norm:
-                                continue
-                            if not facebook_recon._is_plausible_name(txt):
-                                continue
-                            author_url = norm
-                            author_name = txt
+                    # Prova selettori in ordine di specificità
+                    for link_sel in AUTHOR_LINK_SELECTORS_IN_POST:
+                        if author_url:
                             break
+                        try:
+                            author_links = post.locator(link_sel)
+                            n_links = await author_links.count()
                         except Exception:
                             continue
+                        for j in range(min(n_links, 8)):
+                            try:
+                                a = author_links.nth(j)
+                                href = await a.get_attribute("href") or ""
+                                txt = (await a.text_content() or "").strip()
+                                if not href:
+                                    continue
+                                if href.startswith("/"):
+                                    href = "https://www.facebook.com" + href
+                                # _normalize_author_url accetta anche
+                                # /groups/<gid>/user/<uid>/ (=member-of-group)
+                                norm = _normalize_author_url(href)
+                                if not norm:
+                                    continue
+                                if not facebook_recon._is_plausible_name(txt):
+                                    continue
+                                author_url = norm
+                                author_name = txt
+                                break
+                            except Exception:
+                                continue
                     if not author_url or author_url in seen_urls:
                         continue
 
