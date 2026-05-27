@@ -202,14 +202,36 @@ Riceverai:
 - un brief NL che descrive l'audience target
 - i dati estratti del profilo (display_name, bio, post visibili, interessi
   inferiti, language, ecc.)
+- testi di sotto-pagine ad alto valore se disponibili:
+  - "about_overview": sezione "Informazioni" (può contenere data di nascita,
+    città, lavoro, scuola — segnali demografici espliciti)
+  - "likes_pages" / "pages_liked": pagine pubbliche seguite dall'utente
+    (eccellente segnale di interesse: pagine vintage/anni 80/moda/musica/ecc.)
+- contesto di provenienza opzionale: il gruppo Facebook tematico in cui il
+  candidato è stato trovato attivo (postando o commentando).
 
-Tuo compito: produrre uno score 0-10 di quanto il profilo matcha il brief,
-+ una breve `reason` (1-2 frasi italiane) che spiega il perché.
-
-- score=10: match perfetto (tutti i segnali confermati)
-- score=7-9: match forte (la maggior parte dei segnali confermati)
-- score=4-6: match parziale (alcuni segnali, ma non determinanti)
-- score=0-3: match debole o nullo
+Strategia di scoring (importante):
+- Se il brief richiede caratteristiche demografiche (età, città, ecc.) e i
+  dati le ESPLICITAMENTE confermano → score alto (8-10).
+- Se NON dichiarate ma INFERIBILI da segnali indiretti coerenti (es. anno
+  scolastico, foto epoca, lessico, like a pagine specifiche) → score medio
+  (5-7) con prudenza.
+- Se NON dichiarate e nessun segnale indiretto → score basso (1-4): non
+  bocciare per assenza di dato, ma non confermare senza evidenza.
+- Privilegia i SEGNALI DI INTERESSE (post + likes_pages) sui dati anagrafici
+  spesso assenti su FB. Un utente che segue "Moda anni 80" e "Magliette
+  vintage" è un match forte anche senza età dichiarata.
+- **PROVENIENZA DAL GRUPPO = SEGNALE FORTE (peso doppio nello scoring)**: se
+  il candidato è stato trovato attivo (postando, commentando) in un gruppo
+  Facebook il cui NOME è semanticamente coerente col brief, considera che
+  la sola appartenenza al gruppo è già un'EVIDENZA DI INTERESSE diretta. Es:
+  brief "magliette anni 80" + provenienza "Nostalgia Anni 80 Italia" → il
+  candidato HA mostrato attivamente interesse per il tema, non serve cercare
+  conferme nei dati profilo. In questo caso almeno score 6-7. Se anche le
+  sotto-pagine confermano (likes_pages tematici, età compatibile) → 8-9.
+  Non penalizzare la mancanza di età esplicita quando la provenienza dal
+  gruppo è coerente: chi partecipa a "Anni 80" verosimilmente ha vissuto
+  quegli anni (= demografia compatibile inferibile).
 
 Output: SOLO un JSON `{"score": N, "reason": "..."}`. Niente prosa esterna,
 niente <think>, niente backtick.
@@ -224,16 +246,60 @@ async def _llm_score_profile(
     llm_api_key: str,
     llm_model: str,
     jlog,
+    subpage_texts: dict[str, str] | None = None,
+    source_context: dict[str, str] | None = None,
 ) -> tuple[int, str]:
-    """1 LLM call per profilo: ritorna (score 0-10, reason). Score 0 se errore."""
+    """1 LLM call per profilo: ritorna (score 0-10, reason). Score 0 se errore.
+
+    `subpage_texts` opzionale: {label: body_text} prodotto da
+    `facebook_recon.collect_subpage_texts` (es. {"about_overview": "...",
+    "likes_pages": "..."}). Quando presente, viene incluso nel prompt come
+    "Sotto-pagine ad alto valore" per arricchire lo scoring (segnali
+    demografici espliciti + pagine seguite = indicatori di interesse).
+
+    `source_context` opzionale: {"group_name": str, "group_url": str} con il
+    gruppo Facebook in cui il candidato è stato trovato attivo. Quando presente,
+    è iniettato nel prompt come segnale forte di interesse coerente col brief
+    (il system prompt istruisce il LLM a usarlo per peso doppio nello scoring).
+    Risolve il caso job #163: i candidati venivano scartati per "età non
+    dichiarata" anche se erano attivi in gruppi tematici "Magliette Anni 80".
+    """
     profile_json = json.dumps(profile_data, ensure_ascii=False, default=str)[:6000]
+    # Subpage block opzionale (max 2000 char per label per non sforare il context).
+    subpage_block = ""
+    if subpage_texts:
+        parts: list[str] = []
+        for label, text in subpage_texts.items():
+            snippet = (text or "").strip()[:2000]
+            if snippet:
+                parts.append(f"--- {label} ---\n{snippet}")
+        if parts:
+            subpage_block = "\n\nSotto-pagine ad alto valore:\n" + "\n\n".join(parts)
+    # Source-group block opzionale: provenienza tematica come segnale di interesse.
+    source_block = ""
+    if source_context:
+        gname = (source_context.get("group_name") or "").strip()
+        gurl = (source_context.get("group_url") or "").strip()
+        if gname or gurl:
+            source_block = (
+                "\n\nProvenienza candidato (SEGNALE FORTE — il candidato è stato "
+                "trovato ATTIVO in questo gruppo Facebook tematico):\n"
+                f"- Nome gruppo: \"{gname or '(senza nome)'}\"\n"
+                f"- URL gruppo: {gurl}\n"
+                "Il gruppo è stato individuato cercando keyword del brief: la sola "
+                "presenza ATTIVA del candidato nel gruppo dimostra interesse coerente "
+                "col brief. Considera che ha già auto-segnalato compatibilità con il "
+                "tema (vedi regola PROVENIENZA DAL GRUPPO nel system prompt)."
+            )
     payload = {
         "model": llm_model,
         "messages": [
             {"role": "system", "content": _SCORE_SYSTEM_PROMPT},
             {"role": "user", "content": (
                 f"Brief audience:\n{brief}\n\n"
-                f"Dati profilo:\n{profile_json}\n\n"
+                f"Dati profilo:\n{profile_json}"
+                f"{subpage_block}"
+                f"{source_block}\n\n"
                 "Produci il JSON {\"score\": N, \"reason\": \"...\"}."
             )},
         ],
@@ -296,9 +362,15 @@ def _save_match_to_db_and_jsonl(
     asset_type: str,
     profiles_path: Path,
     jlog,
+    source_context: dict[str, str] | None = None,
 ) -> int | None:
     """Salva il match come asset DB (con tag) + append a profiles.jsonl.
     Ritorna asset_id o None se fail.
+
+    `source_context` opzionale: {"group_name": str, "group_url": str} con il
+    gruppo Facebook di provenienza del candidato. Se valorizzato, viene
+    scritto come tag `source_group_url` + `source_group_name` per consentire
+    filtering downstream (es. outreach mirato "manda DM a chi viene dal gruppo X").
 
     Usa la firma `db.upsert_asset(data: dict, tags: dict[str, list[str]])` con
     dedup automatico su source_url_canonical + asset_type."""
@@ -312,8 +384,25 @@ def _save_match_to_db_and_jsonl(
         }
         if reason:
             tags["audience_reason"] = [reason[:200]]
+        # Tag provenienza gruppo (filtering downstream): pattern coerente con
+        # gli altri tag `source_*` di sistema. Skippa se vuoto.
+        if source_context:
+            g_url = (source_context.get("group_url") or "").strip()
+            g_name = (source_context.get("group_name") or "").strip()
+            if g_url:
+                tags["source_group_url"] = [g_url]
+            if g_name:
+                tags["source_group_name"] = [g_name[:200]]
         # display_name dal profile_data se disponibile (più completo del cand_name)
         display_name = profile_data.get("display_name") or profile_name or ""
+        # raw_json arricchito col source_context (nel caso un futuro consumer
+        # voglia leggerlo strutturato senza passare per i tag).
+        raw_payload = dict(profile_data)
+        if source_context:
+            raw_payload["_source_group"] = {
+                "url": source_context.get("group_url") or "",
+                "name": source_context.get("group_name") or "",
+            }
         asset_id = db.upsert_asset(
             {
                 "source_url": profile_url,
@@ -322,7 +411,7 @@ def _save_match_to_db_and_jsonl(
                 "display_name": (display_name or None),
                 "source_task_id": task_id,
                 "source_job_id": job_id,
-                "raw_json": json.dumps(profile_data, ensure_ascii=False, default=str),
+                "raw_json": json.dumps(raw_payload, ensure_ascii=False, default=str),
             },
             tags=tags,
         )
@@ -345,6 +434,9 @@ def _save_match_to_db_and_jsonl(
             "extracted_at": datetime.now(timezone.utc).isoformat(),
             "profile_data": profile_data,
         }
+        if source_context:
+            rec["source_group_url"] = source_context.get("group_url") or ""
+            rec["source_group_name"] = source_context.get("group_name") or ""
         with profiles_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
     except Exception as e:
@@ -629,7 +721,16 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     for m in members:
                         if m["url"] not in seen_urls:
                             seen_urls.add(m["url"])
-                            candidates_pool.append({**m, "source": f"group:{g['url']}"})
+                            # Traccia provenienza gruppo: usato in Fase 5 come segnale
+                            # forte per lo scoring LLM (chi posta in un gruppo tematico
+                            # ha già un interesse coerente col brief) e come tag su
+                            # asset per filtering downstream (outreach mirato per gruppo).
+                            candidates_pool.append({
+                                **m,
+                                "source": f"group:{g['url']}",
+                                "source_group_url": g["url"],
+                                "source_group_name": g.get("name") or "",
+                            })
                             n_authors_added += 1
                             added_this_group += 1
                     if added_this_group == 0:
@@ -696,11 +797,41 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 n_extract_fail += 1
                 continue
 
-            # LLM score
+            # Sotto-pagine ad alto valore (/about + /likes_pages) per scoring
+            # arricchito. Best-effort: pagine private/redirect non bloccano,
+            # ritornano dict vuoto. Costo: +2 goto FB per candidato (= +30-60s
+            # con speed_profile=balanced) ma migliora drasticamente la qualità
+            # dello score perché bio/post visibili spesso non bastano (vedi
+            # job #162: score medio 1.9 senza /about+/likes_pages).
+            subpage_texts: dict[str, str] = {}
+            try:
+                subpage_texts = await facebook_recon.collect_subpage_texts(
+                    page, safe, cand_url, jlog=jlog,
+                )
+                if subpage_texts:
+                    jlog(f"  📄 sub-pages: {list(subpage_texts.keys())}")
+            except Exception as e:
+                jlog(f"  ⚠️ collect_subpage_texts error (procedo senza): {e}")
+
+            # Source context: il gruppo Facebook di provenienza è un segnale di
+            # interesse forte (chi posta in un gruppo tematico ha già auto-dichiarato
+            # compatibilità col tema). Passato al LLM scorer, gestito con peso doppio
+            # nel system prompt. Fix #163: senza questo, il LLM bocciava per "età non
+            # dichiarata" candidati che erano attivi in "Magliette Anni 80".
+            source_context = None
+            if cand.get("source_group_url"):
+                source_context = {
+                    "group_name": cand.get("source_group_name") or "",
+                    "group_url": cand.get("source_group_url") or "",
+                }
+
+            # LLM score (con dati arricchiti se presenti)
             score, reason = await _llm_score_profile(
                 brief, profile_data,
                 llm_base_url=llm_base_url, llm_api_key=llm_api_key,
                 llm_model=llm_model, jlog=jlog,
+                subpage_texts=subpage_texts or None,
+                source_context=source_context,
             )
             jlog(f"  score: {score}/10 — {reason[:80]}")
             audit.log_event("PROFILE_SCORED", url=cand_url, score=score, reason=reason[:200])
@@ -718,6 +849,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                     asset_type=output_asset_type,
                     profiles_path=profiles_path,
                     jlog=jlog,
+                    source_context=source_context,
                 )
                 if asset_id:
                     saved_count += 1
