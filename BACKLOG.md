@@ -378,22 +378,43 @@ ripristino su crash del thread, dump del traceback).
 
 **Effort**: ~2h. Beneficio: dispatcher più affidabile.
 
-### B-007 · Test integration completi
+### B-007 · Test integration completi — 🟡 v1 IMPLEMENTATA (2026-05-27)
 
-Oggi smoke test sono solo unit. Aggiungere E2E per:
-- workflow A → B → C con artifact passing
-- outreach_whatsapp dry-run con 5 contatti finti
-- recovery dopo kill di un job
+**Implementato** (`tests/test_workflow_integration.py`): test E2E deterministici
+dei seam di orchestrazione runtime, senza runner reali (LLM/browser/external):
+- **recovery**: `reconcile_orphan_jobs` (boot) marca i job attivi orfani a 'error'
+  + finalizza i workflow_run; `watchdog_zombie_jobs` (runtime) marca i job zombie
+  oltre il grace period e rispetta il grace dei job appena partiti.
+- **workflow state machine**: `find_workflow_roots` + policy di
+  `_maybe_finalize_workflow_run` (done/error/cancelled/pending).
+- **artifact passing A→B**: edge con `pass_artifact` → il file viene passato a
+  `input_artifact_path` del task downstream e parte il job downstream
+  (runner stubbato via monkeypatch di `_run_job`).
 
-**Effort**: ~4h. Riduce regressioni.
+**Follow-up (v2)**: il full-stack con runner reali (outreach_whatsapp dry-run con
+5 contatti finti, recovery con kill di un job LLM live) è non-deterministico e va
+verificato a mano/in staging (vedi skill `verify`), non in CI.
 
-### B-008 · Encryption at rest credenziali
+### B-008 · Encryption at rest credenziali — ✅ CHIUSO (2026-05-27)
 
-Oggi `social_accounts.encrypted_password` e `whatsapp_api_config.encrypted_access_token`
-sono cifrati con Fernet (AGENTSCRAPER_SECRET). Altri campi sensibili (LLM API keys
-in `tasks`) NO. Standardizzare: tutti i secret in DB → Fernet.
+**Audit**: tutte le credenziali "forti" erano già cifrate Fernet in colonne BYTEA
+(`social_accounts.encrypted_password`, `whatsapp_api_config.encrypted_access_token`,
+`email_accounts.encrypted_smtp/imap_password`, `telegram_bots.encrypted_bot_token`,
+`llm_api_keys.encrypted_api_key`). Restavano in chiaro **solo le LLM API key
+per-task** (`tasks.llm_api_key`, `discovery_llm_api_key`, `browser_llm_api_key`).
 
-**Effort**: ~2h.
+**Implementato** ([app/secrets_util.py](app/secrets_util.py)): cifratura at-rest
+trasparente — `encrypt_secret` (idempotente, no-op se `ARGOS_SECRET` assente) in
+`create/update_task`, `decrypt_secret` (con fallback sui legacy in chiaro) nel
+chokepoint unico `_row_to_task`. Nessun cambio schema (ciphertext base64 nella
+colonna TEXT) → **niente migration/promote**. Migrazione one-time opt-in:
+`db.encrypt_legacy_task_keys()` via [scripts/encrypt_task_keys.py](scripts/encrypt_task_keys.py)
+(NON auto-run al boot, per non scrivere a sorpresa su Neon). Test:
+`tests/test_secrets_encryption.py`. Doc: [GUIDA.md §13.1](GUIDA.md).
+
+**Nota legacy**: `channel_config` (email/telegram pre-multi-account) può contenere
+secret in chiaro nel JSON `config`, ma è superato dalle tabelle cifrate
+`email_accounts`/`telegram_bots`; va deprecato/ripulito separatamente.
 
 ---
 

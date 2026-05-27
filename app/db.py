@@ -30,9 +30,14 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from .config import DATA_DIR
+from .secrets_util import decrypt_secret, encrypt_secret, is_secret_configured, looks_encrypted
 
 
 log = logging.getLogger(__name__)
+
+# B-008: chiavi API LLM per-task cifrate at-rest. Cifrate in create/update_task,
+# decifrate in _row_to_task (chokepoint unico di lettura). Vedi app/secrets_util.py.
+_TASK_SECRET_FIELDS = ("llm_api_key", "discovery_llm_api_key", "browser_llm_api_key")
 
 _pool = None  # type: ignore[var-annotated]
 
@@ -1184,6 +1189,46 @@ def init_db() -> None:
     log.info("DB business schema applicato (init_db) + colonne multi-tenant.")
 
 
+def encrypt_legacy_task_keys() -> int:
+    """B-008: one-time idempotente — cifra at-rest le LLM API key dei task ancora
+    in chiaro (`llm_api_key`, `discovery_llm_api_key`, `browser_llm_api_key`).
+
+    Legge i valori RAW (NON via `_row_to_task`, che decifrerebbe) e cifra solo i
+    plaintext (`looks_encrypted` falso). Sicuro da rilanciare: i valori già
+    cifrati vengono saltati. No-op se `ARGOS_SECRET` non è configurata.
+
+    Ritorna il numero di valori cifrati. Lanciabile via `scripts/encrypt_task_keys.py`.
+    NON viene chiamato automaticamente al boot: la cifratura at-rest è già attiva
+    sui NUOVI write (create/update_task) e la lettura ha fallback sui legacy in
+    chiaro, quindi la migrazione di massa resta una scelta esplicita dell'operatore
+    (evita scritture a sorpresa su Neon al primo boot in prod).
+    """
+    if not is_secret_configured():
+        log.info("encrypt_legacy_task_keys: ARGOS_SECRET assente, skip.")
+        return 0
+    n = 0
+    with connect() as con:
+        rows = con.execute(
+            "SELECT id, llm_api_key, discovery_llm_api_key, browser_llm_api_key FROM tasks"
+        ).fetchall()
+        for r in rows:
+            updates: dict[str, Any] = {}
+            for f in _TASK_SECRET_FIELDS:
+                v = r[f]
+                if v and not looks_encrypted(v):
+                    updates[f] = encrypt_secret(v)
+            if updates:
+                sets = ", ".join(f"{k} = %s" for k in updates)
+                con.execute(
+                    f"UPDATE tasks SET {sets} WHERE id = %s",
+                    (*updates.values(), r["id"]),
+                )
+                n += len(updates)
+    if n:
+        log.info("encrypt_legacy_task_keys: cifrate %d chiavi-task at-rest.", n)
+    return n
+
+
 def migrate_legacy_channels_to_accounts() -> None:
     """One-time migration (idempotente): legacy `channel_config('email'|'telegram')`
     e relative env vars (`SMTP_PASSWORD`, `IMAP_PASSWORD`, `TELEGRAM_BOT_TOKEN`)
@@ -1470,6 +1515,10 @@ def _serialize_input_asset_filter(value: Any) -> str | None:
 
 def _row_to_task(row: dict[str, Any]) -> dict[str, Any]:
     d = dict(row)
+    # B-008: decifra at-rest le LLM API key (no-op sui valori legacy in chiaro).
+    for _f in _TASK_SECRET_FIELDS:
+        if d.get(_f):
+            d[_f] = decrypt_secret(d[_f])
     d["seed_queries"] = _load_list(d.get("seed_queries"))
     d["seed_queries_friends"] = _load_list(d.get("seed_queries_friends"))
     d["allowed_domains"] = _load_list(d.get("allowed_domains"))
@@ -1617,12 +1666,26 @@ def set_workflow_disabled(workflow_id: int, disabled: bool, tenant_id: Any = _UN
             )
 
 
+def _encrypt_task_secrets(data: dict[str, Any]) -> dict[str, Any]:
+    """B-008: ritorna una copia shallow di `data` con le LLM API key cifrate
+    at-rest. Idempotente (non ri-cifra valori già cifrati). I caller vedono
+    sempre il plaintext in lettura grazie a `_row_to_task`."""
+    if not any(data.get(f) for f in _TASK_SECRET_FIELDS):
+        return data
+    out = dict(data)
+    for f in _TASK_SECRET_FIELDS:
+        if out.get(f):
+            out[f] = encrypt_secret(out[f])
+    return out
+
+
 def create_task(
     data: dict[str, Any],
     *,
     tenant_id: Any = _UNSET,
     created_by_user_id: Any = _UNSET,
 ) -> int:
+    data = _encrypt_task_secrets(data)
     tenant_id = _resolve_tenant(tenant_id)
     created_by_user_id = _resolve_user(created_by_user_id)
     ts = now_iso()
@@ -1748,6 +1811,7 @@ def create_task(
 
 
 def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> None:
+    data = _encrypt_task_secrets(data)
     tenant_id = _resolve_tenant(tenant_id)
     with connect() as con:
         con.execute(

@@ -223,5 +223,20 @@ In base ai workflow correnti dell'utente:
 | IG DM send | 🔴 Alto | Selettori DM IG fragili, anti-bot aggressive |
 | FB DM send | 🟢 Basso | Validato 2026-05-12 |
 | Multi-tag filter | 🟡 Medio | DB OK, send-time mai verificato |
-| Workflow cascata | 🟡 Medio | Smoke OK, scenario complesso da validare |
+| Workflow cascata | 🟡 Medio | Smoke OK; orchestrazione (recovery, finalize, artifact passing) coperta da test automatici (B-007). Scenario full-runner complesso ancora da validare a mano |
 | WhatsApp engine B | 🔴 Alto | Setup Meta complicato, probabilmente non testato |
+
+---
+
+## Test automatici (CI) — complementari ai test manuali sopra
+
+I test sopra sono **end-to-end manuali con runner reali** (LLM/browser/social). In `tests/` ci sono anche **test automatici deterministici** (pytest, DB isolato `agentscraper_test`) che coprono la logica di orchestrazione e i seam dove si annidano le regressioni, senza servizi esterni:
+
+| File | Copre |
+|---|---|
+| `test_workflow_integration.py` (B-007) | recovery (`reconcile_orphan_jobs`, `watchdog_zombie_jobs`), policy `_maybe_finalize_workflow_run`, `find_workflow_roots`, artifact passing A→B (runner stubbato) |
+| `test_secrets_encryption.py` (B-008) | cifratura at-rest LLM API key per-task (round-trip, idempotenza, fallback legacy, migrazione one-time) |
+| `test_job_chat.py` (B-001) | chat in-running: parser comandi, coda `consume_pending_chat`, route |
+| `test_contact_cli.py` (B-002) | mini-CLI contatti: parser + apply DB + route |
+
+Esecuzione: `python -m pytest tests/ -q` (il conftest droppa/ricrea lo schema per test → isolamento totale; richiede il container Postgres dev attivo).

@@ -2013,6 +2013,26 @@ In alternativa: rilanciare il task. Con `refresh_policy_days>0` (default 7) gli 
 
 L'app fornisce gli strumenti tecnici. La conformità legale e l'etica sono responsabilità tua.
 
+### 13.1 Cifratura at-rest delle credenziali (B-008)
+
+Tutti i secret memorizzati in DB sono cifrati con **Fernet** (AES128-CBC + HMAC), chiave derivata da `ARGOS_SECRET` in `.env`. Senza quella chiave, anche con accesso al DB (o a un backup) le credenziali restano illeggibili.
+
+Cosa è cifrato:
+- password account social (`social_accounts.encrypted_password`)
+- access token WhatsApp (`whatsapp_api_config.encrypted_access_token`)
+- password SMTP/IMAP (`email_accounts.encrypted_smtp/imap_password`)
+- bot token Telegram (`telegram_bots.encrypted_bot_token`)
+- API key del vault LLM (`llm_api_keys.encrypted_api_key`)
+- **LLM API key per-task** (`tasks.llm_api_key`, `discovery_llm_api_key`, `browser_llm_api_key`) — aggiunte con B-008.
+
+Come funziona per le chiavi-task: cifratura **trasparente** ([app/secrets_util.py](app/secrets_util.py)). Si cifra alla scrittura (`create/update_task`) e si decifra in lettura nel punto unico `_row_to_task`, quindi runner e UI vedono sempre il plaintext. È **idempotente** (non ri-cifra un valore già cifrato) e **retrocompatibile**: i task con chiave legacy in chiaro continuano a funzionare (la decrypt ha fallback). Se `ARGOS_SECRET` non è impostata, degrada a plaintext senza rompere nulla.
+
+Per cifrare le chiavi dei task **già esistenti** (senza aspettare un loro re-save):
+```
+python scripts/encrypt_task_keys.py
+```
+Idempotente. Opera sul DB attivo (`.env`/override): per cifrarle anche su Neon, attiva l'override Neon prima di lanciarlo (è una scrittura su prod, fallo consapevolmente).
+
 ---
 
 ## 14. Limiti e TODO
