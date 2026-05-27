@@ -2789,7 +2789,7 @@ dl.kv pre { white-space: pre-wrap; margin: 0; }
 
 /* Dbconfig (standalone, no app shell) */
 .dbconfig-body { margin: 0; background: var(--bg-page); min-height: 100vh; font-family: var(--font-body); color: var(--fg); }
-.dbconfig-main { display: flex; justify-content: center; align-items: flex-start; padding: 3rem 1rem; }
+.dbconfig-main { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 3rem 1rem; box-sizing: border-box; }
 .dbconfig-card {
   background: var(--surface-1);
   border: 1px solid var(--border);

@@ -569,7 +569,11 @@ async def _run_agent_inner(
         user_agent=settings.http_user_agent,
     ) as fetch_client:
         try:
-            from .runner_control import wait_if_paused_or_stop, RunnerStopped
+            from .runner_control import (
+                consume_live_instructions,
+                wait_if_paused_or_stop,
+                RunnerStopped,
+            )
             for step in range(max_steps):
                 # Gestisce pause + stop in modo uniforme con runner_browseruse.
                 # Se signal='pause' sospende; se 'stop' alza RunnerStopped che
@@ -579,6 +583,12 @@ async def _run_agent_inner(
                 except RunnerStopped:
                     stopped = True
                     break
+
+                # B-001: istruzioni live dell'utente → messaggio user prioritario
+                # nel contesto, letto dall'LLM prima del prossimo tool_call.
+                _live = consume_live_instructions(job_id, jlog)
+                if _live:
+                    payload["messages"].append({"role": "user", "content": _live})
 
                 if n_assets_collected >= max_targets:
                     jlog(

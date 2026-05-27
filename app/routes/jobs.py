@@ -4,10 +4,18 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db, jobs
+from ..agent.job_chat_commands import HELP_TEXT, parse_chat_input
+from ..agent.runner_control import (
+    MODES_SUPPORTING_LIVE_CHAT,
+    MODES_SUPPORTING_PAUSE,
+)
 from ..dashboard import compute_dashboard
 from ..templates import templates
 
 router = APIRouter()
+
+# Stati in cui il job può ancora ricevere istruzioni runner-consumate.
+_ACTIVE_STATES = {"queued", "running", "paused"}
 
 
 @router.post("/tasks/{task_id}/run", response_class=HTMLResponse)
@@ -206,3 +214,217 @@ async def job_control(
     return templates.TemplateResponse(
         request, "partials/job_dashboard.html", {"d": data}
     )
+
+
+# ---------------------------------------------------------------------------
+# B-001: chat in-running (human-in-the-loop su job attivo)
+# ---------------------------------------------------------------------------
+
+def _chat_ctx(job: dict) -> dict:
+    job_id = int(job["id"])
+    task = db.get_task(job["task_id"])
+    mode = (task or {}).get("agent_mode") or ""
+    return {
+        "job_id": job_id,
+        "messages": db.list_job_chat_messages(job_id),
+        "is_active": (job.get("status") or "") in _ACTIVE_STATES,
+        "status": job.get("status") or "",
+        "live_chat_supported": mode in MODES_SUPPORTING_LIVE_CHAT,
+        "agent_mode": mode,
+        "pending": db.count_pending_chat(job_id),
+    }
+
+
+def _render_chat(request: Request, job: dict) -> HTMLResponse:
+    """Pannello chat completo (trascritto + box input). Caricato una volta nell'
+    area `#job-chat-area`; i messaggi poi fanno self-poll, l'input resta statico."""
+    return templates.TemplateResponse(request, "partials/job_chat.html", _chat_ctx(job))
+
+
+def _render_chat_messages(request: Request, job: dict) -> HTMLResponse:
+    """Solo la lista messaggi (per il self-poll ogni 3s e la risposta al POST):
+    swappa l'INTERNO della lista senza toccare l'input dell'utente."""
+    return templates.TemplateResponse(
+        request, "partials/job_chat_messages.html", _chat_ctx(job),
+    )
+
+
+@router.get("/jobs/{job_id}/chat", response_class=HTMLResponse)
+async def job_chat_panel(request: Request, job_id: int):
+    """Pannello chat completo di un job."""
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job non trovato")
+    return _render_chat(request, job)
+
+
+@router.get("/jobs/{job_id}/chat/messages", response_class=HTMLResponse)
+async def job_chat_messages(request: Request, job_id: int):
+    """Solo la lista messaggi — target del self-poll HTMX (ogni 3s)."""
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job non trovato")
+    return _render_chat_messages(request, job)
+
+
+@router.get("/tasks/{task_id}/chat", response_class=HTMLResponse)
+async def task_latest_job_chat(request: Request, task_id: int):
+    """Chat dell'ULTIMO job del task. L'area `#job-chat-area` punta qui (task_id
+    stabile): così su page-load e quando parte un nuovo job mostra il job giusto."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task non trovato")
+    jobs_list = db.list_jobs(task_id)
+    if not jobs_list:
+        return HTMLResponse(
+            '<p class="muted small">Nessun job ancora lanciato: la chat con '
+            "l'agente comparirà qui dopo l'avvio.</p>"
+        )
+    return _render_chat(request, jobs_list[0])
+
+
+@router.post("/jobs/{job_id}/chat", response_class=HTMLResponse)
+async def job_chat_post(request: Request, job_id: int, body: str = Form("")):
+    """Riceve un messaggio dell'operatore, lo applica (comando deterministico) o
+    lo mette in coda per il runner (testo libero / /skip), e ritorna il pannello
+    aggiornato.
+
+    Il messaggio utente è SEMPRE registrato nel trascritto. La semantica `applied`:
+      - comandi deterministici (/stop /pause /resume /note /set /help, errori):
+        applicati subito a livello route, salvati con applied=1, ack immediato.
+      - testo libero + /skip su agent_mode che li inietta (MODES_SUPPORTING_LIVE_CHAT)
+        e job attivo: salvati con applied=0 → il runner li consuma al checkpoint.
+      - testo libero su mode non supportato / job non attivo: applied=1 + ack che
+        rimanda ai comandi (così non restano "pending" all'infinito).
+    """
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job non trovato")
+
+    task = db.get_task(job["task_id"])
+    mode = (task or {}).get("agent_mode") or ""
+    status = (job.get("status") or "")
+    is_active = status in _ACTIVE_STATES
+
+    parsed = parse_chat_input(body)
+    raw = (body or "").strip()
+
+    def _ack(text: str) -> None:
+        db.insert_job_chat_message(job_id, "assistant", text, kind="reply", applied=1)
+
+    if parsed.kind == "free_text":
+        if not raw:
+            return _render_chat_messages(request, db.get_job(job_id) or job)
+        runner_consumable = is_active and mode in MODES_SUPPORTING_LIVE_CHAT
+        db.insert_job_chat_message(
+            job_id, "user", raw, kind="suggestion",
+            applied=0 if runner_consumable else 1,
+        )
+        if runner_consumable:
+            _ack("📨 In coda — l'agente lo leggerà al prossimo step e lo applicherà.")
+        elif not is_active:
+            _ack(f"⚠️ Il job è '{status}': non è più attivo, non posso passare l'istruzione all'agente.")
+        else:
+            _ack(
+                f"ⓘ La modalità '{mode}' non legge suggerimenti in linguaggio naturale. "
+                "Usa i comandi: /stop /pause /resume /note /set. Scrivi /help per dettagli."
+            )
+        return _render_chat_messages(request, db.get_job(job_id) or job)
+
+    # --- Comandi ---
+    cmd = parsed.command
+    # Registra il messaggio utente nel trascritto (i comandi runner-consumati
+    # /skip restano applied=0; gli altri applied=1).
+    runner_consumable_cmd = cmd == "skip" and is_active and mode in MODES_SUPPORTING_LIVE_CHAT
+    db.insert_job_chat_message(
+        job_id, "user", raw, kind="command",
+        applied=0 if runner_consumable_cmd else 1,
+    )
+
+    if parsed.error and cmd in (None, "unknown"):
+        _ack(parsed.error)
+        return _render_chat_messages(request, db.get_job(job_id) or job)
+
+    if cmd == "help":
+        _ack(HELP_TEXT)
+
+    elif cmd == "note":
+        if parsed.error:
+            _ack(parsed.error)
+        else:
+            db.append_job_log(job_id, f"Nota operatore (chat): {parsed.note}")
+            _ack("📝 Nota aggiunta al log del job.")
+
+    elif cmd == "stop":
+        db.set_control_signal(job_id, "stop")
+        cancelled = jobs.hard_stop_job(job_id)
+        db.append_job_log(
+            job_id,
+            "Richiesta STOP dalla chat — task cancellato (hard stop)."
+            if cancelled else
+            "Richiesta STOP dalla chat — runner non più attivo, chiudo direttamente.",
+        )
+        if not cancelled:
+            cur = db.get_job(job_id)
+            if cur and (cur.get("status") or "") in _ACTIVE_STATES:
+                db.update_job(job_id, status="cancelled", finished_at=db.now_iso())
+                db.set_control_signal(job_id, None)
+        _ack("⏹ Stop richiesto.")
+
+    elif cmd == "pause":
+        if mode not in MODES_SUPPORTING_PAUSE:
+            _ack(
+                f"⚠️ La modalità '{mode}' non supporta la pausa "
+                f"(supportate: {', '.join(sorted(MODES_SUPPORTING_PAUSE))}). Usa /stop."
+            )
+        elif not is_active:
+            _ack(f"⚠️ Il job è '{status}', non posso metterlo in pausa.")
+        else:
+            db.set_control_signal(job_id, "pause")
+            db.append_job_log(job_id, "Richiesta PAUSE dalla chat — applicata al prossimo step.")
+            _ack("⏸ Pausa richiesta — verrà applicata al prossimo checkpoint.")
+
+    elif cmd == "resume":
+        if status != "paused":
+            _ack(f"ⓘ Il job non è in pausa (stato: '{status}'). Niente da riprendere.")
+        else:
+            db.set_control_signal(job_id, None)
+            db.update_job(job_id, status="running")
+            db.append_job_log(job_id, "Richiesta RESUME dalla chat.")
+            _ack("▶ Resume richiesto.")
+
+    elif cmd == "skip":
+        if runner_consumable_cmd:
+            _ack("⏭ Ok, salto il target corrente al prossimo checkpoint.")
+        elif not is_active:
+            _ack(f"⚠️ Il job è '{status}': non c'è nulla da saltare.")
+        else:
+            _ack(
+                f"ⓘ La modalità '{mode}' non gestisce /skip live. "
+                "Usa /stop per interrompere."
+            )
+
+    elif cmd == "set":
+        if parsed.error:
+            _ack(parsed.error)
+        else:
+            # Guardia tenant: get_asset è filtrato per tenant del contesto. Se
+            # l'asset non esiste o non appartiene al tenant → niente update.
+            asset = db.get_asset(parsed.asset_id)
+            if not asset:
+                _ack(f"❌ Asset #{parsed.asset_id} non trovato (o non tuo).")
+            else:
+                db.update_asset(parsed.asset_id, **{parsed.field_name: parsed.value})
+                db.append_job_log(
+                    job_id,
+                    f"Correzione operatore (chat): asset #{parsed.asset_id} "
+                    f"{parsed.field_name} = {parsed.value}",
+                )
+                _ack(
+                    f"✏️ Asset #{parsed.asset_id}: {parsed.field_name} aggiornato a "
+                    f"'{parsed.value}'."
+                )
+    else:
+        _ack(parsed.error or "Comando non riconosciuto. Scrivi /help.")
+
+    return _render_chat_messages(request, db.get_job(job_id) or job)

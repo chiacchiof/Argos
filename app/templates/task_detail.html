@@ -84,7 +84,8 @@
       {# 4. Action buttons. #}
       <div class="actions">
         <button hx-post="/tasks/{{ task.id }}/run"
-                hx-target="#job-status" hx-swap="innerHTML">
+                hx-target="#job-status" hx-swap="innerHTML"
+                hx-on::after-request="if(event.detail.successful){htmx.trigger(document.body,'job-changed');}">
           <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg> Esegui ora
         </button>
         <a href="/tasks/{{ task.id }}/edit" class="btn-link-action">
@@ -142,6 +143,15 @@
          #job-status, l'OOB swap del polling esterno (/tasks/{id}/jobs) non
          puo' piu' cancellare il log come succedeva prima (incident 2026-05-23). #}
       <div id="job-log-area"></div>
+
+      {# B-001: chat in-running con l'agente. Ancorata a task_id (stabile):
+         carica la chat dell'ultimo job su page-load e quando parte un nuovo job
+         (evento `job-changed` emesso dal bottone Esegui ora). La lista messaggi
+         self-polla internamente; l'input resta statico (vedi partials/job_chat). #}
+      <div id="job-chat-area"
+           hx-get="/tasks/{{ task.id }}/chat"
+           hx-trigger="load, job-changed from:body"
+           hx-swap="innerHTML"></div>
     </div>
 
     {# ============ PANEL: CRONOLOGIA ============ #}

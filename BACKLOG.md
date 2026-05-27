@@ -7,7 +7,27 @@ perché serve, stima sforzo, design ad alto livello.
 
 ## 🔝 P0 — Sblocca casi d'uso critici
 
-### B-001 · Chat con LLM-in-running (human-in-the-loop su task attivo)
+### B-001 · Chat con LLM-in-running (human-in-the-loop su task attivo) — 🟡 v1 IMPLEMENTATA (2026-05-27)
+
+**Stato (v1, branch `branch_jobChatLive`)**: chat per job in `partials/job_chat.html`
+(area `#job-chat-area` in task_detail, ancorata a `task_id`, lista messaggi in
+self-poll 3s, input statico). Backend:
+- tabella `job_chat_messages` (migration `0fb817660193`) + helper DB
+  (`insert_job_chat_message`, `list_job_chat_messages`, `consume_pending_chat`,
+  `count_pending_chat`), tenant-scoped.
+- route `POST/GET /jobs/{id}/chat` (+ `/chat/messages`, `/tasks/{id}/chat`).
+- **comandi deterministici** (parser puro `app/agent/job_chat_commands.py`):
+  `/stop /pause /resume /note /set <asset_id> <campo> <valore> /skip /help` —
+  applicati a livello route per QUALSIASI job attivo.
+- **testo libero (soft-suggestion)**: messo in coda (`applied=0`) e iniettato nel
+  prompt LLM al checkpoint via `runner_control.consume_live_instructions`. Cablato
+  su `browser_use` (per-seed) e `site_explorer` (per-step) =
+  `MODES_SUPPORTING_LIVE_CHAT`. Per gli altri mode il free-text è accettato con
+  ack che rimanda ai comandi.
+
+**Follow-up rimasti (v2)**: parsing in linguaggio naturale → comando con conferma
+(scope scartato in v1); iniezione free-text in `bulk_extract` (concorrente, schema
+fisso) e `auto_extract` (propagazione parent→sub-job); estensione a `react`.
 
 **Cosa**: durante l'esecuzione di un job (es. `outreach_whatsapp`, `browser_use`,
 `auto_extract`), avere una **chat laterale per job_id** dove l'utente può:

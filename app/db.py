@@ -489,6 +489,28 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 -- ============================================================
+-- Job chat (B-001): human-in-the-loop su job attivo
+-- ============================================================
+-- Coda di messaggi per job. I messaggi `direction='user'` con `applied=0` sono
+-- la coda che il runner consuma al checkpoint (`consume_pending_chat`): testo
+-- libero = suggerimento live iniettato nel prompt LLM, `/skip` = comando per il
+-- runner. I comandi deterministici (/stop, /pause, /resume, /note, /set) sono
+-- applicati subito a livello route e salvati con `applied=1` (nessuna azione
+-- runner). `direction='assistant'` = ack/reply, sempre `applied=1`.
+CREATE TABLE IF NOT EXISTS job_chat_messages (
+  id BIGSERIAL PRIMARY KEY,
+  job_id BIGINT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  direction TEXT NOT NULL,                   -- 'user' | 'assistant'
+  kind TEXT NOT NULL DEFAULT 'suggestion',   -- 'suggestion' | 'command' | 'reply' | 'system'
+  body TEXT NOT NULL,
+  applied INTEGER NOT NULL DEFAULT 0,        -- 0 = pending (runner non l'ha ancora consumato), 1 = consumato/non-actionable
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_chat_job ON job_chat_messages(job_id, id);
+CREATE INDEX IF NOT EXISTS idx_job_chat_pending
+  ON job_chat_messages(job_id) WHERE applied = 0 AND direction = 'user';
+
+-- ============================================================
 -- Assets + tags
 -- ============================================================
 CREATE TABLE IF NOT EXISTS assets (
@@ -982,7 +1004,8 @@ CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflo
 # Le tabelle `site_patterns` e `site_playbooks` restano GLOBALI (knowledge base
 # scraping condivisa cross-tenant -vedi SETUP_CLOUD_DB_TENANT.md).
 _TENANT_AWARE_TABLES = (
-    "tasks", "jobs", "workflows", "workflow_runs", "workflow_edges",
+    "tasks", "jobs", "job_chat_messages",
+    "workflows", "workflow_runs", "workflow_edges",
     "assets", "asset_tags", "contacts", "threads", "messages",
     "orchestrator_messages", "social_accounts", "social_dm_log",
     "whatsapp_api_config", "channel_config",
@@ -2524,6 +2547,93 @@ def get_control_signal(job_id: int) -> str | None:
     if not row:
         return None
     return row["control_signal"]
+
+
+# ----- Job chat (B-001): human-in-the-loop su job attivo -----
+
+def insert_job_chat_message(
+    job_id: int,
+    direction: str,
+    body: str,
+    *,
+    kind: str = "suggestion",
+    applied: int = 0,
+    tenant_id: Any = _UNSET,
+) -> int:
+    """Inserisce un messaggio nella chat di un job.
+
+    - `direction`: 'user' (scritto dall'operatore) | 'assistant' (ack/reply).
+    - `kind`: 'suggestion' (testo libero → prompt LLM) | 'command' (/skip ecc.)
+      | 'reply' (ack assistant) | 'system'.
+    - `applied`: 0 = pending (il runner deve consumarlo); 1 = già applicato /
+      non-actionable (ack assistant, comandi route-level deterministici).
+
+    Il `tenant_id` è risolto dal contesto corrente (come `create_job`): nelle
+    route è quello dell'utente loggato — già verificato proprietario del job.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        cur = con.execute(
+            "INSERT INTO job_chat_messages (job_id, direction, kind, body, applied, "
+            "created_at, tenant_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (job_id, direction, kind, body, int(applied), now_iso(), tenant_id),
+        )
+        return int(cur.fetchone()["id"])
+
+
+def list_job_chat_messages(
+    job_id: int, tenant_id: Any = _UNSET, limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Trascritto completo della chat di un job (per la UI), ordine cronologico.
+
+    Tenant-filtered: un operatore non può leggere la chat di job di altri tenant.
+    """
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if tenant_id is None:
+            rows = con.execute(
+                "SELECT * FROM job_chat_messages WHERE job_id = %s "
+                "ORDER BY id ASC LIMIT %s",
+                (job_id, int(limit)),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM job_chat_messages WHERE job_id = %s AND tenant_id = %s "
+                "ORDER BY id ASC LIMIT %s",
+                (job_id, tenant_id, int(limit)),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def consume_pending_chat(job_id: int) -> list[dict[str, Any]]:
+    """Lato runner: estrae i messaggi utente pending (testo libero + /skip) e li
+    marca `applied=1` atomicamente. Ritorna la lista consumata (ordine cronologico).
+
+    Chiamato al checkpoint del runner (vedi `runner_control.consume_live_instructions`).
+    Filtra per `job_id` soltanto: il runner gira già nel contesto del proprio
+    tenant e il job_id è univoco — nessun rischio cross-tenant.
+    """
+    with connect() as con:
+        rows = con.execute(
+            "UPDATE job_chat_messages SET applied = 1 "
+            "WHERE job_id = %s AND direction = 'user' AND applied = 0 "
+            "RETURNING id, kind, body, created_at",
+            (job_id,),
+        ).fetchall()
+    out = [dict(r) for r in rows]
+    out.sort(key=lambda r: int(r["id"]))
+    return out
+
+
+def count_pending_chat(job_id: int) -> int:
+    """Quanti messaggi utente sono ancora in attesa di essere letti dal runner."""
+    with connect() as con:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM job_chat_messages "
+            "WHERE job_id = %s AND direction = 'user' AND applied = 0",
+            (job_id,),
+        ).fetchone()
+    return int(row["n"]) if row else 0
 
 
 # ===========================================================================

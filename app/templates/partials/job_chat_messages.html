@@ -1,0 +1,41 @@
+{# B-001: solo la lista messaggi della chat del job. Target del self-poll (3s)
+   e della risposta al POST. NON contiene l'input (che resta statico nel
+   pannello), così lo swap non azzera ciò che l'utente sta scrivendo. #}
+{% if not messages %}
+  <p class="job-chat-empty muted small">
+    Nessun messaggio. Scrivi un'istruzione per l'agente, oppure <code>/help</code>
+    per i comandi.
+  </p>
+{% else %}
+  <ul class="job-chat-list">
+    {% for m in messages %}
+    <li class="job-chat-msg job-chat-{{ m.direction }}{% if m.applied == 0 and m.direction == 'user' %} job-chat-pending{% endif %}">
+      <span class="job-chat-who">
+        {% if m.direction == 'user' %}🧑 tu{% else %}🤖 agente{% endif %}
+      </span>
+      <span class="job-chat-body">{{ m.body }}</span>
+      {% if m.applied == 0 and m.direction == 'user' %}
+        <span class="job-chat-flag" title="In attesa che l'agente lo legga al prossimo step">⏳ in coda</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+{% endif %}
+{% if pending and pending > 0 %}
+  <p class="job-chat-pendnote muted small">⏳ {{ pending }} messaggio/i in attesa che l'agente li legga.</p>
+{% endif %}
+{# Auto-scroll in fondo dopo ogni swap; e se il job non è più attivo ferma il
+   self-poll (lo swap innerHTML non tocca gli attributi hx-* del container, quindi
+   va disattivato esplicitamente quando lo stato diventa terminale). #}
+<script>
+  (function () {
+    var box = document.getElementById('job-chat-msgs-{{ job_id }}');
+    if (!box) { return; }
+    box.scrollTop = box.scrollHeight;
+    {% if not is_active %}
+    box.removeAttribute('hx-get');
+    box.removeAttribute('hx-trigger');
+    if (window.htmx) { htmx.process(box); }
+    {% endif %}
+  })();
+</script>

@@ -1484,7 +1484,7 @@ I log del runner mostrano:
 - `📌 memoria DB: salvato pattern come 'candidate' (id=N)` → primo apprendimento.
 - `📌 memoria DB: pattern id=N -> status='confirmed' (post-validation: 12 successes / 3 failures)` → promozione.
 
-**Tool chat per ispezione/cleanup**: `list_site_patterns(domain?)` per leggere, `set_site_pattern_status(pattern_id, 'rejected')` per scartare manualmente un pattern fasullo (vedi 9.6).
+**Tool chat per ispezione/cleanup**: `list_site_patterns(domain?)` per leggere, `set_site_pattern_status(pattern_id, 'rejected')` per scartare manualmente un pattern fasullo (vedi 9.7).
 
 **Multi-tenant visibility (2026-05-22)**: `site_patterns` e `site_playbooks` sono **tenant-aware con visibilità opt-in**.
 
@@ -1652,7 +1652,32 @@ Per browser_use specificamente, `register_should_stop_callback` viene cablato a 
 
 Il timeout della singola chiamata LLM è ora `60s` esplicito sul `ChatOpenAI`: limita la finestra di esposizione su completion in volo dopo un Stop.
 
-### 9.6 Tool chat orchestrator per asset e pattern
+### 9.6 Chat in-running: guidare un job mentre gira (B-001)
+
+Sotto la dashboard del job (task detail → "Ultimo job") c'è un pannello **💬 Chat con il job**: puoi parlare con un job **mentre è in esecuzione** invece di killarlo, correggere e rilanciare. La lista messaggi si aggiorna da sola ogni 3s; l'input resta stabile mentre scrivi.
+
+Due modi d'uso:
+
+**1. Comandi deterministici** (iniziano con `/`, applicati subito, funzionano su QUALSIASI job attivo):
+
+| Comando | Effetto |
+|---|---|
+| `/stop` | ferma il job (hard stop) |
+| `/pause` / `/resume` | sospende / riprende (solo agent_mode che supportano pause) |
+| `/note <testo>` | annota una riga nel log del job |
+| `/set <asset_id> <campo> <valore>` | corregge un asset al volo (campi: `whatsapp`, `email`, `telegram_username`, `telegram_chat_id`, `display_name`, `sitoweb`) |
+| `/skip` | salta il target/seed corrente |
+| `/help` | lista comandi |
+
+Esempio: numero WhatsApp sbagliato scoperto a job in corso → `/set 4155 whatsapp +393331234567` (niente kill+rilancio).
+
+**2. Testo libero (suggerimento live)**: qualsiasi frase senza `/` viene messa **in coda** (badge "⏳ in coda") e iniettata nel prompt dell'agente al **prossimo checkpoint** come "ISTRUZIONI UTENTE LIVE (priorità su tutto)". Quando l'agente la legge, conferma con un ack. Attivo su `browser_use` (tra un seed e l'altro) e `site_explorer` (tra uno step LLM e l'altro) = `MODES_SUPPORTING_LIVE_CHAT` in [`runner_control.py`](app/agent/runner_control.py). Per gli altri mode il testo libero riceve un ack che rimanda ai comandi (così non resta appeso).
+
+Esempio: durante un `site_explorer` scrivi "concentrati solo sulle pagine /agenti/, ignora il blog" → al prossimo step l'LLM lo riceve come messaggio prioritario.
+
+Architettura: tabella `job_chat_messages` (coda con flag `applied`, stesso pattern cross-thread di `control_signal`), checkpoint via `runner_control.consume_live_instructions`, route in [`routes/jobs.py`](app/routes/jobs.py), parser puro in [`job_chat_commands.py`](app/agent/job_chat_commands.py). Tutto tenant-scoped.
+
+### 9.7 Tool chat orchestrator per asset e pattern
 
 Quando il toggle Azioni è ON, l'orchestrator può anche:
 - `list_assets({asset_type, status, tags: ["citta:Acireale","price_band:200-300k"], limit})`
@@ -1665,7 +1690,7 @@ Esempi da chat:
 - "elenca gli annunci immobiliari ad Acireale sopra 200k" → l'orchestrator chiama `list_assets(asset_type='real_estate', tags=['citta:Acireale','price_band:200-300k'])`.
 - "ho già un pattern confirmed per yescasa.it?" → `list_site_patterns(registrable_domain='yescasa.it')`.
 
-### 9.7 Modalità d'uso aggiornate (best practice)
+### 9.8 Modalità d'uso aggiornate (best practice)
 
 Linee guida pratiche dopo i fix di affidabilità. Seguile per evitare i tre problemi tipici (asset spazzatura, pattern fasulli in memoria, qualifier che valuta rumore).
 

@@ -142,9 +142,16 @@ def _resolve_extraction_schema(task: dict[str, Any]) -> str:
     return get_schema(task.get("extraction_template"))
 
 
-def _build_seed_task(task: dict[str, Any], seed_url: str | None, max_steps: int) -> str:
+def _build_seed_task(
+    task: dict[str, Any], seed_url: str | None, max_steps: int,
+    live_instructions: str | None = None,
+) -> str:
     schema_block = _resolve_extraction_schema(task)
-    parts = [
+    parts: list[str] = []
+    if live_instructions:
+        # B-001: istruzioni live dell'utente — in cima, priorità su tutto.
+        parts.extend([live_instructions, ""])
+    parts += [
         OPERATIONAL_PREAMBLE,
         "",
         "═══ SCHEMA DI ESTRAZIONE PER QUESTO PROGETTO ═══",
@@ -388,6 +395,10 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
             stopped = True
             break
 
+        # B-001: drena la chat live dell'utente e iniettala nel prompt del seed.
+        from .runner_control import consume_live_instructions
+        live_instructions = consume_live_instructions(job_id, jlog)
+
         # Ricarico il progetto da DB: l'utente potrebbe averlo modificato durante la pausa
         live_task = db.get_task(task["id"]) or task
         # Mantengo i seed originali (frozen) ma uso obiettivo/schema/max_iter aggiornati
@@ -401,7 +412,7 @@ async def _run_agent_inner(task: dict[str, Any], job_id: int, jlog: Callable) ->
         else:
             sub_dir = run_dir
 
-        task_text = _build_seed_task(live_task, seed, max_steps)
+        task_text = _build_seed_task(live_task, seed, max_steps, live_instructions)
         # Flush incrementale: dopo ogni N step, browser_use chiama questa
         # callback che salva history.extracted_content() in profiles.jsonl.
         # Cosi' anche con kill brusco (uvicorn reload, watchdog stop) i profili
