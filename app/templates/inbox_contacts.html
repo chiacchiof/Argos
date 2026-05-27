@@ -20,6 +20,28 @@
   <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
   {% endif %}
 
+  {# B-002: mini-CLI comandi rapidi. Un comando deterministico batte 5 click per
+     le modifiche piccole. Vedi GUIDA §8.1. #}
+  <form method="post" action="/inbox/contacts/cli" class="contact-cli">
+    <span class="contact-cli-icon" title="Comando rapido">⌨</span>
+    <input type="text" name="command" autocomplete="off"
+           placeholder="comando rapido — es. optout 4155 · update 4155 whatsapp=+393331234567 · qualify 4155 score=8 · help">
+    <button type="submit" class="btn-small">Esegui</button>
+  </form>
+  <p class="muted small contact-cli-help">
+    Comandi: <code>update &lt;id&gt; &lt;campo&gt;=&lt;valore&gt;</code> ·
+    <code>optout &lt;id&gt;</code> · <code>reset &lt;id&gt;</code> ·
+    <code>qualify &lt;id&gt; score=&lt;0-10&gt;</code> ·
+    <code>bulk-optout &lt;id,id,id&gt;</code> · <code>help</code>
+  </p>
+  <style>
+    .contact-cli { display:flex; gap:0.4rem; align-items:center; margin:0.6rem 0 0.2rem; }
+    .contact-cli-icon { opacity:0.7; font-size:1.1em; }
+    .contact-cli input[name=command] { flex:1; padding:0.45rem 0.7rem; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:inherit; font-family:ui-monospace,monospace; font-size:0.9em; }
+    .contact-cli-help { margin:0.2rem 0 0.6rem; }
+    .contact-cli-help code { font-size:0.85em; }
+  </style>
+
   <div class="stats-bar">
     <span class="stats-pill"><strong>{{ total }}</strong> contatti {% if filter_status or has_filters %}filtrati{% else %}totali{% endif %}</span>
     {% if filter_status %}<span class="stats-pill stats-pill-active">stato: <strong>{{ filter_status }}</strong></span>{% endif %}

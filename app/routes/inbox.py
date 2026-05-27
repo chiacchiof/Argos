@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from .. import db
 from ..channels import email as ch_email
 from ..channels import telegram as ch_telegram
+from ..contact_cli import apply_contact_command
 from ..templates import templates
 from . import _tenant_filter as _tf
 
@@ -495,6 +496,18 @@ async def contact_delete(contact_id: int):
         url=f"/inbox/contacts?flash=Contatto+%23{contact_id}+cancellato",
         status_code=303,
     )
+
+
+@router.post("/inbox/contacts/cli")
+async def contacts_cli(command: str = Form("")):
+    """B-002: mini-CLI per CRUD rapido contatti. Parsa il comando, lo applica via
+    le funzioni db esistenti (tenant-safe) e torna alla lista con un flash."""
+    import urllib.parse
+
+    ok, msg = apply_contact_command(command)
+    prefix = "" if ok else "⚠️ "
+    flash = urllib.parse.quote_plus(prefix + msg)
+    return RedirectResponse(url=f"/inbox/contacts?flash={flash}", status_code=303)
 
 
 @router.post("/inbox/contacts/delete-bulk")

@@ -299,19 +299,27 @@ outreach (social + WA). Doc in [GUIDA.md §17.9](GUIDA.md#179). Vedi commit.
 
 ---
 
-### B-002 · Mini-CLI per CRUD contatti (`/inbox/contacts`)
+### B-002 · Mini-CLI per CRUD contatti (`/inbox/contacts`) — ✅ CHIUSO (2026-05-27)
 
-**Cosa**: casella testo nella pagina `/inbox/contacts` per comandi rapidi:
-- `update 4155 whatsapp=+393331234567`
-- `optout 4155`
-- `qualify 4155 score=8`
-- `bulk-optout 4155,4156,4157`
+**Cosa**: casella testo nella pagina `/inbox/contacts` per comandi rapidi.
 
-**Perché**: scrivere 4 caratteri batte 5 click per modifiche piccole.
+**Implementato**: parser puro deterministico in [`app/contact_cli.py`](app/contact_cli.py)
+(riusa il pattern di `job_chat_commands.py` di B-001), route `POST /inbox/contacts/cli`
+(redirect + flash), casella comando in `inbox_contacts.html`. Tenant-safe (guardia
+`get_contact` + WHERE per tenant negli helper). Comandi + esempi:
 
-**Effort**: ~30 min. Parser deterministico, no LLM.
+```
+update 4155 whatsapp=+393331234567   → corregge un campo
+                                        (whatsapp|email|telegram_username|display_name|sitoweb|notes)
+optout 4155                          → opt-out (non più contattabile)
+reset 4155                           → re-contattabile (status=qualified)
+qualify 4155 score=8                 → qualifier_score + status=qualified
+bulk-optout 4155,4156,4157           → opt-out multiplo
+help                                 → sintassi
+```
 
-**Dipendenze**: nessuna.
+Doc in [GUIDA.md §8.1](GUIDA.md). Test: `tests/test_contact_cli.py` (parser + apply
+DB + route end-to-end). **Effort reale**: ~30 min come stimato.
 
 ---
 

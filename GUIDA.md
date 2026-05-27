@@ -1352,6 +1352,27 @@ Un task `outreach` con `message_channels=email` usa **l'account specificato in `
 
 L'auto-reply funziona solo se hai un task `responder` che gira (manualmente o via cron).
 
+### 8.1 Mini-CLI contatti (comandi rapidi) — B-002
+
+In cima a `/inbox/contacts` c'è una **casella comando**: per le modifiche piccole e frequenti, scrivere un comando batte il giro "apri contatto → cambia campo → salva". Parser deterministico (no LLM), tenant-safe (un id di un altro tenant → "non trovato", nessuna scrittura). Implementazione in [`app/contact_cli.py`](app/contact_cli.py), route `POST /inbox/contacts/cli`.
+
+| Comando | Cosa fa | Esempio |
+|---|---|---|
+| `update <id> <campo>=<valore>` | corregge un campo (campi: `whatsapp`, `email`, `telegram_username`, `display_name`, `sitoweb`, `notes`) | `update 4155 whatsapp=+393331234567` |
+| `optout <id>` | segna opt-out (non più contattabile) | `optout 4155` |
+| `reset <id>` | re-contattabile (`status=qualified`) | `reset 4155` |
+| `qualify <id> score=<0-10>` | setta `qualifier_score` + `status=qualified` | `qualify 4155 score=8` |
+| `bulk-optout <id,id,id>` | opt-out multiplo in un colpo | `bulk-optout 4155,4156,4157` |
+| `help` | ricorda la sintassi | `help` |
+
+**Esempi d'uso reali:**
+- Numero WhatsApp sbagliato scoperto a colpo d'occhio nella lista → `update 4155 whatsapp=+393331234567` (niente form di edit).
+- Tre contatti palesemente fuori target → `bulk-optout 4155,4156,4157`.
+- Vuoi promuovere a qualified un contatto con un punteggio → `qualify 4155 score=8`.
+- `display_name` con spazi è ammesso: `update 7 display_name=Mario Rossi`.
+
+Dopo l'invio la pagina ricarica con un flash che conferma l'esito (es. `✓ contatto #4155: whatsapp aggiornato a '+393331234567'`) o segnala l'errore (es. `⚠️ Campo 'status' non aggiornabile via CLI`). I comandi richiamano le stesse funzioni DB dei bottoni esistenti (edit/optout/qualify), quindi `status`/`qualifier_score` restano coerenti con la pipeline qualifier.
+
 ---
 
 ## 9. Asset, tag e memoria pattern
