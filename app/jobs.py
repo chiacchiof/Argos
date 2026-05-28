@@ -198,6 +198,33 @@ def watchdog_zombie_jobs() -> int:
                     continue  # ancora nel grace period, salta
             except Exception:
                 pass
+        # Diagnostica: dump dello stato delle registry e dei thread proactor
+        # prima di marcare il job come zombie. Aiuta a capire i falsi positivi
+        # (job vivo ma is_runner_alive=False) — vedi job 162 del 2026-05-28.
+        try:
+            import threading as _th
+            rt = _running_tasks.get(jid)
+            rt_state = (
+                f"task={rt!r} done={rt.done() if rt else 'n/a'}"
+                if rt is not None else "MISSING"
+            )
+            aj = _active_jobs.get(jid)
+            aj_state = (
+                f"task={aj[1]!r} done={aj[1].done()} loop_closed={aj[0].is_closed()}"
+                if aj is not None else "MISSING"
+            )
+            proactor_threads = [
+                t.name for t in _th.enumerate()
+                if t.name.startswith(f"proactor-job-{jid}")
+            ]
+            db.append_job_log(
+                jid,
+                f"Watchdog DIAG: _running_tasks[{jid}]={rt_state} | "
+                f"_active_jobs[{jid}]={aj_state} | "
+                f"proactor_threads={proactor_threads}",
+            )
+        except Exception:
+            log.exception("watchdog diag dump failed for job %s", jid)
         db.append_job_log(
             jid,
             f"Watchdog: runner asyncio non più attivo dopo grace period "

@@ -592,14 +592,19 @@
       <div class="audience-search-add" style="margin-top:0.6rem">
         <label>
           🔎 Aggiungi singolo asset
+          {# hx-trigger: NO modifier `changed` — bug riproducibile con HTMX 1.9.12
+             dove `changed` + `delay:` insieme bloccano il fire (lastValue
+             aggiornato su ogni keyup PRIMA del debounce → al fire value==lastValue
+             → skip). Il `delay:300ms` da solo basta per il debounce. #}
           <input type="search" id="audience-search-input"
-                 placeholder="Min 2 caratteri (titolo, asset_type o valore tag)..."
+                 placeholder="Min 2 caratteri (titolo, asset_type o valore tag)... poi clicca un risultato"
                  hx-get="/assets/search?callback=audienceAddAsset"
-                 hx-trigger="keyup changed delay:300ms, search"
+                 hx-trigger="keyup delay:300ms, search"
                  hx-target="#audience-search-results"
                  hx-swap="innerHTML"
                  name="q"
                  autocomplete="off"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();}"
                  style="width:100%; max-width:500px">
         </label>
         <div id="audience-search-results"></div>
@@ -666,7 +671,12 @@
           fetch(`/tasks/${tid}/append_asset_id?asset_id=${assetId}`, { method: 'POST' })
             .then(r => r.text())
             .then(html => {
-              document.getElementById('audience-snapshot-table').innerHTML = html;
+              const tbl = document.getElementById('audience-snapshot-table');
+              tbl.innerHTML = html;
+              // CRITICO: senza htmx.process i bottoni "×" nel nuovo HTML iniettato
+              // restano senza binding HTMX e cliccarli non fa nulla. Vedi commit
+              // del 2026-05-28 che ha fixato proprio questo bug.
+              if (window.htmx) { htmx.process(tbl); }
               // pulisci la search
               const inp = document.getElementById('audience-search-input');
               if (inp) inp.value = '';

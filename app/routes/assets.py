@@ -858,6 +858,12 @@ async def asset_search_htmx(
         "WHERE 1=1 "
     )
     args: list = []
+    # Tenant isolation: un architect/operator non deve suggestare asset di altri
+    # tenant. super_admin → current_tenant_id()=None → niente filtro (vede tutto).
+    tenant_id = db.current_tenant_id()
+    if tenant_id is not None:
+        sql += "AND a.tenant_id = %s "
+        args.append(tenant_id)
     if q:
         sql += "AND (LOWER(a.title) LIKE %s OR LOWER(a.asset_type) LIKE %s OR LOWER(t.tag_value) LIKE %s) "
         args += [pat, pat, pat]

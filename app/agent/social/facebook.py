@@ -178,6 +178,11 @@ class Facebook(SocialPlatform):
             #    chat E2E). NON vogliamo "Invia codice" — chiudiamo con X.
             # 2) Altri popup di onboarding Messenger ("Notifiche", "Tema", ecc.).
             await self._dismiss_messenger_modals(page)
+            # Banner E2E (rollout 2024-2025): aprendo una chat pre-cifratura, FB
+            # mostra "Questi messaggi non sono stati inviati perché questa chat
+            # fosse protetta con la crittografia end-to-end" + bottone "Continua"
+            # che copre il textbox finche' non lo clicchi.
+            await self._dismiss_e2e_continue_banner(page)
             # Se non puoi messaggiare (es. profilo non amico o blocked):
             # FB mostra messaggio "Questa persona non puo' ricevere messaggi"
             try:
@@ -196,23 +201,71 @@ class Facebook(SocialPlatform):
                     )
             except Exception:
                 pass
-            # Cerca il textbox del messaggio (aria-label localizzata)
+            # Cerca il textbox del messaggio.
+            # `aria-label="Scrivi a <Nome>"` e' il textbox della chat E2EE (Lexical).
+            # `aria-label="Messaggio"`/"Message" sono il composer classico pre-E2EE.
+            # Match per startswith su "Scrivi a"/"Write to" perche' include il nome
+            # del destinatario (es. "Scrivi a Carlotta Castoro").
             input_sels = [
+                "div[contenteditable='true'][role='textbox'][aria-label^='Scrivi a']",
+                "div[contenteditable='true'][role='textbox'][aria-label^='Write to']",
                 "[aria-label='Messaggio']",
                 "[aria-label='Message']",
                 "div[contenteditable='true'][role='textbox']",
                 "div[contenteditable='true']",
             ]
+            # FB Messenger e' una SPA: domcontentloaded scatta prima che React
+            # monti il composer (Lexical editor). Aspetta esplicitamente che
+            # uno qualsiasi dei selettori sia visibile, max 20s. Senza questo
+            # tutti i selettori falliscono is_visible(2500ms) e torniamo
+            # dm_input_not_found mentre la pagina e' ancora in skeleton grigio.
+            try:
+                composite = ", ".join(input_sels)
+                await page.locator(composite).first.wait_for(state="visible", timeout=20000)
+            except Exception:
+                pass
             typed = False
+            type_errors: list[str] = []
             for sel in input_sels:
                 try:
-                    if await page.locator(sel).first.is_visible(timeout=2500):
-                        await human_type(page, sel, message, profile=speed_profile)
-                        typed = True
-                        break
-                except Exception:
+                    if not await page.locator(sel).first.is_visible(timeout=2500):
+                        continue
+                except Exception as e:
+                    type_errors.append(f"{sel} visible-check: {type(e).__name__}: {e}")
                     continue
+                try:
+                    await human_type(page, sel, message, profile=speed_profile)
+                    typed = True
+                    break
+                except Exception as e:
+                    type_errors.append(f"{sel} human_type: {type(e).__name__}: {e}")
+                    continue
+            if type_errors:
+                log.warning("[facebook/%s] send_dm input attempts: %s", username_clean, " | ".join(type_errors))
             if not typed:
+                try:
+                    from datetime import datetime, timezone
+                    from pathlib import Path
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    shot_dir = Path("data/sessions")
+                    shot_dir.mkdir(parents=True, exist_ok=True)
+                    base = shot_dir / f"dm_fail_{username_clean}_{ts}"
+                    try:
+                        await page.screenshot(path=str(base.with_suffix(".png")), full_page=False)
+                    except Exception:
+                        pass
+                    try:
+                        html = await page.evaluate("document.body && document.body.outerHTML")
+                        base.with_suffix(".html").write_text(html or "", encoding="utf-8")
+                    except Exception:
+                        pass
+                    try:
+                        cur_url = page.url
+                        base.with_suffix(".url.txt").write_text(cur_url, encoding="utf-8")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 return DMResult(
                     ok=False, reason="dm_input_not_found",
                     target_username=username_clean,
@@ -332,6 +385,48 @@ class Facebook(SocialPlatform):
                 await asyncio.sleep(0.6)
                 continue
             await asyncio.sleep(0.4)
+
+    async def _dismiss_e2e_continue_banner(self, page: "Page") -> None:
+        """Chiude il banner E2E "Continua" di Messenger.
+
+        Da quando FB ha rolled out end-to-end encryption di default su Messenger
+        (rollout completato 2024-2025), aprendo una chat con messaggi pre-E2E
+        compare un banner in basso con bottone "Continua" che blocca il textbox
+        del messaggio finché non lo clicchi. Il textbox NON è renderizzato
+        prima del click (verificato 2026-05-28 con dump DOM su @carlotta.castoro:
+        zero `contenteditable='true'` nell'HTML).
+
+        FB usa `<div aria-label="Continua">` (non `<button>`), quindi
+        `get_by_role("button", name="Continua")` NON matcha — serve il selettore
+        CSS diretto.
+        """
+        from .humanize import human_wait
+
+        try:
+            body = await page.evaluate("document.body && document.body.innerText")
+        except Exception:
+            return
+        low = (body or "").lower()
+        markers = (
+            "crittografia end-to-end",
+            "end-to-end encryption",
+            "messaggi non sono stati inviati",
+            "messages weren't sent",
+        )
+        if not any(m in low for m in markers):
+            return
+        for sel in (
+            "div[aria-label='Continua']",
+            "div[aria-label='Continue']",
+        ):
+            try:
+                loc = page.locator(sel).first
+                if await loc.is_visible(timeout=1500):
+                    await loc.click(delay=80)
+                    await human_wait(1.0, 2.0)
+                    return
+            except Exception:
+                continue
 
     async def check_health(self, page: "Page") -> HealthStatus:
         url = page.url

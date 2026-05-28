@@ -96,7 +96,7 @@ def _extract_username_from_url(url: str, platform: str) -> str | None:
 
 def _load_targets_for_platform(
     task: dict[str, Any], platform: str, *, limit: int
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int]:
     """Carica asset target per la piattaforma.
 
     Strategia:
@@ -108,6 +108,10 @@ def _load_targets_for_platform(
 
     In entrambi i casi si tiene un social URL per la platform e si scartano
     quelli su host bloccati.
+
+    Ritorna `(targets, n_candidates)` dove `n_candidates` è il numero di asset
+    nel pool PRIMA del filtro per social URL (usato dal report per stimare
+    quanti sono stati skippati per mancanza di URL valido).
     """
     explicit_ids = task.get("target_asset_ids") or task.get("target_contact_ids") or []
     if isinstance(explicit_ids, str):
@@ -174,7 +178,7 @@ def _load_targets_for_platform(
                 break
         if len(out) >= limit:
             break
-    return out
+    return out, len(candidates)
 
 
 async def run_agent(task: dict[str, Any], job_id: int) -> str:
@@ -286,7 +290,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
         )
     else:
         jlog("Selezione automatica: tutti gli asset qualified con URL per la platform")
-    targets = _load_targets_for_platform(task, platform, limit=max_dms_per_run)
+    targets, n_candidates = _load_targets_for_platform(task, platform, limit=max_dms_per_run)
     if not targets:
         if explicit_ids:
             jlog(
@@ -451,11 +455,11 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     run_dir.mkdir(parents=True, exist_ok=True)
     report_path = run_dir / "report.md"
     audience_label = "snapshot esplicito" if explicit_ids else "filtri dinamici"
-    n_skipped_no_social = max(0, len(candidates) - len(targets))
+    n_skipped_no_social = max(0, n_candidates - len(targets))
     report = (
         f"# Riepilogo outreach_social {ts}\n\n"
         f"- **Piattaforma**: {platform}\n"
-        f"- **Audience**: {len(candidates)} asset ({audience_label})\n"
+        f"- **Audience**: {n_candidates} asset ({audience_label})\n"
         f"- **Target con {platform} URL**: {len(targets)}\n"
         f"- **DM inviati**: {n_ok}\n"
         f"- **DM falliti**: {n_fail}\n"

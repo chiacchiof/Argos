@@ -178,16 +178,32 @@ async def human_type(
 
     Range del delay modulato da `profile`:
       safe: 60-200ms, balanced: 25-90ms, aggressive: 10-40ms.
+
+    NB: usa `keyboard.type` (text input) e NON `press` per carattere: `press`
+    accetta solo key names (`"Enter"`, `"a"`, `"Shift+a"`) e solleva
+    `Unknown key: "é"` su caratteri accentati/unicode (verificato job #168 FB).
+    `keyboard.type` simula text input emettendo gli eventi corretti per
+    qualsiasi carattere unicode.
     """
+    import sys as _sys
+
     settings = get_speed_profile(profile)
     delay_ms_range = settings.get("human_type_delay_ms", (60, 200))
     punct_pause_range = (0.05, 0.15) if profile and profile != "safe" else (0.15, 0.4)
     el = page.locator(selector).first
     await el.click(delay=random.randint(40, 110))
     await asyncio.sleep(random.uniform(0.2, 0.5) * float(settings.get("wait_scale", 1.0)))
+    # Pulisce eventuali contenuti residui nel textbox (es. draft FB o tentativi
+    # falliti precedenti) prima di scrivere — evita di accodare al vecchio testo.
+    try:
+        mod = "Meta" if _sys.platform == "darwin" else "Control"
+        await el.press(f"{mod}+a")
+        await el.press("Delete")
+    except Exception:
+        pass
     lo_ms, hi_ms = (int(delay_ms_range[0]), int(delay_ms_range[1]))
     for ch in text:
-        await el.press(ch, delay=random.randint(lo_ms, hi_ms))
+        await page.keyboard.type(ch, delay=random.randint(lo_ms, hi_ms))
         if ch in ".!?,;:":
             await asyncio.sleep(random.uniform(*punct_pause_range))
 
