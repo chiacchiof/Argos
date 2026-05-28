@@ -19,11 +19,16 @@ self-poll 3s, input statico). Backend:
 - **comandi deterministici** (parser puro `app/agent/job_chat_commands.py`):
   `/stop /pause /resume /note /set <asset_id> <campo> <valore> /skip /help` —
   applicati a livello route per QUALSIASI job attivo.
-- **testo libero (soft-suggestion)**: messo in coda (`applied=0`) e iniettato nel
-  prompt LLM al checkpoint via `runner_control.consume_live_instructions`. Cablato
-  su `browser_use` (per-seed) e `site_explorer` (per-step) =
-  `MODES_SUPPORTING_LIVE_CHAT`. Per gli altri mode il free-text è accettato con
-  ack che rimanda ai comandi.
+- **chat consumata dal runner al checkpoint** (`applied=0`) via
+  `runner_control.consume_live_chat` (skip + istruzioni), `MODES_SUPPORTING_LIVE_CHAT`:
+  - `browser_use` (per-seed) e `site_explorer` (per-step): free-text iniettato nel
+    prompt LLM (`consume_live_instructions`), `/skip` = salta seed/target.
+  - `outreach_whatsapp` (per-DM, engine A e B — **scenario n°1 del backlog**,
+    aggiunto 2026-05-27): `/skip` salta il contatto, il numero è **riletto
+    dall'asset** prima dell'invio (un `/set <id> whatsapp …` live ha effetto sul DM
+    successivo), il free-text è annotato nel log. Test in
+    `tests/test_outreach_whatsapp_live.py` (dry-run).
+  - Per gli altri mode il free-text è accettato con ack che rimanda ai comandi.
 
 **Follow-up rimasti (v2)**: parsing in linguaggio naturale → comando con conferma
 (scope scartato in v1); iniezione free-text in `bulk_extract` (concorrente, schema

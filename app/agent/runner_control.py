@@ -20,6 +20,7 @@ API:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import Callable
 
 from .. import db
@@ -35,16 +36,25 @@ MODES_SUPPORTING_PAUSE: frozenset[str] = frozenset({
     "auto_extract",  # delega ai sub-runner ma riceve il signal di fermo
 })
 
-# B-001: agent_mode che iniettano davvero il testo libero della chat nel prompt
-# LLM al checkpoint (via `consume_live_instructions`). Per gli altri mode i
-# COMANDI deterministici (/stop, /pause, /resume, /note, /set) funzionano comunque
-# a livello route; il testo libero viene solo accettato con un ack che rimanda ai
-# comandi (così non resta "pending" all'infinito). bulk_extract estrae in modo
-# concorrente con schema fisso e auto_extract delega a sub-job con job_id diverso:
-# entrambi fuori da questo set in v1.
+# B-001: agent_mode i cui runner CONSUMANO la coda chat al checkpoint (via
+# `consume_live_chat` / `consume_live_instructions`). Per questi il route mette in
+# coda testo libero e `/skip` (applied=0). Per gli altri mode i COMANDI
+# deterministici (/stop, /pause, /resume, /note, /set) funzionano comunque a
+# livello route; il testo libero riceve solo un ack che rimanda ai comandi (così
+# non resta "pending" all'infinito).
+#
+# - browser_use / site_explorer: iniettano il testo libero nel prompt LLM e
+#   traducono /skip in "salta il seed/target corrente".
+# - outreach_whatsapp: consuma tra un DM e l'altro — /skip salta il contatto e il
+#   numero viene riletto dall'asset (così un `/set <id> whatsapp …` live ha effetto);
+#   il testo libero viene annotato nel log (il messaggio è pre-generato).
+#
+# bulk_extract (estrazione concorrente, schema fisso) e auto_extract (delega a
+# sub-job con job_id diverso) restano fuori da questo set in v1.
 MODES_SUPPORTING_LIVE_CHAT: frozenset[str] = frozenset({
     "browser_use",
     "site_explorer",
+    "outreach_whatsapp",
 })
 
 
@@ -56,65 +66,88 @@ class RunnerStopped(Exception):
     """
 
 
-def consume_live_instructions(
-    job_id: int, jlog: Callable[[str], None],
-) -> str | None:
-    """B-001: estrae i messaggi chat utente pending per questo job e li trasforma
-    in un blocco di "istruzioni live" da iniettare nel prossimo prompt LLM.
+@dataclass
+class LiveChat:
+    """Esito del consumo della coda chat di un job al checkpoint del runner.
+
+    - `skip`: True se l'utente ha inviato almeno un `/skip` (salta target corrente).
+    - `instructions`: testo libero dell'utente (per iniezione nel prompt LLM o
+      annotazione nel log, a seconda del runner).
+    """
+    skip: bool = False
+    instructions: list[str] = field(default_factory=list)
+
+
+def consume_live_chat(job_id: int, jlog: Callable[[str], None]) -> LiveChat | None:
+    """B-001: estrae e consuma i messaggi chat utente pending per questo job.
 
     Va chiamato al checkpoint del runner (di solito subito dopo
     `wait_if_paused_or_stop`). Effetti collaterali:
       - marca i messaggi come consumati (`db.consume_pending_chat`),
       - logga ogni riga nel job log (visibile in dashboard),
-      - posta UN ack `assistant` nella chat ("ricevuto, lo passo all'agente").
+      - posta UN ack `assistant` nella chat.
 
-    Ritorna il blocco testuale già formattato (prefisso "ISTRUZIONI UTENTE LIVE")
-    pronto da anteporre al prompt, oppure `None` se non c'è nulla in coda.
-    Il comando `/skip` viene tradotto in un'istruzione esplicita di salto.
-
-    Nota: è sincrono (le `db.*` lo sono). Il chiamante decide se/come usare il
-    valore di ritorno — i runner che non lo usano comunque drenano la coda
-    (ricezione + ack + log), evitando messaggi "in attesa" all'infinito.
+    Ritorna un `LiveChat` (skip + instructions) o `None` se la coda è vuota.
+    Sincrono e difensivo: non solleva mai (un problema sulla chat non deve far
+    cadere un runner).
     """
     try:
         pending = db.consume_pending_chat(job_id)
     except Exception:
-        # Mai far cadere un runner per un problema sulla chat.
         return None
     if not pending:
         return None
 
-    lines: list[str] = []
+    skip = False
+    instructions: list[str] = []
     for m in pending:
         body = (m.get("body") or "").strip()
         if not body:
             continue
         if body.lower() == "/skip":
-            lines.append(
-                "L'utente chiede di SALTARE il target/seed corrente e proseguire "
-                "con il prossimo."
-            )
+            skip = True
             jlog("💬 istruzione live: /skip (salta target corrente)")
         else:
-            lines.append(body)
+            instructions.append(body)
             jlog(f"💬 istruzione live dall'utente: {body}")
 
-    if not lines:
+    if not skip and not instructions:
         return None
 
-    block = (
-        "ISTRUZIONI UTENTE LIVE (priorità su tutto, comunicate durante "
-        "l'esecuzione):\n- " + "\n- ".join(lines)
-    )
     try:
+        n = len(instructions) + (1 if skip else 0)
         db.insert_job_chat_message(
             job_id, "assistant",
-            f"Ricevuto ({len(lines)} istruzione/i). Le applico al prossimo step.",
+            f"Ricevuto ({n} istruzione/i). Le applico al prossimo step.",
             kind="reply", applied=1,
         )
     except Exception:
         pass
-    return block
+    return LiveChat(skip=skip, instructions=instructions)
+
+
+def consume_live_instructions(
+    job_id: int, jlog: Callable[[str], None],
+) -> str | None:
+    """Variante per i runner LLM-driven (browser_use, site_explorer): ritorna un
+    blocco "ISTRUZIONI UTENTE LIVE" già formattato da anteporre al prompt, oppure
+    `None` se non c'è nulla. `/skip` viene tradotto in un'istruzione esplicita di
+    salto nel testo. Wrappa `consume_live_chat` (che fa consumo + log + ack)."""
+    lc = consume_live_chat(job_id, jlog)
+    if not lc:
+        return None
+    lines = list(lc.instructions)
+    if lc.skip:
+        lines.append(
+            "L'utente chiede di SALTARE il target/seed corrente e proseguire "
+            "con il prossimo."
+        )
+    if not lines:
+        return None
+    return (
+        "ISTRUZIONI UTENTE LIVE (priorità su tutto, comunicate durante "
+        "l'esecuzione):\n- " + "\n- ".join(lines)
+    )
 
 
 async def wait_if_paused_or_stop(job_id: int, jlog: Callable[[str], None]) -> None:

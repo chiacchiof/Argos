@@ -1692,11 +1692,14 @@ Due modi d'uso:
 
 Esempio: numero WhatsApp sbagliato scoperto a job in corso → `/set 4155 whatsapp +393331234567` (niente kill+rilancio).
 
-**2. Testo libero (suggerimento live)**: qualsiasi frase senza `/` viene messa **in coda** (badge "⏳ in coda") e iniettata nel prompt dell'agente al **prossimo checkpoint** come "ISTRUZIONI UTENTE LIVE (priorità su tutto)". Quando l'agente la legge, conferma con un ack. Attivo su `browser_use` (tra un seed e l'altro) e `site_explorer` (tra uno step LLM e l'altro) = `MODES_SUPPORTING_LIVE_CHAT` in [`runner_control.py`](app/agent/runner_control.py). Per gli altri mode il testo libero riceve un ack che rimanda ai comandi (così non resta appeso).
+**2. Testo libero (suggerimento live) + `/skip`**: qualsiasi frase senza `/`, e il comando `/skip`, vengono messi **in coda** (badge "⏳ in coda") e consumati dal runner al **prossimo checkpoint**. I runner che consumano la chat (`MODES_SUPPORTING_LIVE_CHAT` in [`runner_control.py`](app/agent/runner_control.py)):
 
-Esempio: durante un `site_explorer` scrivi "concentrati solo sulle pagine /agenti/, ignora il blog" → al prossimo step l'LLM lo riceve come messaggio prioritario.
+- **`browser_use`** (tra un seed e l'altro) e **`site_explorer`** (tra uno step LLM): il testo libero è iniettato nel prompt come "ISTRUZIONI UTENTE LIVE (priorità su tutto)"; `/skip` = "salta il seed/target corrente". *Es.: durante un `site_explorer` scrivi "concentrati solo sulle pagine /agenti/, ignora il blog" → al prossimo step l'LLM lo riceve come messaggio prioritario.*
+- **`outreach_whatsapp`** (tra un DM e l'altro): `/skip` salta il contatto corrente; il numero viene **riletto dall'asset** prima di inviare, così un `/set <id> whatsapp +39…` scritto in chat ha effetto **sul DM successivo** (niente kill+rilancio); il testo libero viene annotato nel log (il messaggio è pre-generato). *Es. (scenario killer del backlog): task con 5 DM, dopo il 2° scrivi `/set 4155 whatsapp +393331234567` e poi `/skip` → il 3° viene saltato, e gli altri usano il numero corretto.*
 
-Architettura: tabella `job_chat_messages` (coda con flag `applied`, stesso pattern cross-thread di `control_signal`), checkpoint via `runner_control.consume_live_instructions`, route in [`routes/jobs.py`](app/routes/jobs.py), parser puro in [`job_chat_commands.py`](app/agent/job_chat_commands.py). Tutto tenant-scoped.
+Per i mode che NON consumano la chat (`bulk_extract`, `auto_extract`, ecc.) il testo libero riceve un ack che rimanda ai comandi (così non resta appeso).
+
+Architettura: tabella `job_chat_messages` (coda con flag `applied`, stesso pattern cross-thread di `control_signal`), checkpoint via `runner_control.consume_live_chat` (skip + istruzioni) — con wrapper `consume_live_instructions` per i runner LLM —, route in [`routes/jobs.py`](app/routes/jobs.py), parser puro in [`job_chat_commands.py`](app/agent/job_chat_commands.py). Tutto tenant-scoped.
 
 ### 9.7 Tool chat orchestrator per asset e pattern
 

@@ -30,7 +30,7 @@ from typing import Any
 from .. import db
 from ..config import RESULTS_DIR
 from .llm_providers import resolve_api_key, resolve_base_url
-from .runner_control import wait_if_paused_or_stop, RunnerStopped
+from .runner_control import consume_live_chat, wait_if_paused_or_stop, RunnerStopped
 from .social.crypto_creds import is_configured
 from .social.engine import OutreachEngine
 from .social.message_generator import MessageRequest, generate_batch
@@ -490,8 +490,35 @@ async def _run_engine_a(
 
     while queue:
         await wait_if_paused_or_stop(job_id, jlog)
+        # B-001: chat live (granularità per-batch: l'engine A invia il batch
+        # internamente). /skip rimuove il prossimo contatto dalla coda; i numeri
+        # del batch vengono riletti dall'asset così un `/set <id> whatsapp …` live
+        # ha effetto; il testo libero viene annotato nel log.
+        lc = consume_live_chat(job_id, jlog)
+        if lc:
+            for _ins in lc.instructions:
+                jlog(f"  📝 nota operatore (chat): {_ins}")
+            if lc.skip and queue:
+                skipped = queue.pop(0)
+                jlog(f"  ⏭ /skip operatore: salto {skipped['phone']}.")
+                db.insert_social_dm_log({
+                    "account_id": next(iter(account_id_by_uuid.values()), None),
+                    "job_id": job_id,
+                    "target_asset_id": skipped["asset"]["id"],
+                    "target_platform": "whatsapp",
+                    "target_username": skipped["phone"],
+                    "message": skipped["message"],
+                    "ok": False, "reason": "skipped_by_user", "engine": "A_browser",
+                })
+        if not queue:
+            break
         batch = queue[:max_per_session]
         queue = queue[max_per_session:]
+        # Re-read del numero per ogni target del batch (per far valere /set live).
+        for _p in batch:
+            _fresh = db.get_asset(_p["asset"]["id"])
+            if _fresh and (_fresh.get("whatsapp") or "").strip():
+                _p["phone"] = _fresh["whatsapp"].strip()
         # Format dei target richiesti da OutreachEngine: [(username, message), ...]
         # Per WhatsApp `username` = phone number.
         targets_pairs = [(p["phone"], p["message"]) for p in batch]
@@ -580,6 +607,27 @@ async def _run_engine_b(
         phone = p["phone"]
         message = p["message"]
         last_in = asset.get("whatsapp_last_inbound_at")
+
+        # B-001: chat live tra un DM e l'altro. /skip salta questo contatto; il
+        # numero viene riletto dall'asset così un `/set <id> whatsapp …` live ha
+        # effetto; il testo libero viene annotato nel log (msg già generato).
+        lc = consume_live_chat(job_id, jlog)
+        if lc and lc.skip:
+            jlog(f"  ⏭ /skip operatore: salto il contatto {phone}.")
+            db.insert_social_dm_log({
+                "account_id": None, "job_id": job_id,
+                "target_asset_id": asset["id"], "target_platform": "whatsapp",
+                "target_username": phone, "message": message,
+                "ok": False, "reason": "skipped_by_user", "engine": "B_api",
+                "api_config_id": api_config_id,
+            })
+            continue
+        if lc and lc.instructions:
+            for _ins in lc.instructions:
+                jlog(f"  📝 nota operatore (chat): {_ins}")
+        fresh = db.get_asset(asset["id"])
+        if fresh and (fresh.get("whatsapp") or "").strip():
+            phone = fresh["whatsapp"].strip()
 
         if dry_run:
             db.insert_social_dm_log({
