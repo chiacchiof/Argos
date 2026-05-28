@@ -8,6 +8,12 @@ from pydantic import ValidationError
 from .. import db, jobs, storage
 from . import _tenant_filter as _tf
 from ..agent.extraction_templates import TEMPLATES, get_schema, list_templates
+from ..agent.mode_schemas import (
+    FAMILIES,
+    FAMILY_LABELS,
+    MODE_SCHEMAS,
+    modes_by_family,
+)
 from ..agent.llm_providers import (
     DEFAULT_PROVIDER,
     env_key_status,
@@ -1108,6 +1114,34 @@ def _form_extra_context() -> dict:
         if not p["needs_key"] or _providers_with_creds.issuperset({p["key"]}) or _eks.get(p["key"])
     ]
 
+    # Agent mode schemas (single source of truth, app/agent/mode_schemas.py).
+    # Esposti al template come:
+    # - mode_families: lista di (family_key, family_label, [ModeSchema, ...]) per
+    #   il rendering del <select> con <optgroup>.
+    # - mode_schemas_json: dump JSON serializzato di MODE_SCHEMAS, usato dal JS
+    #   del form per popolare hint/label dinamici al cambio modalità.
+    _by_fam = modes_by_family()
+    mode_families = [
+        (fam, FAMILY_LABELS[fam], _by_fam[fam])
+        for fam in FAMILIES
+        if _by_fam.get(fam)
+    ]
+    import json as _json
+    mode_schemas_json = _json.dumps(
+        {
+            m: {
+                "family": s.family,
+                "hint": s.hint,
+                "seed_kind": s.seed_kind,
+                "seed_label": s.seed_label,
+                "seed_hint": s.seed_hint,
+                "runner_status": s.runner_status,
+            }
+            for m, s in MODE_SCHEMAS.items()
+        },
+        ensure_ascii=False,
+    )
+
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
@@ -1126,6 +1160,8 @@ def _form_extra_context() -> dict:
         "social_accounts_by_platform": social_accounts_by_platform,
         "email_accounts_for_form": email_accounts_for_form,
         "telegram_bots_for_form": telegram_bots_for_form,
+        "mode_families": mode_families,
+        "mode_schemas_json": mode_schemas_json,
     }
 
 

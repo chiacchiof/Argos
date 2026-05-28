@@ -9,7 +9,7 @@ OutputFormat = Literal["txt", "md", "both"]
 AgentMode = Literal[
     "react", "browser_use", "bulk_extract", "auto_extract", "site_explorer",
     "qualifier", "outreach", "outreach_social", "outreach_whatsapp", "responder",
-    "recon_social",
+    "recon_social", "audience_discovery",
 ]
 BulkExtractionMethod = Literal["llm_per_page", "css_selectors"]
 MessageChannel = Literal["email", "telegram"]
