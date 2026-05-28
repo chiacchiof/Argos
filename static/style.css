@@ -208,6 +208,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   background:
     radial-gradient(42% 36% at 50% 44%, rgba(6,182,212,0.13), transparent 70%),
     rgba(8,13,30,0.76);
+  color: #f6f9ff;
   -webkit-backdrop-filter: blur(10px) saturate(130%);
   backdrop-filter: blur(10px) saturate(130%);
   opacity: 0;
@@ -232,8 +233,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   border: 1px solid rgba(79,107,246,0.34);
   border-radius: var(--radius-lg);
   background:
-    linear-gradient(180deg, rgba(45,45,54,0.94), rgba(31,31,37,0.94)),
-    var(--surface-1);
+    radial-gradient(70% 90% at 50% 10%, rgba(34,211,238,0.10), transparent 64%),
+    linear-gradient(180deg, rgba(45,45,54,0.98), rgba(25,25,32,0.98));
   box-shadow: 0 22px 70px rgba(0,0,0,0.44), 0 0 0 1px rgba(255,255,255,0.04) inset;
 }
 
@@ -312,10 +313,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .argos-loader-card p {
   margin: 0;
   min-height: 1.35em;
-  color: var(--fg);
+  color: #f6f9ff;
   text-align: center;
   font-size: 0.95rem;
   line-height: 1.45;
+  text-shadow: 0 1px 10px rgba(0,0,0,0.35);
 }
 
 @keyframes argosLoaderOrbit {

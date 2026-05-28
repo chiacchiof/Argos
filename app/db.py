@@ -2700,6 +2700,124 @@ def count_pending_chat(job_id: int) -> int:
     return int(row["n"]) if row else 0
 
 
+# ----- Recon (R3): create run + resume + checkpoint + visited -----
+
+def insert_recon_run(task_id: int, job_id: int, social_account_id: int) -> int:
+    """Crea una nuova riga `recon_runs` con status='running' e ritorna l'id.
+
+    Sostituisce l'inline SQL con `cur.lastrowid` in `runner_recon_social.py`,
+    che era un bug pre-esistente: `lastrowid` non esiste sui cursor psycopg →
+    `AttributeError`. Usa `RETURNING id` come da convenzione (db.py docstring).
+    """
+    with connect() as con:
+        cur = con.execute(
+            "INSERT INTO recon_runs (task_id, job_id, social_account_id, "
+            "status, started_at, last_active_at) "
+            "VALUES (%s, %s, %s, 'running', %s, %s) RETURNING id",
+            (task_id, job_id, social_account_id, now_iso(), now_iso()),
+        )
+        return int(cur.fetchone()["id"])
+
+
+def find_resumable_recon_run(
+    task_id: int, *, max_age_hours: int = 24,
+) -> dict[str, Any] | None:
+    """B-015: trova un `recon_run` riprendibile per questo task.
+
+    Criteri: status='paused' (graceful stop precedente) AND last_active_at entro
+    `max_age_hours` (default 24h: oltre, meglio ripartire da zero — la sessione
+    social potrebbe essere scaduta e il contesto stale). Ritorna `None` se
+    nessun candidato. Restituisce il più recente.
+    """
+    import datetime as _dt
+    cutoff = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=int(max_age_hours))
+    ).isoformat()
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM recon_runs "
+            "WHERE task_id = %s AND status = 'paused' AND last_active_at >= %s "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, cutoff),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def resume_recon_run(run_id: int, new_job_id: int) -> None:
+    """B-015: ri-attiva un `recon_run` paused, linkandolo al nuovo job."""
+    with connect() as con:
+        con.execute(
+            "UPDATE recon_runs SET status = 'running', job_id = %s, "
+            "last_active_at = %s WHERE id = %s",
+            (new_job_id, now_iso(), run_id),
+        )
+
+
+def list_visited_urls(run_id: int) -> set[str]:
+    """B-015: URL già processati in un `recon_run` (per skip dedup on resume).
+
+    Caricato in memoria all'avvio del runner; gli insert successivi sono
+    idempotenti grazie a `UNIQUE (run_id, target_url)` su `recon_visited`.
+    """
+    with connect() as con:
+        rows = con.execute(
+            "SELECT target_url FROM recon_visited WHERE run_id = %s", (run_id,),
+        ).fetchall()
+    return {r["target_url"] for r in rows}
+
+
+def mark_recon_run_paused(run_id: int) -> None:
+    """B-015: stop graceful → 'paused' (così la prossima esecuzione del task
+    può fare resume). Senza questo, il reconcile/watchdog marcherebbe 'error'."""
+    with connect() as con:
+        con.execute(
+            "UPDATE recon_runs SET status = 'paused', last_active_at = %s "
+            "WHERE id = %s",
+            (now_iso(), run_id),
+        )
+
+
+def save_recon_checkpoint(run_id: int, snapshot: dict[str, Any]) -> int:
+    """B-015: salva uno snapshot JSON del progresso del run.
+
+    Il `recon_visited` è il source-of-truth per il resume (dedup per URL); questo
+    checkpoint è metadata utile per UI/forensic ("a che punto era il job?").
+    Aggiorna anche `last_active_at` per estendere la finestra di resumability.
+    """
+    payload = json.dumps(snapshot, ensure_ascii=False)
+    with connect() as con:
+        cur = con.execute(
+            "INSERT INTO recon_checkpoints (run_id, snapshot_json, created_at) "
+            "VALUES (%s, %s, %s) RETURNING id",
+            (run_id, payload, now_iso()),
+        )
+        snap_id = int(cur.fetchone()["id"])
+        con.execute(
+            "UPDATE recon_runs SET last_active_at = %s WHERE id = %s",
+            (now_iso(), run_id),
+        )
+    return snap_id
+
+
+def latest_recon_checkpoint(run_id: int) -> dict[str, Any] | None:
+    """B-015: ultimo checkpoint di un run (None se mai salvato). Lo snapshot_json
+    viene già deserializzato (chiave `snapshot`) per comodità del chiamante."""
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM recon_checkpoints WHERE run_id = %s "
+            "ORDER BY id DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    try:
+        out["snapshot"] = json.loads(out.get("snapshot_json") or "{}")
+    except Exception:
+        out["snapshot"] = {}
+    return out
+
+
 # ===========================================================================
 # Workflows (entità di prima classe)
 # ===========================================================================

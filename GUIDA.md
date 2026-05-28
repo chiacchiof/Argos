@@ -2818,6 +2818,18 @@ Endpoint cloud (OpenAI, Anthropic, ecc.) **non** ricevono il campo (rifiuterebbe
 
 Call-site coperti: message_generator (outreach social/WA), runner_qualifier (qualifier-of-qualified), runner_recon_social, runner_bulk_extract, runner_site_explorer, runner_browseruse, runner_responder, site_profiler, orchestrator, ollama.chat (tool-calling).
 
+### 17.11 Checkpoint + resume mid-job (R3, B-015 chiuso 2026-05-28)
+
+Su una sessione recon lunga (es. 1000+ follower) un kill/Ctrl-C/crash di rete a metà strada **non** ti fa più ripartire da zero. Meccanica:
+
+- Allo **stop graceful** del job (click "Stop" o `RunnerStopped`), il `recon_run` viene marcato `'paused'` invece di lasciarlo `'running'` (che il watchdog ricicleria a `'error'`).
+- Al **rilancio del task entro 24h**, il runner cerca un `recon_run` `'paused'` per quel task (helper [`db.find_resumable_recon_run`](app/db.py)): se lo trova, ne riusa l'`id`, carica gli URL già visitati (`db.list_visited_urls`) in memoria, marca `'running'` e linka al nuovo `job_id`. Vedi log: `♻ RESUME: recon_run #N (precedentemente 'paused', M URL già processati → skip-dedup automatico)`.
+- In loop: ogni URL già in `visited_urls` → `SKIP_RESUMED` (lookup set O(1), prima del check DB `SKIP_RECENT`). Source-of-truth del resume = la tabella `recon_visited` (UNIQUE per `(run_id, target_url)`).
+- Ogni 10 target il runner salva un checkpoint (`recon_checkpoints.snapshot_json`) con `n_ok / n_fail / n_skip / current_index / total / visited_count` — metadata utile per UI/forensic ("a che punto era il job quando è morto?").
+- Oltre 24h il run non viene più ripreso (sessione social possibilmente scaduta, contesto stale): si parte fresh. Override via `max_age_hours` parametro dell'helper se serve.
+
+Insieme al kill-switch globale (`RECON_SOCIAL_DISABLED=1`), all'account pool (`social_accounts`) e al watchdog di B-007, chiude R3 del piano `recon_social`. Test in [`tests/test_recon_resume.py`](tests/test_recon_resume.py).
+
 ## 18. Outreach multi-tag filter (audience-driven, 2026-05-15)
 
 Filtra i contatti destinatari per **tag attributi AND multipli**, costruiti dai tag derivati dall'extract LLM (cap. 17.6). Esempio: `interests_inferred=fitness AND location=Catania` → contatta SOLO i contatti che hanno entrambi.

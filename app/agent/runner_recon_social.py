@@ -677,16 +677,28 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     audit.log_event("RUN_START", job_id=job_id, account_id=account["id"],
                     n_targets=len(seed), llm_model=llm_model)
 
-    # ---- 6. recon_runs DB row ----
-    with db.connect() as con:
-        cur = con.execute(
-            """INSERT INTO recon_runs (task_id, job_id, social_account_id,
-                                       status, started_at, last_active_at)
-               VALUES (%s, %s, %s, 'running', %s, %s)""",
-            (task["id"], job_id, account["id"], db.now_iso(), db.now_iso()),
+    # ---- 6. recon_runs DB row (B-015: resume su run paused recente) ----
+    # Bug fix pre-esistente: la vecchia INSERT usava `cur.lastrowid` che non
+    # esiste sui cursor psycopg → AttributeError silenzioso. Ora via helper
+    # `db.insert_recon_run` con RETURNING id (convenzione db.py).
+    resumed = db.find_resumable_recon_run(task["id"])
+    visited_urls: set[str] = set()
+    stopped = False  # flag per il finally: se True, NON marcare 'done' (lascia 'paused')
+    if resumed:
+        recon_run_id = int(resumed["id"])
+        visited_urls = db.list_visited_urls(recon_run_id)
+        db.resume_recon_run(recon_run_id, job_id)
+        jlog(
+            f"♻ RESUME: recon_run #{recon_run_id} (precedentemente 'paused', "
+            f"{len(visited_urls)} URL già processati → skip-dedup automatico)"
         )
-        recon_run_id = int(cur.lastrowid)
-    audit.log_event("RECON_RUN_CREATED", recon_run_id=recon_run_id)
+        audit.log_event(
+            "RECON_RUN_RESUMED", recon_run_id=recon_run_id,
+            visited_count=len(visited_urls),
+        )
+    else:
+        recon_run_id = db.insert_recon_run(task["id"], job_id, account["id"])
+        audit.log_event("RECON_RUN_CREATED", recon_run_id=recon_run_id)
 
     # ---- 7. Apri browser persistent ----
     sess_dir = account.get("session_dir") or (
@@ -923,6 +935,17 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 await wait_if_paused_or_stop(job_id, jlog)
             except RunnerStopped:
                 jlog("⏹ Stop richiesto: termino sessione.")
+                # B-015: stop graceful → marca 'paused' (non 'done' nel finally).
+                # Il prossimo run del task entro 24h riprende da qui.
+                stopped = True
+                try:
+                    db.mark_recon_run_paused(recon_run_id)
+                    jlog(
+                        f"   recon_run #{recon_run_id} → 'paused' "
+                        f"(resumable entro 24h, {len(visited_urls)} URL già processati)"
+                    )
+                except Exception:
+                    log.warning("mark_recon_run_paused fail (proseguo)")
                 break
 
             # Pre-step: risolvi il seed_entry → URL profilo
@@ -1017,6 +1040,15 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             if account_platform and account_platform != plat:
                 jlog(f"  [{i}/{len(seed)}] ⚠️ account è {account_platform} ma URL è {plat}: provo comunque")
 
+            # B-015 RESUME: salta URL già processati in questo recon_run (dopo
+            # uno stop precedente). Cheap (set lookup O(1)) → davanti al
+            # SKIP_RECENT che fa una query DB.
+            if url in visited_urls:
+                jlog(f"  [{i}/{len(seed)}] {url} → SKIP_RESUMED (già processato nel run precedente)")
+                audit.log_event("SKIP_RESUMED", url=url, recon_run_id=recon_run_id)
+                n_skip += 1
+                continue
+
             # DEDUP RECENTE: skip se esiste già un asset di questo type con
             # source_url + updated_at < refresh_policy_days. Default 7 giorni.
             # -1 = sempre re-scrape (no skip).
@@ -1048,7 +1080,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 audit.log_event("EXTRACT_DONE", url=url, platform=plat,
                                 error=profile_data.get("error"))
 
-                # Salva in recon_visited (idempotente)
+                # Salva in recon_visited (idempotente) + cache in-memory per B-015 resume.
                 try:
                     with db.connect() as con:
                         con.execute(
@@ -1058,6 +1090,7 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                                ON CONFLICT (run_id, target_url) DO NOTHING""",
                             (recon_run_id, url, plat, db.now_iso()),
                         )
+                    visited_urls.add(url)
                 except Exception as e:
                     log.warning("recon_visited insert fail: %s", e)
 
@@ -1277,6 +1310,19 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 # Periodic screenshot
                 await audit.capture_step(page, step_label=url)
 
+                # B-015: checkpoint periodico (ogni 10 target). Source-of-truth
+                # del resume resta `recon_visited`; qui salviamo solo metadata
+                # forensic/UI (n_ok, n_fail, n_skip, current_index).
+                if i % 10 == 0:
+                    try:
+                        db.save_recon_checkpoint(recon_run_id, {
+                            "n_ok": n_ok, "n_fail": n_fail, "n_skip": n_skip,
+                            "current_index": i, "total": len(seed),
+                            "visited_count": len(visited_urls),
+                        })
+                    except Exception as e:
+                        log.debug("save_recon_checkpoint fail (proseguo): %s", e)
+
                 # Pausa anti-bot: range dipende da speed_profile (safe 30-180s,
                 # balanced 15-60s, aggressive 10-30s)
                 if i < len(seed):
@@ -1305,13 +1351,21 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
                 await p_handle.stop()
         except Exception:
             pass
-        audit.log_event("RUN_END", n_ok=n_ok, n_fail=n_fail, n_skip=n_skip)
+        audit.log_event("RUN_END", n_ok=n_ok, n_fail=n_fail, n_skip=n_skip, stopped=stopped)
         audit.close()
+        # B-015: se stopped=True abbiamo già marcato 'paused' nell'except — NON
+        # sovrascrivere con 'done'. Aggiorniamo comunque target_count per la UI.
         with db.connect() as con:
-            con.execute(
-                "UPDATE recon_runs SET status = 'done', finished_at = %s, target_count = %s WHERE id = %s",
-                (db.now_iso(), n_ok, recon_run_id),
-            )
+            if stopped:
+                con.execute(
+                    "UPDATE recon_runs SET target_count = %s, last_active_at = %s WHERE id = %s",
+                    (n_ok, db.now_iso(), recon_run_id),
+                )
+            else:
+                con.execute(
+                    "UPDATE recon_runs SET status = 'done', finished_at = %s, target_count = %s WHERE id = %s",
+                    (db.now_iso(), n_ok, recon_run_id),
+                )
 
     # ---- 9. Report ----
     report = (

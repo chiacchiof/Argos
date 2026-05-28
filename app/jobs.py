@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
-import threading
 from typing import Any, Awaitable, Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -229,77 +227,43 @@ def _list_active_jobs_in_db() -> list[dict[str, Any]]:
 async def _run_in_proactor_thread(
     coro_factory: Callable[[], Awaitable[Any]],
     job_id: int,
+    *,
+    timeout: float | None = None,
 ) -> Any:
     """Esegue la coroutine in un thread con ProactorEventLoop (Windows).
 
-    Espone (loop, task) tramite `_active_jobs[job_id]` così che `hard_stop_job`
-    possa cancellare il task da qualunque thread chiamando `task.cancel()` via
-    `loop.call_soon_threadsafe`.
+    Implementazione: delega a [`app/runtime/proactor.run_in_proactor_thread`](app/runtime/proactor.py)
+    (B-006: estratto in modulo dedicato per testabilità + timeout opt-in +
+    traceback dump strutturato). Questo wrapper resta in `jobs.py` per:
 
-    Serve perché uvicorn imposta WindowsSelectorEventLoopPolicy che NON supporta
-    asyncio.create_subprocess_exec — usato da Playwright/browser-use per avviare
-    Chromium. Su Linux/macOS la coroutine gira nel loop chiamante.
+    - **call-site compatibilità**: i runner chiamano `_run_in_proactor_thread`
+      come prima, niente migrazione dei call site.
+    - **wiring di `_active_jobs`**: passa register/unregister che mutano il
+      registro globale dei job attivi (usato da `hard_stop_job`,
+      `is_runner_alive`, watchdog) — il registro vive in `jobs.py` perché
+      condiviso con `register_subjob`/`unregister_subjob`/reconcile/ecc.
+    - **wiring di `jlog`**: callback verso `db.append_job_log` per il traceback
+      dump (sempre attivo, opt-out non previsto).
 
-    Multi-tenant: il ContextVar `_current_tenant_id_var` (e `_current_user_id_var`)
-    è **thread-local**. Le `threading.Thread` NON propagano i ContextVar
-    automaticamente, quindi catturiamo i valori nel thread chiamante (dove
-    `_run_job` ha già settato il context dal task) e li ri-iniettiamo nel
-    nuovo thread come prima cosa. Senza questo, le scritture `db.*` del
-    runner agentico finirebbero con `tenant_id=NULL` e gli asset/contacts
-    creati sarebbero invisibili al tenant proprietario del task.
+    Vedi `app/runtime/proactor.py` per la spiegazione tecnica completa (perché
+    serve il proactor thread su Windows, propagazione tenant ContextVar, ecc.).
+
+    Args:
+      coro_factory: callable lazy che ritorna la coroutine.
+      job_id: id del job (per registry + log).
+      timeout: cap in secondi (default None = no cap; fallback a env
+        `ARGOS_PROACTOR_DEFAULT_TIMEOUT_S`). Allo scadere alza `JobTimeout`.
     """
-    if sys.platform != "win32":
-        # POSIX: la cancellazione si propaga naturalmente nel loop chiamante.
-        # asyncio.create_task copia il context corrente, quindi tenant/user OK.
-        loop = asyncio.get_running_loop()
-        task = asyncio.create_task(coro_factory())
-        _active_jobs[job_id] = (loop, task)
-        try:
-            return await task
-        finally:
-            _active_jobs.pop(job_id, None)
+    from .runtime.proactor import run_in_proactor_thread
 
-    # Cattura tenant_id + user_id del context corrente per propagarli al thread.
-    saved_tenant_id = db.current_tenant_id()
-    saved_user_id = db.current_user_id()
-
-    result: list[Any] = []
-    exc_holder: list[BaseException] = []
-    started = threading.Event()
-
-    def runner() -> None:
-        # Setta i ContextVar manualmente (questo thread parte con context vuoto).
-        db.set_current_tenant(saved_tenant_id)
-        db.set_current_user(saved_user_id)
-
-        new_loop = asyncio.ProactorEventLoop()  # type: ignore[attr-defined]
-        asyncio.set_event_loop(new_loop)
-        task = new_loop.create_task(coro_factory())
-        _active_jobs[job_id] = (new_loop, task)
-        started.set()
-        try:
-            result.append(new_loop.run_until_complete(task))
-        except asyncio.CancelledError:
-            # Il task è stato cancellato dall'esterno: non lo trattiamo come errore.
-            log.info("job %s: task cancelled", job_id)
-        except BaseException as e:  # pragma: no cover
-            exc_holder.append(e)
-        finally:
-            _active_jobs.pop(job_id, None)
-            try:
-                new_loop.close()
-            except Exception:
-                pass
-
-    t = threading.Thread(target=runner, name=f"proactor-job-{job_id}", daemon=True)
-    t.start()
-    started.wait(timeout=5)
-    while t.is_alive():
-        await asyncio.sleep(0.5)
-    t.join()
-    if exc_holder:
-        raise exc_holder[0]
-    return result[0] if result else None
+    return await run_in_proactor_thread(
+        coro_factory,
+        job_id,
+        timeout=timeout,
+        jlog=lambda msg: db.append_job_log(job_id, msg),
+        register=lambda jid, loop, task: _active_jobs.__setitem__(jid, (loop, task)),
+        unregister=lambda jid: _active_jobs.pop(jid, None),
+    )
 
 
 def _after_job_done(job_id: int, task_id: int, workflow_run_id: int | None = None) -> None:

@@ -126,24 +126,98 @@ auto-poll + safety guard sui comandi destructive).
 
 ## 🚀 P1 — Quality of life
 
-### B-013 / B-014 / B-015 · `recon_social` (R1 + R2 + R3) × IG + TikTok + FB
+### B-013 / B-014 / B-015 · `recon_social` (R1 + R2 + R3) × IG + TikTok + FB — STATO MISTO (aggiornato 2026-05-28)
 
-**Cosa**: nuovo agent_mode `recon_social` per esplorare social loggato in
-3 fasi incrementali. Vedi piano dettagliato in [PIANO_RECON_SOCIAL.md](PIANO_RECON_SOCIAL.md).
+**Cosa**: agent_mode `recon_social` per esplorare social loggato in 3 fasi
+incrementali. Vedi piano in [PIANO_RECON_SOCIAL.md](PIANO_RECON_SOCIAL.md).
 
-| Sub | Cosa | Effort |
-|---|---|---|
-| **B-013 (R1)** | URL-driven recon: lista URL → extract con session loggata | 5-6h |
-| **B-014 (R2)** | Exploration goal-driven: agente ReAct + tool whitelist + safety guards (blacklist click su like/commenta/DM/follow) | 12-15h |
-| **B-015 (R3)** | Multi-session resilient: checkpoint, resume, pool account rotation, kill-switch | 5h |
+Stato granulare per sub (dal codice, non per memoria):
 
-**Decisione utente (2026-05-13)**: vuole tutti e tre, su tutte e 3 le
-piattaforme target (IG + TikTok + FB; WA escluso = messaging).
+| Sub | Cosa | Stato | Evidenza |
+|---|---|---|---|
+| **B-013 (R1)** url_driven | Lista URL → goto+extract loggato | ✅ **CHIUSO** | Default in [runner_recon_social.py:576](app/agent/runner_recon_social.py#L576); IG+TT+FB tramite `_RECON_BY_PLATFORM` |
+| **B-014 (R2)** exploration | Agente ReAct goal-driven + tool whitelist + safety guards | ❌ **APERTO** | Runner blocca esplicitamente alle righe [584-589](app/agent/runner_recon_social.py#L584): *"recon_mode='exploration' (R2) non ancora implementato in Fase 1. R2 nel backlog B-014."* Effort residuo: 12-15h come da stima originale |
+| **B-015 (R3)** multi-session resilient | Checkpoint, resume, pool account rotation, kill-switch | ✅ **CHIUSO (2026-05-28)** | Kill-switch ✅ (`is_recon_disabled`); account pool ✅ (`social_accounts`); dedup `recon_visited` ✅; **checkpoint + resume mid-job ✅** (vedi nota qui sotto) |
+
+**B-015 — chiusura R3 (2026-05-28)**: aggiunti 6 helper in [db.py](app/db.py)
+(`insert_recon_run`, `find_resumable_recon_run`, `resume_recon_run`,
+`list_visited_urls`, `mark_recon_run_paused`, `save_recon_checkpoint`,
+`latest_recon_checkpoint`) e cablato il lifecycle in [runner_recon_social.py](app/agent/runner_recon_social.py):
+
+- All'avvio del job: cerca un `recon_run` **paused** per lo stesso task entro
+  24h. Se esiste, riusa l'id, carica `visited_urls` in memoria, marca
+  `'running'` e linka al nuovo `job_id`. Altrimenti crea un nuovo run.
+- Nel seed loop: prima di processare un URL → se in `visited_urls`, `SKIP_RESUMED`
+  (set lookup O(1), davanti al check DB `SKIP_RECENT`).
+- Ogni 10 target: `save_recon_checkpoint(run_id, snapshot)` per metadata
+  forensic/UI. Il source-of-truth del resume resta `recon_visited`.
+- Su `RunnerStopped` (stop graceful): `mark_recon_run_paused(run_id)` + flag
+  `stopped=True` letto dal `finally` per **non** sovrascrivere con `'done'`. Al
+  prossimo run del task entro 24h, resume automatico.
+
+**Bonus fix incluso**: la vecchia `INSERT INTO recon_runs` usava `cur.lastrowid`
+(SQLite-style) che su psycopg solleva `AttributeError`. Sostituita dall'helper
+`db.insert_recon_run` con `RETURNING id` (convenzione db.py). Test
+[`tests/test_recon_resume.py`](tests/test_recon_resume.py).
+
+Nessuna migration (lo schema `recon_runs`/`recon_checkpoints`/`recon_visited`
+esisteva già).
+
+**Decisione utente (2026-05-13)**: vuole tutti e tre su IG + TikTok + FB.
 
 **Caveat**: GDPR/ePrivacy + ToS Meta/TikTok = zona grigia. Disclaimer
 prominente nell'UI obbligatorio.
 
-**Totale**: 22-26h di sviluppo + design completo già scritto in piano.
+**Vedi anche B-017** (`follower_scrape` mode) — capability extra emersa
+dopo il design originale, non parte del trittico R1/R2/R3.
+
+---
+
+### B-017 · `recon_social` mode `follower_scrape` — promozione FB+TT da BETA a prod — APERTO (tracking 2026-05-28)
+
+**Stato**: capability già spedita ma non tracciata nel backlog originale.
+`recon_mode='follower_scrape'` enumera follower/amici di un account target a
+partire da un sender loggato (es. enumerazione dei follower di `@brand_xyz`
+loggato come `@nostro_account`).
+
+| Platform | Stato | Evidenza |
+|---|---|---|
+| Instagram | ✅ prod | GUIDA §17, validato job#147 (1258 follower in 8m20s) |
+| Facebook | ⚠️ BETA | Warning runtime [runner_recon_social.py:794](app/agent/runner_recon_social.py#L794): *"⚠️ follower_scrape su facebook: implementazione BETA"* |
+| TikTok | ⚠️ BETA | Idem warning runtime |
+
+**Cosa serve per chiuderlo**: validazione end-to-end FB e TT con job reali
+(criteri di accettazione tipo IG: ≥X follower in tempo accettabile, 0 detection
+signals, asset materializzati con titoli validi); rimozione warning BETA quando
+prod-ready; aggiornamento `TEST_PLAN.md` § "follower_scrape FB/TT".
+
+**Effort**: ~2-3h validazione + fix selettori probabili (DOM FB cambia spesso —
+vedi "Note di rischio" in TEST_PLAN.md), non un nuovo sviluppo da zero.
+
+---
+
+### B-018 · `audience_discovery` v2 — test coverage + estensione IG/TikTok — APERTO (tracking 2026-05-28)
+
+**Stato v1 (già in main)**: runner [runner_audience_discovery.py](app/agent/runner_audience_discovery.py)
+funzionale, pipeline deterministica a 5 fasi (keyword→friends→groups→members→
+scoring), **solo Facebook**, BETA dichiarata. Warning UI obbligatorio dall'
+orchestrator: *"audience_discovery è BETA, viola ToS Facebook. Usa account
+warmup sacrificabile. v1 supporta solo Facebook, IG/TT in roadmap"*. Integrato
+con RunReporter e `scripts/rebuild_report.py`.
+
+**Gap**:
+
+| Voce | Note |
+|---|---|
+| ❌ Zero test specifici per il runner | `tests/test_audience_snapshot.py` è cosa diversa (target_asset_ids snapshot per outreach). Servono test del parser brief→keyword (Fase 1), dello scoring LLM (Fase 5), e idealmente un dry-run end-to-end con FB stubbato |
+| 🛣 Estensione IG | Pipeline equivalente sostituendo `facebook_audience` con `instagram_audience` (search hashtag → engagers, no "gruppi" su IG quindi adattare Fase 3-4) |
+| 🛣 Estensione TikTok | Più speculativa: TT non ha "groups", la pipeline va ripensata (hashtag → top videos → autori) |
+
+**Effort**: test ~3-4h; IG ~8-12h (nuovo modulo `instagram_audience` + adattamento
+pipeline); TT da stimare dopo design.
+
+**Caveat**: aggravato dal warning BETA — qualsiasi estensione richiede red-team
+ToS compliance prima del prod.
 
 ---
 
@@ -375,13 +449,30 @@ Estendere `outreach_whatsapp` per allegati. Motore A: upload via DOM. Motore B:
 
 ## 🛠 P2 — Manutenzione tecnica
 
-### B-006 · Refactor `_run_in_proactor_thread`
+### B-006 · Refactor `_run_in_proactor_thread` — ✅ CHIUSO (2026-05-28)
 
-Oggi è in `app/jobs.py`. È usato da 4+ runners. Spostarlo in modulo dedicato
-(`app/runtime/proactor.py`) con error handling più solido (timeout globali,
-ripristino su crash del thread, dump del traceback).
+**Implementato**: estratto in [`app/runtime/proactor.py`](app/runtime/proactor.py)
+(nuovo package `app/runtime/`). [`jobs.py`](app/jobs.py) mantiene un thin wrapper
+retro-compatibile (`_run_in_proactor_thread`) che delega + wiring del registro
+`_active_jobs` (register/unregister) e di `db.append_job_log` come `jlog`.
 
-**Effort**: ~2h. Beneficio: dispatcher più affidabile.
+Migliorie aggiunte:
+- **Timeout opt-in** per job (`timeout` param + env `ARGOS_PROACTOR_DEFAULT_TIMEOUT_S`).
+  Default `None` = comportamento legacy invariato (nessun cap). Allo scadere
+  alza `JobTimeout` (subclass di `asyncio.TimeoutError` per retro-compat).
+  Cap utile contro il caso "stuck-ma-vivo" che il watchdog di B-007 non vede.
+- **Traceback dump strutturato** nel `job.log` su crash non-CancelledError
+  (sempre attivo, niente più "il runner è morto silenziosamente").
+- **CancelledError silenzioso** (è lo stop utente, non un crash).
+- Callback `register`/`unregister` per il registro job: il caller decide come
+  tracciare → modulo testabile in isolamento, niente coupling con `jobs.py`.
+
+Test: [`tests/test_proactor.py`](tests/test_proactor.py) (POSIX path: no-op,
+timeout, traceback dump, cancel silenzioso, callback safety). Rete di sicurezza
+per le regressioni: i test di B-007 (`test_workflow_integration.py`) coprono
+recovery/reconcile/watchdog/finalize — entrambi verdi post-refactor.
+
+Nessuna migration, nessun cambio schema, nessun promote.
 
 ### B-007 · Test integration completi — 🟡 v1 IMPLEMENTATA (2026-05-27)
 
