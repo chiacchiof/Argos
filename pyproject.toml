@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 # Il pkg name "argos" e' gia' preso su PyPI (HDF5 data inspector) — qui usiamo
 # "argos-edg" per un eventuale publish; per `pip install -e .` locale e' indifferente.
 name = "argos-edg"
-version = "1.1.0"
+version = "1.4.0"
 description = "Argos — multi-agent intelligence system per lead discovery & outreach (Etna Digital Growth)"
 requires-python = ">=3.11"
 readme = "README.md"
