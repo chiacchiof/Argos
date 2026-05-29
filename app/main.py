@@ -79,9 +79,15 @@ async def lifespan(app: FastAPI):
     # Riconcilia job orfani (server riavviato mentre stavano girando)
     jobs.reconcile_orphan_jobs()
     jobs.start_scheduler()
+    # Fogli collaborativi: bus realtime Redis OPZIONALE (no-op se REDIS_URL vuoto).
+    # In single-worker il connection manager in-memory basta; Redis serve solo
+    # per il fan-out multi-worker.
+    from .fascicoli import realtime_redis
+    await realtime_redis.start()
     try:
         yield
     finally:
+        await realtime_redis.stop()
         jobs.stop_scheduler()
         db_cloud.close_pool()
 

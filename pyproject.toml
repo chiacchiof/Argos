@@ -62,6 +62,10 @@ dependencies = [
   # html=False blocca tag inline → sanitization by construction, no bleach.
   "markdown-it-py>=3.0",
   "mdit-py-plugins>=0.4",
+  # Bus realtime OPZIONALE per i Fogli collaborativi multi-worker (vedi
+  # docs/argos_fogli_collaborativi_plan.md). Include redis.asyncio; non e'
+  # richiesto in single-worker (REDIS_URL vuoto -> non importato).
+  "redis>=5.0",
 ]
 
 [project.optional-dependencies]

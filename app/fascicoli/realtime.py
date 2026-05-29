@@ -63,8 +63,17 @@ _rooms: dict[int, set[Connection]] = {}
 
 async def register(sheet_id: int, conn: Connection) -> None:
     _rooms.setdefault(sheet_id, set()).add(conn)
+    await _redis_touch(sheet_id, conn.user_id, conn.email)
     await broadcast_presence(sheet_id)
     log.debug("WS register sheet=%s user=%s (room=%d)", sheet_id, conn.user_id, len(_rooms[sheet_id]))
+
+
+async def _redis_touch(sheet_id: int, user_id: int, email: str) -> None:
+    try:
+        from . import realtime_redis
+        await realtime_redis.touch_presence(sheet_id, user_id, email)
+    except Exception:
+        pass
 
 
 async def unregister(sheet_id: int, conn: Connection) -> None:
@@ -150,7 +159,19 @@ async def broadcast_revision(
 
 
 async def broadcast_presence(sheet_id: int) -> None:
-    await broadcast(sheet_id, {"type": "presence", "users": presence_users(sheet_id)})
+    await broadcast(sheet_id, {"type": "presence", "users": await _presence_for_broadcast(sheet_id)})
+
+
+async def _presence_for_broadcast(sheet_id: int) -> list[dict[str, Any]]:
+    """Presenza unificata cross-worker se Redis attivo, altrimenti locale."""
+    try:
+        from . import realtime_redis
+        merged = await realtime_redis.merged_presence(sheet_id)
+        if merged is not None:
+            return merged
+    except Exception:
+        pass
+    return presence_users(sheet_id)
 
 
 async def broadcast_cursor(

@@ -57,5 +57,13 @@ class Settings(BaseSettings):
     bootstrap_super_admin_email: str = ""
     bootstrap_super_admin_password: str = ""
 
+    # --- Fogli collaborativi: bus realtime Redis (OPZIONALE) ---
+    # Vuoto -> modalita' single-worker in-memory (default Argos: il connection
+    # manager in-process basta). Valorizzato (es. redis://localhost:6379/0 o un
+    # provider gestito tipo Upstash/Redis Cloud con rediss://) -> fan-out pub/sub
+    # multi-worker. Redis e' solo bus live, mai fonte di verita' (vedi
+    # docs/argos_fogli_collaborativi_plan.md §Redis).
+    redis_url: str = ""
+
 
 settings = Settings()
