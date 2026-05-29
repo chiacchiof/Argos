@@ -142,6 +142,33 @@ def get_optional_user(request: Request) -> CurrentUser | None:
     return _user_from_row(row)
 
 
+def get_optional_user_ws(websocket) -> CurrentUser | None:
+    """Variante WebSocket di get_optional_user.
+
+    Il middleware HTTP `auth_middleware` NON gira per le connessioni WebSocket
+    (e' `@app.middleware("http")`), quindi l'autenticazione e il tenant scoping
+    vanno fatti a mano nel handler WS. SessionMiddleware invece e' ASGI puro e
+    popola `websocket.session` anche per gli upgrade WebSocket: leggiamo lo
+    stesso cookie di sessione firmato. Non solleva mai eccezioni: ritorna None
+    se non autenticato (il handler chiudera' con codice 4401)."""
+    if not db_cloud.is_configured():
+        return None
+    try:
+        session = websocket.session
+    except (AttributeError, AssertionError):
+        return None
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    try:
+        row = db_cloud.get_user(int(user_id))
+    except Exception:
+        return None
+    if not row or not row.get("is_active"):
+        return None
+    return _user_from_row(row)
+
+
 def get_current_user(request: Request) -> CurrentUser:
     """Dependency FastAPI: ritorna l'utente loggato o solleva 401/redirect.
 

@@ -451,7 +451,9 @@
       onRevision: function (rev) { self.model.revision = rev; },
       onRemotePatch: function (msg) { self._onRemotePatch(msg); },
       onPresence: function (users) { self._onPresence(users); },
-      onCursor: function (msg) { self.grid.setRemoteCursor(msg.user_id, msg.email, msg.row, msg.col); }
+      onCursor: function (msg) { self.grid.setRemoteCursor(msg.user_id, msg.email, msg.row, msg.col); },
+      onCursorGone: function (uid) { self.grid.dropRemoteCursor(uid); },
+      onError: function (msg) { self._onError(msg); }
     };
     // Factory: WsTransport se disponibile (Fase 3), altrimenti HTTP.
     this.transport = (window.ArgosSheetWsTransport && cfg.ws_url)
@@ -542,6 +544,15 @@
     });
   };
 
+  SheetApp.prototype._onError = function (msg) {
+    if (msg && msg.code === "forbidden") {
+      // permesso revocato o sola lettura: blocca l'editing lato client
+      this.grid.canEdit = false;
+      this.formulaEl.disabled = true;
+    }
+    if (msg && msg.message) console.warn("[sheet]", msg.code, msg.message);
+  };
+
   SheetApp.prototype._onPresence = function (users) {
     var html = "";
     for (var i = 0; i < (users || []).length; i++) {
@@ -552,6 +563,92 @@
     }
     this.presenceEl.innerHTML = html;
   };
+
+  // =======================================================================
+  // Transport: WebSocket (Fase 3+). Stessa interfaccia di HttpTransport.
+  // Reconnect con backoff esponenziale + recupero incrementale via hello.
+  // =======================================================================
+  function WsTransport(config, handlers, HttpCls) {
+    this.cfg = config; this.h = handlers; this.HttpCls = HttpCls;
+    this._rev = config.revision || 0;
+    this._haveSnapshot = false;
+    this._ws = null; this._retries = 0; this._closedByUs = false;
+    this._pingTimer = null; this._cursorAt = 0;
+  }
+  WsTransport.prototype._url = function () {
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    return proto + "//" + location.host + this.cfg.ws_url;
+  };
+  WsTransport.prototype.start = function () {
+    var self = this;
+    this.h.onStatus(this._retries ? "reconnecting" : "connecting");
+    var ws;
+    try { ws = new WebSocket(this._url()); }
+    catch (e) { this.h.onStatus("offline"); this._scheduleReconnect(); return; }
+    this._ws = ws;
+    ws.onopen = function () {
+      self.h.onStatus("online");
+      // hello: snapshot completo se non abbiamo ancora stato, altrimenti incrementale
+      ws.send(JSON.stringify({ type: "hello", last_revision: self._haveSnapshot ? self._rev : -1 }));
+      self._pingTimer = setInterval(function () {
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: "ping" }));
+      }, 25000);
+    };
+    ws.onmessage = function (ev) {
+      var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      switch (msg.type) {
+        case "snapshot": self._haveSnapshot = true; self._rev = msg.revision; self.h.onSnapshot(msg); self.h.onStatus("online"); break;
+        case "revision_patch": self._rev = Math.max(self._rev, msg.revision); self.h.onRemotePatch(msg); break;
+        case "sync": self._haveSnapshot = true; self._rev = msg.revision; self.h.onStatus("online"); break;
+        case "presence": self.h.onPresence(msg.users); break;
+        case "cursor": self.h.onCursor(msg); break;
+        case "cursor_gone": if (self.h.onCursorGone) self.h.onCursorGone(msg.user_id); break;
+        case "error": if (self.h.onError) self.h.onError(msg); break;
+        case "pong": break;
+      }
+    };
+    ws.onclose = function (ev) {
+      clearInterval(self._pingTimer);
+      if (self._closedByUs) return;
+      // auth/forbidden/not-found: non riconnettere
+      if (ev.code === 4401 || ev.code === 4403 || ev.code === 4404) {
+        self.h.onStatus("offline");
+        if (self.h.onError) self.h.onError({ code: ev.code === 4401 ? "unauthorized" : "forbidden",
+          message: ev.code === 4401 ? "Sessione scaduta: ricarica la pagina." : "Accesso al foglio negato." });
+        return;
+      }
+      self.h.onStatus("reconnecting");
+      self._scheduleReconnect();
+    };
+    ws.onerror = function () { /* onclose seguira' */ };
+  };
+  WsTransport.prototype._scheduleReconnect = function () {
+    var self = this;
+    this._retries = Math.min(this._retries + 1, 10);
+    var delay = Math.min(30000, 400 * Math.pow(2, this._retries)); // backoff capped 30s
+    setTimeout(function () { if (!self._closedByUs) self.start(); }, delay);
+  };
+  WsTransport.prototype.sendPatch = function (cells, patchId) {
+    if (this._ws && this._ws.readyState === 1) {
+      this._ws.send(JSON.stringify({ type: "cell_patch", patch_id: patchId, cells: cells }));
+    } else {
+      this.h.onStatus("offline");
+    }
+    return Promise.resolve();
+  };
+  WsTransport.prototype.sendCursor = function (payload) {
+    if (!this._ws || this._ws.readyState !== 1) return;
+    var now = Date.now();
+    if (now - this._cursorAt < 120) return; // throttle
+    this._cursorAt = now;
+    this._ws.send(JSON.stringify({ type: "cursor", row: payload.row, col: payload.col, selection: payload.sel }));
+  };
+  WsTransport.prototype.lastRevision = function () { return this._rev; };
+  WsTransport.prototype.stop = function () {
+    this._closedByUs = true; clearInterval(this._pingTimer);
+    if (this._ws) try { this._ws.close(); } catch (e) {}
+  };
+  window.ArgosSheetWsTransport = WsTransport;
 
   // bootstrap
   if (document.readyState === "loading") {
