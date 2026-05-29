@@ -49,6 +49,140 @@
     }
   };
 
+  // ---- motore formule ----------------------------------------------------
+  // Una cella e' una formula se il testo inizia con "=". Conserviamo `formula`
+  // (testo grezzo "=A1+SUM(B1:B3)") e `value` (risultato calcolato, mostrato in
+  // griglia ed esportato). Il client che EDITA ricalcola tutte le formule e
+  // diffonde i valori calcolati; i client che ricevono applicano i valori.
+  function FormulaEngine(model) { this.model = model; }
+  function colToIndex(letters) {
+    var n = 0;
+    for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
+    return n - 1;
+  }
+  FormulaEngine.prototype.recomputeAll = function () {
+    var changed = [], memo = {};
+    for (var k in this.model.cells) {
+      var cell = this.model.cells[k];
+      if (cell.formula) {
+        var p = k.split(","), r = +p[0], c = +p[1];
+        var val = this._evalCell(r, c, {}, memo);
+        if (val !== cell.value) { cell.value = val; changed.push({ r: r, c: c }); }
+      }
+    }
+    return changed;
+  };
+  FormulaEngine.prototype._numeric = function (r, c, visiting, memo) {
+    var cell = this.model.get(r, c);
+    if (!cell) return 0;
+    var raw = cell.formula ? this._evalCell(r, c, visiting, memo) : cell.value;
+    // Propaga gli errori (#CYCLE/#ERR/#NAME) invece di trattarli come 0: cosi'
+    // una formula che referenzia una cella in errore diventa anch'essa errore.
+    if (typeof raw === "string" && raw.charAt(0) === "#") throw new Error(raw);
+    var n = parseFloat(raw);
+    return isNaN(n) ? 0 : n;  // testo non numerico = 0 (come gli spreadsheet)
+  };
+  FormulaEngine.prototype._evalCell = function (r, c, visiting, memo) {
+    var key = r + "," + c;
+    if (memo[key] !== undefined) return memo[key];
+    if (visiting[key]) return "#CYCLE";
+    var cell = this.model.get(r, c);
+    if (!cell || !cell.formula) { var v = cell ? cell.value : ""; memo[key] = v; return v; }
+    visiting[key] = true;
+    var result;
+    try {
+      var n = this._evalExpr(this._tokenize(cell.formula.slice(1)), { i: 0 }, visiting, memo);
+      result = (typeof n === "number" && isFinite(n)) ? String(Math.round(n * 1e10) / 1e10) : "#ERR";
+    } catch (e) { result = (e && e.message === "#CYCLE") ? "#CYCLE" : "#ERR"; }
+    delete visiting[key];
+    memo[key] = result;
+    return result;
+  };
+  FormulaEngine.prototype._tokenize = function (s) {
+    var re = /\s+|([A-Za-z]+\d+:[A-Za-z]+\d+)|([A-Za-z]+\d+)|([A-Za-z]+)|(\d+\.?\d*)|([+\-*/(),])/g, toks = [], m;
+    while ((m = re.exec(s)) !== null) {
+      if (m[0].trim() === "" && !m[1] && !m[2] && !m[3] && !m[4] && !m[5]) continue;
+      if (m[1]) toks.push({ t: "range", v: m[1] });
+      else if (m[2]) toks.push({ t: "cell", v: m[2] });
+      else if (m[3]) toks.push({ t: "func", v: m[3].toUpperCase() });
+      else if (m[4]) toks.push({ t: "num", v: parseFloat(m[4]) });
+      else if (m[5]) toks.push({ t: "op", v: m[5] });
+    }
+    return toks;
+  };
+  FormulaEngine.prototype._refToRC = function (ref) {
+    var m = /^([A-Za-z]+)(\d+)$/.exec(ref);
+    return { r: parseInt(m[2], 10) - 1, c: colToIndex(m[1].toUpperCase()) };
+  };
+  FormulaEngine.prototype._rangeValues = function (range, visiting, memo) {
+    var parts = range.split(":"), a = this._refToRC(parts[0]), b = this._refToRC(parts[1]);
+    var r1 = Math.min(a.r, b.r), r2 = Math.max(a.r, b.r), c1 = Math.min(a.c, b.c), c2 = Math.max(a.c, b.c), out = [];
+    for (var r = r1; r <= r2; r++) for (var c = c1; c <= c2; c++) out.push(this._numeric(r, c, visiting, memo));
+    return out;
+  };
+  FormulaEngine.prototype._evalExpr = function (toks, pos, visiting, memo) {
+    var v = this._evalTerm(toks, pos, visiting, memo);
+    while (pos.i < toks.length && toks[pos.i].t === "op" && (toks[pos.i].v === "+" || toks[pos.i].v === "-")) {
+      var op = toks[pos.i++].v, rhs = this._evalTerm(toks, pos, visiting, memo);
+      v = op === "+" ? v + rhs : v - rhs;
+    }
+    return v;
+  };
+  FormulaEngine.prototype._evalTerm = function (toks, pos, visiting, memo) {
+    var v = this._evalFactor(toks, pos, visiting, memo);
+    while (pos.i < toks.length && toks[pos.i].t === "op" && (toks[pos.i].v === "*" || toks[pos.i].v === "/")) {
+      var op = toks[pos.i++].v, rhs = this._evalFactor(toks, pos, visiting, memo);
+      v = op === "*" ? v * rhs : v / rhs;
+    }
+    return v;
+  };
+  FormulaEngine.prototype._evalFactor = function (toks, pos, visiting, memo) {
+    var tk = toks[pos.i];
+    if (!tk) throw new Error("#ERR");
+    if (tk.t === "op" && tk.v === "-") { pos.i++; return -this._evalFactor(toks, pos, visiting, memo); }
+    if (tk.t === "op" && tk.v === "+") { pos.i++; return this._evalFactor(toks, pos, visiting, memo); }
+    if (tk.t === "num") { pos.i++; return tk.v; }
+    if (tk.t === "cell") {
+      pos.i++; var rc = this._refToRC(tk.v);
+      var val = this._numeric(rc.r, rc.c, visiting, memo);
+      return val;
+    }
+    if (tk.t === "op" && tk.v === "(") {
+      pos.i++; var e = this._evalExpr(toks, pos, visiting, memo);
+      if (!toks[pos.i] || toks[pos.i].v !== ")") throw new Error("#ERR");
+      pos.i++; return e;
+    }
+    if (tk.t === "func") {
+      pos.i++;
+      if (!toks[pos.i] || toks[pos.i].v !== "(") throw new Error("#ERR");
+      pos.i++;
+      var args = [];
+      while (toks[pos.i] && toks[pos.i].v !== ")") {
+        if (toks[pos.i].t === "range") { args = args.concat(this._rangeValues(toks[pos.i].v, visiting, memo)); pos.i++; }
+        else { args.push(this._evalExpr(toks, pos, visiting, memo)); }
+        if (toks[pos.i] && toks[pos.i].v === ",") pos.i++;
+      }
+      if (!toks[pos.i] || toks[pos.i].v !== ")") throw new Error("#ERR");
+      pos.i++;
+      return this._applyFunc(tk.v, args);
+    }
+    throw new Error("#ERR");
+  };
+  FormulaEngine.prototype._applyFunc = function (name, args) {
+    var sum = function (a) { return a.reduce(function (x, y) { return x + y; }, 0); };
+    switch (name) {
+      case "SUM": return sum(args);
+      case "AVERAGE": case "AVG": return args.length ? sum(args) / args.length : 0;
+      case "MIN": return args.length ? Math.min.apply(null, args) : 0;
+      case "MAX": return args.length ? Math.max.apply(null, args) : 0;
+      case "COUNT": return args.length;
+      case "PRODUCT": return args.reduce(function (x, y) { return x * y; }, 1);
+      case "ABS": return Math.abs(args[0] || 0);
+      case "ROUND": return args.length > 1 ? Math.round(args[0] * Math.pow(10, args[1])) / Math.pow(10, args[1]) : Math.round(args[0] || 0);
+      default: throw new Error("#NAME");
+    }
+  };
+
   // ---- grid (DOM) --------------------------------------------------------
   function SheetGrid(model, opts) {
     this.model = model;
@@ -172,7 +306,8 @@
     ed.className = "sheet-cell-editor";
     ed.type = "text";
     var cell = this.model.get(r, c);
-    ed.value = initial != null ? initial : (cell ? (cell.value || "") : "");
+    // In edit mostra la FORMULA grezza (se presente), non il valore calcolato.
+    ed.value = initial != null ? initial : (cell ? (cell.formula || cell.value || "") : "");
     this.wrap.appendChild(ed);
     this._positionEditor(ed, td);
     this.editor = { el: ed, r: r, c: c };
@@ -203,11 +338,15 @@
     this.editor = null;
     e.el.remove();
     var prev = this.model.get(e.r, e.c);
-    var prevVal = prev ? (prev.value || "") : "";
-    if (val !== prevVal) {
-      this.model.setCell(e.r, e.c, val, null, null);
+    var prevRaw = prev ? (prev.formula || prev.value || "") : "";
+    if (val !== prevRaw) {
+      var isFormula = val.charAt(0) === "=";
+      var style = prev ? prev.style : null;
+      // value temporaneo = testo grezzo; il motore (in SheetApp) calcola il
+      // valore reale delle formule e ridisegna.
+      this.model.setCell(e.r, e.c, val, isFormula ? val : null, style);
       this.renderCell(e.r, e.c);
-      if (this.onCommit) this.onCommit([{ row: e.r, col: e.c, value: val, formula: null }]);
+      if (this.onCommit) this.onCommit([{ row: e.r, col: e.c, value: val, formula: isFormula ? val : null }]);
     }
   };
 
@@ -260,9 +399,10 @@
       for (var j = 0; j < cols.length; j++) {
         var r = r0 + i, c = c0 + j;
         if (r >= this.model.nRows || c >= this.model.nCols) continue;
-        this.model.setCell(r, c, cols[j], null, null);
+        var isF = cols[j].charAt(0) === "=";
+        this.model.setCell(r, c, cols[j], isF ? cols[j] : null, null);
         this.renderCell(r, c);
-        patch.push({ row: r, col: c, value: cols[j], formula: null });
+        patch.push({ row: r, col: c, value: cols[j], formula: isF ? cols[j] : null });
       }
     }
     if (patch.length && this.onCommit) this.onCommit(patch);
@@ -434,6 +574,7 @@
     var self = this;
     this.model = new SheetModel(cfg.n_rows, cfg.n_cols);
     this.model.revision = cfg.revision || 0;
+    this.engine = new FormulaEngine(this.model);
     this.statusEl = document.getElementById("sheet-status");
     this.bannerEl = document.getElementById("sheet-conn-banner");
     this.cellrefEl = document.getElementById("sheet-cellref");
@@ -493,8 +634,16 @@
       var c = cells[i];
       this.model.setCell(c.row, c.col, c.value, c.formula, c.style);
     }
+    // ricalcola le formule e ridisegna i valori calcolati (display only)
+    this._recomputeAndRender();
     this.grid.renderAll();
     this._onSelChange(this.grid.active.r, this.grid.active.c);
+  };
+
+  SheetApp.prototype._recomputeAndRender = function () {
+    var changed = this.engine.recomputeAll();
+    for (var i = 0; i < changed.length; i++) this.grid.renderCell(changed[i].r, changed[i].c);
+    return changed;
   };
 
   SheetApp.prototype._onRemotePatch = function (msg) {
@@ -505,14 +654,30 @@
       return;
     }
     if (msg.cells) this.grid.applyRemoteCells(msg.cells);
+    this._recomputeAndRender();  // aggiorna eventuali nostre formule dipendenti
     this.model.revision = msg.revision;
+    this._onSelChange(this.grid.active.r, this.grid.active.c);
   };
 
   SheetApp.prototype._onLocalCommit = function (cells) {
+    // ricalcola le formule: una modifica puo' cambiare il valore di celle-formula
+    // dipendenti, che vanno ridisegnate E persistite (cosi' gli altri client e
+    // l'export vedono i valori calcolati). Uniamo celle modificate + dipendenti.
+    var changed = this._recomputeAndRender();
+    var byKey = {};
+    var self = this;
+    function put(r, c) {
+      var cell = self.model.get(r, c) || {};
+      byKey[r + "," + c] = { row: r, col: c, value: cell.value == null ? "" : cell.value, formula: cell.formula || null };
+    }
+    for (var i = 0; i < cells.length; i++) put(cells[i].row, cells[i].col);
+    for (var j = 0; j < changed.length; j++) put(changed[j].r, changed[j].c);
+    var payload = Object.keys(byKey).map(function (k) { return byKey[k]; });
+
     var patchId = "p" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
     this._pending = this._pending || {};
     this._pending[patchId] = true;
-    this.transport.sendPatch(cells, patchId);
+    this.transport.sendPatch(payload, patchId);
     this._onSelChange(this.grid.active.r, this.grid.active.c);
   };
 
@@ -520,7 +685,8 @@
     this.cellrefEl.textContent = colLabel(c) + (r + 1);
     var cell = this.model.get(r, c);
     if (document.activeElement !== this.formulaEl) {
-      this.formulaEl.value = cell ? (cell.value || "") : "";
+      // mostra la formula grezza se presente, altrimenti il valore
+      this.formulaEl.value = cell ? (cell.formula || cell.value || "") : "";
     }
     this.transport.sendCursor({ row: r, col: c, sel: this.grid.sel });
   };
@@ -531,11 +697,12 @@
       if (e.key === "Enter") {
         e.preventDefault();
         var r = self.grid.active.r, c = self.grid.active.c, val = self.formulaEl.value;
-        var prev = self.model.get(r, c); var prevVal = prev ? (prev.value || "") : "";
-        if (val !== prevVal) {
-          self.model.setCell(r, c, val, null, null);
+        var prev = self.model.get(r, c); var prevRaw = prev ? (prev.formula || prev.value || "") : "";
+        if (val !== prevRaw) {
+          var isF = val.charAt(0) === "=";
+          self.model.setCell(r, c, val, isF ? val : null, prev ? prev.style : null);
           self.grid.renderCell(r, c);
-          self._onLocalCommit([{ row: r, col: c, value: val, formula: null }]);
+          self._onLocalCommit([{ row: r, col: c, value: val, formula: isF ? val : null }]);
         }
         self.grid.setActive(r + 1, c);
         self.grid.wrap.focus();
@@ -598,18 +765,41 @@
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
     return proto + "//" + location.host + this.cfg.ws_url;
   };
+  WsTransport.prototype._wsOpen = function () { return this._ws && this._ws.readyState === 1; };
+
+  // Strategia ibrida: carica SUBITO lo snapshot via HTTP (la griglia si popola e
+  // il salvataggio funziona anche se il WebSocket non si apre, es. proxy/restart),
+  // poi apri il WS per il realtime. Il salvataggio usa il WS se aperto, altrimenti
+  // ripiega su HTTP POST. Cosi' la feature funziona sempre; il realtime e' un bonus.
   WsTransport.prototype.start = function () {
+    if (!this._haveSnapshot) {
+      this.h.onStatus("connecting");
+      this._httpSnapshot();
+    }
+    this._connectWs();
+  };
+  WsTransport.prototype._httpSnapshot = function () {
     var self = this;
-    this.h.onStatus(this._retries ? "reconnecting" : "connecting");
+    fetch(self.cfg.snapshot_url, { credentials: "same-origin", headers: { "Accept": "application/json" } })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (snap) {
+        if (snap.revision >= self._rev) self._rev = snap.revision;
+        self._haveSnapshot = true;
+        self.h.onSnapshot(snap);
+        self.h.onStatus("online");  // dati caricati: si puo' leggere e salvare (via HTTP)
+      })
+      .catch(function () { if (!self._wsOpen()) self.h.onStatus("offline"); });
+  };
+  WsTransport.prototype._connectWs = function () {
+    var self = this;
     var ws;
     try { ws = new WebSocket(this._url()); }
-    catch (e) { this.h.onStatus("offline"); this._scheduleReconnect(); return; }
+    catch (e) { this._scheduleReconnect(); return; }
     this._ws = ws;
     ws.onopen = function () {
+      self._retries = 0;
       self.h.onStatus("online");
-      // hello: snapshot completo se non abbiamo ancora stato, altrimenti incrementale
       ws.send(JSON.stringify({ type: "hello", last_revision: self._haveSnapshot ? self._rev : -1 }));
-      // rispedisci le patch accumulate offline (applicate gia' ottimisticamente)
       if (self._outbox.length) {
         var pending = self._outbox; self._outbox = [];
         for (var i = 0; i < pending.length; i++) {
@@ -636,14 +826,16 @@
     ws.onclose = function (ev) {
       clearInterval(self._pingTimer);
       if (self._closedByUs) return;
-      // auth/forbidden/not-found: non riconnettere
+      // auth/forbidden/not-found: WS e HTTP falliranno entrambi -> offline + errore.
       if (ev.code === 4401 || ev.code === 4403 || ev.code === 4404) {
         self.h.onStatus("offline");
         if (self.h.onError) self.h.onError({ code: ev.code === 4401 ? "unauthorized" : "forbidden",
           message: ev.code === 4401 ? "Sessione scaduta: ricarica la pagina." : "Accesso al foglio negato." });
         return;
       }
-      self.h.onStatus("reconnecting");
+      // realtime perso ma il fallback HTTP salva ancora: NON allarmare l'utente,
+      // resta "online" (se abbiamo lo snapshot) e riprova il WS in background.
+      if (!self._haveSnapshot) self.h.onStatus("reconnecting");
       self._scheduleReconnect();
     };
     ws.onerror = function () { /* onclose seguira' */ };
@@ -652,20 +844,33 @@
     var self = this;
     this._retries = Math.min(this._retries + 1, 10);
     var delay = Math.min(30000, 400 * Math.pow(2, this._retries)); // backoff capped 30s
-    setTimeout(function () { if (!self._closedByUs) self.start(); }, delay);
+    setTimeout(function () { if (!self._closedByUs) self._connectWs(); }, delay);
   };
   WsTransport.prototype.sendPatch = function (cells, patchId) {
-    if (this._ws && this._ws.readyState === 1) {
+    // WS se aperto (realtime istantaneo), altrimenti fallback HTTP (salva comunque).
+    if (this._wsOpen()) {
       this._ws.send(JSON.stringify({ type: "cell_patch", patch_id: patchId, cells: cells }));
-    } else {
-      // offline: accoda per il flush al reconnect (cap per evitare crescita illimitata)
-      if (this._outbox.length < 2000) this._outbox.push({ id: patchId, cells: cells });
-      this.h.onStatus("offline");
+      return Promise.resolve();
     }
-    return Promise.resolve();
+    var self = this;
+    return fetch(this.cfg.patch_url, {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch_id: patchId, cells: cells })
+    }).then(function (r) {
+      if (!r.ok) throw new Error("patch HTTP " + r.status);
+      return r.json();
+    }).then(function (resp) {
+      self._rev = Math.max(self._rev, resp.revision);
+      self.h.onStatus("online");
+      self.h.onRevision(resp.revision);
+    }).catch(function () {
+      if (self._outbox.length < 2000) self._outbox.push({ id: patchId, cells: cells });
+      self.h.onStatus("offline");
+    });
   };
   WsTransport.prototype.sendCursor = function (payload) {
-    if (!this._ws || this._ws.readyState !== 1) return;
+    if (!this._wsOpen()) return;
     var now = Date.now();
     if (now - this._cursorAt < 120) return; // throttle
     this._cursorAt = now;
@@ -677,6 +882,9 @@
     if (this._ws) try { this._ws.close(); } catch (e) {}
   };
   window.ArgosSheetWsTransport = WsTransport;
+  // Esposti per i test (node) del motore formule; innocui nel browser.
+  window.ArgosFormulaEngine = FormulaEngine;
+  window.ArgosSheetModel = SheetModel;
 
   // bootstrap
   if (document.readyState === "loading") {
