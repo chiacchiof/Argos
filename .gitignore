@@ -22,6 +22,10 @@ data/
 *.sqlite
 *.sqlite3
 
+# Log e dump temporanei di debug
+*.log
+tmp*.html
+
 # Test / lint cache
 .pytest_cache/
 .ruff_cache/

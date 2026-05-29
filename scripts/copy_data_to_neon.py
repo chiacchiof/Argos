@@ -98,6 +98,16 @@ TABLES_IN_ORDER: list[str] = [
     "social_dm_log",
     # Tier 9: FK a threads
     "messages",
+    # Tier 10: Fascicoli & Fogli (FK a tenants/users; child a projects/project_sheets)
+    "projects",                      # FK -> tenants, users
+    "project_users",                 # FK -> projects, users
+    "project_files",                 # FK -> projects, users
+    "project_chat_conversations",    # FK -> projects, users
+    "project_chat_messages",         # FK -> project_chat_conversations, projects, users
+    "project_sheets",                # FK -> projects, tenants, users
+    "project_sheet_users",           # FK -> project_sheets, users
+    "project_sheet_cells",           # FK -> project_sheets, users
+    "project_sheet_revisions",       # FK -> project_sheets, users
 ]
 
 

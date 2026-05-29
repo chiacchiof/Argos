@@ -31,6 +31,7 @@
         Ruolo
         <select name="role" id="role-select">
           <option value="tenant_user" selected>tenant_user</option>
+          <option value="tenant_architect">tenant_architect</option>
           <option value="super_admin">super_admin</option>
         </select>
       </label>
@@ -45,7 +46,7 @@
       </label>
       <button type="submit" class="btn-primary">Crea utente</button>
     </form>
-    <p class="admin-hint"><small>Nome/Cognome sono opzionali ma raccomandati (verranno mostrati al posto dell'email nelle UI). I super-admin non sono collegati ad alcuna azienda; i tenant_user devono averne una.</small></p>
+    <p class="admin-hint"><small>Nome/Cognome sono opzionali ma raccomandati (verranno mostrati al posto dell'email nelle UI). I super-admin non sono collegati ad alcuna azienda; i tenant_user e i tenant_architect devono averne una. Un <strong>tenant_architect</strong> costruisce task/workflow, fascicoli e fogli e usa la chat orchestrator completa; un <strong>tenant_user</strong> (operator) usa solo gli agenti pubblicati.</small></p>
   </div>
 
   <div class="admin-card-block">
@@ -84,6 +85,8 @@
           <td>
             {% if u.role == 'super_admin' %}
             <span class="badge badge-warn">super-admin</span>
+            {% elif u.role == 'tenant_architect' %}
+            <span class="badge">tenant_architect</span>
             {% else %}
             <span class="badge">tenant_user</span>
             {% endif %}
@@ -154,7 +157,7 @@
       var role = roleSel.value;
       tenantField.style.display = (role === 'super_admin') ? 'none' : '';
       var tenantSelect = tenantField.querySelector('select');
-      if (tenantSelect) tenantSelect.required = (role === 'tenant_user');
+      if (tenantSelect) tenantSelect.required = (role !== 'super_admin');
     }
     if (roleSel) { roleSel.addEventListener('change', sync); sync(); }
   })();

@@ -52,13 +52,10 @@ Capabilities side-by-side:
 | Crea / modifica asset, contatti, social account | ✗ | ✓ | ✓ |
 | Configura LLM keys, email, telegram, whatsapp | ✗ | ✓ | ✓ |
 | Memoria sito | ✗ | ✓ del proprio tenant + pool community se abilitato | ✓ tutta |
+| Fascicoli / Fogli | ✓ propri + condivisi del tenant | ✓ **tutti** quelli del tenant (supervisione `architect_view`) | ✓ tutti i tenant |
 | Vault chiavi LLM | ✗ | Le proprie | Tutte (per supporto tenant) |
 | Pagine `/admin/*` | ✗ (403) | ✗ (403) | ✓ |
 | Gating: cosa succede se digita URL fuori dal proprio scope | redirect a `/home` | redirect a `/` | accesso totale |
-
-Il super-admin **non ha un tenant_id**: in `tenants_table` non figura. La
-ContextVar `tenant_id` per le sue request e' `None` → le query non applicano
-filtri, di default vede tutto.
 
 Il super-admin **non ha un tenant_id**: in `tenants_table` non figura. La
 ContextVar `tenant_id` per le sue request e' `None` → le query non applicano
@@ -86,9 +83,18 @@ URL: [`/admin/tenants`](/admin/tenants)
 ### Cos'e' un tenant
 
 Un **tenant** rappresenta un'azienda / cliente. E' l'unita' di isolamento dei
-dati: utenti / task / asset / outreach / messaggi appartengono a un tenant e
-**non sono visibili agli altri tenant** (salvo il pool community della
-[Site Memory](#site-memory-cross-tenant) opt-in).
+dati: utenti / task / asset / outreach / messaggi / **fascicoli** / **fogli**
+appartengono a un tenant e **non sono visibili agli altri tenant** (salvo il
+pool community della [Site Memory](#site-memory-cross-tenant) opt-in).
+
+> **Fascicoli e Fogli (v1.4) — isolamento.** Hanno un doppio livello: oltre al
+> `tenant_id` (isolamento fra tenant), una `visibility` `tenant`/`user` per la
+> privacy *intra*-tenant. L'**architect** ha supervisione sull'intero tenant
+> (vede anche i fascicoli/fogli `user` di altri utenti dello stesso tenant); la
+> chat Orchestrator dell'architect li legge con lo stesso criterio
+> (`architect_view`), restando però sempre confinata al proprio tenant. Il
+> contenuto dei **documenti** dei fascicoli resta locale al PC dell'utente (mai
+> su Neon); il contenuto dei **fogli** vive su DB ed è quindi sempre leggibile.
 
 Ogni tenant ha:
 - **id** (autoincrementale).

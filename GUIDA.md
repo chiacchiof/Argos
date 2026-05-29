@@ -1375,6 +1375,49 @@ Dopo l'invio la pagina ricarica con un flash che conferma l'esito (es. `✓ cont
 
 ---
 
+## 8.5 Fascicoli e Fogli (archivi documentali del tenant)
+
+Dalla v1.4 Argos affianca allo scraping/lead-gen **due archivi paralleli** che vivono accanto a task e workflow e appartengono al tenant:
+
+- **Fascicoli** — dossier documentali con ricerca semantica (RAG). Un fascicolo è una cartella di file (PDF, DOCX, TXT, email `.eml`) che risiede **sul PC dell'utente** (sotto la *RootProject* configurata in `/fascicoli/settings`); su DB ne vivono solo i **metadati** (titolo, descrizione, elenco file, condivisione). L'indice RAG (`.argos/embeddings.json`) sta nella cartella locale: il contenuto dei documenti **non lascia mai il PC** né finisce su Neon (principio "i dati sensibili restano locali").
+- **Fogli** — spreadsheet collaborativi in tempo reale. A differenza dei fascicoli, **il contenuto delle celle vive su DB** (Postgres), quindi è sempre leggibile anche da un altro PC. Un foglio può essere *standalone* o *agganciato a un fascicolo*.
+
+### 8.5.1 Stato locale: «completo» vs «monco»
+
+Poiché i file dei fascicoli sono locali, un fascicolo può risultare:
+- **completo** — la cartella esiste sul PC corrente (RootProject configurata e UUID trovato): i documenti sono leggibili e interrogabili via RAG.
+- **monco** — esistono solo i metadati su DB (cartella non presente su questo PC): vedi titolo/descrizione/elenco file, ma **non** il contenuto dei documenti. I **fogli** del fascicolo restano comunque leggibili (stanno su DB).
+
+### 8.5.2 Condivisione e visibilità
+
+Sia fascicoli sia fogli hanno una `visibility`:
+- `tenant` — visibili a tutti gli utenti del tenant.
+- `user` — privati dell'owner + utenti esplicitamente aggiunti (tabella `project_users` / membership del foglio). La modale di condivisione permette di aggiungere persone con livello (lettura/scrittura) e l'opzione "Tutti (lettura)".
+
+L'**architetto** ha *supervisione* sull'intero tenant: vede tutti i fascicoli e fogli del tenant, anche quelli `user` privati di altri utenti dello stesso tenant. L'isolamento **fra tenant diversi** resta invece sempre garantito.
+
+### 8.5.3 L'orchestrator legge fascicoli e fogli (v1.5)
+
+Dalla v1.5 l'Orchestrator (chat architect) sa **leggere tutto il dominio del tenant**, fascicoli e fogli inclusi, per ragionarci e progettare task/workflow di conseguenza. I tool di lettura disponibili:
+
+| Tool | Cosa fa |
+|---|---|
+| `get_tenant_overview` | Conteggi di tutto il dominio: task, workflow, fascicoli (+dimensione), fogli, contatti, e i **soli conteggi** di asset/qualified. |
+| `list_fascicoli` | Elenco fascicoli con `local_state` (completo/monco), n_files, owner, visibility. |
+| `get_fascicolo` | Dettaglio: metadati, elenco file (relative_path), fogli agganciati. |
+| `search_fascicolo` | Ricerca semantica RAG nel contenuto dei documenti (richiede stato *completo*). |
+| `read_fascicolo_file` | Testo estratto di un singolo file (txt/md/pdf/eml), path-safe (richiede *completo*). |
+| `list_fogli` | Elenco fogli del tenant (o di un fascicolo). |
+| `read_foglio` | Contenuto del foglio come tabella testuale (TSV). |
+
+**Esempi di domande che ora l'orchestrator può soddisfare:** «cosa c'è nel fascicolo Brief Cliente X?», «riassumi il foglio Clienti», «qualifica i lead elencati nel foglio Prospect», «usa i criteri descritti nel fascicolo Target per impostare il qualifier». Il flusso tipico è: **leggi** il contenuto con questi tool, **poi** progetta/aggiorna il task riportando i dati nei campi esistenti (`objective`, `seed_queries`, `target_*`).
+
+### 8.5.4 Perimetro di lettura (cosa è escluso)
+
+La lettura cross-dominio dell'orchestrator copre tutto il dominio del tenant **tranne `asset` e `qualified`**, di cui vede **solo i conteggi** in `get_tenant_overview`. Il motivo è il volume: la tabella `assets` può contenere decine di migliaia di righe con `raw_json` pesante. I contenuti degli asset restano gestiti dai tool dedicati (`list_assets`/`get_asset`) usati per i flussi outreach, non come "lettura del dominio".
+
+---
+
 ## 9. Asset, tag e memoria pattern
 
 A partire dall'iterazione 2026-05-09 il modello dati e il runtime hanno **due strati nuovi** che generalizzano il vecchio "tutto è un contatto" e dotano il sistema di una memoria di apprendimento per dominio.

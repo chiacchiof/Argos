@@ -9,7 +9,7 @@ Questa guida copre **due profili di utente tenant**:
 
 2. **Architect** (`tenant_architect`) — utente tecnico che costruisce gli
    agenti, configura LLM, workflow, asset. Sezioni "classiche": Tasks,
-   Workflows, Assets, Qualified, Outreach, Inbox, Site Memory.
+   Workflows, Assets, Qualified, Outreach, Inbox, Site Memory, Fascicoli e Fogli.
 
 Per le funzioni riservate al super-admin (creazione tenant, gestione utenti,
 filtri cross-tenant) vedi [ADMIN_GUIDE.md](ADMIN_GUIDE.md).
@@ -32,8 +32,9 @@ filtri cross-tenant) vedi [ADMIN_GUIDE.md](ADMIN_GUIDE.md).
 12. [Social Accounts — gli account "sender"](#social-accounts)
 13. [Orchestrator — la chat AI che pianifica](#orchestrator)
 14. [Site Memory — la memoria del framework](#site-memory)
-15. [Settings — chiavi LLM e account canali](#settings)
-16. [Glossario](#glossario)
+15. [Fascicoli e Fogli — archivi documentali e spreadsheet](#fascicoli-e-fogli)
+16. [Settings — chiavi LLM e account canali](#settings)
+17. [Glossario](#glossario)
 
 ---
 
@@ -734,6 +735,13 @@ L'orchestrator ha decine di tool "read" (per esplorare DB e config) e "write"
 (per creare task / workflow / asset). E' un agente ReAct: ragiona, chiama un
 tool, analizza, ragiona di nuovo, fino al risultato.
 
+Dalla v1.5 legge **tutto il dominio del tenant**: oltre a task/workflow/job,
+anche i **Fascicoli** (metadati + ricerca RAG nei documenti) e i **Fogli**
+(contenuto tabellare), più un `get_tenant_overview` con i conteggi complessivi.
+Restano **esclusi dai contenuti** `asset` e `qualified` (per volume): di questi
+l'orchestrator vede solo i conteggi. Così puoi chiedergli di progettare task e
+workflow basandosi su ciò che è scritto nei tuoi fascicoli e fogli.
+
 ### Quando NON usare l'orchestrator
 
 - Quando sai esattamente cosa vuoi creare: piu' veloce creare il task a mano
@@ -777,6 +785,10 @@ Per accedere alle righe `shared` di altri tenant, il super-admin deve aver
 attivato il flag `site_memory_shared` sul tuo tenant
 ([ADMIN_GUIDE.md](ADMIN_GUIDE.md)).
 
+<a id="fascicoli-e-fogli-quick"></a>
+> 💡 Oltre allo scraping, il tenant ha due archivi documentali — **Fascicoli**
+> e **Fogli** — descritti nella sezione [Fascicoli e Fogli](#fascicoli-e-fogli).
+
 ### Quando cancellare
 
 - **Sito cambia struttura**: i pattern vecchi diventano fuorvianti — cancellali
@@ -795,6 +807,52 @@ Sotto "Scraping policies" puoi creare regole:
 - `mondocamgirl\.com` → `force_skip` (red flag, abbiamo segnalato problemi su quel dominio)
 
 Priority bassa = piu' importante (viene valutata prima). Default = 100.
+
+---
+
+<a id="fascicoli-e-fogli"></a>
+## Fascicoli e Fogli
+
+Dalla v1.4 Argos affianca allo scraping **due archivi documentali** del tenant,
+indipendenti dalla pipeline lead-gen.
+
+### Fascicoli (`/fascicoli`)
+
+Un **fascicolo** è un dossier di documenti (PDF, DOCX, TXT, email `.eml`) con
+**ricerca semantica** (RAG). I file vivono **sul tuo PC**, dentro la cartella
+*RootProject* che configuri una volta in [`/fascicoli/settings`](/fascicoli/settings);
+su DB stanno solo i metadati (titolo, descrizione, elenco file, condivisione) —
+**il contenuto dei documenti non lascia mai il PC**. Puoi:
+- creare un fascicolo, trascinarci dentro file, e farli **indicizzare** per la ricerca;
+- aprire la **chat sul fascicolo**: fai domande e l'assistente risponde citando i documenti;
+- aprire un file direttamente dal PC.
+
+Un fascicolo può risultare **completo** (cartella presente su questo PC →
+documenti leggibili) o **monco** (solo metadati, cartella non presente qui).
+
+### Fogli (`/fascicoli/sheets`)
+
+Un **foglio** è uno spreadsheet collaborativo in tempo reale (stile Google
+Sheets). A differenza dei fascicoli, **il contenuto delle celle vive su DB**,
+quindi è sempre leggibile/modificabile anche da un altro PC e si presta alla
+collaborazione multi-utente. Un foglio può essere standalone o agganciato a un
+fascicolo. Esportabile in CSV/XLSX (anti formula-injection).
+
+### Condivisione
+
+Sia fascicoli sia fogli hanno una **visibilità**: `tenant` (tutti gli utenti del
+tenant) o `user` (privati dell'owner + persone aggiunte). La modale di
+condivisione permette di aggiungere persone con livello lettura/scrittura e
+l'opzione "Tutti (lettura)". L'**architetto** ha supervisione sull'intero tenant
+(vede tutti i fascicoli e fogli, anche quelli `user` di altri utenti dello
+stesso tenant); l'isolamento **fra tenant diversi** resta sempre garantito.
+
+### L'orchestrator li legge (v1.5)
+
+La chat [Orchestrator](#orchestrator) sa leggere fascicoli e fogli: chiedi
+«cosa c'è nel fascicolo X», «riassumi il foglio Clienti», oppure «qualifica i
+lead elencati nel foglio Prospect» e userà i loro contenuti per ragionare e
+impostare i task. (Il contenuto RAG dei fascicoli richiede stato *completo*.)
 
 ---
 
@@ -856,6 +914,9 @@ Vedi sopra in [Social Accounts](#social-accounts).
 | **outreach** | Invio messaggi (email / WA / DM) ai contatti. |
 | **inbox thread** | Una conversazione (canale + contatto). |
 | **site memory** | Memoria persistente per dominio (pattern, playbook, intelligence, policy). |
+| **fascicolo** | Dossier di documenti (PDF/DOCX/TXT/email) con ricerca semantica RAG. File locali sul PC, metadati su DB. Stato `completo` (cartella presente) o `monco` (solo metadati). |
+| **foglio** | Spreadsheet collaborativo realtime; contenuto celle su DB. Standalone o agganciato a un fascicolo. |
+| **RootProject** | Cartella sul PC, configurata in `/fascicoli/settings`, sotto cui risiedono le cartelle dei fascicoli. |
 | **community pool** | Pool cross-tenant di intelligence/policy condivise (opt-in via flag). |
 | **orchestrator** | Chat AI che pianifica + crea task automaticamente. Per operator: solo lettura, no creazione. |
 | **artifact passing** | Meccanismo che permette al task downstream di ricevere output del task upstream in un workflow. |
