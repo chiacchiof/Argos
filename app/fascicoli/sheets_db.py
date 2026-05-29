@@ -16,6 +16,7 @@ sequenza delle revisioni vive in project_sheet_revisions, non in Redis.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from psycopg.types.json import Json
@@ -30,6 +31,7 @@ MAX_ROWS = 1000           # righe massime per foglio
 MAX_COLS = 100            # colonne massime per foglio
 MAX_CELLS_PER_PATCH = 500  # celle massime in una singola patch
 MAX_VALUE_LEN = 20_000     # 20 KB per valore cella
+MAX_STYLE_LEN = 4_000      # JSON serializzato dello stile cella
 DEFAULT_ROWS = 100
 DEFAULT_COLS = 26
 
@@ -369,8 +371,16 @@ def _validate_patch_cells(cells: Any, n_rows: int, n_cols: int) -> list[dict[str
             if len(formula) > MAX_VALUE_LEN:
                 raise SheetValidationError(f"Formula cella ({row},{col}) troppo grande.")
         style = c.get("style")
-        if style is not None and not isinstance(style, dict):
-            raise SheetValidationError("`style` deve essere un oggetto.")
+        if style is not None:
+            if not isinstance(style, dict):
+                raise SheetValidationError("`style` deve essere un oggetto.")
+            # Bound dimensione/nesting + verifica serializzabilita' JSON prima di
+            # passare a psycopg (evita errori DB criptici e DoS da deep-nesting).
+            try:
+                if len(json.dumps(style)) > MAX_STYLE_LEN:
+                    raise SheetValidationError(f"`style` cella ({row},{col}) troppo grande.")
+            except (TypeError, ValueError):
+                raise SheetValidationError(f"`style` cella ({row},{col}) non serializzabile.")
         norm.append({"row": row, "col": col, "value": value, "formula": formula, "style": style})
     return norm
 

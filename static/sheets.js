@@ -567,14 +567,19 @@
   };
 
   SheetApp.prototype._onPresence = function (users) {
-    var html = "";
-    for (var i = 0; i < (users || []).length; i++) {
-      var u = users[i];
-      var initials = (u.email || "?").substring(0, 2).toUpperCase();
-      html += '<span class="pavatar" title="' + (u.email || "") + '" style="background:'
-        + (u.color || colorFor(u.user_id)) + '">' + initials + "</span>";
+    // Costruzione DOM sicura: l'email arriva da WS/DB e NON va concatenata in
+    // innerHTML (rischio XSS). textContent/setAttribute neutralizzano l'HTML.
+    this.presenceEl.textContent = "";
+    var list = users || [];
+    for (var i = 0; i < list.length; i++) {
+      var u = list[i];
+      var span = document.createElement("span");
+      span.className = "pavatar";
+      span.title = u.email || "";
+      span.style.background = u.color || colorFor(u.user_id);
+      span.textContent = (u.email || "?").substring(0, 2).toUpperCase();
+      this.presenceEl.appendChild(span);
     }
-    this.presenceEl.innerHTML = html;
   };
 
   // =======================================================================

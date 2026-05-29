@@ -13,7 +13,11 @@ Sicurezza:
   - Origin check (anti CSWSH: SameSite=lax + cookie non-HTTPS non basta) -> 4403;
   - ogni query DB passa tenant_id ESPLICITO (il ContextVar non si propaga in modo
     affidabile fuori dal middleware HTTP -> rischio cross-tenant);
-  - permesso di edit verificato all'apertura E su ogni cell_patch;
+  - lo stato (utente/is_active, foglio, progetto, ACL) e' RI-VALIDATO contro il DB
+    all'apertura, su ogni `hello` (reconnect) e in modo throttlato (>=10s) prima di
+    ogni `cell_patch`. Cosi' una revoca di permesso / disattivazione utente / cambio
+    visibilita' chiude o blocca la sessione invece di restare valida fino alla
+    disconnessione (vedi piano §WebSocket "controllare i permessi su ogni messaggio");
   - mai fidarsi dello user_id mandato dal client: si usa l'utente autenticato.
 
 Protocollo: vedi docs/argos_fogli_collaborativi_plan.md §Protocollo WebSocket.
@@ -21,6 +25,7 @@ Protocollo: vedi docs/argos_fogli_collaborativi_plan.md §Protocollo WebSocket.
 from __future__ import annotations
 
 import logging
+import time
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -39,11 +44,21 @@ ws_router = APIRouter()
 # Oltre questo gap di revisioni mandiamo uno snapshot completo invece delle patch
 # mancanti (evita di inondare il client dopo una lunga disconnessione).
 _SNAPSHOT_GAP_LIMIT = 200
+# Throttle della ri-validazione DB sul percorso caldo (cell_patch).
+_REVALIDATE_EVERY = 10.0  # secondi
+
+
+class _WsClose(Exception):
+    """Segnala che la connessione va chiusa con un codice + messaggio d'errore."""
+    def __init__(self, code: int, code_str: str, message: str):
+        self.code = code
+        self.code_str = code_str
+        self.message = message
 
 
 def _origin_ok(websocket: WebSocket) -> bool:
     """True se l'Origin del WS corrisponde all'host dell'app (same-origin) o se
-    Origin e' assente (client non-browser)."""
+    Origin e' assente (client non-browser). Mitiga il CSWSH."""
     origin = websocket.headers.get("origin")
     if not origin:
         return True
@@ -52,6 +67,30 @@ def _origin_ok(websocket: WebSocket) -> bool:
         return urlparse(origin).netloc.lower() == host.lower()
     except Exception:
         return False
+
+
+def _resolve_state(websocket: WebSocket, sheet_id: int):
+    """Ri-valida contro il DB: utente (is_active), foglio (tenant+visibilita'),
+    progetto agganciato, e i permessi. Solleva _WsClose se non piu' autorizzato.
+
+    Ritorna (user, sheet, project, can_edit). Usato all'apertura, su hello e
+    (throttlato) prima di ogni cell_patch."""
+    user = get_optional_user_ws(websocket)  # rilegge sessione + DB + is_active
+    if user is None:
+        raise _WsClose(4401, "unauthorized", "Sessione non valida o scaduta.")
+    architect_view = user.can_manage_architecture
+    sheet = sdb.get_sheet(sheet_id, tenant_id=user.tenant_id,
+                          current_user_id=user.id, architect_view=architect_view)
+    if not sheet:
+        raise _WsClose(4404, "not_found", "Foglio non trovato o non accessibile.")
+    project = None
+    if sheet.get("project_id"):
+        project = fdb.get_project(sheet["project_id"], tenant_id=user.tenant_id,
+                                  current_user_id=user.id, architect_view=architect_view)
+    if not facl.can_open_sheet(sheet, project, user):
+        raise _WsClose(4403, "forbidden", "Accesso al foglio negato.")
+    can_edit = facl.can_edit_sheet_cells(sheet, project, user)
+    return user, sheet, project, can_edit
 
 
 @ws_router.websocket("/ws/sheets/{sheet_id}")
@@ -63,53 +102,49 @@ async def sheet_ws(websocket: WebSocket, sheet_id: int):
         await websocket.close(code=4403)
         return
 
-    # 2) Auth via sessione
-    user = get_optional_user_ws(websocket)
-    if user is None:
-        await websocket.close(code=4401)
+    # 2) Auth + ACL iniziali (ri-validate contro il DB)
+    try:
+        user, sheet, project, can_edit = _resolve_state(websocket, sheet_id)
+    except _WsClose as e:
+        try:
+            await websocket.send_json({"type": "error", "code": e.code_str, "message": e.message})
+        except Exception:
+            pass
+        await websocket.close(code=e.code)
         return
 
-    tenant_id = user.tenant_id
-    architect_view = user.can_manage_architecture
-
-    # 3) Tenant scoping difensivo (ContextVar per eventuali helper + explicit nelle query)
-    t_tok = db.set_current_tenant(tenant_id)
+    # 3) Tenant scoping difensivo (ContextVar per eventuali helper; le query
+    #    passano comunque tenant_id ESPLICITO leggendo dall'utente ri-validato).
+    t_tok = db.set_current_tenant(user.tenant_id)
     u_tok = db.set_current_user(user.id)
     conn: realtime.Connection | None = None
+    last_check = time.monotonic()
     try:
-        # 4) Carica foglio + progetto, verifica visibilita'/ACL
-        sheet = sdb.get_sheet(sheet_id, tenant_id=tenant_id, current_user_id=user.id,
-                              architect_view=architect_view)
-        if not sheet:
-            await websocket.send_json({"type": "error", "code": "not_found",
-                                       "message": "Foglio non trovato."})
-            await websocket.close(code=4404)
-            return
-        project = None
-        if sheet.get("project_id"):
-            project = fdb.get_project(sheet["project_id"], tenant_id=tenant_id,
-                                      current_user_id=user.id, architect_view=architect_view)
-        if not facl.can_open_sheet(sheet, project, user):
-            await websocket.send_json({"type": "error", "code": "forbidden",
-                                       "message": "Accesso negato."})
-            await websocket.close(code=4403)
-            return
-        can_edit = facl.can_edit_sheet_cells(sheet, project, user)
-
-        # 5) Registra nella stanza + presenza
         conn = realtime.Connection(websocket, user.id, user.email)
         await realtime.register(sheet_id, conn)
-        # invia subito la presenza corrente a QUESTO client (register ha gia'
-        # fatto broadcast, ma l'onmessage del client potrebbe non essere pronto)
         await conn.send({"type": "presence", "users": realtime.presence_users(sheet_id)})
 
-        # 6) Loop messaggi
         while True:
             msg = await websocket.receive_json()
             mtype = msg.get("type")
 
+            # Ri-validazione: sempre su hello (reconnect), throttlata su cell_patch.
+            if mtype == "hello" or mtype == "cell_patch":
+                now = time.monotonic()
+                if mtype == "hello" or (now - last_check) >= _REVALIDATE_EVERY:
+                    try:
+                        user, sheet, project, can_edit = _resolve_state(websocket, sheet_id)
+                    except _WsClose as e:
+                        try:
+                            await conn.send({"type": "error", "code": e.code_str, "message": e.message})
+                        except Exception:
+                            pass
+                        await websocket.close(code=e.code)
+                        break
+                    last_check = now
+
             if mtype == "hello":
-                await _handle_hello(conn, sheet_id, tenant_id, msg)
+                await _handle_hello(conn, sheet_id, user.tenant_id, msg)
 
             elif mtype == "cell_patch":
                 if not can_edit:
@@ -119,7 +154,7 @@ async def sheet_ws(websocket: WebSocket, sheet_id: int):
                 try:
                     result = sdb.apply_cell_patch(
                         sheet_id, msg.get("cells"),
-                        tenant_id=tenant_id, actor_user_id=user.id,
+                        tenant_id=user.tenant_id, actor_user_id=user.id,
                     )
                 except sdb.SheetValidationError as exc:
                     await conn.send({"type": "error", "code": "bad_request", "message": str(exc)})
@@ -161,6 +196,7 @@ async def sheet_ws(websocket: WebSocket, sheet_id: int):
 
 async def _handle_hello(conn: realtime.Connection, sheet_id: int, tenant_id, msg: dict) -> None:
     """Invia lo stato iniziale o il recupero incrementale dopo reconnect.
+    Chiamato SOLO dopo che _resolve_state ha confermato can_open (vedi loop).
 
     - last_revision < 0 / None / desync / gap troppo grande -> snapshot completo.
     - last_revision < head -> patch mancanti da project_sheet_revisions.

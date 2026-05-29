@@ -153,6 +153,19 @@ def test_patch_rejects_oversized_value_and_duplicates(two_tenants):
                              tenant_id=ctx["ta"], actor_user_id=ctx["op_a"])
 
 
+def test_patch_rejects_oversized_style(two_tenants):
+    ctx = two_tenants
+    sid = sdb.create_sheet(title="S", tenant_id=ctx["ta"], created_by_user_id=ctx["op_a"])
+    big_style = {"k" + str(i): "v" * 50 for i in range(200)}  # > MAX_STYLE_LEN serializzato
+    with pytest.raises(sdb.SheetValidationError):
+        sdb.apply_cell_patch(sid, [{"row": 0, "col": 0, "value": "x", "style": big_style}],
+                             tenant_id=ctx["ta"], actor_user_id=ctx["op_a"])
+    # style non-dict rifiutato
+    with pytest.raises(sdb.SheetValidationError):
+        sdb.apply_cell_patch(sid, [{"row": 0, "col": 0, "value": "x", "style": "notadict"}],
+                             tenant_id=ctx["ta"], actor_user_id=ctx["op_a"])
+
+
 def test_failed_patch_does_not_bump_revision(two_tenants):
     ctx = two_tenants
     sid = sdb.create_sheet(title="S", tenant_id=ctx["ta"], created_by_user_id=ctx["op_a"])

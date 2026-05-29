@@ -48,8 +48,10 @@ def _recv_until(ws, wanted, limit=12):
 def test_ws_requires_auth(env):
     from app.main import app
     with TestClient(app) as client:
-        # nessun login -> handshake accettato poi close 4401
+        # nessun login -> handshake accettato, messaggio error poi close 4401
         with client.websocket_connect("/ws/sheets/1") as ws:
+            err = ws.receive_json()
+            assert err["type"] == "error" and err["code"] == "unauthorized"
             with pytest.raises(WebSocketDisconnect) as exc:
                 ws.receive_json()
             assert exc.value.code == 4401
@@ -141,6 +143,55 @@ def test_ws_viewer_cannot_patch(env):
             assert err["code"] == "forbidden"
     # nessuna cella scritta
     assert sdb.get_cells(sid, tenant_id=ctx["ta"]) == []
+
+
+def test_ws_revalidation_blocks_disabled_user(env):
+    """Se l'utente viene disattivato mentre e' connesso, il successivo hello
+    ri-valida contro il DB e chiude la connessione (4401)."""
+    ctx = env
+    op_a = db_cloud.get_user_by_email("op-a@a.it")["id"]
+    sid = sdb.create_sheet(title="S", tenant_id=ctx["ta"], created_by_user_id=op_a)
+    from app.main import app
+    with TestClient(app) as client:
+        _login(client, "op-a@a.it")
+        with client.websocket_connect(f"/ws/sheets/{sid}") as ws:
+            ws.send_json({"type": "hello", "last_revision": -1})
+            _recv_until(ws, {"snapshot", "sync"})
+            # admin disabilita l'utente mid-sessione
+            db_cloud.update_user(op_a, is_active=False)
+            ws.send_json({"type": "hello", "last_revision": -1})
+            err = _recv_until(ws, "error")
+            assert err["code"] == "unauthorized"
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 4401
+
+
+def test_ws_revalidation_blocks_revoked_access(env):
+    """Revoca dell'accesso al progetto agganciato mid-sessione -> hello chiude 4403."""
+    ctx = env
+    op_a = db_cloud.get_user_by_email("op-a@a.it")["id"]
+    op_a2 = db_cloud.get_user_by_email("op-a2@a.it")["id"]
+    pid = fdb.create_project(title="P", visibility="user", tenant_id=ctx["ta"], owner_user_id=op_a)
+    fdb.add_project_member(pid, op_a2, role="editor")
+    sid = sdb.create_sheet(title="F", project_id=pid, tenant_id=ctx["ta"], created_by_user_id=op_a)
+    from app.main import app
+    with TestClient(app) as client:
+        _login(client, "op-a2@a.it")
+        with client.websocket_connect(f"/ws/sheets/{sid}") as ws:
+            ws.send_json({"type": "hello", "last_revision": -1})
+            _recv_until(ws, {"snapshot", "sync"})
+            # owner revoca l'accesso di op-a2 al progetto: il foglio (su progetto
+            # user-visibility) diventa invisibile -> chiusura 4404 not_found
+            # (scelta privacy-preserving: non rivela l'esistenza). L'obiettivo
+            # di sicurezza -- connessione chiusa alla revoca -- e' centrato.
+            fdb.remove_project_member(pid, op_a2)
+            ws.send_json({"type": "hello", "last_revision": -1})
+            err = _recv_until(ws, "error")
+            assert err["code"] in ("forbidden", "not_found")
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code in (4403, 4404)
 
 
 def test_ws_cross_tenant_closed(env):
