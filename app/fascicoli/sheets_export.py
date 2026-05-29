@@ -153,6 +153,29 @@ def to_xlsx(cells: list[dict]) -> bytes:
     return out.getvalue()
 
 
+def to_prompt_text(cells: list[dict], max_chars: int = 4000) -> str:
+    """Rende le celle come tabella testuale (intestazioni colonna A/B/C + numero
+    riga) per darle in pasto all'LLM della chat sul fascicolo. Troncata a
+    max_chars. Ritorna '(foglio vuoto)' se non ci sono celle."""
+    n_rows, n_cols = _grid_bounds(cells)
+    if not any((c.get("value") or c.get("formula")) for c in cells):
+        return "(foglio vuoto)"
+    grid = [["" for _ in range(n_cols)] for _ in range(n_rows)]
+    for c in cells:
+        r, col = int(c["row"]), int(c["col"])
+        if 0 <= r < n_rows and 0 <= col < n_cols:
+            grid[r][col] = _cell_value(c).replace("\t", " ").replace("\n", " ")
+    lines = ["\t".join(_col_ref(i) for i in range(n_cols))]
+    for ri, row in enumerate(grid, start=1):
+        # salta le righe completamente vuote per compattezza
+        if any(v for v in row):
+            lines.append(str(ri) + "\t" + "\t".join(row))
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n…(troncato)"
+    return text
+
+
 def safe_filename(title: str, ext: str) -> str:
     base = re.sub(r"[^A-Za-z0-9 _.-]", "_", (title or "foglio").strip()) or "foglio"
     return f"{base[:80]}.{ext}"

@@ -36,6 +36,7 @@ from ..fascicoli import acl as facl
 from ..fascicoli import db as fdb
 from ..fascicoli import fs as ffs
 from ..fascicoli import sheets_db as sdb
+from ..fascicoli import sheets_export as sx
 from ..fascicoli import index_jobs
 from ..fascicoli import rag as frag
 from ..fascicoli import sync as fsync
@@ -63,6 +64,37 @@ def _user_root_path(user: CurrentUser) -> Path | None:
 # (vedi docs/argos_fogli_collaborativi_plan.md §Permessi). Alias retro-compatibili.
 _can_edit_project = facl.can_edit_project
 _can_manage_project = facl.can_manage_project
+
+
+def _sheet_context_chunks(project_id: int, current_user: CurrentUser, *, max_total_chars: int = 12000) -> list[dict]:
+    """Fogli collaborativi del fascicolo come 'fonti' per la chat RAG: il loro
+    contenuto vive su DB (non nei file locali), quindi va iniettato a parte cosi'
+    l'assistente puo' leggerli e ragionarci. Ogni foglio diventa uno pseudo-chunk
+    {file, idx, text, score} compatibile con frag._build_messages."""
+    out: list[dict] = []
+    try:
+        architect_view = current_user.is_architect or current_user.is_super_admin
+        sheets = sdb.list_sheets(
+            project_id=project_id, only_project=True,
+            tenant_id=current_user.tenant_id, current_user_id=current_user.id,
+            architect_view=architect_view,
+        )
+    except Exception:
+        return out
+    total = 0
+    for sh in sheets:
+        try:
+            cells = sdb.get_cells(sh["id"], tenant_id=current_user.tenant_id)
+        except Exception:
+            continue
+        txt = sx.to_prompt_text(cells, max_chars=4000)
+        if not txt or txt == "(foglio vuoto)":
+            continue
+        out.append({"file": f"Foglio «{sh['title']}»", "idx": 0, "text": txt, "score": 1.0})
+        total += len(txt)
+        if total >= max_total_chars:
+            break
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -830,6 +862,9 @@ async def fascicoli_chat(
 
     # Retrieve UNA VOLTA: i chunks usati per il prompt sono gli stessi citati.
     chunks = frag.retrieve(folder, msg, k=5)
+    # I FOGLI del fascicolo vivono su DB (non nei file): iniettali come fonti
+    # cosi' l'assistente puo' leggerli e ragionarci.
+    chunks = _sheet_context_chunks(project_id, current_user) + chunks
     citations = [{"file": c["file"], "score": round(c["score"], 4)} for c in chunks]
 
     async def event_stream():

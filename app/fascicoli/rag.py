@@ -276,9 +276,13 @@ def _build_messages(
         "Sei l'assistente di Argos Fascicoli. Rispondi in italiano usando "
         "**markdown** quando aiuta a chiarezza (grassetto, liste puntate, "
         "blocchi codice), basandoti SOLO sulle fonti fornite qui sotto. "
+        "Le fonti possono essere documenti (PDF/DOCX/...) oppure FOGLI di calcolo "
+        "indicati come «Foglio «titolo»»: questi ultimi sono tabelle in formato "
+        "TSV con intestazioni di colonna (A, B, C...) e numeri di riga — "
+        "interpretane righe e colonne per rispondere su dati, totali, valori. "
         "Se la risposta non e' nelle fonti, dillo chiaramente senza inventare. "
-        "Quando usi un'informazione cita il nome del file fra parentesi "
-        "quadre, es. [contratto-acme.pdf]."
+        "Quando usi un'informazione cita la fonte fra parentesi quadre, "
+        "es. [contratto-acme.pdf] oppure [Foglio «Budget»]."
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": sys_prompt}]
     if history:
