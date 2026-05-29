@@ -30,6 +30,13 @@ dependencies = [
   "aiosmtplib>=3.0",
   "imap-tools>=1.5",
   "pypdf>=4.0",
+  # PDF fallback testuale (per file dove pypdf estrae poco/nulla, capita spesso
+  # su PDF generati da gestionali italiani con encoding strani).
+  "pdfplumber>=0.11",
+  # Rendering pagine PDF -> immagini per OCR via Vision LLM (Ollama llava /
+  # qwen2.5-vl / llama3.2-vision). Niente Poppler native install, binary
+  # incluso nel wheel pypdfium2 (Windows-friendly).
+  "pypdfium2>=4.30",
   # Anti-bot: TLS fingerprint impersonation per bypassare Cloudflare base/medio
   "curl_cffi>=0.15",
   # Anti-detection per Playwright (usato in url_discovery_browser + outreach social)

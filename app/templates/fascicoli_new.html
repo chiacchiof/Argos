@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Nuovo fascicolo — Argos{% endblock %}
+{% block content %}
+<section>
+  <div class="section-header">
+    <div>
+      <h2 style="margin: 0">Nuovo fascicolo</h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        La cartella verrà creata sotto <code>{{ root_project_path }}</code>.
+      </p>
+    </div>
+    <a href="/fascicoli" class="btn-link">Annulla</a>
+  </div>
+
+  <form method="post" action="/fascicoli" class="stack" style="max-width: 720px; margin-top: 1.5rem; display: grid; gap: 1.2rem;">
+    <label class="field">
+      <span class="field-label">Titolo</span>
+      <input type="text" name="title" required maxlength="120"
+             placeholder="Es: Cliente Acme — gara acquedotto 2026">
+      <small class="muted">Diventerà anche il nome della cartella sul disco.</small>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Descrizione</span>
+      <textarea name="description" rows="3"
+                placeholder="A cosa serve questo fascicolo, di cosa contiene la documentazione (opzionale)."></textarea>
+    </label>
+
+    <fieldset class="field">
+      <legend class="field-label">Visibilità</legend>
+      <label style="display: block; padding: 0.5rem 0; border-bottom: 1px solid var(--border)">
+        <input type="radio" name="visibility" value="tenant" checked>
+        <strong>Tenant</strong> &mdash; visibile a tutti gli utenti del tenant.
+        <br><small class="muted">Adatto a fascicoli condivisi: clienti, commesse, fornitori.</small>
+      </label>
+      <label style="display: block; padding: 0.5rem 0">
+        <input type="radio" name="visibility" value="user">
+        <strong>Privato</strong> &mdash; visibile solo a te.
+        <br><small class="muted">Potrai condividerlo dopo con singoli utenti come viewer o editor.</small>
+      </label>
+    </fieldset>
+
+    <div>
+      <button type="submit" class="btn btn-primary">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+        Crea fascicolo
+      </button>
+    </div>
+  </form>
+</section>
+{% endblock %}

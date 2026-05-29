@@ -1,0 +1,141 @@
+{# Fragment HTMX per la barra di avanzamento dell'indicizzazione.
+
+   Stati:
+   - status==None       -> mostra il bottone "Indicizza"
+   - status=='running'  -> barra + polling ogni 1.5s
+   - status=='done'     -> badge "Indicizzato" + bottone re-indicizza
+   - status=='error'    -> badge errore + bottone Riprova
+
+   Container id="index-zone" e' sempre l'outermost: HTMX swap outerHTML lo
+   sostituisce con la nuova versione del fragment.
+#}
+{% set s = status %}
+
+{% if not s %}
+{# IDLE — nessun job mai partito. Bottone iniziale. #}
+<div id="index-zone" data-no-loader="true" style="display: flex; align-items: center; gap: 0.4rem">
+  <form hx-post="/fascicoli/{{ project_id }}/index"
+        hx-target="#index-zone" hx-swap="outerHTML"
+        data-no-loader="true"
+        style="margin: 0">
+    <button type="submit" class="btn-icon btn-icon-brand"
+            title="Indicizza i contenuti per la chat (estrae testo + embedding via Ollama)"
+            aria-label="Indicizza">
+      <svg class="icon"><use href="#i-cpu"/></svg>
+    </button>
+  </form>
+</div>
+
+{% elif s.status == 'running' %}
+{# RUNNING — barra di avanzamento + polling. #}
+<div id="index-zone"
+     data-no-loader="true"
+     hx-get="/fascicoli/{{ project_id }}/index/status"
+     hx-trigger="every 1500ms"
+     hx-swap="outerHTML"
+     style="display: flex; flex-direction: column; gap: 0.35rem; min-width: 280px; padding: 0.5rem 0.7rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px">
+  <div style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85em">
+    <span class="live-pulse" style="width: 8px; height: 8px; border-radius: 50%; background: var(--brand-2); animation: argospulse 1s infinite"></span>
+    <strong>Indicizzazione in corso</strong>
+    <span class="muted" style="margin-left: auto; font-size: 0.92em">
+      {{ s.phase }}
+    </span>
+  </div>
+
+  {# Per-file progress (chunks dentro il file corrente) #}
+  {% if s.chunks_total and s.chunks_total > 0 %}
+  <div style="display: flex; align-items: center; gap: 0.5rem">
+    <progress max="{{ s.chunks_total }}" value="{{ s.chunks_done }}" style="flex: 1; height: 8px"></progress>
+    <small class="muted" style="font-variant-numeric: tabular-nums; min-width: 5em; text-align: right">
+      {{ s.chunks_done }} / {{ s.chunks_total }}
+    </small>
+  </div>
+  {% endif %}
+
+  {# Per-progetto progress (file totali) #}
+  {% if s.files_total and s.files_total > 0 %}
+  <div style="display: flex; align-items: center; gap: 0.5rem">
+    <progress max="{{ s.files_total }}" value="{{ s.files_done }}" style="flex: 1; height: 4px; opacity: 0.7"></progress>
+    <small class="muted" style="font-variant-numeric: tabular-nums; min-width: 5em; text-align: right">
+      file {{ s.files_done }} / {{ s.files_total }}
+    </small>
+  </div>
+  {% endif %}
+
+  <small class="muted" style="font-size: 0.78em; line-height: 1.3">
+    {% if s.current_file %}
+      <code style="font-size: 0.9em">{{ s.current_file }}</code>
+    {% else %}
+      {{ s.message }}
+    {% endif %}
+  </small>
+</div>
+
+<style>
+  @keyframes argospulse {
+    0% { transform: scale(0.7); opacity: 0.5 }
+    50% { transform: scale(1); opacity: 1 }
+    100% { transform: scale(0.7); opacity: 0.5 }
+  }
+</style>
+
+{% elif s.status == 'done' %}
+{# DONE — badge statico + bottone re-indicizza. NESSUN polling/hx-trigger
+   altrimenti si rientra in loop al prossimo render (il job resta 'done' in
+   memoria finche' uvicorn restarta). La pagina detail si ricarica UNA volta
+   via JS qui sotto cosi' il pannello chat si abilita. #}
+<div id="index-zone" data-no-loader="true" style="display: flex; align-items: center; gap: 0.5rem">
+  <span class="badge badge-ok" title="{{ s.message }}">
+    ✓ {{ s.summary.chunks if s.summary else 0 }} chunk
+  </span>
+  <form hx-post="/fascicoli/{{ project_id }}/index"
+        hx-target="#index-zone" hx-swap="outerHTML"
+        data-no-loader="true"
+        style="margin: 0">
+    <button type="submit" class="btn-icon" title="Re-indicizza (sovrascrive l'indice corrente)" aria-label="Re-indicizza">
+      <svg class="icon"><use href="#i-rotate-ccw"/></svg>
+    </button>
+  </form>
+  <script>
+    // One-shot reload della pagina detail dopo done, per riflettere chat
+    // disponibile + last_indexed_at nei file. sessionStorage scoped per
+    // project + summary.chunks evita reload infiniti su re-render successivi
+    // dello stesso done state.
+    (function(){
+      var k = 'argos-reloaded-idx-{{ project_id }}-{{ s.summary.chunks if s.summary else 0 }}';
+      if (!sessionStorage.getItem(k)) {
+        sessionStorage.setItem(k, '1');
+        setTimeout(function(){ window.location.reload(); }, 500);
+      }
+    })();
+  </script>
+</div>
+
+{% elif s.status == 'error' %}
+{# ERROR — badge + tasto Riprova. #}
+<div id="index-zone" data-no-loader="true" style="display: flex; align-items: center; gap: 0.5rem">
+  <span class="badge badge-err" title="{{ s.error }}">
+    ✗ Errore indicizzazione
+  </span>
+  <form hx-post="/fascicoli/{{ project_id }}/index"
+        hx-target="#index-zone" hx-swap="outerHTML"
+        data-no-loader="true"
+        style="margin: 0">
+    <button type="submit" class="btn" title="Riprova">
+      <svg class="icon"><use href="#i-rotate-ccw"/></svg> Riprova
+    </button>
+  </form>
+</div>
+
+{% else %}
+{# Stato sconosciuto: fallback bottone. #}
+<div id="index-zone" data-no-loader="true">
+  <form hx-post="/fascicoli/{{ project_id }}/index"
+        hx-target="#index-zone" hx-swap="outerHTML"
+        data-no-loader="true">
+    <button type="submit" class="btn-icon btn-icon-brand">
+      <svg class="icon"><use href="#i-cpu"/></svg>
+    </button>
+  </form>
+</div>
+{% endif %}

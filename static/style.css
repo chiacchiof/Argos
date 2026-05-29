@@ -2485,7 +2485,7 @@ a.tag-chip-mini:hover { background: var(--brand-soft); border-color: var(--brand
   font-weight: 600;
 }
 .chat-send:disabled, .chat-composer textarea:disabled, .chat-attach-button:has(input:disabled) {
-  opacity: 0.7; cursor: wait;
+  opacity: 0.7; cursor: not-allowed;
 }
 
 .chat-attachment-pill {
@@ -4638,6 +4638,27 @@ body.op-drawer-open .op-drawer {
   background: var(--op-surface-2);
   color: var(--op-fg);
   border-bottom-left-radius: 4px;
+}
+.op-bubble-assistant .op-bubble-body.op-md-content {
+  padding: 10px 14px;
+  white-space: normal;
+  overflow-x: auto;
+}
+.op-bubble-assistant .op-bubble-body.op-md-content > :first-child { margin-top: 0; }
+.op-bubble-assistant .op-bubble-body.op-md-content > :last-child { margin-bottom: 0; }
+.op-bubble-assistant .op-bubble-body.op-md-content p { margin: 0.45em 0; }
+.op-bubble-assistant .op-bubble-body.op-md-content table {
+  min-width: 100%;
+  margin: 0.65em 0;
+  font-size: 0.84rem;
+}
+.op-bubble-assistant .op-bubble-body.op-md-content th,
+.op-bubble-assistant .op-bubble-body.op-md-content td {
+  padding: 6px 8px;
+  vertical-align: top;
+}
+.op-bubble-assistant .op-bubble-body.op-md-content code {
+  white-space: nowrap;
 }
 .op-bubble-streaming::after {
   content: '▊';

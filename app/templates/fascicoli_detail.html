@@ -1,0 +1,809 @@
+{% extends "base.html" %}
+{% block title %}{{ project.title }} — Argos Fascicoli{% endblock %}
+{% block content %}
+<section>
+  <div class="section-header">
+    <div>
+      <h2 style="margin: 0">{{ project.title }}</h2>
+      <p class="muted" style="margin: 0.4rem 0 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center">
+        <span>Owner: <strong>{{ project|owner_display }}</strong></span>
+        <span>·</span>
+        {% if project.visibility == 'tenant' %}
+        <span class="badge badge-pause">Tenant</span>
+        {% else %}
+        <span class="badge badge-cancel">Privato</span>
+        {% endif %}
+        {% if project.local_state == 'completo' %}
+        <span class="badge badge-ok">Su questo PC</span>
+        {% else %}
+        <span class="badge badge-cancel">Monco</span>
+        {% endif %}
+        {% if project.is_archived %}
+        <span class="badge badge-off">Archiviato</span>
+        {% endif %}
+      </p>
+    </div>
+    <a href="/fascicoli" class="btn-link">← Lista</a>
+  </div>
+
+  {% if project.local_state == 'monco' %}
+  <div style="padding: 0.9rem 1.1rem; background: var(--warn-soft); color: var(--warn); border-left: 3px solid var(--warn); border-radius: 6px; margin: 1rem 0">
+    <strong>Fascicolo non ancora presente su questo PC.</strong>
+    {% if has_root_configured %}
+    Su questo PC non c'è una cartella locale collegata a questo fascicolo. Carica
+    un file (sezione File qui sotto): Argos creerà la cartella per te dentro
+    <code>{{ user_root_path }}</code> e il fascicolo diventerà attivo qui.
+    {% else %}
+    Per usare il fascicolo da questo PC, configura prima la
+    <a href="/fascicoli/settings?first_time=1">RootProject</a>.
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if project.description %}
+  <p style="max-width: 820px; margin: 1rem 0; color: var(--fg)">{{ project.description }}</p>
+  {% endif %}
+
+  {# ============================================================
+       Layout principale: sinistra file+upload, destra chat.
+       Su mobile collassa a colonna singola (CSS responsive).
+     ============================================================ #}
+  <div class="fascicolo-layout" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; margin-top: 1.5rem">
+
+    {# ---------- COLONNA SINISTRA: FILE ---------- #}
+    <div>
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem">
+        <h3 style="margin: 0">File <span class="muted" style="font-weight: 400">({{ files|length }})</span></h3>
+        {% if project.local_state == 'completo' %}
+        <div style="display: flex; gap: 0.4rem; align-items: center">
+          <form method="post" action="/fascicoli/{{ project.id }}/refresh" style="margin: 0">
+            <button type="submit" class="btn-icon"
+                    title="Ri-scansiona la cartella per cogliere modifiche fatte da Esplora Risorse"
+                    aria-label="Re-sync filesystem">
+              <svg class="icon"><use href="#i-rotate-ccw"/></svg>
+            </button>
+          </form>
+          {% if can_edit %}
+          {# Container HTMX per l'indicizzazione: barra di progresso + polling
+             via _index_progress.html (vedi app/routes/fascicoli.py::index_status). #}
+          {% with project_id=project.id, status=index_status %}
+            {% include "_index_progress.html" %}
+          {% endwith %}
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+
+      {% if project.local_state == 'completo' %}
+      <p class="muted" style="margin: 0.2rem 0 0.9rem 0">
+        <small>Cartella locale: <code>{{ project.local_folder }}</code></small>
+      </p>
+      {% elif has_root_configured %}
+      <p class="muted" style="margin: 0.2rem 0 0.9rem 0">
+        <small>
+          Su questo PC il fascicolo non ha ancora una cartella locale.
+          Carica un file qui: Argos creerà la cartella sotto
+          <code>{{ user_root_path }}</code> e collegherà il manifest UUID di questo progetto.
+        </small>
+      </p>
+      {% else %}
+      <p class="muted" style="margin: 0.2rem 0 0.9rem 0">
+        <small>
+          Per caricare file e usare la chat, configura prima la
+          <a href="/fascicoli/settings?first_time=1">RootProject</a> su questo PC.
+        </small>
+      </p>
+      {% endif %}
+
+      {# Upload zone: sempre disponibile a chi puo' editare E ha una RootProject. #}
+      {% if can_edit and has_root_configured %}
+      <form method="post" action="/fascicoli/{{ project.id }}/upload"
+            enctype="multipart/form-data"
+            id="upload-form"
+            style="margin-bottom: 1rem">
+        <input type="file" name="files" id="file-input" multiple style="display: none">
+        <div id="drop-zone" class="drop-zone"
+             style="display: flex; flex-direction: column; align-items: center; gap: 0.7rem;
+                    padding: 1.6rem 1rem; border: 2px dashed var(--border-strong); border-radius: 10px;
+                    background: var(--surface-1); transition: background 0.15s, border-color 0.15s">
+          <svg class="icon" aria-hidden="true" style="width: 2rem; height: 2rem; opacity: 0.55"><use href="#i-upload"/></svg>
+          <strong style="text-align: center">Trascina i file qui</strong>
+          <small class="muted" style="text-align: center; max-width: 380px">
+            oppure usa il bottone qui sotto.
+            PDF, DOCX, TXT, MD, EML, immagini, ZIP — max 50 MB per file.
+          </small>
+          <div style="display: flex; gap: 0.5rem; margin-top: 0.4rem; flex-wrap: wrap; justify-content: center">
+            <button type="button" id="pick-files-btn" class="btn btn-primary">
+              <svg class="icon"><use href="#i-upload"/></svg> Scegli file dal PC
+            </button>
+          </div>
+          <div id="upload-status" class="muted" style="font-size: 0.85em; margin-top: 0.3rem"></div>
+        </div>
+      </form>
+      {% endif %}
+
+      {% if files %}
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th style="text-align: right">Dim.</th>
+            <th>Modificato</th>
+            <th>Indicizzato</th>
+            {% if can_edit %}<th style="width: 1%"></th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in files %}
+          <tr>
+            <td><code>{{ f.relative_path }}</code></td>
+            <td style="text-align: right"><small>{{ "%.1f"|format((f.size_bytes or 0) / 1024) }} KB</small></td>
+            <td><small class="muted">{{ f.mtime or '—' }}</small></td>
+            <td>
+              {% if f.last_indexed_at %}
+              <span class="badge badge-ok" title="Indicizzato il {{ f.last_indexed_at }}">indicizzato</span>
+              {% else %}
+              <span class="badge badge-cancel" title="Non ancora nell'indice chat">—</span>
+              {% endif %}
+            </td>
+            {% if can_edit %}
+            <td>
+              <form method="post" action="/fascicoli/{{ project.id }}/files/delete" style="margin: 0"
+                    onsubmit="return confirm('Eliminare il file {{ f.name|e }}? Verrà cancellato dal disco e dall&apos;indice.');">
+                <input type="hidden" name="relative_path" value="{{ f.relative_path }}">
+                <button type="submit" class="btn-icon btn-icon-danger"
+                        title="Elimina file" aria-label="Elimina file">
+                  <svg class="icon"><use href="#i-trash"/></svg>
+                </button>
+              </form>
+            </td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty-state" style="padding: 1.5rem 1rem">
+        <div class="empty-title">Nessun file ancora</div>
+        <div class="empty-hint">
+          {% if project.local_state == 'completo' %}
+            Trascina file nell'area sopra, o aggiungili direttamente nella
+            cartella e premi l'icona <svg class="icon" aria-hidden="true" style="vertical-align: -2px; width: 14px"><use href="#i-rotate-ccw"/></svg> per ri-leggere.
+          {% else %}
+            I file di questo fascicolo sono su un altro PC.
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    {# ---------- COLONNA DESTRA: CHAT ---------- #}
+    <div class="fascicolo-chat-col" style="position: sticky; top: 1rem">
+      <div style="background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column">
+        <div class="chat-head">
+          <div class="chat-agent">
+            <div class="chat-avatar">
+              <svg class="icon" aria-hidden="true" style="width: 18px; height: 18px"><use href="#i-folder"/></svg>
+            </div>
+            <div>
+              <h3>Chat sul fascicolo</h3>
+              <small class="muted">
+                {% if index_ready %}
+                  {{ n_indexed }} chunk · {{ n_indexed_files }} file · <code>{{ embed_model }}</code>
+                {% elif embed_model %}
+                  {# embed_model valorizzato ma 0 chunk: c'e' stato un tentativo di
+                     indicizzazione che non ha estratto testo. Diagnosi piu' comune
+                     in italiano: PDF scansione / solo immagini / DOCX non supportato. #}
+                  <span style="color: var(--warn)">
+                    ⚠ Nessun testo estraibile. Probabile PDF scansione/immagine —
+                    pypdf non legge il testo se non c'è un layer OCR.
+                  </span>
+                {% elif project.local_state == 'completo' %}
+                  Non indicizzato — premi
+                  <svg class="icon" aria-hidden="true" style="vertical-align: -3px; width: 13px; height: 13px"><use href="#i-cpu"/></svg>
+                  per costruire l'indice
+                {% else %}
+                  Indisponibile (fascicolo monco)
+                {% endif %}
+              </small>
+            </div>
+          </div>
+          {% if chat_messages %}
+          <form method="post" action="/fascicoli/{{ project.id }}/chat/clear" style="margin: 0">
+            <button type="submit" class="chat-clear btn-link"
+                    onclick="return confirm('Cancellare la cronologia chat? I documenti restano.')"
+                    title="Pulisci cronologia chat">
+              <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
+            </button>
+          </form>
+          {% endif %}
+        </div>
+
+        <div class="chat-transcript" id="chat-transcript" style="max-height: 520px; min-height: 280px; padding: 1rem">
+          {% if not chat_messages %}
+          <div class="chat-empty">
+            <strong>Nessuna conversazione ancora.</strong>
+            <p>
+              {% if index_ready %}
+                Fai una domanda sui documenti del fascicolo. Argos cerchera' negli embedding e citera' i file usati.
+              {% elif project.local_state == 'completo' %}
+                Indicizza prima i file per poter chiedere.
+              {% else %}
+                Apri Argos dal PC dove sono salvati i file per usare la chat.
+              {% endif %}
+            </p>
+          </div>
+          {% else %}
+          {% for msg in chat_messages %}
+          <div class="chat-message chat-{{ msg.role }}">
+            <div class="chat-bubble">
+              {% if msg.role == 'assistant' %}
+              {# Assistant: markdown rendered server-side (filter `render_md` in
+                 app/templates.py). `.md-prose` per lo stile, `safe` perche'
+                 markdown-it ha html=False -> niente injection. #}
+              <div class="chat-body md-prose">{{ msg.content | render_md | safe }}</div>
+              {% else %}
+              <div class="chat-body">{{ msg.content }}</div>
+              {% endif %}
+              {% if msg.citations %}
+              <div class="chat-meta" style="margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.3rem">
+                {% for c in msg.citations %}
+                <small class="badge badge-done" title="Score: {{ c.score }}">
+                  <svg class="icon" aria-hidden="true" style="vertical-align: -2px; width: 11px; height: 11px"><use href="#i-folder"/></svg>
+                  <code style="font-size: 0.9em">{{ c.file }}</code>
+                </small>
+                {% endfor %}
+              </div>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+          <span id="chat-bottom"></span>
+          {% endif %}
+        </div>
+
+        {% if project.local_state == 'completo' %}
+        {# NB: NON uso `chat-composer` perche' lo stile globale fa una grid a
+           3 colonne pensata per un'altra chat con bottone attach a sinistra,
+           e con solo textarea+send lo allarga in modo brutto. Layout flex
+           semplice qui sotto, send compatto a destra. #}
+        <form id="chat-form-{{ project.id }}"
+              data-chat-action="/fascicoli/{{ project.id }}/chat"
+              class="chat-form fascicolo-chat-composer"
+              data-no-loader="true"
+              {% if not index_ready %}aria-disabled="true" style="opacity: 0.55"{% endif %}>
+          <textarea name="message" rows="2" required
+                    placeholder="{% if index_ready %}Fai una domanda... (Invio = invia, Shift+Invio = a capo){% else %}Indicizza prima i file{% endif %}"
+                    {% if not index_ready %}disabled{% endif %}></textarea>
+          <button type="submit" class="fascicolo-chat-send"
+                  {% if not index_ready %}disabled{% endif %}
+                  title="Invia (Invio)" aria-label="Invia">
+            <svg class="icon"><use href="#i-send"/></svg>
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ============================================================
+       Pannelli secondari (collassati): accesso, modifica, archivio
+     ============================================================ #}
+
+  {% if project.visibility == 'user' %}
+  <details style="margin-top: 2rem; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 1.1rem; background: var(--surface-1)">
+    <summary style="cursor: pointer; font-weight: 600">Accesso ({{ 1 + members|length }})</summary>
+    <ul style="list-style: none; padding: 0.8rem 0 0 0; margin: 0">
+      <li style="padding: 0.4rem 0">
+        <strong>{{ project|owner_display }}</strong>
+        <span class="muted">— owner</span>
+      </li>
+      {% for m in members %}
+      <li style="padding: 0.4rem 0; display: flex; justify-content: space-between; align-items: center">
+        <span>{{ m.email }} <span class="muted">— {{ m.role }}</span></span>
+        {% if can_manage %}
+        <form method="post" action="/fascicoli/{{ project.id }}/members/{{ m.user_id }}/remove" style="margin: 0">
+          <button type="submit" class="btn-icon btn-icon-danger"
+                  onclick="return confirm('Rimuovere accesso a {{ m.email }}?')"
+                  title="Rimuovi" aria-label="Rimuovi membro">
+            <svg class="icon"><use href="#i-trash"/></svg>
+          </button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% if can_manage and tenant_users %}
+    <form method="post" action="/fascicoli/{{ project.id }}/members"
+          style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.8rem;
+                 border-top: 1px solid var(--border); padding-top: 0.8rem">
+      <select name="user_id" required style="flex: 1">
+        <option value="">— Aggiungi utente del tenant —</option>
+        {% for u in tenant_users %}
+        <option value="{{ u.id }}">{{ u.email }}</option>
+        {% endfor %}
+      </select>
+      <select name="role">
+        <option value="viewer">Viewer</option>
+        <option value="editor">Editor</option>
+      </select>
+      <button type="submit" class="btn btn-secondary">
+        <svg class="icon"><use href="#i-plus"/></svg> Aggiungi
+      </button>
+    </form>
+    {% endif %}
+  </details>
+  {% endif %}
+
+  {% if can_edit %}
+  <details style="margin-top: 1rem; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 1.1rem; background: var(--surface-1)">
+    <summary style="cursor: pointer; font-weight: 600">Modifica fascicolo</summary>
+    <form method="post" action="/fascicoli/{{ project.id }}/edit"
+          style="display: grid; gap: 1rem; margin-top: 0.8rem; max-width: 720px">
+      <label class="field">
+        <span class="field-label">Titolo</span>
+        <input type="text" name="title" value="{{ project.title }}" maxlength="120">
+      </label>
+      <label class="field">
+        <span class="field-label">Descrizione</span>
+        <textarea name="description" rows="3">{{ project.description or '' }}</textarea>
+      </label>
+      {% if can_manage %}
+      <fieldset class="field">
+        <legend class="field-label">Visibilità</legend>
+        <label style="padding: 0.3rem 0; display: block">
+          <input type="radio" name="visibility" value="tenant" {% if project.visibility == 'tenant' %}checked{% endif %}>
+          Tenant — tutti del tenant
+        </label>
+        <label style="padding: 0.3rem 0; display: block">
+          <input type="radio" name="visibility" value="user" {% if project.visibility == 'user' %}checked{% endif %}>
+          Privato — solo membri elencati
+        </label>
+      </fieldset>
+      {% endif %}
+      <div>
+        <button type="submit" class="btn btn-primary">
+          <svg class="icon"><use href="#i-save"/></svg> Salva
+        </button>
+      </div>
+    </form>
+  </details>
+  {% endif %}
+
+  {% if can_manage %}
+  <details style="margin-top: 1rem; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 1.1rem; background: var(--surface-1)">
+    <summary style="cursor: pointer; font-weight: 600; color: var(--fg-muted)">Archivia o ripristina</summary>
+    <div style="margin-top: 0.8rem">
+      {% if project.is_archived %}
+      <form method="post" action="/fascicoli/{{ project.id }}/restore" style="display: inline">
+        <button type="submit" class="btn">Ripristina dall'archivio</button>
+      </form>
+      {% else %}
+      <form method="post" action="/fascicoli/{{ project.id }}/archive" style="display: inline"
+            onsubmit="return confirm('Archiviare il fascicolo? La cartella e i file fisici NON vengono toccati.');">
+        <button type="submit" class="btn-danger-inline">Archivia fascicolo</button>
+      </form>
+      <p class="muted" style="margin: 0.5rem 0 0 0">
+        <small>Archiviare nasconde il fascicolo dalla lista. Cartella e file fisici sul disco restano intatti.</small>
+      </p>
+      {% endif %}
+    </div>
+  </details>
+
+  <details style="margin-top: 1rem; border: 1px solid var(--danger-border); border-radius: 10px; padding: 0.7rem 1.1rem; background: var(--danger-soft)">
+    <summary style="cursor: pointer; font-weight: 600; color: var(--danger)">⚠ Elimina definitivamente</summary>
+    <div style="margin-top: 0.8rem">
+      <p style="margin: 0 0 0.7rem 0">
+        L'eliminazione è <strong>irreversibile</strong>: cancella il record dal database,
+        la cronologia chat, le ACL e (opzionalmente) tutti i file dalla cartella sul disco.
+      </p>
+      <form method="post" action="/fascicoli/{{ project.id }}/delete"
+            onsubmit="return confirm('Eliminare DEFINITIVAMENTE il fascicolo {{ project.title|e }}?\n\nQuesta azione non si può annullare.');">
+        <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0; cursor: pointer">
+          <input type="checkbox" name="delete_files" value="1">
+          <span>Elimina anche <strong>tutti i file fisici</strong> dalla cartella sul disco
+            {% if project.local_state == 'completo' %}
+            (<code>{{ project.local_folder }}</code>)
+            {% else %}
+            <small class="muted">(richiede di essere sul PC d'origine; se monco si rimuove solo il DB)</small>
+            {% endif %}
+          </span>
+        </label>
+        <button type="submit" class="btn-danger-inline" style="margin-top: 0.5rem">
+          <svg class="icon"><use href="#i-trash"/></svg> Elimina fascicolo
+        </button>
+      </form>
+    </div>
+  </details>
+  {% endif %}
+</section>
+
+{# Upload UI + chat HTMX + scroll #}
+<script>
+(function () {
+  // ===== CHAT: streaming SSE, markdown render, enter-to-send =====
+  const chatForm = document.getElementById('chat-form-{{ project.id }}');
+  const transcript = document.getElementById('chat-transcript');
+
+  function escapeHtmlText(s) {
+    const d = document.createElement('div');
+    d.textContent = String(s == null ? '' : s);
+    return d.innerHTML;
+  }
+
+  function addCitations(bubble, citations) {
+    if (!citations || !citations.length) return;
+    const meta = document.createElement('div');
+    meta.className = 'chat-meta';
+    meta.style.marginTop = '0.5rem';
+    meta.style.display = 'flex';
+    meta.style.flexWrap = 'wrap';
+    meta.style.gap = '0.3rem';
+    for (const c of citations) {
+      const sm = document.createElement('small');
+      sm.className = 'badge badge-done';
+      sm.title = 'Score: ' + (c.score != null ? c.score : '');
+      sm.innerHTML =
+        '<svg class="icon" aria-hidden="true" style="vertical-align:-2px;width:11px;height:11px"><use href="#i-folder"/></svg> ' +
+        '<code style="font-size:0.9em">' + escapeHtmlText(c.file) + '</code>';
+      meta.appendChild(sm);
+    }
+    bubble.appendChild(meta);
+  }
+
+  async function streamChat(form) {
+    const textarea = form.querySelector('textarea[name="message"]');
+    const sendBtn  = form.querySelector('button[type="submit"]');
+    const msg = textarea ? (textarea.value || '').trim() : '';
+    if (!msg) return;
+
+    // Rimuovi placeholder "Nessuna conversazione ancora"
+    const empty = transcript.querySelector('.chat-empty');
+    if (empty) empty.remove();
+
+    // Bubble user (instant)
+    const userDiv = document.createElement('div');
+    userDiv.className = 'chat-message chat-user';
+    const ub = document.createElement('div');
+    ub.className = 'chat-bubble';
+    const ubody = document.createElement('div');
+    ubody.className = 'chat-body';
+    ubody.textContent = msg;
+    ub.appendChild(ubody);
+    userDiv.appendChild(ub);
+    transcript.appendChild(userDiv);
+
+    // Bubble assistant con placeholder "Sto pensando"
+    const asstDiv = document.createElement('div');
+    asstDiv.className = 'chat-message chat-assistant';
+    const abubble = document.createElement('div');
+    abubble.className = 'chat-bubble';
+    const abody = document.createElement('div');
+    abody.className = 'chat-body';
+    const dots = document.createElement('em');
+    dots.className = 'muted chat-thinking-dots';
+    dots.textContent = 'Sto pensando';
+    abody.appendChild(dots);
+    abubble.appendChild(abody);
+    asstDiv.appendChild(abubble);
+    transcript.appendChild(asstDiv);
+
+    transcript.scrollTop = transcript.scrollHeight;
+
+    // Disabilita form durante lo stream
+    if (textarea) textarea.disabled = true;
+    if (sendBtn)  sendBtn.disabled  = true;
+    textarea.value = '';
+
+    let accumulated = '';
+    let citations = null;
+    let finalHtml = null;
+    let firstDelta = true;
+
+    try {
+      const fd = new FormData();
+      fd.append('message', msg);
+      const res = await fetch(form.dataset.chatAction, {
+        method: 'POST', body: fd, credentials: 'same-origin',
+        headers: { 'Accept': 'text/event-stream' },
+      });
+
+      if (!res.ok || !res.body) {
+        abody.textContent = '⚠ Errore HTTP ' + res.status;
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE events separati da \n\n
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const ev of events) {
+          // raccogli tutte le righe `data: ...` di un evento
+          let dataStr = '';
+          for (const line of ev.split('\n')) {
+            if (line.startsWith('data: ')) dataStr += line.slice(6);
+            else if (line.startsWith('data:')) dataStr += line.slice(5);
+          }
+          if (!dataStr) continue;
+          let obj;
+          try { obj = JSON.parse(dataStr); }
+          catch (e) { continue; }
+
+          if (typeof obj.delta === 'string') {
+            if (firstDelta) {
+              abody.innerHTML = ''; // rimuove "Sto pensando"
+              firstDelta = false;
+            }
+            accumulated += obj.delta;
+            abody.textContent = accumulated;
+            transcript.scrollTop = transcript.scrollHeight;
+          } else if (obj.done) {
+            if (obj.html) {
+              finalHtml = obj.html;
+            }
+            if (obj.citations) {
+              citations = obj.citations;
+            }
+          } else if (obj.error) {
+            abody.textContent = '⚠ Errore: ' + obj.error;
+          }
+        }
+      }
+
+      // Sostituisci testo plain con HTML markdown server-side renderizzato
+      if (finalHtml !== null) {
+        abody.className = 'chat-body md-prose';
+        abody.innerHTML = finalHtml;
+      }
+      addCitations(abubble, citations);
+    } catch (err) {
+      abody.textContent = '⚠ Errore di connessione: ' + (err && err.message ? err.message : err);
+    } finally {
+      if (textarea) { textarea.disabled = false; textarea.focus(); }
+      if (sendBtn)  sendBtn.disabled  = false;
+      transcript.scrollTop = transcript.scrollHeight;
+    }
+  }
+
+  if (chatForm && transcript) {
+    const textarea = chatForm.querySelector('textarea[name="message"]');
+
+    // Submit: intercetta e gestisci via streaming
+    chatForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      streamChat(chatForm);
+    });
+
+    // Enter = submit, Shift+Enter = newline (default browser)
+    if (textarea) {
+      textarea.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          if ((textarea.value || '').trim()) {
+            streamChat(chatForm);
+          }
+        }
+      });
+    }
+  }
+
+  // ===== UPLOAD ===== (logica esistente, invariata)
+  const dz = document.getElementById('drop-zone');
+  const input = document.getElementById('file-input');
+  const form = document.getElementById('upload-form');
+  const pickBtn = document.getElementById('pick-files-btn');
+  const status = document.getElementById('upload-status');
+
+  function setStatus(msg) { if (status) status.textContent = msg || ''; }
+  function reset() {
+    if (!dz) return;
+    dz.style.background = 'var(--surface-1)';
+    dz.style.borderColor = 'var(--border-strong)';
+  }
+  function hot() {
+    if (!dz) return;
+    dz.style.background = 'var(--surface-2)';
+    dz.style.borderColor = 'var(--brand-2)';
+  }
+
+  if (dz && input && form) {
+    // Bottone esplicito: apre il file picker del sistema
+    if (pickBtn) {
+      pickBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        input.click();
+      });
+    }
+
+    // File scelti dal picker -> submit
+    input.addEventListener('change', function () {
+      if (input.files && input.files.length) {
+        setStatus('Caricamento di ' + input.files.length + ' file...');
+        form.submit();
+      }
+    });
+
+    // Drag-and-drop su drop-zone
+    ['dragenter', 'dragover'].forEach(ev =>
+      dz.addEventListener(ev, function (e) { e.preventDefault(); e.stopPropagation(); hot(); })
+    );
+    ['dragleave'].forEach(ev =>
+      dz.addEventListener(ev, function (e) { e.preventDefault(); e.stopPropagation(); reset(); })
+    );
+    dz.addEventListener('drop', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      reset();
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length) {
+        // DataTransfer -> input.files (browser moderni; fallback FormData per Safari vecchi)
+        try {
+          input.files = files;
+        } catch (err) { /* readonly su alcuni browser */ }
+        setStatus('Caricamento di ' + files.length + ' file...');
+        // Costruisci FormData esplicitamente per evitare problemi con input.files readonly
+        const fd = new FormData();
+        for (let i = 0; i < files.length; i++) fd.append('files', files[i]);
+        fetch(form.action, { method: 'POST', body: fd, credentials: 'same-origin' })
+          .then(r => { window.location.reload(); })
+          .catch(err => { setStatus('Errore upload: ' + err); });
+      }
+    });
+
+    // Drag su tutta la window -> evita che il browser apra il file droppato fuori dalla zona
+    ['dragover', 'drop'].forEach(ev =>
+      window.addEventListener(ev, function (e) {
+        // Solo se NON sopra la drop-zone (evita di interferire col handler della zona)
+        if (!dz.contains(e.target)) { e.preventDefault(); }
+      })
+    );
+  }
+
+  // Scroll iniziale chat al fondo (riusa la `transcript` gia' dichiarata in
+  // alto nella sezione chat; ridichiararla qui causerebbe SyntaxError "already
+  // declared" che farebbe morire l'intero IIFE -> upload e drag-drop rotti.
+  // Vedi commit history per la regressione del 2026-05-29.).
+  if (transcript) transcript.scrollTop = transcript.scrollHeight;
+})();
+</script>
+
+<style>
+/* Responsive: su viewport stretti chat sotto i file, niente sticky. */
+@media (max-width: 980px) {
+  .fascicolo-layout { grid-template-columns: 1fr !important; }
+  .fascicolo-chat-col { position: static !important; }
+}
+
+/* Placeholder "Sto pensando…" pulsa per dare feedback durante l'attesa LLM. */
+.chat-thinking-dots {
+  display: inline-block;
+  animation: argos-think-pulse 1.4s ease-in-out infinite;
+}
+@keyframes argos-think-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
+}
+.chat-thinking-dots::after {
+  content: ' …';
+}
+
+/* Composer chat fascicolo: layout flex semplice (textarea espandibile + send
+   compatto a destra). NON ereditiamo `chat-composer` globale che ha una grid
+   a 3 colonne progettata per una chat diversa (con bottone attach a sx). */
+.fascicolo-chat-composer {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  padding: 0.75rem;
+  background: var(--surface-1);
+  border-top: 1px solid var(--border);
+  margin: 0;
+}
+.fascicolo-chat-composer textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 46px;
+  max-height: 200px;
+  resize: vertical;
+  border-radius: 14px;
+  padding: 0.6rem 0.9rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: inherit;
+  line-height: 1.4;
+}
+.fascicolo-chat-composer textarea:focus,
+.fascicolo-chat-composer textarea:focus-visible {
+  background: var(--surface-3);
+  border-color: var(--brand-2);
+  outline: 0;
+  box-shadow: none;
+}
+.fascicolo-chat-composer textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.fascicolo-chat-send {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--brand-2);
+  color: #fff;
+  border: 1px solid var(--brand-2);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.fascicolo-chat-send:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.fascicolo-chat-send:active:not(:disabled) {
+  transform: scale(0.95);
+}
+.fascicolo-chat-send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.fascicolo-chat-send .icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* Markdown render dentro la chat bubble: il `.chat-body` di base ha
+   `white-space: pre-wrap` (utile per i messaggi utente plain) ma confligge
+   con l'HTML markdown. Override per assistant `.md-prose`. */
+.chat-bubble .chat-body.md-prose { white-space: normal; }
+.chat-bubble .md-prose p { margin: 0.35rem 0; }
+.chat-bubble .md-prose p:first-child { margin-top: 0; }
+.chat-bubble .md-prose p:last-child  { margin-bottom: 0; }
+.chat-bubble .md-prose ul,
+.chat-bubble .md-prose ol { margin: 0.4rem 0; padding-left: 1.4rem; }
+.chat-bubble .md-prose li { margin: 0.15rem 0; }
+.chat-bubble .md-prose code {
+  background: var(--surface-2);
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.92em;
+}
+.chat-bubble .md-prose pre {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+.chat-bubble .md-prose pre code {
+  background: transparent;
+  padding: 0;
+}
+.chat-bubble .md-prose blockquote {
+  border-left: 3px solid var(--border);
+  margin: 0.4rem 0;
+  padding: 0.1rem 0.7rem;
+  color: var(--fg-muted);
+}
+.chat-bubble .md-prose h1,
+.chat-bubble .md-prose h2,
+.chat-bubble .md-prose h3 {
+  margin: 0.6rem 0 0.3rem 0;
+  border: none;
+  padding-bottom: 0;
+}
+</style>
+{% endblock %}

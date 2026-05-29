@@ -57,15 +57,16 @@ CREATE TABLE IF NOT EXISTS tenants (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-  id             BIGSERIAL PRIMARY KEY,
-  tenant_id      BIGINT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  email          CITEXT UNIQUE NOT NULL,
-  password_hash  TEXT NOT NULL,
-  role           TEXT NOT NULL CHECK (role IN ('super_admin', 'tenant_architect', 'tenant_user')),
-  is_active      BOOLEAN NOT NULL DEFAULT TRUE,
-  first_name     TEXT,
-  last_name      TEXT,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  id                 BIGSERIAL PRIMARY KEY,
+  tenant_id          BIGINT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  email              CITEXT UNIQUE NOT NULL,
+  password_hash      TEXT NOT NULL,
+  role               TEXT NOT NULL CHECK (role IN ('super_admin', 'tenant_architect', 'tenant_user')),
+  is_active          BOOLEAN NOT NULL DEFAULT TRUE,
+  first_name         TEXT,
+  last_name          TEXT,
+  root_project_path  TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (
     (role = 'super_admin' AND tenant_id IS NULL)
     OR (role IN ('tenant_architect', 'tenant_user') AND tenant_id IS NOT NULL)
@@ -87,6 +88,10 @@ def init_db() -> None:
             # Idempotent: aggiungi first_name + last_name su users esistenti.
             conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
             conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT")
+            # Idempotent: root_project_path (Argos Fascicoli v1) — cartella
+            # dove l'utente tiene i suoi fascicoli sul PC corrente. NULL fino
+            # a setup. Vedi docs/argos_fascicoli_design.md.
+            conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS root_project_path TEXT")
             # Idempotent: aggiungi site_memory_shared su tenants esistenti
             # (default FALSE = isolato; super-admin lo abilita per i tenant premium).
             conn.execute(
@@ -349,7 +354,7 @@ def get_user(user_id: int) -> dict[str, Any] | None:
     with connect() as conn:
         return conn.execute(
             "SELECT id, tenant_id, email, password_hash, role, is_active, "
-            "       first_name, last_name, created_at "
+            "       first_name, last_name, root_project_path, created_at "
             "FROM users WHERE id = %s",
             (user_id,),
         ).fetchone()
@@ -359,7 +364,7 @@ def get_user_by_email(email: str) -> dict[str, Any] | None:
     with connect() as conn:
         return conn.execute(
             "SELECT id, tenant_id, email, password_hash, role, is_active, "
-            "       first_name, last_name, created_at "
+            "       first_name, last_name, root_project_path, created_at "
             "FROM users WHERE email = %s",
             (email.strip().lower(),),
         ).fetchone()
@@ -403,9 +408,10 @@ def update_user(
     first_name: str | None = None,
     last_name: str | None = None,
     role: str | None = None,
+    root_project_path: str | None = None,
 ) -> None:
-    """Aggiorna utente. `first_name`/`last_name`: stringa vuota → NULL (clear);
-    stringa non vuota → set; None → preserve (no-op su quel campo).
+    """Aggiorna utente. `first_name`/`last_name`/`root_project_path`: stringa
+    vuota → NULL (clear); stringa non vuota → set; None → preserve (no-op).
     `role`: solo valori in _VALID_ROLES; per cambiare super_admin <-> tenant_*
     serve anche aggiornare tenant_id (qui non gestito — chiamare a parte)."""
     fields: list[str] = []
@@ -427,6 +433,9 @@ def update_user(
             raise ValueError(f"role non valido: {role}")
         fields.append("role = %s")
         params.append(role)
+    if root_project_path is not None:
+        fields.append("root_project_path = %s")
+        params.append(root_project_path.strip() or None)
     if not fields:
         return
     params.append(user_id)

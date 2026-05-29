@@ -60,7 +60,11 @@
     {% if _chat_history %}
       {% for m in _chat_history %}
       <div class="op-bubble op-bubble-{{ m.role }}">
-        <div class="op-bubble-body">{{ m.body | safe }}</div>
+        {% if m.role == 'assistant' %}
+        <div class="op-bubble-body op-md-content">{{ m.body | render_md | safe }}</div>
+        {% else %}
+        <div class="op-bubble-body">{{ m.body }}</div>
+        {% endif %}
       </div>
       {% endfor %}
     {% else %}
@@ -231,6 +235,21 @@
       return body;
     }
 
+    async function _renderAssistantMarkdown(body, markdown) {
+      if (!body || !markdown) return;
+      var form = new FormData();
+      form.append('message', markdown);
+      var resp = await fetch('/orchestrator/chat/render', {
+        method: 'POST',
+        body: form,
+        headers: { 'Accept': 'text/html' },
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      body.innerHTML = await resp.text();
+      body.classList.add('op-md-content');
+      transcript.scrollTop = transcript.scrollHeight;
+    }
+
     // Stato allegato selezionato (corrente, non ancora inviato).
     var _attachedFile = null;
     var ATTACH_MAX_BYTES = 5 * 1024 * 1024;
@@ -271,6 +290,7 @@
       _appendBubble('user', displayText);
       var assistantBody = _appendBubble('assistant', '');
       assistantBody.classList.add('op-bubble-streaming');
+      var assistantText = '';
 
       var form = new FormData();
       form.append('message', text);
@@ -302,13 +322,19 @@
             try {
               var ev = JSON.parse(line);
               if (ev.type === 'token' && ev.content) {
-                assistantBody.textContent += ev.content;
+                assistantText += ev.content;
+                assistantBody.textContent = assistantText;
                 transcript.scrollTop = transcript.scrollHeight;
               }
             } catch (err) { /* ignore parse errors */ }
           }
         }
         assistantBody.classList.remove('op-bubble-streaming');
+        try {
+          await _renderAssistantMarkdown(assistantBody, assistantText);
+        } catch (err) {
+          assistantBody.textContent = assistantText;
+        }
       } catch (err) {
         assistantBody.classList.remove('op-bubble-streaming');
         assistantBody.textContent = 'Errore: non riesco a contattare l\'assistente. Riprova fra un momento.';

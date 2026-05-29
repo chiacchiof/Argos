@@ -1,0 +1,26 @@
+{# Singola bubble di risposta assistant per il pannello chat fascicolo.
+
+   Restituita dall'endpoint POST /fascicoli/{id}/chat in modalita' HTMX:
+   il JS lato client ha gia' aggiunto la bubble user + un placeholder
+   "Sto pensando..." al transcript; questo fragment viene appeso al
+   transcript con hx-swap="beforeend" dopo che il placeholder e' stato
+   rimosso dal handler afterRequest.
+
+   Citazioni: lista di {file, score}; ognuna diventa un badge cliccabile
+   con il nome file fonte. Score riportato in title per debugging.
+#}
+<div class="chat-message chat-assistant">
+  <div class="chat-bubble">
+    <div class="chat-body">{{ content }}</div>
+    {% if citations %}
+    <div class="chat-meta" style="margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.3rem">
+      {% for c in citations %}
+      <small class="badge badge-done" title="Score: {{ c.score }}">
+        <svg class="icon" aria-hidden="true" style="vertical-align: -2px; width: 11px; height: 11px"><use href="#i-folder"/></svg>
+        <code style="font-size: 0.9em">{{ c.file }}</code>
+      </small>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>

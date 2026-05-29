@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Impostazioni Fascicoli — Argos{% endblock %}
+{% block content %}
+<section>
+  <div class="section-header">
+    <div>
+      <h2 style="margin: 0">
+        {% if first_time %}Setup iniziale — Fascicoli{% else %}Impostazioni Fascicoli{% endif %}
+      </h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        {% if first_time %}
+          Benvenuto. Prima di creare il primo fascicolo, dimmi dove vuoi che
+          Argos tenga le cartelle dei tuoi progetti su questo PC.
+        {% else %}
+          Cambia la cartella RootProject usata da Argos su questo PC.
+        {% endif %}
+      </p>
+    </div>
+    {% if not first_time %}
+    <a href="/fascicoli" class="btn-link">Annulla</a>
+    {% endif %}
+  </div>
+
+  <div style="max-width: 720px; margin-top: 1.5rem;">
+    <div style="padding: 0.9rem 1.1rem; background: var(--surface-2); border-left: 3px solid var(--brand-2); border-radius: 6px; margin-bottom: 1.2rem">
+      <strong>I tuoi file restano qui, sul tuo PC.</strong>
+      <p class="muted" style="margin: 0.3rem 0 0 0; font-size: 0.92em">
+        Nel cloud passano solo i metadati (nomi file, dimensioni, struttura) per
+        permettere agli altri utenti del tuo tenant di vedere l'esistenza dei
+        progetti. Mai i contenuti.
+      </p>
+    </div>
+
+    <form method="post" action="/fascicoli/settings" style="display: grid; gap: 1rem;">
+      <label class="field">
+        <span class="field-label">Cartella RootProject (path completo)</span>
+        <input type="text" name="root_path" required
+               value="{{ current_path or default_suggestion }}"
+               style="font-family: var(--mono, monospace)">
+        <small class="muted">Se la cartella non esiste, Argos la creerà.</small>
+      </label>
+      <div>
+        <button type="submit" class="btn btn-primary">
+          <svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>
+          Salva
+        </button>
+      </div>
+    </form>
+  </div>
+</section>
+{% endblock %}

@@ -24,14 +24,13 @@ from ..agent.llm_providers import (
     env_key_status,
     get_provider,
     list_providers,
-    resolve_api_key,
-    resolve_base_url,
     resolve_credential,
 )
 from ..agent.ollama import list_models
 from ..agent.tools.fetch_http import fetch_http
 from ..agent.tools.search import web_search
 from ..config import UPLOADS_DIR, settings
+from ..markdown_render import render_markdown
 from ..orchestrator import (
     AUTONOMY_LEVELS,
     OrchestratorPlan,
@@ -1978,6 +1977,12 @@ async def orchestrator_chat_stream(
         yield _chat_stream_event("done")
 
     return _chat_stream_response(event_stream())
+
+
+@router.post("/orchestrator/chat/render", response_class=HTMLResponse)
+async def orchestrator_chat_render_markdown(message: str = Form("")):
+    """Renderizza markdown chat con lo stesso renderer sicuro della UI server-side."""
+    return HTMLResponse(render_markdown(message or ""))
 
 
 @router.post("/orchestrator/chat/clear")

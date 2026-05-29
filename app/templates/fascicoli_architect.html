@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Fascicoli (architect) — Argos{% endblock %}
+{% block content %}
+<section>
+  <div class="section-header">
+    <div>
+      <h2 style="margin: 0">Fascicoli — Vista architect</h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        Supervisione architetturale sull'intero tenant. Vedi <strong>solo metadati</strong>
+        (nomi, dimensioni, struttura). I contenuti dei file restano sui PC degli utenti.
+      </p>
+    </div>
+    <a href="/fascicoli" class="btn-link">Vista utente</a>
+  </div>
+
+  {% if not projects %}
+  <div class="empty-state">
+    <span class="empty-icon">
+      <svg class="icon" aria-hidden="true" style="width: 2.6rem; height: 2.6rem"><use href="#i-folder"/></svg>
+    </span>
+    <div class="empty-title">Nessun fascicolo nel tenant.</div>
+    <div class="empty-hint">
+      Quando gli utenti creeranno fascicoli, comparirà qui un riepilogo con
+      consumo di spazio per progetto.
+    </div>
+  </div>
+  {% else %}
+  {% set total_size = projects | sum(attribute='size_bytes') %}
+  {% set total_files = projects | sum(attribute='n_files') %}
+  <div style="display: flex; gap: 0.8rem; flex-wrap: wrap; margin: 1rem 0 1.5rem">
+    <div style="padding: 0.8rem 1.1rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; min-width: 130px">
+      <div class="muted" style="font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.05em">Fascicoli</div>
+      <div style="font-size: 1.6rem; font-weight: 600">{{ projects|length }}</div>
+    </div>
+    <div style="padding: 0.8rem 1.1rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; min-width: 130px">
+      <div class="muted" style="font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.05em">File totali</div>
+      <div style="font-size: 1.6rem; font-weight: 600">{{ total_files }}</div>
+    </div>
+    <div style="padding: 0.8rem 1.1rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; min-width: 130px">
+      <div class="muted" style="font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.05em">Spazio</div>
+      <div style="font-size: 1.6rem; font-weight: 600">{{ "%.1f"|format((total_size or 0) / 1024 / 1024) }} <small class="muted" style="font-size: 0.7em">MB</small></div>
+    </div>
+  </div>
+
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Titolo</th>
+        <th>Owner</th>
+        <th>Visibilità</th>
+        <th style="text-align: right">File</th>
+        <th style="text-align: right">Dimensione</th>
+        <th>Aggiornato</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in projects %}
+      <tr {% if p.is_archived %}class="row-disabled"{% endif %}>
+        <td>
+          <a href="/fascicoli/{{ p.id }}">{{ p.title }}</a>
+          {% if p.is_archived %} <small class="muted">(archiviato)</small>{% endif %}
+        </td>
+        <td><small>{{ p|owner_display }}</small></td>
+        <td>
+          {% if p.visibility == 'tenant' %}
+          <span class="badge badge-pause">Tenant</span>
+          {% else %}
+          <span class="badge badge-cancel">Privato</span>
+          {% endif %}
+        </td>
+        <td style="text-align: right">{{ p.n_files }}</td>
+        <td style="text-align: right"><small>{{ "%.2f"|format((p.size_bytes or 0) / 1024 / 1024) }} MB</small></td>
+        <td><small class="muted">{{ p.updated_at }}</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}

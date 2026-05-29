@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Fascicoli — Argos{% endblock %}
+{% block content %}
+<section>
+  <div class="section-header">
+    <div>
+      <h2 style="margin: 0">Fascicoli</h2>
+      <p class="muted" style="margin: 0.3rem 0 0 0">
+        I tuoi documenti restano nella tua cartella, sul tuo PC. Argos li legge per te.
+      </p>
+      <p class="muted" style="margin: 0.4rem 0 0 0; font-size: 0.88em">
+        <a href="/fascicoli/settings" title="Cambia root project">
+          <svg class="icon" aria-hidden="true" style="vertical-align: -3px"><use href="#i-folder"/></svg>
+          RootProject: <code>{{ root_project_path }}</code>
+        </a>
+        {% if current_user and (current_user.is_architect or current_user.is_super_admin) %}
+        &nbsp;·&nbsp; <a href="/fascicoli/architect">Vista architect</a>
+        {% endif %}
+      </p>
+    </div>
+    <a href="/fascicoli/new" class="btn-link-action">
+      <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+      Nuovo fascicolo
+    </a>
+  </div>
+
+  {% if not projects %}
+  <div class="empty-state">
+    <span class="empty-icon">
+      <svg class="icon" aria-hidden="true" style="width: 2.6rem; height: 2.6rem"><use href="#i-folder"/></svg>
+    </span>
+    <div class="empty-title">Nessun fascicolo ancora.</div>
+    <div class="empty-hint">
+      Crea il primo fascicolo per organizzare documenti, contratti, capitolati o
+      qualsiasi insieme di file su cui vuoi che Argos ti aiuti a lavorare.
+    </div>
+    <div style="margin-top: 1.2rem">
+      <a href="/fascicoli/new" class="btn btn-primary">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+        Crea il primo
+      </a>
+    </div>
+  </div>
+  {% else %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Titolo</th>
+        <th>Visibilità</th>
+        <th>Owner</th>
+        <th style="text-align: right">File</th>
+        <th style="text-align: right">Dimensione</th>
+        <th>Stato</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in projects %}
+      <tr>
+        <td>
+          <a href="/fascicoli/{{ p.id }}"><strong>{{ p.title }}</strong></a>
+          {% if p.description %}<br><small class="muted">{{ p.description }}</small>{% endif %}
+        </td>
+        <td>
+          {% if p.visibility == 'tenant' %}
+          <span class="badge badge-pause">Tenant</span>
+          {% else %}
+          <span class="badge badge-cancel">Privato</span>
+          {% endif %}
+        </td>
+        <td><small>{{ p|owner_display }}</small></td>
+        <td style="text-align: right">{{ p.n_files }}</td>
+        <td style="text-align: right"><small>{{ "%.1f"|format((p.size_bytes or 0) / 1024 / 1024) }} MB</small></td>
+        <td>
+          {% if p.local_state == 'completo' %}
+          <span class="badge badge-ok" title="Cartella: {{ p.local_folder }}">Su questo PC</span>
+          {% else %}
+          <span class="badge badge-cancel" title="File non presenti su questo PC">Monco</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}

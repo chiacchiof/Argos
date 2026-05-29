@@ -998,6 +998,65 @@ CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_api_config_status ON whatsapp_api_config(status);
 CREATE INDEX IF NOT EXISTS idx_workflow_edges_from ON workflow_edges(from_task_id, enabled);
 CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflow_id);
+
+-- ============================================================
+-- Fascicoli (Argos Fascicoli v1): registro progetti tenant-scoped.
+-- Vedi docs/argos_fascicoli_design.md per il design completo.
+-- I CONTENUTI dei file vivono SOLO sul filesystem locale (.argos/),
+-- in Postgres ci sono solo metadati (titolo, dimensioni, hash).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS projects (
+  id              BIGSERIAL PRIMARY KEY,
+  tenant_id       BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  owner_user_id   BIGINT NOT NULL REFERENCES users(id)   ON DELETE RESTRICT,
+  folder_uuid     UUID NOT NULL UNIQUE,
+  title           TEXT NOT NULL,
+  description     TEXT,
+  visibility      TEXT NOT NULL CHECK (visibility IN ('tenant', 'user')),
+  is_archived     BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_projects_tenant_visibility ON projects(tenant_id, visibility);
+CREATE INDEX IF NOT EXISTS idx_projects_owner            ON projects(owner_user_id);
+
+CREATE TABLE IF NOT EXISTS project_users (
+  project_id    BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  user_id       BIGINT NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
+  role          TEXT NOT NULL CHECK (role IN ('viewer', 'editor')),
+  added_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (project_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_users_user ON project_users(user_id);
+
+CREATE TABLE IF NOT EXISTS project_files (
+  id                BIGSERIAL PRIMARY KEY,
+  project_id        BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  relative_path     TEXT NOT NULL,
+  name              TEXT NOT NULL,
+  size_bytes        BIGINT NOT NULL,
+  content_hash      TEXT,
+  mime_type         TEXT,
+  added_by_user_id  BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  added_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  mtime             TIMESTAMPTZ,
+  last_indexed_at   TIMESTAMPTZ,
+  UNIQUE (project_id, relative_path)
+);
+CREATE INDEX IF NOT EXISTS idx_project_files_project ON project_files(project_id);
+
+-- Cronologia chat RAG per progetto (fascicoli v2). Una conversazione per
+-- progetto in v1 (no conversation_id).
+CREATE TABLE IF NOT EXISTS project_chat_messages (
+  id          BIGSERIAL PRIMARY KEY,
+  project_id  BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  user_id     BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  role        TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+  content     TEXT NOT NULL,
+  citations   TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_project_chat_messages_project ON project_chat_messages(project_id, id);
 """
 
 
