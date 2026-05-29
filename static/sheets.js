@@ -13,7 +13,7 @@
 (function () {
   "use strict";
 
-  var SHEETS_JS_VERSION = "v6-resize-fix+select-header-2026-05-29";
+  var SHEETS_JS_VERSION = "v7-clip-testo-lungo+resize-2026-05-29";
   try { console.info("[Argos Fogli] sheets.js", SHEETS_JS_VERSION, "caricato"); } catch (e) {}
 
   var cfg = JSON.parse(document.getElementById("sheet-config").textContent);
@@ -286,6 +286,12 @@
     this._pointing = null;   // {pos,len} del riferimento inserito col mouse
     this._pointDrag = null;  // {r,c} ancora del drag di selezione range
     this._refCells = [];     // celle evidenziate come riferimenti di formula
+    // larghezze colonna gestite in JS: la tabella ha width = somma esplicita,
+    // cosi' il contenuto lungo NON allarga la colonna (clip via overflow:hidden)
+    var _cs = (typeof getComputedStyle === "function") ? getComputedStyle(document.documentElement) : null;
+    this._defColW = (_cs && parseFloat(_cs.getPropertyValue("--sheet-col-w"))) || 92;
+    this._rowheadW = (_cs && parseFloat(_cs.getPropertyValue("--sheet-rowhead-w"))) || 46;
+    this._colW = {};
     this._build();
     this._bind();
     this.setActive(0, 0);
@@ -323,7 +329,9 @@
     for (var j = 0; j < cols.length; j++) this._cols[+cols[j].dataset.c] = cols[j];
     var trs = this.table.querySelectorAll("tbody tr");
     for (var t = 0; t < trs.length; t++) this._trs[t] = trs[t];
+    this._rowheadCol = this.table.querySelector("colgroup col.ch-rowhead");
     this._applySizes();
+    this._updateTableWidth();
   };
 
   SheetGrid.prototype.td = function (r, c) { return this._tds[key(r, c)]; };
@@ -545,8 +553,19 @@
   };
   SheetGrid.prototype._applySizes = function () {
     var s = this._loadSizes();
-    for (var c in s.cols) if (this._cols[c]) this._cols[c].style.width = s.cols[c] + "px";
+    for (var c in this._cols) {
+      var w = (s.cols && s.cols[c] != null) ? s.cols[c] : this._defColW;
+      this._colW[c] = w;
+      this._cols[c].style.width = w + "px";
+    }
+    if (this._rowheadCol) this._rowheadCol.style.width = this._rowheadW + "px";
     for (var r in s.rows) if (this._trs[r]) this._trs[r].style.height = s.rows[r] + "px";
+  };
+  SheetGrid.prototype._updateTableWidth = function () {
+    if (!this.table) return;
+    var total = this._rowheadW;
+    for (var c in this._colW) total += this._colW[c];
+    this.table.style.width = total + "px";  // somma esplicita -> niente espansione da contenuto
   };
   SheetGrid.prototype._startColResize = function (c, startX) {
     var self = this, col = this._cols[c];
@@ -558,6 +577,8 @@
     function move(ev) {
       var w = Math.max(32, Math.round(startW + (ev.clientX - startX)));
       col.style.width = w + "px";
+      self._colW[c] = w;
+      self._updateTableWidth();
       if (self.editor) self._positionEditor(self.editor.el, self.td(self.editor.r, self.editor.c));
     }
     function up() {
