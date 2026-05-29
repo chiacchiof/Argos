@@ -13,6 +13,9 @@
 (function () {
   "use strict";
 
+  var SHEETS_JS_VERSION = "v2-hybrid+formule-2026-05-29";
+  try { console.info("[Argos Fogli] sheets.js", SHEETS_JS_VERSION, "caricato"); } catch (e) {}
+
   var cfg = JSON.parse(document.getElementById("sheet-config").textContent);
 
   // ---- helpers -----------------------------------------------------------
@@ -787,8 +790,12 @@
         self._haveSnapshot = true;
         self.h.onSnapshot(snap);
         self.h.onStatus("online");  // dati caricati: si puo' leggere e salvare (via HTTP)
+        try { console.info("[Argos Fogli] snapshot HTTP caricato (rev", snap.revision + ")"); } catch (e) {}
       })
-      .catch(function () { if (!self._wsOpen()) self.h.onStatus("offline"); });
+      .catch(function (err) {
+        try { console.error("[Argos Fogli] snapshot HTTP fallito:", err); } catch (e) {}
+        if (!self._wsOpen()) self.h.onStatus("offline");
+      });
   };
   WsTransport.prototype._connectWs = function () {
     var self = this;
@@ -799,6 +806,7 @@
     ws.onopen = function () {
       self._retries = 0;
       self.h.onStatus("online");
+      try { console.info("[Argos Fogli] WebSocket connesso (realtime attivo)"); } catch (e) {}
       ws.send(JSON.stringify({ type: "hello", last_revision: self._haveSnapshot ? self._rev : -1 }));
       if (self._outbox.length) {
         var pending = self._outbox; self._outbox = [];
@@ -825,6 +833,7 @@
     };
     ws.onclose = function (ev) {
       clearInterval(self._pingTimer);
+      try { console.warn("[Argos Fogli] WebSocket chiuso (code", ev.code + ") — salvataggio via HTTP attivo"); } catch (e) {}
       if (self._closedByUs) return;
       // auth/forbidden/not-found: WS e HTTP falliranno entrambi -> offline + errore.
       if (ev.code === 4401 || ev.code === 4403 || ev.code === 4404) {

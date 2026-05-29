@@ -165,7 +165,7 @@ async def sheet_editor(
     sheet, project = _load_sheet_or_404(sheet_id, current_user)
     can_edit = facl.can_edit_sheet_cells(sheet, project, current_user)
     can_manage = facl.can_manage_sheet(sheet, project, current_user)
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         request,
         "sheet_editor.html",
         {
@@ -177,6 +177,10 @@ async def sheet_editor(
             "back_url": f"/fascicoli/{sheet['project_id']}" if sheet.get("project_id") else "/sheets",
         },
     )
+    # No-store: l'HTML dell'editor deve sempre ricaricare l'ultima versione di
+    # sheets.js/css (il ?v=mtime nel markup cambia solo se l'HTML e' fresco).
+    resp.headers["Cache-Control"] = "no-store, must-revalidate"
+    return resp
 
 
 # ---------------------------------------------------------------------------
