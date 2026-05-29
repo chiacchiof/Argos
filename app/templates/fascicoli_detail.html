@@ -142,7 +142,7 @@
             <th style="text-align: right">Dim.</th>
             <th>Modificato</th>
             <th>Indicizzato</th>
-            {% if can_edit %}<th style="width: 1%"></th>{% endif %}
+            {% if project.local_state == 'completo' or can_edit %}<th style="width: 1%"></th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -158,8 +158,19 @@
               <span class="badge badge-cancel" title="Non ancora nell'indice chat">—</span>
               {% endif %}
             </td>
-            {% if can_edit %}
-            <td>
+            {% if project.local_state == 'completo' or can_edit %}
+            <td style="white-space: nowrap; display: flex; gap: 0.3rem; align-items: center">
+              {% if project.local_state == 'completo' %}
+              <button type="button" class="btn-icon" title="Apri sul PC" aria-label="Apri file"
+                      data-rel="{{ f.relative_path }}" onclick="argosOpenFile({{ project.id }}, this.dataset.rel, this)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                  <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+                </svg>
+              </button>
+              {% endif %}
+              {% if can_edit %}
               <form method="post" action="/fascicoli/{{ project.id }}/files/delete" style="margin: 0"
                     onsubmit="return confirm('Eliminare il file {{ f.name|e }}? Verrà cancellato dal disco e dall&apos;indice.');">
                 <input type="hidden" name="relative_path" value="{{ f.relative_path }}">
@@ -168,6 +179,7 @@
                   <svg class="icon"><use href="#i-trash"/></svg>
                 </button>
               </form>
+              {% endif %}
             </td>
             {% endif %}
           </tr>
@@ -895,6 +907,18 @@
 {% include "_sheet_manage_assets.html" %}
 
 <script>
+  // Apre un file del fascicolo con l'app predefinita dell'OS (sul PC locale).
+  function argosOpenFile(projectId, rel, btn) {
+    if (btn) { btn.disabled = true; setTimeout(function () { btn.disabled = false; }, 1500); }
+    var body = new URLSearchParams(); body.set('relative_path', rel);
+    fetch('/fascicoli/' + projectId + '/files/open', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body
+    }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { alert('Impossibile aprire il file.'); });
+    }).catch(function () { alert('Impossibile aprire il file.'); });
+  }
+
   // Rinomina conversazione chat (submit di un form generato al volo)
   function fascRenameConv(cur) {
     var t = prompt('Nome della chat:', cur || '');

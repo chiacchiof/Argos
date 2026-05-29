@@ -35,10 +35,15 @@ from . import sheets_db as sdb
 # ---------------------------------------------------------------------------
 
 def can_edit_project(project: dict, user: CurrentUser) -> bool:
-    """Owner / architect / super-admin / editor (project_users role='editor')."""
+    """Owner / architect / super-admin / editor.
+    Se il progetto e' a visibilita' 'tenant' con tenant_role='editor', TUTTI i
+    membri del tenant possono modificare (upload file, creazione fogli, ecc.).
+    Con tenant_role='viewer' (sola lettura) solo owner/architect/editor espliciti."""
     if project["owner_user_id"] == user.id:
         return True
     if user.is_architect or user.is_super_admin:
+        return True
+    if project.get("visibility") == "tenant" and project.get("tenant_role", "editor") == "editor":
         return True
     for m in fdb.list_project_members(project["id"]):
         if m["user_id"] == user.id and m["role"] == "editor":
@@ -84,12 +89,16 @@ def can_edit_sheet_cells(sheet: dict, project: dict | None, user: CurrentUser) -
     """Puo' modificare le celle (inviare cell_patch)."""
     if user.is_super_admin or user.is_architect:
         return True
+    if sheet.get("created_by_user_id") == user.id:
+        return True
     if sheet.get("project_id"):
         return project is not None and can_edit_project(project, user)
     if sheet.get("visibility") == "tenant":
-        return True  # tenant-collaborativo: ogni membro del tenant modifica
-    if sheet.get("created_by_user_id") == user.id:
-        return True
+        # tenant 'editor' = tutti modificano; 'viewer' = sola lettura per tutti
+        # (solo gli editor espliciti modificano)
+        if sheet.get("tenant_role", "editor") == "editor":
+            return True
+        return sdb.sheet_member_role(sheet["id"], user.id) == "editor"
     # foglio privato: editabile solo da chi e' stato condiviso come 'editor'
     return sdb.sheet_member_role(sheet["id"], user.id) == "editor"
 

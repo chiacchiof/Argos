@@ -282,6 +282,21 @@ def test_acl_standalone_user_sheet(two_tenants):
     assert acl.can_edit_sheet_cells(sheet, None, arch) is True
 
 
+def test_sheet_tenant_role_read_only(two_tenants):
+    ctx = two_tenants
+    sid = sdb.create_sheet(title="RO", visibility="tenant", tenant_role="viewer",
+                           tenant_id=ctx["ta"], created_by_user_id=ctx["op_a"])
+    op2 = _user(ctx["op_a2"], "tenant_user", ctx["ta"])
+    sheet = sdb.get_sheet(sid, tenant_id=ctx["ta"], current_user_id=ctx["op_a2"])
+    assert sheet["tenant_role"] == "viewer"
+    assert acl.can_open_sheet(sheet, None, op2) is True       # tutti leggono
+    assert acl.can_edit_sheet_cells(sheet, None, op2) is False  # sola lettura per tutti
+    # passa a modifica -> tutti i membri del tenant modificano
+    sdb.set_sheet_access(sid, "tenant", "editor", tenant_id=ctx["ta"])
+    sheet = sdb.get_sheet(sid, tenant_id=ctx["ta"], current_user_id=ctx["op_a2"])
+    assert acl.can_edit_sheet_cells(sheet, None, op2) is True
+
+
 def test_acl_project_attached_follows_project(two_tenants):
     ctx = two_tenants
     # Progetto user-visibility, owner op_a, con op_a2 come viewer

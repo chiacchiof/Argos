@@ -15,12 +15,22 @@ from typing import Any
 _ARCH_ROLES = ("tenant_architect", "super_admin")
 
 
+def parse_access(access: str) -> tuple[str, str]:
+    """Converte il valore del select «Accesso generale» in (visibility, tenant_role)."""
+    if access == "user":
+        return "user", "editor"  # tenant_role irrilevante con visibilita' 'user'
+    if access == "tenant-viewer":
+        return "tenant", "viewer"
+    return "tenant", "editor"
+
+
 def build_share_context(
     *,
     kind: str,
     title: str,
     base: str,
     visibility: str,
+    tenant_role: str = "editor",
     owner_user_id: int | None,
     member_role: dict[int, str],
     tenant_users: list[dict[str, Any]],
@@ -46,5 +56,5 @@ def build_share_context(
     addable.sort(key=lambda r: (r["email"] or "").lower())
     return {
         "kind": kind, "title": title, "base": base, "visibility": visibility,
-        "rows": rows, "addable": addable,
+        "tenant_role": tenant_role, "rows": rows, "addable": addable,
     }

@@ -50,10 +50,14 @@ def test_project_share_flow(env):
         # rimuovi (none)
         client.post(f"/fascicoli/{c['pid']}/share", data={"user_id": c["other"], "role": "none"})
         assert fdb.list_project_members(c["pid"]) == []
-        # cambia visibilita'
-        r = client.post(f"/fascicoli/{c['pid']}/share/visibility", data={"visibility": "tenant"})
+        # cambia accesso generale: Tutti (lettura) -> visibility tenant + role viewer
+        r = client.post(f"/fascicoli/{c['pid']}/share/visibility", data={"access": "tenant-viewer"})
         assert r.status_code == 200
-        assert fdb.get_project(c["pid"], current_user_id=c["owner"])["visibility"] == "tenant"
+        proj = fdb.get_project(c["pid"], current_user_id=c["owner"])
+        assert proj["visibility"] == "tenant" and proj["tenant_role"] == "viewer"
+        # Tutti (modifica) -> tenant + editor
+        client.post(f"/fascicoli/{c['pid']}/share/visibility", data={"access": "tenant-editor"})
+        assert fdb.get_project(c["pid"], current_user_id=c["owner"])["tenant_role"] == "editor"
 
 
 def test_project_share_cross_tenant_blocked(env):
@@ -74,6 +78,25 @@ def test_project_share_requires_manage(env):
     with TestClient(app) as client:
         _login(client, "oth@a.it")
         assert client.get(f"/fascicoli/{c['pid']}/share").status_code == 403
+
+
+def test_project_tenant_role_controls_edit(env):
+    c = env
+    from app.auth import CurrentUser
+    from app.fascicoli import acl
+    other = CurrentUser(id=c["other"], email="o", role="tenant_user", tenant_id=c["ta"], tenant_name=None, is_active=True)
+    # tenant + editor: ogni membro del tenant modifica
+    fdb.update_project(c["pid"], visibility="tenant", tenant_role="editor")
+    p = fdb.get_project(c["pid"], current_user_id=c["other"])
+    assert acl.can_edit_project(p, other) is True
+    # tenant + viewer (sola lettura): il membro NON modifica
+    fdb.update_project(c["pid"], visibility="tenant", tenant_role="viewer")
+    p = fdb.get_project(c["pid"], current_user_id=c["other"])
+    assert acl.can_edit_project(p, other) is False
+    # ...ma un editor esplicito modifica comunque
+    fdb.add_project_member(c["pid"], c["other"], role="editor")
+    p = fdb.get_project(c["pid"], current_user_id=c["other"])
+    assert acl.can_edit_project(p, other) is True
 
 
 def test_editor_can_create_sheet_viewer_cannot(env):

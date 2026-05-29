@@ -5,21 +5,28 @@
   <button type="button" class="share-close" onclick="argosCloseShareModal()" aria-label="Chiudi">&times;</button>
 </div>
 
+{% set access = 'user' if share.visibility == 'user' else ('tenant-viewer' if share.tenant_role == 'viewer' else 'tenant-editor') %}
 <div class="share-visibility">
   <label class="share-vis-label">Accesso generale</label>
   <form action="{{ share.base }}/share/visibility" method="post" class="share-form">
-    <select name="visibility" onchange="argosShareApply(this.form)">
-      <option value="tenant" {% if share.visibility == 'tenant' %}selected{% endif %}>Tutti gli utenti del tenant (modifica)</option>
-      <option value="user" {% if share.visibility == 'user' %}selected{% endif %}>Solo le persone scelte qui sotto</option>
+    <select name="access" onchange="argosShareApply(this.form)">
+      <option value="tenant-editor" {% if access == 'tenant-editor' %}selected{% endif %}>Tutti gli utenti del tenant (modifica)</option>
+      <option value="tenant-viewer" {% if access == 'tenant-viewer' %}selected{% endif %}>Tutti gli utenti del tenant (lettura)</option>
+      <option value="user" {% if access == 'user' %}selected{% endif %}>Solo le persone scelte qui sotto</option>
     </select>
   </form>
 </div>
-{% if share.visibility == 'tenant' %}
-<p class="share-note">Tutti gli utenti del tenant possono aprire e modificare. Imposta «Solo le persone scelte» per gestire i permessi individuali qui sotto.</p>
+{% if access == 'tenant-editor' %}
+<p class="share-note">
+  Tutti gli utenti del tenant possono aprire e modificare.
+  {% if share.kind == 'project' %}«Modifica» = aggiungere/togliere file, modificare le info, creare fogli, eliminare.{% endif %}
+</p>
+{% elif access == 'tenant-viewer' %}
+<p class="share-note">Tutti gli utenti del tenant possono aprire in <strong>sola lettura</strong>. Solo le persone con «Modifica» qui sotto (o gli architetti) possono modificare.</p>
 {% else %}
 <p class="share-note">
   Solo le persone elencate possono accedere.
-  {% if share.kind == 'project' %}«Modifica» consente anche di caricare file e creare fogli nel fascicolo.{% endif %}
+  {% if share.kind == 'project' %}«Modifica» = aggiungere/togliere file, modificare le info, creare fogli.{% endif %}
 </p>
 {% endif %}
 

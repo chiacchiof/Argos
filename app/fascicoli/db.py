@@ -143,6 +143,7 @@ def create_project(
     title: str,
     description: str | None = None,
     visibility: str = "tenant",
+    tenant_role: str = "editor",
     folder_uuid: str | None = None,
     tenant_id: Any = _UNSET,
     owner_user_id: Any = _UNSET,
@@ -152,6 +153,8 @@ def create_project(
     """
     if visibility not in ("tenant", "user"):
         raise ValueError(f"visibility non valida: {visibility}")
+    if tenant_role not in ("viewer", "editor"):
+        raise ValueError(f"tenant_role non valido: {tenant_role}")
     tenant_id = _resolve_tenant(tenant_id)
     owner = _resolve_user(owner_user_id)
     if tenant_id is None:
@@ -162,8 +165,8 @@ def create_project(
     with connect() as con:
         row = con.execute(
             "INSERT INTO projects "
-            "  (tenant_id, owner_user_id, folder_uuid, title, description, visibility) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            "  (tenant_id, owner_user_id, folder_uuid, title, description, visibility, tenant_role) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
                 tenant_id,
                 owner,
@@ -171,6 +174,7 @@ def create_project(
                 title.strip(),
                 (description or "").strip() or None,
                 visibility,
+                tenant_role,
             ),
         ).fetchone()
         con.commit()
@@ -183,6 +187,7 @@ def update_project(
     title: str | None = None,
     description: str | None = None,
     visibility: str | None = None,
+    tenant_role: str | None = None,
     owner_user_id: int | None = None,
     tenant_id: Any = _UNSET,
 ) -> None:
@@ -200,6 +205,11 @@ def update_project(
             raise ValueError(f"visibility non valida: {visibility}")
         fields.append("visibility = %s")
         args.append(visibility)
+    if tenant_role is not None:
+        if tenant_role not in ("viewer", "editor"):
+            raise ValueError(f"tenant_role non valido: {tenant_role}")
+        fields.append("tenant_role = %s")
+        args.append(tenant_role)
     if owner_user_id is not None:
         fields.append("owner_user_id = %s")
         args.append(int(owner_user_id))

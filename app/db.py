@@ -1013,6 +1013,7 @@ CREATE TABLE IF NOT EXISTS projects (
   title           TEXT NOT NULL,
   description     TEXT,
   visibility      TEXT NOT NULL CHECK (visibility IN ('tenant', 'user')),
+  tenant_role     TEXT NOT NULL DEFAULT 'editor' CHECK (tenant_role IN ('viewer', 'editor')),
   is_archived     BOOLEAN NOT NULL DEFAULT FALSE,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1092,6 +1093,7 @@ CREATE TABLE IF NOT EXISTS project_sheets (
   project_id         BIGINT REFERENCES projects(id) ON DELETE SET NULL,
   title              TEXT NOT NULL,
   visibility         TEXT NOT NULL DEFAULT 'tenant' CHECK (visibility IN ('tenant', 'user')),
+  tenant_role        TEXT NOT NULL DEFAULT 'editor' CHECK (tenant_role IN ('viewer', 'editor')),
   created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
   is_archived        BOOLEAN NOT NULL DEFAULT FALSE,
   revision           BIGINT NOT NULL DEFAULT 0,
@@ -1140,6 +1142,12 @@ CREATE TABLE IF NOT EXISTS project_sheet_users (
   PRIMARY KEY (sheet_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_project_sheet_users_user ON project_sheet_users(user_id);
+
+-- DB esistenti: ruolo di default per i membri del tenant quando visibility='tenant'
+-- ('editor' = tutti modificano, 'viewer' = tutti in sola lettura). Posizionato in
+-- fondo: gli ALTER richiedono che projects e project_sheets siano gia' creati.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS tenant_role TEXT NOT NULL DEFAULT 'editor';
+ALTER TABLE project_sheets ADD COLUMN IF NOT EXISTS tenant_role TEXT NOT NULL DEFAULT 'editor';
 """
 
 

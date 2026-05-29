@@ -28,7 +28,7 @@ from urllib.parse import quote
 import json
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 
 from .. import db_cloud
 from ..auth import CurrentUser, get_current_user, require_architect_or_admin
@@ -461,6 +461,34 @@ async def fascicoli_delete(
     return RedirectResponse(url="/fascicoli", status_code=302)
 
 
+@router.post("/{project_id}/files/open")
+async def fascicoli_file_open(
+    project_id: int,
+    relative_path: str = Form(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Apre il file con l'app predefinita dell'OS, SUL PC locale (Argos gira in
+    locale, i file restano sul PC). Aprire = leggere: basta poter vedere il
+    fascicolo (nessun permesso di modifica richiesto)."""
+    project = fdb.get_project(
+        project_id, current_user_id=current_user.id,
+        architect_view=current_user.is_architect or current_user.is_super_admin,
+    )
+    if not project:
+        raise HTTPException(404)
+    root = _user_root_path(current_user)
+    folder = fsync.locate_project_folder(root, project["folder_uuid"]) if root else None
+    if not folder:
+        raise HTTPException(400, "Cartella non presente su questo PC.")
+    target = ffs.resolve_file_in_project(folder, (relative_path or "").strip())
+    if not target:
+        raise HTTPException(404, "File non trovato.")
+    if not ffs.open_file_in_os(target):
+        raise HTTPException(500, "Impossibile aprire il file su questo PC.")
+    log.info("opened file project=%s path=%s by=%s", project_id, relative_path, current_user.email)
+    return Response(status_code=204)
+
+
 @router.post("/{project_id}/files/delete")
 async def fascicoli_file_delete(
     request: Request,
@@ -764,6 +792,7 @@ def _project_share_response(request: Request, project: dict, current_user: Curre
     ctx = fshare.build_share_context(
         kind="project", title=project["title"], base=f"/fascicoli/{project['id']}",
         visibility=project.get("visibility", "tenant"),
+        tenant_role=project.get("tenant_role", "editor"),
         owner_user_id=project.get("owner_user_id"),
         member_role=member_role, tenant_users=tenant_users,
     )
@@ -814,14 +843,14 @@ async def fascicoli_share_set(
 @router.post("/{project_id}/share/visibility", response_class=HTMLResponse)
 async def fascicoli_share_visibility(
     request: Request, project_id: int,
-    visibility: str = Form(...),
+    access: str = Form(...),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     project = _load_project_for_manage(project_id, current_user)
-    if visibility not in ("tenant", "user"):
-        raise HTTPException(400, "visibility non valida.")
-    fdb.update_project(project_id, visibility=visibility)
+    visibility, tenant_role = fshare.parse_access(access)
+    fdb.update_project(project_id, visibility=visibility, tenant_role=tenant_role)
     project["visibility"] = visibility
+    project["tenant_role"] = tenant_role
     return _project_share_response(request, project, current_user)
 
 

@@ -224,6 +224,38 @@ def delete_project_folder(folder: Path) -> bool:
     return True
 
 
+def resolve_file_in_project(folder: Path, relative_path: str) -> Path | None:
+    """Path assoluto sicuro di un file dentro `folder` (no path-traversal).
+    None se il path esce dalla cartella o il file non esiste."""
+    if not folder or not folder.is_dir() or not relative_path:
+        return None
+    folder_resolved = folder.resolve()
+    target = (folder / relative_path).resolve()
+    try:
+        target.relative_to(folder_resolved)
+    except ValueError:
+        return None
+    return target if target.is_file() else None
+
+
+def open_file_in_os(path: Path) -> bool:
+    """Apre un file con l'app predefinita dell'OS. Funziona perche' Argos gira
+    sul PC locale dell'utente (i file restano locali). True se avviato."""
+    import subprocess
+    import sys
+    try:
+        if sys.platform.startswith("win"):
+            import os as _os
+            _os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+        return True
+    except Exception:
+        return False
+
+
 def delete_file_in_project(folder: Path, relative_path: str) -> bool:
     """Cancella un singolo file dentro `folder` (path-traversal safe).
     Ritorna True se cancellato, False se file non trovato o path non valido.

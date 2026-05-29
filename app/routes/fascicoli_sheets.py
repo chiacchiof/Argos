@@ -276,6 +276,7 @@ def _share_modal_response(request: Request, sheet: dict, current_user: CurrentUs
     ctx = fshare.build_share_context(
         kind="sheet", title=sheet["title"], base=f"/sheets/{sheet['id']}",
         visibility=sheet.get("visibility", "tenant"),
+        tenant_role=sheet.get("tenant_role", "editor"),
         owner_user_id=sheet.get("created_by_user_id"),
         member_role=member_role, tenant_users=tenant_users,
     )
@@ -317,14 +318,14 @@ async def sheet_share_set(
 async def sheet_share_visibility(
     request: Request,
     sheet_id: int,
-    visibility: str = Form(...),
+    access: str = Form(...),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     sheet, _ = _load_sheet_or_404(sheet_id, current_user, require_manage=True)
-    if visibility not in ("tenant", "user"):
-        raise HTTPException(400, "visibility non valida.")
-    sdb.set_sheet_visibility(sheet_id, visibility)
+    visibility, tenant_role = fshare.parse_access(access)
+    sdb.set_sheet_access(sheet_id, visibility, tenant_role)
     sheet["visibility"] = visibility
+    sheet["tenant_role"] = tenant_role
     return _share_modal_response(request, sheet, current_user)
 
 

@@ -78,6 +78,7 @@ def create_sheet(
     title: str,
     project_id: int | None = None,
     visibility: str = "tenant",
+    tenant_role: str = "editor",
     n_rows: int = DEFAULT_ROWS,
     n_cols: int = DEFAULT_COLS,
     tenant_id: Any = _UNSET,
@@ -86,6 +87,8 @@ def create_sheet(
     """INSERT foglio. Ritorna l'id. Richiede un tenant (super_admin non crea)."""
     if visibility not in ("tenant", "user"):
         raise ValueError(f"visibility non valida: {visibility}")
+    if tenant_role not in ("viewer", "editor"):
+        raise ValueError(f"tenant_role non valido: {tenant_role}")
     title = (title or "").strip() or "Nuovo foglio"
     n_rows = max(1, min(int(n_rows), MAX_ROWS))
     n_cols = max(1, min(int(n_cols), MAX_COLS))
@@ -105,9 +108,9 @@ def create_sheet(
                 raise SheetForbidden("project_id non appartiene al tenant.")
         row = con.execute(
             "INSERT INTO project_sheets "
-            "  (tenant_id, project_id, title, visibility, created_by_user_id, n_rows, n_cols) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-            (tid, project_id, title, visibility, uid, n_rows, n_cols),
+            "  (tenant_id, project_id, title, visibility, tenant_role, created_by_user_id, n_rows, n_cols) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (tid, project_id, title, visibility, tenant_role, uid, n_rows, n_cols),
         ).fetchone()
         con.commit()
         return int(row["id"])
@@ -211,7 +214,29 @@ def rename_sheet(sheet_id: int, title: str, *, tenant_id: Any = _UNSET) -> None:
         con.commit()
 
 
+def set_sheet_access(sheet_id: int, visibility: str, tenant_role: str = "editor", *, tenant_id: Any = _UNSET) -> None:
+    """Imposta visibilita' + ruolo di default del tenant (quando visibility='tenant':
+    'editor' = tutti modificano, 'viewer' = tutti in sola lettura)."""
+    if visibility not in ("tenant", "user"):
+        raise ValueError(f"visibility non valida: {visibility}")
+    if tenant_role not in ("viewer", "editor"):
+        raise ValueError(f"tenant_role non valido: {tenant_role}")
+    tid = _resolve_tenant(tenant_id)
+    where = "id = %s"
+    args: list[Any] = [visibility, tenant_role, sheet_id]
+    if tid is not None:
+        where += " AND tenant_id = %s"
+        args.append(tid)
+    with connect() as con:
+        con.execute(
+            f"UPDATE project_sheets SET visibility = %s, tenant_role = %s, updated_at = NOW() WHERE {where}",
+            tuple(args),
+        )
+        con.commit()
+
+
 def set_sheet_visibility(sheet_id: int, visibility: str, *, tenant_id: Any = _UNSET) -> None:
+    """Compat: imposta solo la visibilita' (lascia tenant_role invariato)."""
     if visibility not in ("tenant", "user"):
         raise ValueError(f"visibility non valida: {visibility}")
     tid = _resolve_tenant(tenant_id)
