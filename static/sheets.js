@@ -435,6 +435,7 @@
     this.model = new SheetModel(cfg.n_rows, cfg.n_cols);
     this.model.revision = cfg.revision || 0;
     this.statusEl = document.getElementById("sheet-status");
+    this.bannerEl = document.getElementById("sheet-conn-banner");
     this.cellrefEl = document.getElementById("sheet-cellref");
     this.formulaEl = document.getElementById("sheet-formula");
     this.presenceEl = document.getElementById("sheet-presence");
@@ -469,6 +470,18 @@
     var labels = { online: "Online", connecting: "Connessione…", reconnecting: "Riconnessione…", offline: "Offline" };
     this.statusEl.dataset.state = state;
     this.statusEl.querySelector(".sheet-status-label").textContent = labels[state] || state;
+    // banner prominente quando non siamo connessi
+    if (this.bannerEl) {
+      if (state === "reconnecting" || state === "offline") {
+        this.bannerEl.dataset.state = state;
+        this.bannerEl.textContent = state === "offline"
+          ? "Connessione persa — le modifiche verranno inviate alla riconnessione."
+          : "Riconnessione in corso…";
+        this.bannerEl.hidden = false;
+      } else {
+        this.bannerEl.hidden = true;
+      }
+    }
   };
 
   SheetApp.prototype._onSnapshot = function (snap) {
@@ -574,6 +587,7 @@
     this._haveSnapshot = false;
     this._ws = null; this._retries = 0; this._closedByUs = false;
     this._pingTimer = null; this._cursorAt = 0;
+    this._outbox = [];  // patch fatte mentre offline, da rispedire al reconnect
   }
   WsTransport.prototype._url = function () {
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -590,6 +604,13 @@
       self.h.onStatus("online");
       // hello: snapshot completo se non abbiamo ancora stato, altrimenti incrementale
       ws.send(JSON.stringify({ type: "hello", last_revision: self._haveSnapshot ? self._rev : -1 }));
+      // rispedisci le patch accumulate offline (applicate gia' ottimisticamente)
+      if (self._outbox.length) {
+        var pending = self._outbox; self._outbox = [];
+        for (var i = 0; i < pending.length; i++) {
+          ws.send(JSON.stringify({ type: "cell_patch", patch_id: pending[i].id, cells: pending[i].cells }));
+        }
+      }
       self._pingTimer = setInterval(function () {
         if (ws.readyState === 1) ws.send(JSON.stringify({ type: "ping" }));
       }, 25000);
@@ -632,6 +653,8 @@
     if (this._ws && this._ws.readyState === 1) {
       this._ws.send(JSON.stringify({ type: "cell_patch", patch_id: patchId, cells: cells }));
     } else {
+      // offline: accoda per il flush al reconnect (cap per evitare crescita illimitata)
+      if (this._outbox.length < 2000) this._outbox.push({ id: patchId, cells: cells });
       this.h.onStatus("offline");
     }
     return Promise.resolve();

@@ -96,6 +96,21 @@ def test_ws_incremental_recovery_via_last_revision(env):
             assert r3["revision"] == 3
 
 
+def test_ws_hello_sync_when_already_current(env):
+    ctx = env
+    op_a = db_cloud.get_user_by_email("op-a@a.it")["id"]
+    sid = sdb.create_sheet(title="S", tenant_id=ctx["ta"], created_by_user_id=op_a)
+    sdb.apply_cell_patch(sid, [{"row": 0, "col": 0, "value": "a"}], tenant_id=ctx["ta"], actor_user_id=op_a)
+    from app.main import app
+    with TestClient(app) as client:
+        _login(client, "op-a@a.it")
+        with client.websocket_connect(f"/ws/sheets/{sid}") as ws:
+            # client gia' alla revisione head (1): nessuna patch, solo sync
+            ws.send_json({"type": "hello", "last_revision": 1})
+            m = _recv_until(ws, {"sync", "snapshot", "revision_patch"})
+            assert m["type"] == "sync" and m["revision"] == 1
+
+
 def test_ws_ping_pong(env):
     ctx = env
     op_a = db_cloud.get_user_by_email("op-a@a.it")["id"]
