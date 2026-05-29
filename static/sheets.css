@@ -9,7 +9,7 @@
   --sheet-cell-bg: #ffffff;
   --sheet-cell-fg: #1f1f1f;
   --sheet-active: #1a73e8;          /* blu selezione tipo Google Sheets */
-  --sheet-active-fill: rgba(26, 115, 232, 0.10);
+  --sheet-active-fill: rgba(26, 115, 232, 0.16);
   --sheet-header-active: #d2e3fc;
   --sheet-topbar-h: 52px;
   --sheet-fbar-h: 34px;
@@ -25,7 +25,7 @@
   --sheet-cell-bg: #1b1b21;
   --sheet-cell-fg: #e8e8ec;
   --sheet-active: #4f6bf6;
-  --sheet-active-fill: rgba(79, 107, 246, 0.16);
+  --sheet-active-fill: rgba(79, 107, 246, 0.26);
   --sheet-header-active: #2b3a63;
 }
 
@@ -206,7 +206,16 @@ table.sheet-table th.head-active { background: var(--sheet-header-active); color
 /* Selection */
 table.sheet-table td.in-range { background: var(--sheet-active-fill); }
 table.sheet-table td.is-active {
+  /* la cella attiva resta "pulita" col bordo blu (come Google Sheets), anche
+     dentro una selezione multipla */
+  background: var(--sheet-cell-bg);
   box-shadow: inset 0 0 0 2px var(--sheet-active);
+  position: relative; z-index: 2;
+}
+
+/* Celle referenziate da una formula in editing: bordo colorato per riferimento */
+table.sheet-table td.ref-hl {
+  box-shadow: inset 0 0 0 2px var(--ref-color, #e8710a);
   position: relative; z-index: 1;
 }
 

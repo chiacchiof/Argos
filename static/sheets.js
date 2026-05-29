@@ -13,7 +13,7 @@
 (function () {
   "use strict";
 
-  var SHEETS_JS_VERSION = "v3-formule+autocomplete+pointing-2026-05-29";
+  var SHEETS_JS_VERSION = "v4-selezione+ref-highlight-2026-05-29";
   try { console.info("[Argos Fogli] sheets.js", SHEETS_JS_VERSION, "caricato"); } catch (e) {}
 
   var cfg = JSON.parse(document.getElementById("sheet-config").textContent);
@@ -285,6 +285,7 @@
     this.remoteCursors = {}; // uid -> {r,c,el,color,email}
     this._pointing = null;   // {pos,len} del riferimento inserito col mouse
     this._pointDrag = null;  // {r,c} ancora del drag di selezione range
+    this._refCells = [];     // celle evidenziate come riferimenti di formula
     this._build();
     this._bind();
     this.setActive(0, 0);
@@ -406,7 +407,11 @@
     if (initial != null) ed.setSelectionRange(ed.value.length, ed.value.length);
     else ed.select();
     var self = this;
-    ed.addEventListener("input", function () { self._pointing = null; if (self.suggest) self.suggest.update(ed); });
+    ed.addEventListener("input", function () {
+      self._pointing = null;
+      if (self.suggest) self.suggest.update(ed);
+      self.highlightFormulaRefs(ed.value);  // aggiorna le celle illuminate
+    });
     ed.addEventListener("keydown", function (e) {
       // se il menu funzioni e' aperto, gestisce lui frecce/Invio/Tab/Esc
       if (self.suggest && self.suggest.onKeydown(e)) { e.preventDefault(); e.stopPropagation(); return; }
@@ -417,6 +422,8 @@
     });
     // se si sta gia' digitando una formula (es. ho premuto "="), mostra subito i suggerimenti
     if (self.suggest && ed.value.charAt(0) === "=") self.suggest.update(ed);
+    // illumina subito le celle referenziate (caso: apro in edit una cella-formula)
+    this.highlightFormulaRefs(ed.value);
   };
 
   SheetGrid.prototype._positionEditor = function (ed, td) {
@@ -432,6 +439,7 @@
     if (!this.editor) return;
     if (this.suggest) this.suggest.hide();
     this._pointing = null; this._pointDrag = null;
+    this._clearRefHighlights();
     var e = this.editor, val = e.el.value;
     this.editor = null;
     e.el.remove();
@@ -452,6 +460,7 @@
     if (!this.editor) return;
     if (this.suggest) this.suggest.hide();
     this._pointing = null; this._pointDrag = null;
+    this._clearRefHighlights();
     this.editor.el.remove();
     this.editor = null;
   };
@@ -485,6 +494,42 @@
     var pos = this._pointing.pos + this._pointing.len;
     try { ed.setSelectionRange(pos, pos); } catch (e) {}
     ed.focus();
+    this.highlightFormulaRefs(ed.value);  // il ref appena puntato si illumina
+  };
+
+  // ---- evidenziazione celle referenziate da una formula (stile Sheets) --
+  var REF_PALETTE = ["#e8710a", "#1a73e8", "#9334e6", "#188038", "#d93025", "#12b5cb", "#e52592", "#f9ab00"];
+  SheetGrid.prototype._clearRefHighlights = function () {
+    for (var i = 0; i < this._refCells.length; i++) {
+      this._refCells[i].classList.remove("ref-hl");
+      this._refCells[i].style.removeProperty("--ref-color");
+    }
+    this._refCells = [];
+  };
+  SheetGrid.prototype.highlightFormulaRefs = function (text) {
+    this._clearRefHighlights();
+    var applied = [];
+    if (!isFormulaText(text)) return applied;
+    function rc(ref) { var m = /^([A-Za-z]+)(\d+)$/.exec(ref); return { r: parseInt(m[2], 10) - 1, c: colToIndex(m[1].toUpperCase()) }; }
+    var re = /([A-Za-z]+\d+):([A-Za-z]+\d+)|([A-Za-z]+\d+)/g, m, idx = 0, self = this;
+    while ((m = re.exec(text)) !== null) {
+      var color = REF_PALETTE[idx % REF_PALETTE.length]; idx++;
+      var cells = [];
+      if (m[1] && m[2]) {
+        var a = rc(m[1]), b = rc(m[2]);
+        var r1 = Math.min(a.r, b.r), r2 = Math.max(a.r, b.r), c1 = Math.min(a.c, b.c), c2 = Math.max(a.c, b.c);
+        for (var r = r1; r <= r2; r++) for (var c = c1; c <= c2; c++) cells.push([r, c]);
+      } else if (m[3]) {
+        var x = rc(m[3]); cells.push([x.r, x.c]);
+      }
+      for (var k = 0; k < cells.length; k++) {
+        if (cells[k][0] < 0 || cells[k][1] < 0) continue;
+        applied.push({ r: cells[k][0], c: cells[k][1], color: color });
+        var td = self.td(cells[k][0], cells[k][1]);
+        if (td) { td.classList.add("ref-hl"); td.style.setProperty("--ref-color", color); self._refCells.push(td); }
+      }
+    }
+    return applied;
   };
 
   // cancella il contenuto della selezione corrente
