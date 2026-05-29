@@ -1069,10 +1069,12 @@ CREATE TABLE IF NOT EXISTS project_chat_messages (
   citations       TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- DB esistenti: aggiungi conversation_id se manca PRIMA di indicizzarla
+-- (su tabella gia' esistente il CREATE TABLE sopra e' no-op e non aggiunge la
+-- colonna; senza questo ALTER l'indice sotto fallirebbe con UndefinedColumn).
+ALTER TABLE project_chat_messages ADD COLUMN IF NOT EXISTS conversation_id BIGINT REFERENCES project_chat_conversations(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_project_chat_messages_project ON project_chat_messages(project_id, id);
 CREATE INDEX IF NOT EXISTS idx_project_chat_messages_conv ON project_chat_messages(conversation_id, id);
--- DB esistenti: aggiungi conversation_id se manca (idempotente).
-ALTER TABLE project_chat_messages ADD COLUMN IF NOT EXISTS conversation_id BIGINT REFERENCES project_chat_conversations(id) ON DELETE CASCADE;
 
 -- ============================================================
 -- Fogli collaborativi (Argos Fogli v1): spreadsheet realtime tenant-scoped.
