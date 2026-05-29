@@ -13,7 +13,7 @@
 (function () {
   "use strict";
 
-  var SHEETS_JS_VERSION = "v5-resize-colonne-righe-2026-05-29";
+  var SHEETS_JS_VERSION = "v6-resize-fix+select-header-2026-05-29";
   try { console.info("[Argos Fogli] sheets.js", SHEETS_JS_VERSION, "caricato"); } catch (e) {}
 
   var cfg = JSON.parse(document.getElementById("sheet-config").textContent);
@@ -386,6 +386,31 @@
     if (this.onSelChange) this.onSelChange(r, c, this.sel);
   };
 
+  // selezione intera colonna / riga / tutto (click sulle intestazioni)
+  SheetGrid.prototype.selectColumn = function (c, extend) {
+    if (this.editor) this.commitEdit();
+    this.active = { r: 0, c: c };
+    if (extend) { this.sel.r1 = 0; this.sel.r2 = this.model.nRows - 1; this.sel.c2 = c; }
+    else { this.sel = { r1: 0, c1: c, r2: this.model.nRows - 1, c2: c }; }
+    this._paintSelection();
+    if (this.onSelChange) this.onSelChange(this.active.r, this.active.c, this.sel);
+  };
+  SheetGrid.prototype.selectRow = function (r, extend) {
+    if (this.editor) this.commitEdit();
+    this.active = { r: r, c: 0 };
+    if (extend) { this.sel.c1 = 0; this.sel.c2 = this.model.nCols - 1; this.sel.r2 = r; }
+    else { this.sel = { r1: r, c1: 0, r2: r, c2: this.model.nCols - 1 }; }
+    this._paintSelection();
+    if (this.onSelChange) this.onSelChange(this.active.r, this.active.c, this.sel);
+  };
+  SheetGrid.prototype.selectAll = function () {
+    if (this.editor) this.commitEdit();
+    this.active = { r: 0, c: 0 };
+    this.sel = { r1: 0, c1: 0, r2: this.model.nRows - 1, c2: this.model.nCols - 1 };
+    this._paintSelection();
+    if (this.onSelChange) this.onSelChange(0, 0, this.sel);
+  };
+
   SheetGrid.prototype._scrollIntoView = function (r, c) {
     var td = this.td(r, c);
     if (!td) return;
@@ -526,7 +551,9 @@
   SheetGrid.prototype._startColResize = function (c, startX) {
     var self = this, col = this._cols[c];
     if (!col) return;
-    var startW = col.getBoundingClientRect().width || 92;
+    // <col> non e' renderizzato (rect=0): leggo la larghezza reale dall'header th.
+    var th = this.table.querySelector('thead th[data-c="' + c + '"]');
+    var startW = (th && th.getBoundingClientRect().width) || 92;
     document.body.classList.add("sheet-resizing-col");
     function move(ev) {
       var w = Math.max(32, Math.round(startW + (ev.clientX - startX)));
@@ -707,6 +734,16 @@
     }, true);
 
     this.wrap.addEventListener("mousedown", function (e) {
+      // Click sulle intestazioni: seleziona intera colonna / riga / tutto.
+      // (le maniglie .col-rsz/.row-rsz sono gestite dal listener in capture)
+      if (!(self.editor && self._isFormulaEditor())) {
+        var colHead = e.target.closest && e.target.closest('thead th[data-c]');
+        if (colHead && !e.target.closest(".col-rsz")) { self.selectColumn(+colHead.dataset.c, e.shiftKey); self.wrap.focus(); return; }
+        var rowHead = e.target.closest && e.target.closest("tbody th.rowhead");
+        if (rowHead && !e.target.closest(".row-rsz")) { self.selectRow(+rowHead.dataset.r, e.shiftKey); self.wrap.focus(); return; }
+        var corner = e.target.closest && e.target.closest("thead th.corner");
+        if (corner) { self.selectAll(); self.wrap.focus(); return; }
+      }
       var p = self._cellFromEvent(e);
       if (!p) return;
       // POINTING: se sto editando una formula e il caret accetta un riferimento,
