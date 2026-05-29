@@ -31,6 +31,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from .. import db_cloud
 from ..auth import CurrentUser, get_current_user, require_architect_or_admin
+from ..fascicoli import acl as facl
 from ..fascicoli import db as fdb
 from ..fascicoli import fs as ffs
 from ..fascicoli import index_jobs
@@ -56,26 +57,10 @@ def _user_root_path(user: CurrentUser) -> Path | None:
     return Path(p) if p else None
 
 
-def _can_edit_project(project: dict, user: CurrentUser) -> bool:
-    """Owner / architect / super-admin / editor (project_users role='editor')."""
-    if project["owner_user_id"] == user.id:
-        return True
-    if user.is_architect or user.is_super_admin:
-        return True
-    for m in fdb.list_project_members(project["id"]):
-        if m["user_id"] == user.id and m["role"] == "editor":
-            return True
-    return False
-
-
-def _can_manage_project(project: dict, user: CurrentUser) -> bool:
-    """Permessi piu' forti: cambio visibilita', archive, gestione membri.
-    Solo owner / architect / super-admin (gli editor NON possono)."""
-    if project["owner_user_id"] == user.id:
-        return True
-    if user.is_architect or user.is_super_admin:
-        return True
-    return False
+# ACL estratti in app/fascicoli/acl.py per condivisione con le route Fogli
+# (vedi docs/argos_fogli_collaborativi_plan.md §Permessi). Alias retro-compatibili.
+_can_edit_project = facl.can_edit_project
+_can_manage_project = facl.can_manage_project
 
 
 # ---------------------------------------------------------------------------
