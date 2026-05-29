@@ -26,12 +26,13 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from ..auth import CurrentUser, get_current_user
 from ..fascicoli import acl as facl
 from ..fascicoli import db as fdb
 from ..fascicoli import sheets_db as sdb
+from ..fascicoli import sheets_export
 from ..templates import templates
 
 log = logging.getLogger(__name__)
@@ -246,6 +247,42 @@ async def sheet_patch_http(
         "patch_id": body.get("patch_id"),
         "cells": result["cells"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Export (CSV anti-injection / XLSX apribile in Excel/Google Sheets)
+# ---------------------------------------------------------------------------
+
+@router.get("/{sheet_id}/export.csv")
+async def sheet_export_csv(
+    sheet_id: int,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    sheet, _ = _load_sheet_or_404(sheet_id, current_user)
+    cells = sdb.get_cells(sheet_id)
+    data = sheets_export.to_csv(cells)
+    fname = sheets_export.safe_filename(sheet["title"], "csv")
+    return Response(
+        content=data,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.get("/{sheet_id}/export.xlsx")
+async def sheet_export_xlsx(
+    sheet_id: int,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    sheet, _ = _load_sheet_or_404(sheet_id, current_user)
+    cells = sdb.get_cells(sheet_id)
+    data = sheets_export.to_xlsx(cells)
+    fname = sheets_export.safe_filename(sheet["title"], "xlsx")
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 # ---------------------------------------------------------------------------

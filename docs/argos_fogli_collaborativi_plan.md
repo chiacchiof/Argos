@@ -508,3 +508,47 @@ La decisione architetturale centrale e' questa:
 
 Questa distinzione evita ambiguita' con il principio privacy-first dei Fascicoli
 e rende tecnicamente possibile la collaborazione realtime tra utenti.
+
+---
+
+## Stato implementazione (2026-05-29)
+
+Implementato su `branch_googledocs_v1.4`, a fasi (commit separati):
+
+- Fase 1 — schema DB (`project_sheets` con `project_id` NULLABLE per fogli
+  standalone tenant-level + `visibility`, `project_sheet_cells`,
+  `project_sheet_revisions`), `app/fascicoli/sheets_db.py`, ACL condiviso
+  (`app/fascicoli/acl.py`), migration `fogli_v1` (applicata SOLO al DB locale).
+- Fase 2 — route HTTP (`app/routes/fascicoli_sheets.py`), griglia editor stile
+  spreadsheet (`static/sheets.{css,js}`, `sheet_editor.html`), lista fogli,
+  sezione "Fogli" nel fascicolo, link nav (sidebar architect + topbar operatore).
+- Fase 3 — WebSocket realtime (`/ws/sheets/{id}`), connection manager in-memory
+  (`app/fascicoli/realtime.py`), presence + cursori, auth sessione + Origin check
+  + tenant scoping esplicito.
+- Fase 4 — Redis OPZIONALE (`app/fascicoli/realtime_redis.py`), gated dietro
+  `REDIS_URL`; default single-worker resta in-memory.
+- Fase 5 — reconnect robusto: hello/last_revision (snapshot|incrementale|sync),
+  client reconnect-backoff + outbox patch offline, banner stato connessione.
+- Fase 6 — export CSV (anti formula-injection) + XLSX (stdlib, apribile in
+  Excel/Google Sheets), copia/incolla TSV, cursori colorati.
+
+### Decisione di scope (confermata con l'utente)
+
+I fogli sono strumenti del **tenant**: creabili/gestibili sia dentro un fascicolo
+sia standalone, sempre con record su DB (apribili da qualsiasi postazione).
+Modello permessi tenant-collaborativo (vedi `app/fascicoli/acl.py`).
+
+### Follow-up: push diretto su Google Sheets API
+
+L'export XLSX/CSV copre "esportare in Google Spreadsheet o simile" via import.
+Il **push diretto** verso Google Sheets (creare/aggiornare un foglio sul Drive
+dell'utente) richiede:
+
+- OAuth2 per-utente (scopes `drive.file` / `spreadsheets`) con consent screen,
+  oppure un service account per-tenant con il foglio condiviso;
+- storage sicuro dei refresh token (riusare `app/.../crypto_creds.py`);
+- una route `POST /sheets/{id}/export/gsheets` che usa l'API `spreadsheets.create`
+  + `values.update`.
+
+Rimandato: serve configurare le credenziali Google Cloud del fornitore. Non
+bloccante per l'MVP (l'import XLSX in Google Sheets e' immediato).
