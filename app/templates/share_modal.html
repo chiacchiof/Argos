@@ -55,6 +55,11 @@
   </div>
 </div>
 
+{% set editable = share.rows | rejectattr('fixed') | list %}
+{% if not editable %}
+<p class="share-note">Nessun permesso individuale ancora. Usa «+ Aggiungi persone» per dare accesso a utenti specifici; poi gestiscili (cambia livello o rimuovi) con il menu ⋮ accanto a ciascuno.</p>
+{% endif %}
+
 <div class="share-users">
   {% for r in share.rows %}
   <div class="share-user">

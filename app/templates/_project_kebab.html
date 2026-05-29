@@ -1,0 +1,23 @@
+{# Macro menu ⋮ per la gestione di un fascicolo dalla lista (Condividi / Apri /
+   Archivia / Elimina). Render solo se p._can_manage. Riusa lo stile .sheet-kebab
+   di _sheet_manage_assets.html. #}
+{% macro project_kebab(p) %}
+<td class="sheet-actions-cell">
+  {% if p._can_manage %}
+  <details class="sheet-kebab">
+    <summary aria-label="Azioni" title="Azioni">⋮</summary>
+    <div class="sheet-kebab-menu">
+      <button type="button" class="kebab-share-proj" data-id="{{ p.id }}">Condividi</button>
+      <a href="/fascicoli/{{ p.id }}">Apri</a>
+      <form method="post" action="/fascicoli/{{ p.id }}/{{ 'restore' if p.is_archived else 'archive' }}" style="margin:0">
+        <button type="submit">{{ 'Ripristina' if p.is_archived else 'Archivia' }}</button>
+      </form>
+      <form method="post" action="/fascicoli/{{ p.id }}/delete" style="margin:0"
+            onsubmit="return confirm('Eliminare il fascicolo «{{ p.title }}» dal registro? I file sul tuo disco NON vengono toccati.')">
+        <button type="submit" class="kebab-danger">Elimina</button>
+      </form>
+    </div>
+  </details>
+  {% endif %}
+</td>
+{% endmacro %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_project_kebab.html" import project_kebab %}
 {% block title %}Fascicoli — Argos{% endblock %}
 {% block content %}
 <section>
@@ -51,6 +52,7 @@
         <th style="text-align: right">File</th>
         <th style="text-align: right">Dimensione</th>
         <th>Stato</th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
@@ -77,10 +79,13 @@
           <span class="badge badge-cancel" title="File non presenti su questo PC">Monco</span>
           {% endif %}
         </td>
+        {{ project_kebab(p) }}
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% endif %}
 </section>
+
+{% include "_sheet_manage_assets.html" %}
 {% endblock %}

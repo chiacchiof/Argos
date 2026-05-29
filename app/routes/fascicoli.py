@@ -194,6 +194,8 @@ async def fascicoli_list(
         return RedirectResponse(url="/fascicoli/settings?first_time=1", status_code=302)
     projects = fdb.list_projects(current_user_id=current_user.id)
     projects = fsync.annotate_projects_with_local_state(projects, root)
+    for _p in projects:
+        _p["_can_manage"] = _can_manage_project(_p, current_user)
     return templates.TemplateResponse(
         request,
         "fascicoli_list.html",

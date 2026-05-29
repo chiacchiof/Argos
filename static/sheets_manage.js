@@ -75,6 +75,7 @@
       var id = btn.dataset.id;
       if (btn.classList.contains("kebab-rename")) window.argosRenameSheet(id, btn.dataset.title);
       else if (btn.classList.contains("kebab-share")) window.argosShareOpen("/sheets/" + id + "/share");
+      else if (btn.classList.contains("kebab-share-proj")) window.argosShareOpen("/fascicoli/" + id + "/share");
       else if (btn.classList.contains("kebab-del")) window.argosDeleteSheet(id, btn.dataset.title);
       var d = btn.closest("details.sheet-kebab"); if (d) d.removeAttribute("open");
       return;
