@@ -1109,6 +1109,19 @@ CREATE TABLE IF NOT EXISTS project_sheet_revisions (
   UNIQUE (sheet_id, revision)
 );
 CREATE INDEX IF NOT EXISTS idx_project_sheet_revisions_sheet_revision ON project_sheet_revisions(sheet_id, revision);
+
+-- ACL per-foglio (condivisione esplicita verso utenti del tenant). Utile
+-- soprattutto per i fogli a visibilita' 'user' (privati): concede accesso/
+-- modifica a utenti specifici. Per i fogli 'tenant' la visibilita' e' gia'
+-- implicita; questa tabella resta opzionale (additiva).
+CREATE TABLE IF NOT EXISTS project_sheet_users (
+  sheet_id   BIGINT NOT NULL REFERENCES project_sheets(id) ON DELETE CASCADE,
+  user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role       TEXT NOT NULL CHECK (role IN ('viewer', 'editor')),
+  added_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (sheet_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_sheet_users_user ON project_sheet_users(user_id);
 """
 
 

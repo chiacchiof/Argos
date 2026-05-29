@@ -1,0 +1,58 @@
+{# Frammento modale "Condividi foglio". Iniettato in #sheet-share-body dalla
+   lista fogli. Le change sui select chiamano argosShareApply(form) che rifa
+   il POST e re-inietta questo frammento aggiornato. #}
+<div class="share-head">
+  <h3>Condividi «{{ sheet.title }}»</h3>
+  <button type="button" class="share-close" onclick="argosCloseShareModal()" aria-label="Chiudi">&times;</button>
+</div>
+
+<div class="share-visibility">
+  <label class="share-vis-label">Accesso generale</label>
+  <form action="/sheets/{{ sheet.id }}/share/visibility" method="post" class="share-form">
+    <select name="visibility" onchange="argosShareApply(this.form)">
+      <option value="tenant" {% if sheet.visibility == 'tenant' %}selected{% endif %}>Tutti gli utenti del tenant (modifica)</option>
+      <option value="user" {% if sheet.visibility == 'user' %}selected{% endif %}>Solo le persone scelte qui sotto</option>
+    </select>
+  </form>
+</div>
+
+{% if sheet.visibility == 'tenant' %}
+<p class="share-note">Tutti gli utenti del tenant possono aprire e modificare questo foglio.
+Imposta «Solo le persone scelte» per limitare l'accesso e gestire i permessi individuali.</p>
+{% else %}
+<p class="share-note">Solo le persone con accesso possono aprire il foglio. Imposta il permesso per ciascun utente.</p>
+{% endif %}
+
+<div class="share-users">
+  {% for u in rows %}
+  <div class="share-user">
+    <div class="share-user-info">
+      <span class="share-user-avatar">{{ (u.email or '?')[:2]|upper }}</span>
+      <div>
+        <div class="share-user-name">{{ u.email }}</div>
+        {% if u.is_owner %}<div class="share-user-tag">Proprietario</div>
+        {% elif u.is_architect %}<div class="share-user-tag">Architetto · accesso completo</div>{% endif %}
+      </div>
+    </div>
+    <div class="share-user-role">
+      {% if u.is_owner or u.is_architect %}
+      <span class="share-role-fixed">Gestione</span>
+      {% elif sheet.visibility == 'tenant' %}
+      <span class="share-role-fixed">Modifica (tenant)</span>
+      {% else %}
+      <form action="/sheets/{{ sheet.id }}/share" method="post" class="share-form">
+        <input type="hidden" name="user_id" value="{{ u.id }}">
+        <select name="role" onchange="argosShareApply(this.form)">
+          <option value="none" {% if not u.sheet_role %}selected{% endif %}>Nessun accesso</option>
+          <option value="viewer" {% if u.sheet_role == 'viewer' %}selected{% endif %}>Visualizza</option>
+          <option value="editor" {% if u.sheet_role == 'editor' %}selected{% endif %}>Modifica</option>
+        </select>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% if not rows %}
+  <p class="share-note">Nessun altro utente nel tenant.</p>
+  {% endif %}
+</div>

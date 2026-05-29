@@ -62,9 +62,11 @@ def _sheet_visibility_clause(user_id: int) -> tuple[str, list[Any]]:
         "        SELECT 1 FROM projects p WHERE p.id = s.project_id "
         "          AND (p.visibility = 'tenant' OR p.owner_user_id = %s "
         "               OR EXISTS (SELECT 1 FROM project_users pu "
-        "                          WHERE pu.project_id = p.id AND pu.user_id = %s)))) )"
+        "                          WHERE pu.project_id = p.id AND pu.user_id = %s)))) "
+        "  OR EXISTS (SELECT 1 FROM project_sheet_users su "
+        "             WHERE su.sheet_id = s.id AND su.user_id = %s) )"
     )
-    return clause, [user_id, user_id, user_id]
+    return clause, [user_id, user_id, user_id, user_id]
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +255,81 @@ def delete_sheet(sheet_id: int, *, tenant_id: Any = _UNSET) -> bool:
         cur = con.execute(f"DELETE FROM project_sheets WHERE {where}", tuple(args))
         con.commit()
         return (cur.rowcount or 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# Condivisione: membri del foglio (ACL per-utente)
+# ---------------------------------------------------------------------------
+
+def _sheet_in_tenant(con, sheet_id: int, tenant_id: int | None) -> bool:
+    if tenant_id is None:
+        row = con.execute("SELECT 1 FROM project_sheets WHERE id = %s", (sheet_id,)).fetchone()
+    else:
+        row = con.execute("SELECT 1 FROM project_sheets WHERE id = %s AND tenant_id = %s",
+                          (sheet_id, tenant_id)).fetchone()
+    return row is not None
+
+
+def list_sheet_members(sheet_id: int, *, tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    """Membri espliciti del foglio (utenti con cui e' condiviso). Tenant-scoped."""
+    tid = _resolve_tenant(tenant_id)
+    args: list[Any] = [sheet_id]
+    guard = ""
+    if tid is not None:
+        guard = " AND EXISTS (SELECT 1 FROM project_sheets s WHERE s.id = su.sheet_id AND s.tenant_id = %s)"
+        args.append(tid)
+    with connect() as con:
+        rows = con.execute(
+            "SELECT su.user_id, su.role, su.added_at, u.email, u.first_name, u.last_name "
+            "FROM project_sheet_users su JOIN users u ON u.id = su.user_id "
+            f"WHERE su.sheet_id = %s{guard} ORDER BY su.added_at",
+            tuple(args),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_sheet_member(sheet_id: int, user_id: int, role: str = "viewer", *, tenant_id: Any = _UNSET) -> None:
+    """Condivide il foglio con un utente del tenant (upsert ruolo). Verifica che
+    sheet e utente appartengano allo stesso tenant (no condivisione cross-tenant)."""
+    if role not in ("viewer", "editor"):
+        raise ValueError(f"role non valido: {role}")
+    tid = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if not _sheet_in_tenant(con, sheet_id, tid):
+            raise SheetForbidden("Foglio non nel tenant.")
+        # l'utente target deve essere dello stesso tenant del foglio
+        srow = con.execute("SELECT tenant_id FROM project_sheets WHERE id = %s", (sheet_id,)).fetchone()
+        sheet_tenant = srow["tenant_id"] if srow else None
+        urow = con.execute("SELECT 1 FROM users WHERE id = %s AND tenant_id = %s",
+                           (user_id, sheet_tenant)).fetchone()
+        if urow is None:
+            raise SheetForbidden("Utente non appartiene al tenant del foglio.")
+        con.execute(
+            "INSERT INTO project_sheet_users (sheet_id, user_id, role) VALUES (%s, %s, %s) "
+            "ON CONFLICT (sheet_id, user_id) DO UPDATE SET role = EXCLUDED.role",
+            (sheet_id, user_id, role),
+        )
+        con.commit()
+
+
+def remove_sheet_member(sheet_id: int, user_id: int, *, tenant_id: Any = _UNSET) -> None:
+    tid = _resolve_tenant(tenant_id)
+    with connect() as con:
+        if not _sheet_in_tenant(con, sheet_id, tid):
+            return
+        con.execute("DELETE FROM project_sheet_users WHERE sheet_id = %s AND user_id = %s",
+                    (sheet_id, user_id))
+        con.commit()
+
+
+def sheet_member_role(sheet_id: int, user_id: int) -> str | None:
+    """Ruolo dell'utente sul foglio ('viewer'/'editor') o None se non membro."""
+    with connect() as con:
+        row = con.execute(
+            "SELECT role FROM project_sheet_users WHERE sheet_id = %s AND user_id = %s",
+            (sheet_id, user_id),
+        ).fetchone()
+    return row["role"] if row else None
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ from typing import Any
 
 from ..auth import CurrentUser
 from . import db as fdb
+from . import sheets_db as sdb
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +74,10 @@ def can_open_sheet(sheet: dict, project: dict | None, user: CurrentUser) -> bool
     # Standalone.
     if sheet.get("visibility") == "tenant":
         return True
-    return sheet.get("created_by_user_id") == user.id
+    if sheet.get("created_by_user_id") == user.id:
+        return True
+    # foglio privato condiviso esplicitamente con l'utente (qualsiasi ruolo)
+    return sdb.sheet_member_role(sheet["id"], user.id) is not None
 
 
 def can_edit_sheet_cells(sheet: dict, project: dict | None, user: CurrentUser) -> bool:
@@ -84,7 +88,10 @@ def can_edit_sheet_cells(sheet: dict, project: dict | None, user: CurrentUser) -
         return project is not None and can_edit_project(project, user)
     if sheet.get("visibility") == "tenant":
         return True  # tenant-collaborativo: ogni membro del tenant modifica
-    return sheet.get("created_by_user_id") == user.id
+    if sheet.get("created_by_user_id") == user.id:
+        return True
+    # foglio privato: editabile solo da chi e' stato condiviso come 'editor'
+    return sdb.sheet_member_role(sheet["id"], user.id) == "editor"
 
 
 def can_manage_sheet(sheet: dict, project: dict | None, user: CurrentUser) -> bool:

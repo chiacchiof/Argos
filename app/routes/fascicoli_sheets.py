@@ -28,6 +28,7 @@ import logging
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from .. import db_cloud
 from ..auth import CurrentUser, get_current_user
 from ..fascicoli import acl as facl
 from ..fascicoli import db as fdb
@@ -94,6 +95,13 @@ async def sheets_list(
         architect_view=architect_view,
         include_archived=bool(include_archived),
     )
+    # annota can_manage per foglio (mostra il menu ⋮ solo a chi puo' gestire)
+    for s in sheets:
+        project = None
+        if s.get("project_id"):
+            project = fdb.get_project(s["project_id"], current_user_id=current_user.id,
+                                      architect_view=architect_view)
+        s["_can_manage"] = facl.can_manage_sheet(s, project, current_user)
     standalone = [s for s in sheets if not s.get("project_id")]
     attached = [s for s in sheets if s.get("project_id")]
     return templates.TemplateResponse(
@@ -251,6 +259,81 @@ async def sheet_patch_http(
         "patch_id": body.get("patch_id"),
         "cells": result["cells"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Condivisione (modale: utenti del tenant + permessi)
+# ---------------------------------------------------------------------------
+
+def _share_modal_response(request: Request, sheet: dict, current_user: CurrentUser):
+    members = sdb.list_sheet_members(sheet["id"])
+    member_role = {m["user_id"]: m["role"] for m in members}
+    rows = []
+    if current_user.tenant_id is not None:
+        for u in db_cloud.list_users(tenant_id=current_user.tenant_id):
+            if not u.get("is_active"):
+                continue
+            rows.append({
+                "id": u["id"],
+                "email": u["email"],
+                "first_name": u.get("first_name"),
+                "last_name": u.get("last_name"),
+                "is_owner": u["id"] == sheet.get("created_by_user_id"),
+                "is_architect": u.get("role") in ("tenant_architect", "super_admin"),
+                "sheet_role": member_role.get(u["id"]),
+            })
+    # owner prima, poi architetti, poi gli altri per email
+    rows.sort(key=lambda r: (not r["is_owner"], not r["is_architect"], (r["email"] or "")))
+    return templates.TemplateResponse(
+        request, "sheet_share_modal.html",
+        {"sheet": sheet, "rows": rows},
+    )
+
+
+@router.get("/{sheet_id}/share", response_class=HTMLResponse)
+async def sheet_share_get(
+    request: Request,
+    sheet_id: int,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    sheet, _ = _load_sheet_or_404(sheet_id, current_user, require_manage=True)
+    return _share_modal_response(request, sheet, current_user)
+
+
+@router.post("/{sheet_id}/share", response_class=HTMLResponse)
+async def sheet_share_set(
+    request: Request,
+    sheet_id: int,
+    user_id: int = Form(...),
+    role: str = Form(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    sheet, _ = _load_sheet_or_404(sheet_id, current_user, require_manage=True)
+    if role == "none":
+        sdb.remove_sheet_member(sheet_id, user_id)
+    elif role in ("viewer", "editor"):
+        try:
+            sdb.add_sheet_member(sheet_id, user_id, role)
+        except sdb.SheetForbidden:
+            raise HTTPException(400, "Utente non valido per questo foglio.")
+    else:
+        raise HTTPException(400, "Ruolo non valido.")
+    return _share_modal_response(request, sheet, current_user)
+
+
+@router.post("/{sheet_id}/share/visibility", response_class=HTMLResponse)
+async def sheet_share_visibility(
+    request: Request,
+    sheet_id: int,
+    visibility: str = Form(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    sheet, _ = _load_sheet_or_404(sheet_id, current_user, require_manage=True)
+    if visibility not in ("tenant", "user"):
+        raise HTTPException(400, "visibility non valida.")
+    sdb.set_sheet_visibility(sheet_id, visibility)
+    sheet["visibility"] = visibility
+    return _share_modal_response(request, sheet, current_user)
 
 
 # ---------------------------------------------------------------------------
