@@ -13,7 +13,7 @@
 (function () {
   "use strict";
 
-  var SHEETS_JS_VERSION = "v4-selezione+ref-highlight-2026-05-29";
+  var SHEETS_JS_VERSION = "v5-resize-colonne-righe-2026-05-29";
   try { console.info("[Argos Fogli] sheets.js", SHEETS_JS_VERSION, "caricato"); } catch (e) {}
 
   var cfg = JSON.parse(document.getElementById("sheet-config").textContent);
@@ -293,11 +293,18 @@
 
   SheetGrid.prototype._build = function () {
     var m = this.model;
-    var html = ['<table class="sheet-table"><thead><tr><th class="corner"></th>'];
-    for (var c = 0; c < m.nCols; c++) html.push('<th data-c="' + c + '">' + colLabel(c) + "</th>");
+    // colgroup: larghezze per-colonna (table-layout:fixed) -> resize affidabile.
+    var html = ['<table class="sheet-table"><colgroup><col class="ch-rowhead">'];
+    for (var cc = 0; cc < m.nCols; cc++) html.push('<col data-c="' + cc + '">');
+    html.push('</colgroup><thead><tr><th class="corner"></th>');
+    for (var c = 0; c < m.nCols; c++) {
+      html.push('<th data-c="' + c + '">' + colLabel(c) +
+                '<span class="col-rsz" data-c="' + c + '" title="Trascina per ridimensionare"></span></th>');
+    }
     html.push("</tr></thead><tbody>");
     for (var r = 0; r < m.nRows; r++) {
-      html.push('<tr><th class="rowhead" data-r="' + r + '">' + (r + 1) + "</th>");
+      html.push('<tr><th class="rowhead" data-r="' + r + '">' + (r + 1) +
+                '<span class="row-rsz" data-r="' + r + '"></span></th>');
       for (var c2 = 0; c2 < m.nCols; c2++) {
         html.push('<td class="cell" data-r="' + r + '" data-c="' + c2 + '"></td>');
       }
@@ -306,12 +313,17 @@
     html.push("</tbody></table>");
     this.wrap.innerHTML = html.join("");
     this.table = this.wrap.querySelector("table");
-    // index celle per accesso O(1)
-    this._tds = {};
+    // index celle, colonne e righe per accesso O(1)
+    this._tds = {}; this._cols = {}; this._trs = {};
     var tds = this.table.querySelectorAll("td.cell");
     for (var i = 0; i < tds.length; i++) {
       this._tds[key(+tds[i].dataset.r, +tds[i].dataset.c)] = tds[i];
     }
+    var cols = this.table.querySelectorAll("colgroup col[data-c]");
+    for (var j = 0; j < cols.length; j++) this._cols[+cols[j].dataset.c] = cols[j];
+    var trs = this.table.querySelectorAll("tbody tr");
+    for (var t = 0; t < trs.length; t++) this._trs[t] = trs[t];
+    this._applySizes();
   };
 
   SheetGrid.prototype.td = function (r, c) { return this._tds[key(r, c)]; };
@@ -497,6 +509,59 @@
     this.highlightFormulaRefs(ed.value);  // il ref appena puntato si illumina
   };
 
+  // ---- ridimensionamento colonne/righe ----------------------------------
+  SheetGrid.prototype._sizeKey = function () { return "argos.sheet." + cfg.sheet_id + ".sizes"; };
+  SheetGrid.prototype._loadSizes = function () {
+    try { return JSON.parse(localStorage.getItem(this._sizeKey())) || { cols: {}, rows: {} }; }
+    catch (e) { return { cols: {}, rows: {} }; }
+  };
+  SheetGrid.prototype._saveSizes = function (s) {
+    try { localStorage.setItem(this._sizeKey(), JSON.stringify(s)); } catch (e) {}
+  };
+  SheetGrid.prototype._applySizes = function () {
+    var s = this._loadSizes();
+    for (var c in s.cols) if (this._cols[c]) this._cols[c].style.width = s.cols[c] + "px";
+    for (var r in s.rows) if (this._trs[r]) this._trs[r].style.height = s.rows[r] + "px";
+  };
+  SheetGrid.prototype._startColResize = function (c, startX) {
+    var self = this, col = this._cols[c];
+    if (!col) return;
+    var startW = col.getBoundingClientRect().width || 92;
+    document.body.classList.add("sheet-resizing-col");
+    function move(ev) {
+      var w = Math.max(32, Math.round(startW + (ev.clientX - startX)));
+      col.style.width = w + "px";
+      if (self.editor) self._positionEditor(self.editor.el, self.td(self.editor.r, self.editor.c));
+    }
+    function up() {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      document.body.classList.remove("sheet-resizing-col");
+      var s = self._loadSizes(); s.cols[c] = parseInt(col.style.width, 10); self._saveSizes(s);
+    }
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+  SheetGrid.prototype._startRowResize = function (r, startY) {
+    var self = this, tr = this._trs[r];
+    if (!tr) return;
+    var startH = tr.getBoundingClientRect().height || 25;
+    document.body.classList.add("sheet-resizing-row");
+    function move(ev) {
+      var h = Math.max(18, Math.round(startH + (ev.clientY - startY)));
+      tr.style.height = h + "px";
+      if (self.editor) self._positionEditor(self.editor.el, self.td(self.editor.r, self.editor.c));
+    }
+    function up() {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      document.body.classList.remove("sheet-resizing-row");
+      var s = self._loadSizes(); s.rows[r] = parseInt(tr.style.height, 10); self._saveSizes(s);
+    }
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+
   // ---- evidenziazione celle referenziate da una formula (stile Sheets) --
   var REF_PALETTE = ["#e8710a", "#1a73e8", "#9334e6", "#188038", "#d93025", "#12b5cb", "#e52592", "#f9ab00"];
   SheetGrid.prototype._clearRefHighlights = function () {
@@ -632,6 +697,14 @@
   SheetGrid.prototype._bind = function () {
     var self = this;
     var dragging = false;
+
+    // Maniglie di ridimensionamento colonne/righe (sui bordi delle intestazioni).
+    this.wrap.addEventListener("mousedown", function (e) {
+      var ch = e.target.closest && e.target.closest(".col-rsz");
+      if (ch) { e.preventDefault(); e.stopPropagation(); self._startColResize(+ch.dataset.c, e.clientX); return; }
+      var rh = e.target.closest && e.target.closest(".row-rsz");
+      if (rh) { e.preventDefault(); e.stopPropagation(); self._startRowResize(+rh.dataset.r, e.clientY); return; }
+    }, true);
 
     this.wrap.addEventListener("mousedown", function (e) {
       var p = self._cellFromEvent(e);

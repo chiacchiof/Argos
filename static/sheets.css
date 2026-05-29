@@ -173,6 +173,24 @@ table.sheet-table th, table.sheet-table td {
   height: var(--sheet-row-h);
   box-sizing: border-box;
 }
+/* Larghezze per-colonna via colgroup (table-layout:fixed) -> resize affidabile */
+table.sheet-table col[data-c] { width: var(--sheet-col-w); }
+table.sheet-table col.ch-rowhead { width: var(--sheet-rowhead-w); }
+
+/* Maniglie di ridimensionamento sui bordi delle intestazioni */
+table.sheet-table thead th, table.sheet-table tbody th.rowhead { overflow: visible; }
+.col-rsz {
+  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
+  cursor: col-resize; z-index: 5;
+}
+.row-rsz {
+  position: absolute; left: 0; bottom: -3px; height: 7px; width: 100%;
+  cursor: row-resize; z-index: 5;
+}
+.col-rsz:hover { background: var(--sheet-active); opacity: 0.55; }
+.row-rsz:hover { background: var(--sheet-active); opacity: 0.55; }
+body.sheet-resizing-col, body.sheet-resizing-col * { cursor: col-resize !important; user-select: none; }
+body.sheet-resizing-row, body.sheet-resizing-row * { cursor: row-resize !important; user-select: none; }
 /* Column headers (A, B, C…) */
 table.sheet-table thead th {
   position: sticky; top: 0; z-index: 3;
