@@ -398,20 +398,140 @@ def mark_file_indexed(project_id: int, relative_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Chat history (RAG Q&A su fascicolo) — v2
+# Chat history (RAG Q&A su fascicolo) — conversazioni multiple (max 20)
 # ---------------------------------------------------------------------------
 
-def list_chat_messages(project_id: int, limit: int = 200) -> list[dict[str, Any]]:
-    """Cronologia chat per il progetto, oldest first. Parsa `citations` (JSON)."""
+MAX_CONVERSATIONS_PER_PROJECT = 20
+
+
+class ConversationLimitError(Exception):
+    """Raggiunto il limite di conversazioni salvate per fascicolo."""
+
+
+def list_conversations(project_id: int) -> list[dict[str, Any]]:
+    """Conversazioni del fascicolo, piu' recente prima (per last_message_at)."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT c.id, c.title, c.created_at, c.last_message_at, c.created_by_user_id, "
+            "       (SELECT COUNT(*) FROM project_chat_messages m WHERE m.conversation_id = c.id) AS n_messages "
+            "FROM project_chat_conversations c WHERE c.project_id = %s "
+            "ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC",
+            (project_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_conversations(project_id: int) -> int:
+    with connect() as con:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM project_chat_conversations WHERE project_id = %s",
+            (project_id,),
+        ).fetchone()
+    return int(row["n"])
+
+
+def get_conversation(conversation_id: int, project_id: int) -> dict[str, Any] | None:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM project_chat_conversations WHERE id = %s AND project_id = %s",
+            (conversation_id, project_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_conversation(project_id: int, *, title: str = "Nuova chat", user_id: int | None = None) -> int:
+    """Crea una conversazione. Solleva ConversationLimitError se gia' a MAX."""
+    title = (title or "Nuova chat").strip()[:120] or "Nuova chat"
+    with connect() as con:
+        n = con.execute(
+            "SELECT COUNT(*) AS n FROM project_chat_conversations WHERE project_id = %s",
+            (project_id,),
+        ).fetchone()["n"]
+        if n >= MAX_CONVERSATIONS_PER_PROJECT:
+            raise ConversationLimitError(
+                f"Limite di {MAX_CONVERSATIONS_PER_PROJECT} chat per fascicolo raggiunto. "
+                "Elimina una chat per crearne una nuova."
+            )
+        row = con.execute(
+            "INSERT INTO project_chat_conversations (project_id, title, created_by_user_id) "
+            "VALUES (%s, %s, %s) RETURNING id",
+            (project_id, title, user_id),
+        ).fetchone()
+        con.commit()
+        return int(row["id"])
+
+
+def rename_conversation(conversation_id: int, title: str, project_id: int) -> None:
+    title = (title or "").strip()[:120] or "Chat"
+    with connect() as con:
+        con.execute(
+            "UPDATE project_chat_conversations SET title = %s WHERE id = %s AND project_id = %s",
+            (title, conversation_id, project_id),
+        )
+        con.commit()
+
+
+def delete_conversation(conversation_id: int, project_id: int) -> bool:
+    """Elimina conversazione + (CASCADE) i suoi messaggi."""
+    with connect() as con:
+        cur = con.execute(
+            "DELETE FROM project_chat_conversations WHERE id = %s AND project_id = %s",
+            (conversation_id, project_id),
+        )
+        con.commit()
+        return (cur.rowcount or 0) > 0
+
+
+def adopt_legacy_messages(project_id: int, user_id: int | None = None) -> int | None:
+    """Migrazione-on-read: se esistono messaggi senza conversation_id (chat
+    pre-conversazioni) e c'e' spazio, li raccoglie in una conversazione 'Chat'.
+    Ritorna l'id della conversazione creata, o None."""
+    with connect() as con:
+        has_legacy = con.execute(
+            "SELECT 1 FROM project_chat_messages WHERE project_id = %s AND conversation_id IS NULL LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if not has_legacy:
+            return None
+        n = con.execute(
+            "SELECT COUNT(*) AS n FROM project_chat_conversations WHERE project_id = %s",
+            (project_id,),
+        ).fetchone()["n"]
+        if n >= MAX_CONVERSATIONS_PER_PROJECT:
+            return None
+        cid = int(con.execute(
+            "INSERT INTO project_chat_conversations (project_id, title, created_by_user_id) "
+            "VALUES (%s, 'Chat', %s) RETURNING id",
+            (project_id, user_id),
+        ).fetchone()["id"])
+        con.execute(
+            "UPDATE project_chat_messages SET conversation_id = %s "
+            "WHERE project_id = %s AND conversation_id IS NULL",
+            (cid, project_id),
+        )
+        con.execute(
+            "UPDATE project_chat_conversations SET last_message_at = NOW() WHERE id = %s",
+            (cid,),
+        )
+        con.commit()
+        return cid
+
+
+def list_chat_messages(
+    project_id: int, conversation_id: int | None = None, limit: int = 200
+) -> list[dict[str, Any]]:
+    """Messaggi di una conversazione (oldest first). Se conversation_id e' None
+    ritorna i messaggi legacy (conversation_id IS NULL) per back-compat."""
     import json as _json
+    if conversation_id is not None:
+        where, args = "project_id = %s AND conversation_id = %s", (project_id, conversation_id, limit)
+    else:
+        where, args = "project_id = %s AND conversation_id IS NULL", (project_id, limit)
     with connect() as con:
         rows = con.execute(
             "SELECT id, role, content, citations, created_at, user_id "
-            "FROM project_chat_messages "
-            "WHERE project_id = %s "
-            "ORDER BY id "
-            "LIMIT %s",
-            (project_id, limit),
+            f"FROM project_chat_messages WHERE {where} ORDER BY id LIMIT %s",
+            args,
         ).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
@@ -433,10 +553,12 @@ def add_chat_message(
     *,
     role: str,
     content: str,
+    conversation_id: int | None = None,
     user_id: int | None = None,
     citations: list[dict] | None = None,
 ) -> int:
-    """Inserisce un messaggio nella cronologia chat del progetto."""
+    """Inserisce un messaggio (legato a una conversazione) e aggiorna
+    last_message_at della conversazione."""
     import json as _json
     if role not in ("user", "assistant", "system"):
         raise ValueError(f"role non valido: {role}")
@@ -444,19 +566,30 @@ def add_chat_message(
     with connect() as con:
         row = con.execute(
             "INSERT INTO project_chat_messages "
-            "  (project_id, user_id, role, content, citations) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (project_id, user_id, role, content, cit_json),
+            "  (project_id, conversation_id, user_id, role, content, citations) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (project_id, conversation_id, user_id, role, content, cit_json),
         ).fetchone()
+        if conversation_id is not None:
+            con.execute(
+                "UPDATE project_chat_conversations SET last_message_at = NOW() WHERE id = %s",
+                (conversation_id,),
+            )
         con.commit()
         return int(row["id"])
 
 
-def clear_chat_messages(project_id: int) -> None:
-    """Pulisce la cronologia chat del progetto (l'indice embeddings resta)."""
+def clear_chat_messages(project_id: int, conversation_id: int | None = None) -> None:
+    """Svuota i messaggi: di una conversazione se data, altrimenti legacy (NULL)."""
     with connect() as con:
-        con.execute(
-            "DELETE FROM project_chat_messages WHERE project_id = %s",
-            (project_id,),
-        )
+        if conversation_id is not None:
+            con.execute(
+                "DELETE FROM project_chat_messages WHERE project_id = %s AND conversation_id = %s",
+                (project_id, conversation_id),
+            )
+        else:
+            con.execute(
+                "DELETE FROM project_chat_messages WHERE project_id = %s AND conversation_id IS NULL",
+                (project_id,),
+            )
         con.commit()

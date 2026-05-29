@@ -253,15 +253,35 @@
               </small>
             </div>
           </div>
-          {% if chat_messages %}
-          <form method="post" action="/fascicoli/{{ project.id }}/chat/clear" style="margin: 0">
-            <button type="submit" class="chat-clear btn-link"
-                    onclick="return confirm('Cancellare la cronologia chat? I documenti restano.')"
-                    title="Pulisci cronologia chat">
-              <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
-            </button>
-          </form>
-          {% endif %}
+          {% set active_conv = (conversations | selectattr('id', 'equalto', active_conv_id) | first) if active_conv_id else None %}
+          <div class="fasc-conv-bar" style="display: flex; gap: 0.3rem; align-items: center">
+            {% if conversations %}
+            <select class="fasc-conv-select" title="Chat salvate ({{ conversations|length }}/{{ conv_limit }})"
+                    style="max-width: 170px; font-size: 0.82rem; padding: 3px 6px; border-radius: 7px"
+                    onchange="if(this.value) location.href='/fascicoli/{{ project.id }}?conv=' + this.value">
+              {% for c in conversations %}
+              <option value="{{ c.id }}" {% if c.id == active_conv_id %}selected{% endif %}>{{ c.title }} ({{ c.n_messages }})</option>
+              {% endfor %}
+            </select>
+            {% endif %}
+            <form method="post" action="/fascicoli/{{ project.id }}/conversations" style="margin: 0">
+              <button type="submit" class="btn-icon" title="Nuova chat ({{ conversations|length }}/{{ conv_limit }})"
+                      {% if conversations|length >= conv_limit %}disabled{% endif %}>
+                <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+              </button>
+            </form>
+            {% if active_conv %}
+            <button type="button" class="btn-icon" title="Rinomina chat"
+                    data-title="{{ active_conv.title }}" onclick="fascRenameConv(this.dataset.title)"
+                    style="font-size: 0.95rem">✎</button>
+            <form method="post" action="/fascicoli/{{ project.id }}/conversations/{{ active_conv_id }}/delete" style="margin: 0"
+                  onsubmit="return confirm('Eliminare questa chat e tutti i suoi messaggi?')">
+              <button type="submit" class="btn-icon btn-icon-danger" title="Elimina chat">
+                <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
+              </button>
+            </form>
+            {% endif %}
+          </div>
         </div>
 
         <div class="chat-transcript" id="chat-transcript" style="max-height: 520px; min-height: 280px; padding: 1rem">
@@ -317,6 +337,7 @@
               class="chat-form fascicolo-chat-composer"
               data-no-loader="true"
               {% if not index_ready %}aria-disabled="true" style="opacity: 0.55"{% endif %}>
+          <input type="hidden" name="conversation_id" value="{{ active_conv_id or '' }}">
           <textarea name="message" rows="2" required
                     placeholder="{% if index_ready %}Fai una domanda... (Invio = invia, Shift+Invio = a capo){% else %}Indicizza prima i file{% endif %}"
                     {% if not index_ready %}disabled{% endif %}></textarea>
@@ -549,6 +570,8 @@
     try {
       const fd = new FormData();
       fd.append('message', msg);
+      const convInput = form.querySelector('input[name="conversation_id"]');
+      if (convInput && convInput.value) fd.append('conversation_id', convInput.value);
       const res = await fetch(form.dataset.chatAction, {
         method: 'POST', body: fd, credentials: 'same-origin',
         headers: { 'Accept': 'text/event-stream' },
@@ -598,6 +621,11 @@
             }
             if (obj.citations) {
               citations = obj.citations;
+            }
+            // prima chat creata lato server: memorizza l'id per i prossimi invii
+            if (obj.conversation_id && convInput && !convInput.value) {
+              convInput.value = obj.conversation_id;
+              if (window.__fascNewConv) window.__fascNewConv(obj.conversation_id);
             }
           } else if (obj.error) {
             abody.textContent = '⚠ Errore: ' + obj.error;
@@ -854,4 +882,17 @@
 </style>
 
 {% include "_sheet_manage_assets.html" %}
+
+<script>
+  // Rinomina conversazione chat (submit di un form generato al volo)
+  function fascRenameConv(cur) {
+    var t = prompt('Nome della chat:', cur || '');
+    if (t === null) return; t = t.trim(); if (!t) return;
+    var f = document.createElement('form');
+    f.method = 'post';
+    f.action = '/fascicoli/{{ project.id }}/conversations/{{ active_conv_id or 0 }}/rename';
+    var i = document.createElement('input'); i.type = 'hidden'; i.name = 'title'; i.value = t;
+    f.appendChild(i); document.body.appendChild(f); f.submit();
+  }
+</script>
 {% endblock %}

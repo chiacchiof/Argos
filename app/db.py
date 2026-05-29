@@ -1045,18 +1045,34 @@ CREATE TABLE IF NOT EXISTS project_files (
 );
 CREATE INDEX IF NOT EXISTS idx_project_files_project ON project_files(project_id);
 
--- Cronologia chat RAG per progetto (fascicoli v2). Una conversazione per
--- progetto in v1 (no conversation_id).
+-- Conversazioni chat RAG per fascicolo (piu' chat salvate per progetto).
+-- Limite MAX_CONVERSATIONS_PER_PROJECT (20) enforced lato applicazione.
+CREATE TABLE IF NOT EXISTS project_chat_conversations (
+  id                 BIGSERIAL PRIMARY KEY,
+  project_id         BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title              TEXT NOT NULL DEFAULT 'Nuova chat',
+  created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_message_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_project_chat_conv_project ON project_chat_conversations(project_id, last_message_at DESC);
+
+-- Cronologia chat RAG. conversation_id lega il messaggio a una conversazione
+-- salvata; NULL = chat legacy (pre-conversazioni), trattata come thread unico.
 CREATE TABLE IF NOT EXISTS project_chat_messages (
-  id          BIGSERIAL PRIMARY KEY,
-  project_id  BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  user_id     BIGINT REFERENCES users(id) ON DELETE SET NULL,
-  role        TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
-  content     TEXT NOT NULL,
-  citations   TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id              BIGSERIAL PRIMARY KEY,
+  project_id      BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  conversation_id BIGINT REFERENCES project_chat_conversations(id) ON DELETE CASCADE,
+  user_id         BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  role            TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+  content         TEXT NOT NULL,
+  citations       TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_project_chat_messages_project ON project_chat_messages(project_id, id);
+CREATE INDEX IF NOT EXISTS idx_project_chat_messages_conv ON project_chat_messages(conversation_id, id);
+-- DB esistenti: aggiungi conversation_id se manca (idempotente).
+ALTER TABLE project_chat_messages ADD COLUMN IF NOT EXISTS conversation_id BIGINT REFERENCES project_chat_conversations(id) ON DELETE CASCADE;
 
 -- ============================================================
 -- Fogli collaborativi (Argos Fogli v1): spreadsheet realtime tenant-scoped.

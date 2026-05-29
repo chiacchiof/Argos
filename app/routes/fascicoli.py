@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.parse import quote
 
 import json
 
@@ -249,7 +250,22 @@ async def fascicoli_detail(
 
     # Indice RAG + cronologia chat
     index_info = frag.index_summary(folder) if folder else {"ready": False, "n_chunks": 0, "n_files": 0, "model": None}
-    chat_messages = fdb.list_chat_messages(project_id)
+
+    # Conversazioni chat del fascicolo (max 20). Adotta eventuali messaggi legacy
+    # (pre-conversazioni) in una conversazione 'Chat'.
+    fdb.adopt_legacy_messages(project_id, user_id=current_user.id)
+    conversations = fdb.list_conversations(project_id)
+    _conv_q = request.query_params.get("conv")
+    active_conv = None
+    if _conv_q and _conv_q.isdigit():
+        active_conv = next((c for c in conversations if c["id"] == int(_conv_q)), None)
+    if active_conv is None and conversations:
+        active_conv = conversations[0]
+    active_conv_id = active_conv["id"] if active_conv else None
+    chat_messages = (
+        fdb.list_chat_messages(project_id, conversation_id=active_conv_id)
+        if active_conv_id else []
+    )
     # Stato del job di indicizzazione (in-memory): per la barra HTMX nel detail
     job_status = index_jobs.get_status(project_id)
 
@@ -277,6 +293,9 @@ async def fascicoli_detail(
             "n_indexed_files": index_info["n_files"],
             "embed_model": index_info["model"],
             "chat_messages": chat_messages,
+            "conversations": conversations,
+            "active_conv_id": active_conv_id,
+            "conv_limit": fdb.MAX_CONVERSATIONS_PER_PROJECT,
             # Stato del PC corrente vs progetto: serve al template per decidere
             # se mostrare l'upload (richiede root configurata) e diagnostica.
             "has_root_configured": root is not None,
@@ -703,11 +722,65 @@ async def fascicoli_index_status(
 # Chat Q&A (RAG)
 # ---------------------------------------------------------------------------
 
+@router.post("/{project_id}/conversations")
+async def fascicoli_conversation_new(
+    project_id: int,
+    title: str = Form("Nuova chat"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    project = fdb.get_project(
+        project_id, current_user_id=current_user.id,
+        architect_view=current_user.is_architect or current_user.is_super_admin,
+    )
+    if not project:
+        raise HTTPException(404)
+    try:
+        cid = fdb.create_conversation(project_id, title=title or "Nuova chat", user_id=current_user.id)
+    except fdb.ConversationLimitError as exc:
+        # torna al fascicolo con messaggio d'errore
+        return RedirectResponse(url=f"/fascicoli/{project_id}?conv_err={quote(str(exc))}", status_code=302)
+    return RedirectResponse(url=f"/fascicoli/{project_id}?conv={cid}", status_code=302)
+
+
+@router.post("/{project_id}/conversations/{conversation_id}/rename")
+async def fascicoli_conversation_rename(
+    project_id: int,
+    conversation_id: int,
+    title: str = Form(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    project = fdb.get_project(
+        project_id, current_user_id=current_user.id,
+        architect_view=current_user.is_architect or current_user.is_super_admin,
+    )
+    if not project:
+        raise HTTPException(404)
+    fdb.rename_conversation(conversation_id, title, project_id)
+    return RedirectResponse(url=f"/fascicoli/{project_id}?conv={conversation_id}", status_code=302)
+
+
+@router.post("/{project_id}/conversations/{conversation_id}/delete")
+async def fascicoli_conversation_delete(
+    project_id: int,
+    conversation_id: int,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    project = fdb.get_project(
+        project_id, current_user_id=current_user.id,
+        architect_view=current_user.is_architect or current_user.is_super_admin,
+    )
+    if not project:
+        raise HTTPException(404)
+    fdb.delete_conversation(conversation_id, project_id)
+    return RedirectResponse(url=f"/fascicoli/{project_id}", status_code=302)
+
+
 @router.post("/{project_id}/chat")
 async def fascicoli_chat(
     request: Request,
     project_id: int,
     message: str = Form(..., min_length=1),
+    conversation_id: str = Form(""),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Risponde in streaming via Server-Sent Events.
@@ -737,10 +810,23 @@ async def fascicoli_chat(
     if not msg:
         raise HTTPException(400, "message vuoto")
 
+    # Risolvi la conversazione: usa quella indicata o creane una nuova (titolo
+    # dal primo messaggio), rispettando il limite di 20 per fascicolo.
+    conv_id: int | None = None
+    if conversation_id and conversation_id.isdigit():
+        conv = fdb.get_conversation(int(conversation_id), project_id)
+        if conv:
+            conv_id = conv["id"]
+    if conv_id is None:
+        try:
+            conv_id = fdb.create_conversation(project_id, title=msg[:60], user_id=current_user.id)
+        except fdb.ConversationLimitError as exc:
+            raise HTTPException(400, str(exc))
+
     # Snapshot history PRIMA di aggiungere il nuovo user msg (cosi' history
     # non include il messaggio attuale, evita duplicazione nel prompt).
-    history = fdb.list_chat_messages(project_id, limit=20)
-    fdb.add_chat_message(project_id, role="user", content=msg, user_id=current_user.id)
+    history = fdb.list_chat_messages(project_id, conversation_id=conv_id, limit=20)
+    fdb.add_chat_message(project_id, conversation_id=conv_id, role="user", content=msg, user_id=current_user.id)
 
     # Retrieve UNA VOLTA: i chunks usati per il prompt sono gli stessi citati.
     chunks = frag.retrieve(folder, msg, k=5)
@@ -764,7 +850,7 @@ async def fascicoli_chat(
         # Persisti la risposta assistant
         try:
             fdb.add_chat_message(
-                project_id, role="assistant",
+                project_id, conversation_id=conv_id, role="assistant",
                 content=full_text,
                 citations=citations,
             )
@@ -779,7 +865,7 @@ async def fascicoli_chat(
             log.exception("markdown render failed")
             html = None
 
-        done_payload = {"done": True, "citations": citations}
+        done_payload = {"done": True, "citations": citations, "conversation_id": conv_id}
         if html is not None:
             done_payload["html"] = html
         yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
@@ -800,6 +886,7 @@ async def fascicoli_chat(
 async def fascicoli_chat_clear(
     request: Request,
     project_id: int,
+    conversation_id: str = Form(""),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     project = fdb.get_project(
@@ -808,5 +895,7 @@ async def fascicoli_chat_clear(
     )
     if not project:
         raise HTTPException(404)
-    fdb.clear_chat_messages(project_id)
-    return RedirectResponse(url=f"/fascicoli/{project_id}", status_code=302)
+    cid = int(conversation_id) if conversation_id and conversation_id.isdigit() else None
+    fdb.clear_chat_messages(project_id, conversation_id=cid)
+    dest = f"/fascicoli/{project_id}" + (f"?conv={cid}" if cid else "")
+    return RedirectResponse(url=dest, status_code=302)
