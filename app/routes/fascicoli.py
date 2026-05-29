@@ -35,6 +35,7 @@ from ..auth import CurrentUser, get_current_user, require_architect_or_admin
 from ..fascicoli import acl as facl
 from ..fascicoli import db as fdb
 from ..fascicoli import fs as ffs
+from ..fascicoli import share as fshare
 from ..fascicoli import sheets_db as sdb
 from ..fascicoli import sheets_export as sx
 from ..fascicoli import index_jobs
@@ -753,6 +754,74 @@ async def fascicoli_index_status(
 # ---------------------------------------------------------------------------
 # Chat Q&A (RAG)
 # ---------------------------------------------------------------------------
+
+def _project_share_response(request: Request, project: dict, current_user: CurrentUser):
+    members = fdb.list_project_members(project["id"])
+    member_role = {m["user_id"]: m["role"] for m in members}
+    tenant_users = db_cloud.list_users(tenant_id=current_user.tenant_id) if current_user.tenant_id else []
+    ctx = fshare.build_share_context(
+        kind="project", title=project["title"], base=f"/fascicoli/{project['id']}",
+        visibility=project.get("visibility", "tenant"),
+        owner_user_id=project.get("owner_user_id"),
+        member_role=member_role, tenant_users=tenant_users,
+    )
+    return templates.TemplateResponse(request, "share_modal.html", {"share": ctx})
+
+
+def _load_project_for_manage(project_id: int, current_user: CurrentUser) -> dict:
+    project = fdb.get_project(
+        project_id, current_user_id=current_user.id,
+        architect_view=current_user.is_architect or current_user.is_super_admin,
+    )
+    if not project:
+        raise HTTPException(404)
+    if not _can_manage_project(project, current_user):
+        raise HTTPException(403, "Non puoi gestire la condivisione di questo fascicolo.")
+    return project
+
+
+@router.get("/{project_id}/share", response_class=HTMLResponse)
+async def fascicoli_share_get(
+    request: Request, project_id: int,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    project = _load_project_for_manage(project_id, current_user)
+    return _project_share_response(request, project, current_user)
+
+
+@router.post("/{project_id}/share", response_class=HTMLResponse)
+async def fascicoli_share_set(
+    request: Request, project_id: int,
+    user_id: int = Form(...), role: str = Form(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    project = _load_project_for_manage(project_id, current_user)
+    if role == "none":
+        fdb.remove_project_member(project_id, user_id)
+    elif role in ("viewer", "editor"):
+        # no condivisione cross-tenant: l'utente deve appartenere al tenant
+        target = db_cloud.get_user(user_id)
+        if not target or target.get("tenant_id") != current_user.tenant_id:
+            raise HTTPException(400, "Utente non valido per questo tenant.")
+        fdb.add_project_member(project_id, user_id, role)
+    else:
+        raise HTTPException(400, "Ruolo non valido.")
+    return _project_share_response(request, project, current_user)
+
+
+@router.post("/{project_id}/share/visibility", response_class=HTMLResponse)
+async def fascicoli_share_visibility(
+    request: Request, project_id: int,
+    visibility: str = Form(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    project = _load_project_for_manage(project_id, current_user)
+    if visibility not in ("tenant", "user"):
+        raise HTTPException(400, "visibility non valida.")
+    fdb.update_project(project_id, visibility=visibility)
+    project["visibility"] = visibility
+    return _project_share_response(request, project, current_user)
+
 
 @router.post("/{project_id}/conversations")
 async def fascicoli_conversation_new(

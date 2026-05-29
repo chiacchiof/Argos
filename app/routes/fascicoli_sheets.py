@@ -32,6 +32,7 @@ from .. import db_cloud
 from ..auth import CurrentUser, get_current_user
 from ..fascicoli import acl as facl
 from ..fascicoli import db as fdb
+from ..fascicoli import share as fshare
 from ..fascicoli import sheets_db as sdb
 from ..fascicoli import sheets_export
 from ..templates import templates
@@ -271,26 +272,14 @@ async def sheet_patch_http(
 def _share_modal_response(request: Request, sheet: dict, current_user: CurrentUser):
     members = sdb.list_sheet_members(sheet["id"])
     member_role = {m["user_id"]: m["role"] for m in members}
-    rows = []
-    if current_user.tenant_id is not None:
-        for u in db_cloud.list_users(tenant_id=current_user.tenant_id):
-            if not u.get("is_active"):
-                continue
-            rows.append({
-                "id": u["id"],
-                "email": u["email"],
-                "first_name": u.get("first_name"),
-                "last_name": u.get("last_name"),
-                "is_owner": u["id"] == sheet.get("created_by_user_id"),
-                "is_architect": u.get("role") in ("tenant_architect", "super_admin"),
-                "sheet_role": member_role.get(u["id"]),
-            })
-    # owner prima, poi architetti, poi gli altri per email
-    rows.sort(key=lambda r: (not r["is_owner"], not r["is_architect"], (r["email"] or "")))
-    return templates.TemplateResponse(
-        request, "sheet_share_modal.html",
-        {"sheet": sheet, "rows": rows},
+    tenant_users = db_cloud.list_users(tenant_id=current_user.tenant_id) if current_user.tenant_id else []
+    ctx = fshare.build_share_context(
+        kind="sheet", title=sheet["title"], base=f"/sheets/{sheet['id']}",
+        visibility=sheet.get("visibility", "tenant"),
+        owner_user_id=sheet.get("created_by_user_id"),
+        member_role=member_role, tenant_users=tenant_users,
     )
+    return templates.TemplateResponse(request, "share_modal.html", {"share": ctx})
 
 
 @router.get("/{sheet_id}/share", response_class=HTMLResponse)

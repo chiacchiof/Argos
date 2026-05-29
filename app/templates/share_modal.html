@@ -1,0 +1,81 @@
+{# Modale condivisione generica (Fogli e Fascicoli). Iniettata in #sheet-share-body.
+   context: `share` (vedi app/fascicoli/share.py). #}
+<div class="share-head">
+  <h3>Condividi «{{ share.title }}»</h3>
+  <button type="button" class="share-close" onclick="argosCloseShareModal()" aria-label="Chiudi">&times;</button>
+</div>
+
+<div class="share-visibility">
+  <label class="share-vis-label">Accesso generale</label>
+  <form action="{{ share.base }}/share/visibility" method="post" class="share-form">
+    <select name="visibility" onchange="argosShareApply(this.form)">
+      <option value="tenant" {% if share.visibility == 'tenant' %}selected{% endif %}>Tutti gli utenti del tenant (modifica)</option>
+      <option value="user" {% if share.visibility == 'user' %}selected{% endif %}>Solo le persone scelte qui sotto</option>
+    </select>
+  </form>
+</div>
+{% if share.visibility == 'tenant' %}
+<p class="share-note">Tutti gli utenti del tenant possono aprire e modificare. Imposta «Solo le persone scelte» per gestire i permessi individuali qui sotto.</p>
+{% else %}
+<p class="share-note">
+  Solo le persone elencate possono accedere.
+  {% if share.kind == 'project' %}«Modifica» consente anche di caricare file e creare fogli nel fascicolo.{% endif %}
+</p>
+{% endif %}
+
+<div class="share-people-head">
+  <strong>Persone con accesso</strong>
+  <button type="button" class="btn-icon share-add-toggle" title="Aggiungi persone" onclick="argosShareToggleAdd()">+</button>
+</div>
+
+<div class="share-add-panel" id="share-add-panel" hidden>
+  <input type="search" class="share-search" placeholder="Cerca utente per email…" oninput="argosShareFilter(this.value)" autocomplete="off">
+  <div class="share-add-list" id="share-add-list">
+    {% for u in share.addable %}
+    <div class="share-add-row" data-email="{{ u.email|lower }}">
+      <span class="share-user-info">
+        <span class="share-user-avatar">{{ (u.email or '?')[:2]|upper }}</span>
+        <span class="share-user-name">{{ u.email }}</span>
+      </span>
+      <form action="{{ share.base }}/share" method="post" class="share-form share-add-form">
+        <input type="hidden" name="user_id" value="{{ u.user_id }}">
+        <select name="role">
+          <option value="viewer">Sola lettura</option>
+          <option value="editor">Modifica</option>
+        </select>
+        <button type="submit" class="btn btn-secondary" onclick="event.preventDefault(); argosShareApply(this.form)">Aggiungi</button>
+      </form>
+    </div>
+    {% endfor %}
+    {% if not share.addable %}<p class="share-note" id="share-add-empty">Tutti gli utenti del tenant sono già inclusi.</p>{% endif %}
+  </div>
+</div>
+
+<div class="share-users">
+  {% for r in share.rows %}
+  <div class="share-user">
+    <div class="share-user-info">
+      <span class="share-user-avatar">{{ (r.email or '?')[:2]|upper }}</span>
+      <div>
+        <div class="share-user-name">{{ r.email }}</div>
+        {% if r.tag %}<div class="share-user-tag">{{ r.tag }}</div>{% endif %}
+      </div>
+    </div>
+    <div class="share-user-role">
+      {% if r.fixed %}
+      <span class="share-role-fixed">{{ r.fixed }}</span>
+      {% else %}
+      <form action="{{ share.base }}/share" method="post" class="share-form" style="display:flex; gap:.3rem; align-items:center">
+        <input type="hidden" name="user_id" value="{{ r.user_id }}">
+        <select name="role" onchange="argosShareApply(this.form)">
+          <option value="viewer" {% if r.role == 'viewer' %}selected{% endif %}>Sola lettura</option>
+          <option value="editor" {% if r.role == 'editor' %}selected{% endif %}>Modifica</option>
+        </select>
+        <button type="button" class="btn-icon btn-icon-danger" title="Rimuovi dalla condivisione"
+                onclick="argosShareRemove('{{ share.base }}', {{ r.user_id }})">&times;</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>

@@ -58,6 +58,21 @@
   .share-user-name { font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; }
   .share-user-tag { font-size: 0.72rem; color: var(--fg-muted, #888); }
   .share-role-fixed { font-size: 0.8rem; color: var(--fg-muted, #888); }
+  .share-people-head { display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 0.5rem 0; }
+  .share-people-head strong { font-size: 0.9rem; }
+  .share-add-toggle { font-size: 1.2rem; line-height: 1; }
+  .share-add-panel {
+    margin: 0 0 0.8rem 0; padding: 0.6rem; border: 1px solid var(--border, #ddd);
+    border-radius: 10px; background: var(--surface-0, #f8f8fb);
+  }
+  .share-search {
+    width: 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border, #ccc);
+    background: var(--surface-1, #fff); color: var(--fg, #222); font: inherit; margin-bottom: 0.5rem;
+  }
+  .share-add-list { display: flex; flex-direction: column; gap: 0.35rem; max-height: 220px; overflow-y: auto; }
+  .share-add-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  .share-add-form { display: flex; gap: 0.3rem; align-items: center; }
+  .share-add-form select { min-width: 120px; }
 </style>
 
 <div id="sheet-modal" class="sheet-modal-overlay" hidden onclick="if(event.target===this)argosCloseShareModal()">

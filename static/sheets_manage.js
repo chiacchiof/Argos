@@ -9,8 +9,9 @@
 
   window.argosCloseShareModal = function () { var m = modal(); if (m) m.hidden = true; };
 
-  window.argosShareOpen = function (id) {
-    fetch("/sheets/" + id + "/share", { credentials: "same-origin" })
+  // url completo della modale: /sheets/{id}/share oppure /fascicoli/{id}/share
+  window.argosShareOpen = function (url) {
+    fetch(url, { credentials: "same-origin" })
       .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
       .then(function (html) { body().innerHTML = html; modal().hidden = false; })
       .catch(function () { alert("Impossibile aprire la condivisione."); });
@@ -21,6 +22,32 @@
       .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
       .then(function (html) { body().innerHTML = html; })
       .catch(function () { alert("Modifica non riuscita."); });
+  };
+
+  // rimuove un utente dalla condivisione (role=none)
+  window.argosShareRemove = function (base, userId) {
+    var fd = new FormData(); fd.append("user_id", userId); fd.append("role", "none");
+    fetch(base + "/share", { method: "POST", credentials: "same-origin", body: fd })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+      .then(function (html) { body().innerHTML = html; })
+      .catch(function () { alert("Rimozione non riuscita."); });
+  };
+
+  // mostra/nasconde il pannello "aggiungi persone"
+  window.argosShareToggleAdd = function () {
+    var p = document.getElementById("share-add-panel");
+    if (!p) return;
+    p.hidden = !p.hidden;
+    if (!p.hidden) { var s = p.querySelector(".share-search"); if (s) s.focus(); }
+  };
+
+  // filtro client-side della lista utenti aggiungibili per email
+  window.argosShareFilter = function (q) {
+    q = (q || "").trim().toLowerCase();
+    document.querySelectorAll("#share-add-list .share-add-row").forEach(function (row) {
+      var em = row.getAttribute("data-email") || "";
+      row.style.display = (!q || em.indexOf(q) !== -1) ? "" : "none";
+    });
   };
 
   window.argosRenameSheet = function (id, current) {
@@ -46,7 +73,7 @@
     if (btn) {
       var id = btn.dataset.id;
       if (btn.classList.contains("kebab-rename")) window.argosRenameSheet(id, btn.dataset.title);
-      else if (btn.classList.contains("kebab-share")) window.argosShareOpen(id);
+      else if (btn.classList.contains("kebab-share")) window.argosShareOpen("/sheets/" + id + "/share");
       else if (btn.classList.contains("kebab-del")) window.argosDeleteSheet(id, btn.dataset.title);
       var d = btn.closest("details.sheet-kebab"); if (d) d.removeAttribute("open");
       return;
