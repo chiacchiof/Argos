@@ -1,0 +1,98 @@
+{% extends base_template %}
+{% block title %}Fogli — Argos{% endblock %}
+{% block content %}
+<section class="sheets-list-page">
+  <div class="section-header">
+    <div>
+      <h2 style="margin:0">Fogli collaborativi</h2>
+      <p class="muted" style="margin:0.3rem 0 0 0">
+        Fogli di calcolo condivisi in tempo reale tra gli utenti del tenant.
+        Vivono online: apribili da qualsiasi postazione.
+      </p>
+    </div>
+    <details class="sheet-new-pop">
+      <summary class="btn btn-primary" role="button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" style="vertical-align:-3px">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        Nuovo foglio
+      </summary>
+      <form method="post" action="/sheets" class="sheet-new-form">
+        <label>Titolo
+          <input type="text" name="title" placeholder="Nuovo foglio" autocomplete="off" required>
+        </label>
+        <label>Visibilità
+          <select name="visibility">
+            <option value="tenant">Tenant — tutti gli utenti del tenant</option>
+            <option value="user">Privato — solo io e gli architetti</option>
+          </select>
+        </label>
+        <button type="submit" class="btn btn-primary">Crea e apri</button>
+      </form>
+    </details>
+  </div>
+
+  {% if not sheets %}
+  <div class="empty-state">
+    <span class="empty-icon">
+      <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2"/>
+        <line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/>
+        <line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
+      </svg>
+    </span>
+    <div class="empty-title">Nessun foglio ancora.</div>
+    <div class="empty-hint">
+      Crea un foglio collaborativo per lavorare a più mani su tabelle, budget,
+      liste e dati — in tempo reale, come su un foglio commerciale.
+    </div>
+  </div>
+  {% else %}
+
+  {% macro sheet_row(s) %}
+  <tr>
+    <td>
+      <a href="/sheets/{{ s.id }}"><strong>{{ s.title }}</strong></a>
+      {% if s.is_archived %}<span class="badge badge-cancel" style="margin-left:.4rem">Archiviato</span>{% endif %}
+    </td>
+    <td>
+      {% if s.visibility == 'tenant' %}
+      <span class="badge badge-pause">Tenant</span>
+      {% else %}
+      <span class="badge badge-cancel">Privato</span>
+      {% endif %}
+    </td>
+    <td><small class="muted">{{ s.creator_email or '—' }}</small></td>
+    <td><small class="muted">rev {{ s.revision }}</small></td>
+  </tr>
+  {% endmacro %}
+
+  {% if standalone %}
+  <h3 style="margin:1.4rem 0 .5rem 0">Fogli del tenant</h3>
+  <table class="data">
+    <thead><tr><th>Titolo</th><th>Visibilità</th><th>Creato da</th><th>Revisione</th></tr></thead>
+    <tbody>{% for s in standalone %}{{ sheet_row(s) }}{% endfor %}</tbody>
+  </table>
+  {% endif %}
+
+  {% if attached %}
+  <h3 style="margin:1.6rem 0 .5rem 0">Fogli legati a fascicoli</h3>
+  <table class="data">
+    <thead><tr><th>Titolo</th><th>Fascicolo</th><th>Creato da</th><th>Revisione</th></tr></thead>
+    <tbody>
+      {% for s in attached %}
+      <tr>
+        <td><a href="/sheets/{{ s.id }}"><strong>{{ s.title }}</strong></a></td>
+        <td><a href="/fascicoli/{{ s.project_id }}"><small>{{ s.project_title or '—' }}</small></a></td>
+        <td><small class="muted">{{ s.creator_email or '—' }}</small></td>
+        <td><small class="muted">rev {{ s.revision }}</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

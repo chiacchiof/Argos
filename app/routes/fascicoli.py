@@ -34,6 +34,7 @@ from ..auth import CurrentUser, get_current_user, require_architect_or_admin
 from ..fascicoli import acl as facl
 from ..fascicoli import db as fdb
 from ..fascicoli import fs as ffs
+from ..fascicoli import sheets_db as sdb
 from ..fascicoli import index_jobs
 from ..fascicoli import rag as frag
 from ..fascicoli import sync as fsync
@@ -252,6 +253,12 @@ async def fascicoli_detail(
     # Stato del job di indicizzazione (in-memory): per la barra HTMX nel detail
     job_status = index_jobs.get_status(project_id)
 
+    # Fogli collaborativi agganciati a questo fascicolo
+    sheets = sdb.list_sheets(
+        project_id=project_id, only_project=True,
+        current_user_id=current_user.id, architect_view=architect_view,
+    )
+
     return templates.TemplateResponse(
         request,
         "fascicoli_detail.html",
@@ -262,6 +269,7 @@ async def fascicoli_detail(
             "tenant_users": tenant_users,
             "can_edit": _can_edit_project(project, current_user),
             "can_manage": _can_manage_project(project, current_user),
+            "sheets": sheets,
             "index_ready": index_info["ready"],
             "n_indexed": index_info["n_chunks"],
             "n_indexed_files": index_info["n_files"],

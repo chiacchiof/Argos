@@ -18,6 +18,7 @@ from .routes import auth as auth_routes
 from .routes import dbconfig as dbconfig_routes
 from .routes import docs as docs_routes
 from .routes import fascicoli as fascicoli_routes
+from .routes import fascicoli_sheets as fascicoli_sheets_routes
 from .routes import operator as operator_routes
 from .routes import import_csv as import_csv_routes
 from .routes import inbox as inbox_routes
@@ -222,6 +223,7 @@ app.include_router(accounts_messaging_routes.router)
 app.include_router(accounts_llm_keys_routes.router)
 app.include_router(docs_routes.router)
 app.include_router(fascicoli_routes.router)
+app.include_router(fascicoli_sheets_routes.router)
 app.include_router(operator_routes.router)
 app.include_router(update_routes.router)
 

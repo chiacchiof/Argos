@@ -1,0 +1,114 @@
+<!doctype html>
+{% set current_user = request.state.current_user if request and request.state else None %}
+<html lang="it" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ sheet.title }} — Fogli Argos</title>
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('argos-theme');
+        document.documentElement.setAttribute('data-theme', (t === 'light') ? 'light' : 'dark');
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="icon" href="/favicon.ico?v={{ static_asset_mtime('brand/favicon.ico') }}" sizes="any">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_css_mtime() }}">
+  <link rel="stylesheet" href="/static/sheets.css?v={{ static_asset_mtime('sheets.css') }}">
+</head>
+<body class="sheet-body">
+  <header class="sheet-topbar">
+    <a class="sheet-back" href="{{ back_url }}" title="Torna indietro" aria-label="Indietro">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </a>
+    <div class="sheet-brand" title="Argos Fogli">
+      <img src="/static/brand/favicon-32.png" alt="" width="20" height="20">
+    </div>
+
+    <div class="sheet-titlewrap">
+      {% if can_manage %}
+      <form method="post" action="/sheets/{{ sheet.id }}/rename" class="sheet-title-form"
+            onsubmit="this.querySelector('input').blur()">
+        <input class="sheet-title-input" name="title" value="{{ sheet.title }}"
+               autocomplete="off" spellcheck="false"
+               onblur="if(this.value.trim() && this.value!=='{{ sheet.title }}') this.form.submit()">
+      </form>
+      {% else %}
+      <span class="sheet-title-input sheet-title-static">{{ sheet.title }}</span>
+      {% endif %}
+      <span class="sheet-context muted">
+        {% if project %}in <a href="/fascicoli/{{ project.id }}">{{ project.title }}</a>{% else %}foglio del tenant{% endif %}
+        · {% if sheet.visibility == 'tenant' %}condiviso{% else %}privato{% endif %}
+      </span>
+    </div>
+
+    <div class="sheet-topbar-right">
+      <div class="sheet-presence" id="sheet-presence" aria-label="Utenti collegati"></div>
+      <span class="sheet-status" id="sheet-status" data-state="connecting" title="Stato connessione">
+        <span class="sheet-status-dot"></span><span class="sheet-status-label">Connessione…</span>
+      </span>
+      <div class="sheet-menu">
+        <details>
+          <summary class="sheet-btn" role="button" title="Esporta / opzioni">⋯</summary>
+          <div class="sheet-menu-pop">
+            <a href="/sheets/{{ sheet.id }}/export.csv">Esporta CSV</a>
+            <a href="/sheets/{{ sheet.id }}/export.xlsx">Esporta XLSX (Excel/Google)</a>
+            {% if can_manage %}
+            <hr>
+            <form method="post" action="/sheets/{{ sheet.id }}/visibility">
+              <input type="hidden" name="visibility" value="{{ 'user' if sheet.visibility == 'tenant' else 'tenant' }}">
+              <button type="submit" class="sheet-menu-btn">
+                Rendi {{ 'privato' if sheet.visibility == 'tenant' else 'condiviso col tenant' }}
+              </button>
+            </form>
+            <form method="post" action="/sheets/{{ sheet.id }}/archive">
+              <button type="submit" class="sheet-menu-btn">Archivia</button>
+            </form>
+            <form method="post" action="/sheets/{{ sheet.id }}/delete"
+                  onsubmit="return confirm('Eliminare definitivamente questo foglio? Le celle e la cronologia verranno perse.')">
+              <button type="submit" class="sheet-menu-btn sheet-menu-danger">Elimina</button>
+            </form>
+            {% endif %}
+          </div>
+        </details>
+      </div>
+      <button type="button" class="sheet-btn" id="sheet-theme" title="Tema chiaro/scuro" aria-label="Tema">◐</button>
+    </div>
+  </header>
+
+  <div class="sheet-formula-bar">
+    <span class="sheet-cellref" id="sheet-cellref">A1</span>
+    <span class="sheet-fx">fx</span>
+    <input class="sheet-formula-input" id="sheet-formula" type="text" spellcheck="false"
+           autocomplete="off" {% if not can_edit %}disabled{% endif %}
+           aria-label="Contenuto cella attiva">
+  </div>
+
+  <div class="sheet-grid-wrap" id="sheet-grid" tabindex="0"></div>
+
+  {% if not can_edit %}
+  <div class="sheet-readonly-banner">Sola lettura — non hai i permessi per modificare questo foglio.</div>
+  {% endif %}
+
+  <script id="sheet-config" type="application/json">
+    {{ {
+      "sheet_id": sheet.id,
+      "n_rows": sheet.n_rows,
+      "n_cols": sheet.n_cols,
+      "revision": sheet.revision,
+      "can_edit": can_edit,
+      "title": sheet.title,
+      "snapshot_url": "/sheets/" ~ sheet.id ~ "/snapshot",
+      "patch_url": "/sheets/" ~ sheet.id ~ "/patch",
+      "ws_url": "/ws/sheets/" ~ sheet.id,
+      "user_id": (current_user.id if current_user else None),
+      "user_email": (current_user.email if current_user else "")
+    } | tojson | safe }}
+  </script>
+  <script src="/static/sheets.js?v={{ static_asset_mtime('sheets.js') }}"></script>
+</body>
+</html>

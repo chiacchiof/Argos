@@ -137,6 +137,7 @@
       <nav class="op-topbar-nav">
         <a href="/home" class="op-nav-link {% if request.url.path == '/home' %}is-active{% endif %}">Dashboard</a>
         <a href="/fascicoli" class="op-nav-link {% if request.url.path.startswith('/fascicoli') %}is-active{% endif %}">Fascicoli</a>
+        <a href="/sheets" class="op-nav-link {% if request.url.path.startswith('/sheets') %}is-active{% endif %}">Fogli</a>
         <a href="/leads" class="op-nav-link {% if request.url.path == '/leads' or (request.url.path.startswith('/leads/') and not request.url.path.startswith('/leads/qualified')) %}is-active{% endif %}">Lead</a>
         <a href="/leads/qualified" class="op-nav-link {% if request.url.path.startswith('/leads/qualified') %}is-active{% endif %}">Qualificati</a>
         <a href="/messages" class="op-nav-link {% if request.url.path.startswith('/messages') %}is-active{% endif %}">Messaggi</a>
