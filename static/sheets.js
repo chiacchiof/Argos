@@ -691,7 +691,12 @@
       // mostra la formula grezza se presente, altrimenti il valore
       this.formulaEl.value = cell ? (cell.formula || cell.value || "") : "";
     }
-    this.transport.sendCursor({ row: r, col: c, sel: this.grid.sel });
+    // Guard: il primo setActive(0,0) parte DENTRO il costruttore di SheetGrid,
+    // prima che this.transport/this.grid siano assegnati su SheetApp. Evita il
+    // TypeError che bloccava l'intera init (e quindi transport.start()).
+    if (this.transport && this.grid) {
+      this.transport.sendCursor({ row: r, col: c, sel: this.grid.sel });
+    }
   };
 
   SheetApp.prototype._bindFormula = function () {
