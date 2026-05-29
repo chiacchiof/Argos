@@ -258,6 +258,8 @@ async def fascicoli_detail(
         project_id=project_id, only_project=True,
         current_user_id=current_user.id, architect_view=architect_view,
     )
+    for _s in sheets:
+        _s["_can_manage"] = facl.can_manage_sheet(_s, project, current_user)
 
     return templates.TemplateResponse(
         request,

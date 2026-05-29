@@ -1,0 +1,69 @@
+{# Asset condivisi per la gestione fogli (menu ⋮ + modale condivisione).
+   Includere UNA volta per pagina (sheets_list.html, fascicoli_detail.html). #}
+<style>
+  .sheet-actions-cell { width: 40px; text-align: right; }
+  .sheet-kebab { position: relative; display: inline-block; }
+  .sheet-kebab > summary {
+    list-style: none; cursor: pointer; width: 28px; height: 28px; line-height: 28px;
+    border-radius: 6px; text-align: center; font-size: 1.2rem; color: var(--fg-muted, #888); user-select: none;
+  }
+  .sheet-kebab > summary::-webkit-details-marker { display: none; }
+  .sheet-kebab > summary:hover { background: var(--surface-2, #eee); color: var(--fg, #222); }
+  .sheet-kebab-menu {
+    position: absolute; right: 0; top: 32px; z-index: 60; min-width: 160px; padding: 5px;
+    background: var(--surface-1, #fff); border: 1px solid var(--border, #ddd); border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0,0,0,0.18); display: flex; flex-direction: column; gap: 2px;
+  }
+  .sheet-kebab:not([open]) .sheet-kebab-menu { display: none; }
+  .sheet-kebab-menu button {
+    text-align: left; padding: 8px 10px; border: none; background: transparent; cursor: pointer;
+    border-radius: 7px; font: inherit; color: var(--fg, #222);
+  }
+  .sheet-kebab-menu button:hover { background: var(--surface-2, #f0f0f0); }
+  .sheet-kebab-menu .kebab-danger { color: var(--danger, #ef4444); }
+  /* il dropdown non deve essere tagliato dall'overflow:hidden della tabella */
+  table.data:has(details.sheet-kebab[open]) { overflow: visible; }
+  table.data td:has(details.sheet-kebab[open]) { position: relative; }
+
+  .sheet-modal-overlay {
+    position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45);
+    display: flex; align-items: flex-start; justify-content: center; padding: 8vh 1rem;
+  }
+  .sheet-modal-overlay[hidden] { display: none; }
+  .sheet-modal-card {
+    width: 100%; max-width: 520px; max-height: 80vh; overflow-y: auto;
+    background: var(--surface-1, #fff); border: 1px solid var(--border, #ddd);
+    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,0.35); padding: 1.2rem 1.4rem;
+  }
+  .share-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem; }
+  .share-head h3 { margin: 0; font-size: 1.05rem; }
+  .share-close { border: none; background: transparent; font-size: 1.5rem; cursor: pointer; color: var(--fg-muted, #888); }
+  .share-visibility { margin: 0.6rem 0 0.2rem 0; }
+  .share-vis-label { display: block; font-size: 0.78rem; color: var(--fg-muted, #888); margin-bottom: 0.25rem; }
+  .share-form { margin: 0; }
+  .share-form select {
+    width: 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border, #ccc);
+    background: var(--surface-0, #fff); color: var(--fg, #222); font: inherit;
+  }
+  .share-user-role .share-form select { width: auto; min-width: 130px; }
+  .share-note { font-size: 0.78rem; color: var(--fg-muted, #888); margin: 0.5rem 0 0.8rem 0; }
+  .share-users { display: flex; flex-direction: column; gap: 0.5rem; }
+  .share-user { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+  .share-user-info { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+  .share-user-avatar {
+    width: 32px; height: 32px; border-radius: 50%; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--brand-2, #4f6bf6); color: #fff; font-size: 0.72rem; font-weight: 700;
+  }
+  .share-user-name { font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; }
+  .share-user-tag { font-size: 0.72rem; color: var(--fg-muted, #888); }
+  .share-role-fixed { font-size: 0.8rem; color: var(--fg-muted, #888); }
+</style>
+
+<div id="sheet-modal" class="sheet-modal-overlay" hidden onclick="if(event.target===this)argosCloseShareModal()">
+  <div class="sheet-modal-card" role="dialog" aria-modal="true">
+    <div id="sheet-share-body"></div>
+  </div>
+</div>
+
+<script src="/static/sheets_manage.js?v={{ static_asset_mtime('sheets_manage.js') }}"></script>

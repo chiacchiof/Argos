@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_sheet_kebab.html" import sheet_kebab %}
 {% block title %}{{ project.title }} — Argos Fascicoli{% endblock %}
 {% block content %}
 <section>
@@ -175,6 +176,50 @@
         </div>
       </div>
       {% endif %}
+
+      {# ---------- FOGLI COLLABORATIVI: risorsa del fascicolo, sotto i file ---------- #}
+      <div class="fascicolo-sheets" style="margin-top: 1.8rem">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem">
+          <h3 style="margin: 0; display: flex; align-items: center; gap: 0.5rem">
+            <svg class="icon" aria-hidden="true"><use href="#i-tasks"/></svg>
+            Fogli <span class="muted" style="font-weight: 400">({{ sheets|length }})</span>
+          </h3>
+          {% if can_edit %}
+          <details class="sheet-new-pop">
+            <summary class="btn btn-secondary" role="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Nuovo foglio
+            </summary>
+            <form method="post" action="/sheets" class="sheet-new-form">
+              <input type="hidden" name="project_id" value="{{ project.id }}">
+              <input type="hidden" name="visibility" value="tenant">
+              <label>Titolo del foglio
+                <input type="text" name="title" placeholder="Nuovo foglio" autocomplete="off" required>
+              </label>
+              <button type="submit" class="btn btn-primary">Crea e apri</button>
+            </form>
+          </details>
+          {% endif %}
+        </div>
+        {% if sheets %}
+        <table class="data">
+          <thead><tr><th>Titolo</th><th>Visibilità</th><th style="text-align:right">Rev</th><th></th></tr></thead>
+          <tbody>
+            {% for s in sheets %}
+            <tr>
+              <td><a href="/sheets/{{ s.id }}"><strong>{{ s.title }}</strong></a></td>
+              <td>{% if s.visibility == 'tenant' %}<span class="badge badge-pause">Tenant</span>{% else %}<span class="badge badge-cancel">Privato</span>{% endif %}</td>
+              <td style="text-align:right"><small class="muted">rev {{ s.revision }}</small></td>
+              {{ sheet_kebab(s) }}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="muted" style="margin: 0.4rem 0 0 0">
+          Nessun foglio in questo fascicolo.{% if can_edit %} Creane uno per lavorare a più mani in tempo reale.{% endif %}
+        </p>
+        {% endif %}
+      </div>
     </div>
 
     {# ---------- COLONNA DESTRA: CHAT ---------- #}
@@ -286,54 +331,6 @@
     </div>
   </div>
 
-  {# ============================================================
-       Fogli collaborativi agganciati al fascicolo
-     ============================================================ #}
-  <div class="fascicolo-sheets" style="margin-top: 2rem">
-    <div class="section-header" style="margin-bottom: 0.6rem">
-      <h3 style="margin: 0; display: flex; align-items: center; gap: 0.5rem">
-        <svg class="icon" aria-hidden="true"><use href="#i-tasks"/></svg>
-        Fogli collaborativi
-      </h3>
-      {% if can_edit %}
-      <details class="sheet-new-pop">
-        <summary class="btn btn-secondary" role="button">
-          <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Nuovo foglio
-        </summary>
-        <form method="post" action="/sheets" class="sheet-new-form">
-          <input type="hidden" name="project_id" value="{{ project.id }}">
-          <input type="hidden" name="visibility" value="tenant">
-          <label>Titolo del foglio
-            <input type="text" name="title" placeholder="Nuovo foglio" autocomplete="off" required>
-          </label>
-          <button type="submit" class="btn btn-primary">Crea e apri</button>
-        </form>
-      </details>
-      {% endif %}
-    </div>
-    {% if sheets %}
-    <table class="data">
-      <thead><tr><th>Titolo</th><th>Visibilità</th><th>Creato da</th><th style="text-align:right">Revisione</th></tr></thead>
-      <tbody>
-        {% for s in sheets %}
-        <tr>
-          <td><a href="/sheets/{{ s.id }}"><strong>{{ s.title }}</strong></a></td>
-          <td>
-            {% if s.visibility == 'tenant' %}<span class="badge badge-pause">Tenant</span>
-            {% else %}<span class="badge badge-cancel">Privato</span>{% endif %}
-          </td>
-          <td><small class="muted">{{ s.creator_email or '—' }}</small></td>
-          <td style="text-align:right"><small class="muted">rev {{ s.revision }}</small></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="muted" style="margin: 0.4rem 0 0 0">
-      Nessun foglio in questo fascicolo.{% if can_edit %} Creane uno per lavorare a più mani su tabelle e dati in tempo reale.{% endif %}
-    </p>
-    {% endif %}
-  </div>
 
   {# ============================================================
        Pannelli secondari (collassati): accesso, modifica, archivio
@@ -855,4 +852,6 @@
   padding-bottom: 0;
 }
 </style>
+
+{% include "_sheet_manage_assets.html" %}
 {% endblock %}

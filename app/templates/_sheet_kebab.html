@@ -1,0 +1,17 @@
+{# Macro menu ⋮ per la gestione di un foglio (Modifica/Condividi/Elimina).
+   Render solo se s._can_manage. Usa data-attributes (handler delegato in
+   static/sheets_manage.js) per evitare problemi di escaping nei titoli. #}
+{% macro sheet_kebab(s) %}
+<td class="sheet-actions-cell">
+  {% if s._can_manage %}
+  <details class="sheet-kebab">
+    <summary aria-label="Azioni" title="Azioni">⋮</summary>
+    <div class="sheet-kebab-menu">
+      <button type="button" class="kebab-rename" data-id="{{ s.id }}" data-title="{{ s.title }}">Modifica</button>
+      <button type="button" class="kebab-share" data-id="{{ s.id }}">Condividi</button>
+      <button type="button" class="kebab-del kebab-danger" data-id="{{ s.id }}" data-title="{{ s.title }}">Elimina</button>
+    </div>
+  </details>
+  {% endif %}
+</td>
+{% endmacro %}

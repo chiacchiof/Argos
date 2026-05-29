@@ -104,7 +104,7 @@ async def sheets_list(
         s["_can_manage"] = facl.can_manage_sheet(s, project, current_user)
     standalone = [s for s in sheets if not s.get("project_id")]
     attached = [s for s in sheets if s.get("project_id")]
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         request,
         "sheets_list.html",
         {
@@ -115,6 +115,9 @@ async def sheets_list(
             "include_archived": bool(include_archived),
         },
     )
+    # no-store: l'HTML (con CSS/JS inline di menu e tab) deve essere sempre fresco
+    resp.headers["Cache-Control"] = "no-store, must-revalidate"
+    return resp
 
 
 @router.post("")

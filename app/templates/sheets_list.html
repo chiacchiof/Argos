@@ -1,4 +1,5 @@
 {% extends base_template %}
+{% from "_sheet_kebab.html" import sheet_kebab %}
 {% block title %}Fogli — Argos{% endblock %}
 {% block content %}
 <section class="sheets-list-page">
@@ -51,178 +52,78 @@
   </div>
   {% else %}
 
-  {% macro kebab(s) %}
-  <td class="sheet-actions-cell">
-    {% if s._can_manage %}
-    <details class="sheet-kebab">
-      <summary aria-label="Azioni" title="Azioni">⋮</summary>
-      <div class="sheet-kebab-menu">
-        <button type="button" class="kebab-rename" data-id="{{ s.id }}" data-title="{{ s.title }}">Modifica</button>
-        <button type="button" class="kebab-share" data-id="{{ s.id }}">Condividi</button>
-        <button type="button" class="kebab-del kebab-danger" data-id="{{ s.id }}" data-title="{{ s.title }}">Elimina</button>
-      </div>
-    </details>
-    {% endif %}
-  </td>
-  {% endmacro %}
+  <div class="sheet-tabs">
+    <input type="radio" name="sheettab" id="st-tenant" class="st-radio" checked>
+    <input type="radio" name="sheettab" id="st-fasc" class="st-radio">
+    <div class="st-tablist" role="tablist">
+      <label for="st-tenant" class="st-tab">I tuoi fogli e del tenant{% if standalone %} ({{ standalone|length }}){% endif %}</label>
+      <label for="st-fasc" class="st-tab">Fogli dei fascicoli{% if attached %} ({{ attached|length }}){% endif %}</label>
+    </div>
 
-  {% if standalone %}
-  <h3 style="margin:1.4rem 0 .5rem 0">Fogli del tenant</h3>
-  <table class="data">
-    <thead><tr><th>Titolo</th><th>Visibilità</th><th>Creato da</th><th style="text-align:right">Revisione</th><th></th></tr></thead>
-    <tbody>
-      {% for s in standalone %}
-      <tr>
-        <td>
-          <a href="/sheets/{{ s.id }}"><strong>{{ s.title }}</strong></a>
-          {% if s.is_archived %}<span class="badge badge-cancel" style="margin-left:.4rem">Archiviato</span>{% endif %}
-        </td>
-        <td>{% if s.visibility == 'tenant' %}<span class="badge badge-pause">Tenant</span>{% else %}<span class="badge badge-cancel">Privato</span>{% endif %}</td>
-        <td><small class="muted">{{ s.creator_email or '—' }}</small></td>
-        <td style="text-align:right"><small class="muted">rev {{ s.revision }}</small></td>
-        {{ kebab(s) }}
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
+    <div class="st-panel st-panel-tenant">
+      {% if standalone %}
+      <table class="data">
+        <thead><tr><th>Titolo</th><th>Visibilità</th><th>Creato da</th><th style="text-align:right">Revisione</th><th></th></tr></thead>
+        <tbody>
+          {% for s in standalone %}
+          <tr>
+            <td>
+              <a href="/sheets/{{ s.id }}"><strong>{{ s.title }}</strong></a>
+              {% if s.is_archived %}<span class="badge badge-cancel" style="margin-left:.4rem">Archiviato</span>{% endif %}
+            </td>
+            <td>{% if s.visibility == 'tenant' %}<span class="badge badge-pause">Tenant</span>{% else %}<span class="badge badge-cancel">Privato</span>{% endif %}</td>
+            <td><small class="muted">{{ s.creator_email or '—' }}</small></td>
+            <td style="text-align:right"><small class="muted">rev {{ s.revision }}</small></td>
+            {{ sheet_kebab(s) }}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted">Nessun foglio del tenant. Creane uno con «Nuovo foglio».</p>
+      {% endif %}
+    </div>
 
-  {% if attached %}
-  <h3 style="margin:1.6rem 0 .5rem 0">Fogli legati a fascicoli</h3>
-  <table class="data">
-    <thead><tr><th>Titolo</th><th>Fascicolo</th><th>Creato da</th><th style="text-align:right">Revisione</th><th></th></tr></thead>
-    <tbody>
-      {% for s in attached %}
-      <tr>
-        <td><a href="/sheets/{{ s.id }}"><strong>{{ s.title }}</strong></a></td>
-        <td><a href="/fascicoli/{{ s.project_id }}"><small>{{ s.project_title or '—' }}</small></a></td>
-        <td><small class="muted">{{ s.creator_email or '—' }}</small></td>
-        <td style="text-align:right"><small class="muted">rev {{ s.revision }}</small></td>
-        {{ kebab(s) }}
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
+    <div class="st-panel st-panel-fasc">
+      {% if attached %}
+      <table class="data">
+        <thead><tr><th>Titolo</th><th>Fascicolo</th><th>Creato da</th><th style="text-align:right">Revisione</th><th></th></tr></thead>
+        <tbody>
+          {% for s in attached %}
+          <tr>
+            <td><a href="/sheets/{{ s.id }}"><strong>{{ s.title }}</strong></a></td>
+            <td><a href="/fascicoli/{{ s.project_id }}"><small>{{ s.project_title or '—' }}</small></a></td>
+            <td><small class="muted">{{ s.creator_email or '—' }}</small></td>
+            <td style="text-align:right"><small class="muted">rev {{ s.revision }}</small></td>
+            {{ sheet_kebab(s) }}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted">Nessun foglio legato a un fascicolo. Aprine uno e crealo dalla sezione «Fogli» del fascicolo.</p>
+      {% endif %}
+    </div>
+  </div>
   {% endif %}
 </section>
 
-{# Modale condivisione #}
-<div id="sheet-modal" class="sheet-modal-overlay" hidden onclick="if(event.target===this)argosCloseShareModal()">
-  <div class="sheet-modal-card" role="dialog" aria-modal="true">
-    <div id="sheet-share-body"></div>
-  </div>
-</div>
+{% include "_sheet_manage_assets.html" %}
 
 <style>
-  .sheet-actions-cell { width: 40px; text-align: right; }
-  .sheet-kebab { position: relative; display: inline-block; }
-  .sheet-kebab > summary {
-    list-style: none; cursor: pointer; width: 28px; height: 28px; line-height: 28px;
-    border-radius: 6px; text-align: center; font-size: 1.2rem; color: var(--fg-muted, #888); user-select: none;
+  .sheet-tabs > .st-radio { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+  .st-tablist { display: flex; gap: 0.3rem; border-bottom: 1px solid var(--border, #ddd); margin: 1.3rem 0 0 0; }
+  .st-tab {
+    cursor: pointer; padding: 0.55rem 1rem; border-bottom: 2px solid transparent;
+    color: var(--fg-muted, #888); font-weight: 600; font-size: 0.9rem; user-select: none;
   }
-  .sheet-kebab > summary::-webkit-details-marker { display: none; }
-  .sheet-kebab > summary:hover { background: var(--surface-2, #eee); color: var(--fg, #222); }
-  .sheet-kebab-menu {
-    position: absolute; right: 0; top: 32px; z-index: 40; min-width: 160px; padding: 5px;
-    background: var(--surface-1, #fff); border: 1px solid var(--border, #ddd); border-radius: 10px;
-    box-shadow: 0 10px 28px rgba(0,0,0,0.18); display: flex; flex-direction: column; gap: 2px;
+  .st-tab:hover { color: var(--fg, #222); }
+  .st-panel { display: none; padding-top: 1rem; }
+  #st-tenant:checked ~ .st-panel-tenant { display: block; }
+  #st-fasc:checked ~ .st-panel-fasc { display: block; }
+  #st-tenant:checked ~ .st-tablist label[for="st-tenant"],
+  #st-fasc:checked ~ .st-tablist label[for="st-fasc"] {
+    color: var(--brand-2, #4f6bf6); border-bottom-color: var(--brand-2, #4f6bf6);
   }
-  /* mostra il menu SOLO quando il details e' aperto (display:flex sovrascrive
-     il collasso nativo di <details>) */
-  .sheet-kebab:not([open]) .sheet-kebab-menu { display: none; }
-  .sheet-kebab-menu button {
-    text-align: left; padding: 8px 10px; border: none; background: transparent; cursor: pointer;
-    border-radius: 7px; font: inherit; color: var(--fg, #222);
-  }
-  .sheet-kebab-menu button:hover { background: var(--surface-2, #f0f0f0); }
-  .sheet-kebab-menu .kebab-danger { color: var(--danger, #ef4444); }
-
-  .sheet-modal-overlay {
-    position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45);
-    display: flex; align-items: flex-start; justify-content: center; padding: 8vh 1rem;
-  }
-  /* l'attributo hidden deve vincere su display:flex */
-  .sheet-modal-overlay[hidden] { display: none; }
-  .sheet-modal-card {
-    width: 100%; max-width: 520px; max-height: 80vh; overflow-y: auto;
-    background: var(--surface-1, #fff); border: 1px solid var(--border, #ddd);
-    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,0.35); padding: 1.2rem 1.4rem;
-  }
-  .share-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem; }
-  .share-head h3 { margin: 0; font-size: 1.05rem; }
-  .share-close { border: none; background: transparent; font-size: 1.5rem; cursor: pointer; color: var(--fg-muted, #888); }
-  .share-visibility { margin: 0.6rem 0 0.2rem 0; }
-  .share-vis-label { display: block; font-size: 0.78rem; color: var(--fg-muted, #888); margin-bottom: 0.25rem; }
-  .share-form { margin: 0; }
-  .share-form select {
-    width: 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border, #ccc);
-    background: var(--surface-0, #fff); color: var(--fg, #222); font: inherit;
-  }
-  .share-user-role .share-form select { width: auto; min-width: 130px; }
-  .share-note { font-size: 0.78rem; color: var(--fg-muted, #888); margin: 0.5rem 0 0.8rem 0; }
-  .share-users { display: flex; flex-direction: column; gap: 0.5rem; }
-  .share-user { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
-  .share-user-info { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
-  .share-user-avatar {
-    width: 32px; height: 32px; border-radius: 50%; flex: 0 0 auto;
-    display: inline-flex; align-items: center; justify-content: center;
-    background: var(--brand-2, #4f6bf6); color: #fff; font-size: 0.72rem; font-weight: 700;
-  }
-  .share-user-name { font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; }
-  .share-user-tag { font-size: 0.72rem; color: var(--fg-muted, #888); }
-  .share-role-fixed { font-size: 0.8rem; color: var(--fg-muted, #888); }
 </style>
-
-<script>
-  function argosCloseShareModal() { document.getElementById('sheet-modal').hidden = true; }
-  function argosShareOpen(id) {
-    fetch('/sheets/' + id + '/share', { credentials: 'same-origin' })
-      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
-      .then(function (html) {
-        document.getElementById('sheet-share-body').innerHTML = html;
-        document.getElementById('sheet-modal').hidden = false;
-      })
-      .catch(function () { alert('Impossibile aprire la condivisione.'); });
-  }
-  function argosShareApply(form) {
-    fetch(form.action, { method: 'POST', credentials: 'same-origin', body: new FormData(form) })
-      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
-      .then(function (html) { document.getElementById('sheet-share-body').innerHTML = html; })
-      .catch(function () { alert('Modifica non riuscita.'); });
-  }
-  function argosRenameSheet(id, current) {
-    var t = prompt('Nuovo nome del foglio:', current || '');
-    if (t === null) return;
-    t = t.trim(); if (!t) return;
-    var body = new URLSearchParams(); body.set('title', t);
-    fetch('/sheets/' + id + '/rename', { method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body, redirect: 'manual' })
-      .then(function () { location.reload(); })
-      .catch(function () { location.reload(); });
-  }
-  function argosDeleteSheet(id, title) {
-    if (!confirm('Eliminare definitivamente «' + (title || 'questo foglio') + '»? Celle e cronologia verranno perse.')) return;
-    fetch('/sheets/' + id + '/delete', { method: 'POST', credentials: 'same-origin', redirect: 'manual' })
-      .then(function () { location.reload(); })
-      .catch(function () { location.reload(); });
-  }
-  // azioni kebab (handler delegato: niente onclick inline -> niente problemi di
-  // escaping con i titoli che contengono virgolette)
-  document.addEventListener('click', function (e) {
-    var btn = e.target.closest('.sheet-kebab-menu button');
-    if (btn) {
-      var id = btn.dataset.id;
-      if (btn.classList.contains('kebab-rename')) argosRenameSheet(id, btn.dataset.title);
-      else if (btn.classList.contains('kebab-share')) argosShareOpen(id);
-      else if (btn.classList.contains('kebab-del')) argosDeleteSheet(id, btn.dataset.title);
-      var d = btn.closest('details.sheet-kebab'); if (d) d.removeAttribute('open');
-      return;
-    }
-    // chiudi i menu kebab cliccando fuori
-    document.querySelectorAll('details.sheet-kebab[open]').forEach(function (d) {
-      if (!d.contains(e.target)) d.removeAttribute('open');
-    });
-  });
-</script>
 {% endblock %}
