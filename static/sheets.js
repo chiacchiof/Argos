@@ -13,7 +13,7 @@
 (function () {
   "use strict";
 
-  var SHEETS_JS_VERSION = "v2-hybrid+formule-2026-05-29";
+  var SHEETS_JS_VERSION = "v3-formule+autocomplete+pointing-2026-05-29";
   try { console.info("[Argos Fogli] sheets.js", SHEETS_JS_VERSION, "caricato"); } catch (e) {}
 
   var cfg = JSON.parse(document.getElementById("sheet-config").textContent);
@@ -31,6 +31,15 @@
   }
   function key(r, c) { return r + "," + c; }
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  // Una cella e' una formula se inizia con "=" oppure "+" (abitudine Excel/Lotus).
+  // "+A1" viene normalizzato a "=+A1" (l'engine valuta il "+" unario).
+  function isFormulaText(v) { return !!v && (v.charAt(0) === "=" || v.charAt(0) === "+"); }
+  function normalizeFormula(val) {
+    if (!val) return { raw: val, formula: null };
+    if (val.charAt(0) === "=") return { raw: val, formula: val };
+    if (val.charAt(0) === "+") return { raw: val, formula: "=" + val };
+    return { raw: val, formula: null };
+  }
   var COLORS = ["#38bdf8", "#f59e0b", "#22c55e", "#ef4444", "#a855f7",
                 "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#84cc16"];
   function colorFor(uid) { return COLORS[((uid || 0) % COLORS.length + COLORS.length) % COLORS.length]; }
@@ -186,6 +195,82 @@
     }
   };
 
+  // ---- autocomplete funzioni (barra fx / editor cella) ------------------
+  var FUNCTIONS = [
+    { name: "SUM", sig: "SUM(intervallo)", desc: "Somma dei valori" },
+    { name: "AVERAGE", sig: "AVERAGE(intervallo)", desc: "Media dei valori" },
+    { name: "MIN", sig: "MIN(intervallo)", desc: "Valore minimo" },
+    { name: "MAX", sig: "MAX(intervallo)", desc: "Valore massimo" },
+    { name: "COUNT", sig: "COUNT(intervallo)", desc: "Conteggio dei valori" },
+    { name: "PRODUCT", sig: "PRODUCT(intervallo)", desc: "Prodotto dei valori" },
+    { name: "ABS", sig: "ABS(numero)", desc: "Valore assoluto" },
+    { name: "ROUND", sig: "ROUND(numero; cifre)", desc: "Arrotonda a N cifre" }
+  ];
+
+  function FnSuggest() {
+    this.box = document.createElement("div");
+    this.box.className = "sheet-fn-suggest";
+    this.box.hidden = true;
+    document.body.appendChild(this.box);
+    this.items = []; this.sel = 0; this.input = null;
+  }
+  FnSuggest.prototype.visible = function () { return !this.box.hidden; };
+  FnSuggest.prototype.hide = function () { this.box.hidden = true; this.items = []; this.input = null; };
+  FnSuggest.prototype._partial = function (input) {
+    var caret = input.selectionStart == null ? input.value.length : input.selectionStart;
+    var left = input.value.slice(0, caret);
+    if (!isFormulaText(left)) return null;            // solo dentro una formula (= o +)
+    var m = /([A-Za-z]+)$/.exec(left);
+    return m ? m[1] : null;
+  };
+  FnSuggest.prototype.update = function (input) {
+    this.input = input;
+    var p = this._partial(input);
+    if (!p) { this.hide(); return; }
+    var up = p.toUpperCase();
+    this.items = FUNCTIONS.filter(function (f) { return f.name.indexOf(up) === 0; });
+    if (!this.items.length) { this.hide(); return; }
+    this.sel = 0; this._render(); this._position(input); this.box.hidden = false;
+  };
+  FnSuggest.prototype._render = function () {
+    var self = this;
+    this.box.textContent = "";
+    this.items.forEach(function (f, i) {
+      var row = document.createElement("div");
+      row.className = "sheet-fn-item" + (i === self.sel ? " is-sel" : "");
+      var nm = document.createElement("span"); nm.className = "sheet-fn-name"; nm.textContent = f.sig;
+      var ds = document.createElement("span"); ds.className = "sheet-fn-desc"; ds.textContent = f.desc;
+      row.appendChild(nm); row.appendChild(ds);
+      row.addEventListener("mousedown", function (ev) { ev.preventDefault(); self.sel = i; self.accept(); });
+      self.box.appendChild(row);
+    });
+  };
+  FnSuggest.prototype._position = function (input) {
+    var r = input.getBoundingClientRect();
+    this.box.style.left = r.left + "px";
+    this.box.style.top = (r.bottom + 2) + "px";
+    this.box.style.minWidth = Math.max(r.width, 240) + "px";
+  };
+  FnSuggest.prototype.accept = function () {
+    if (!this.input || !this.items.length) return;
+    var input = this.input, f = this.items[this.sel];
+    var caret = input.selectionStart == null ? input.value.length : input.selectionStart;
+    var left = input.value.slice(0, caret), right = input.value.slice(caret);
+    var newLeft = left.replace(/([A-Za-z]+)$/, f.name + "(");
+    input.value = newLeft + right;
+    var pos = newLeft.length;
+    try { input.setSelectionRange(pos, pos); } catch (e) {}
+    this.hide(); input.focus();
+  };
+  FnSuggest.prototype.onKeydown = function (e) {
+    if (!this.visible()) return false;
+    if (e.key === "ArrowDown") { this.sel = (this.sel + 1) % this.items.length; this._render(); return true; }
+    if (e.key === "ArrowUp") { this.sel = (this.sel - 1 + this.items.length) % this.items.length; this._render(); return true; }
+    if (e.key === "Enter" || e.key === "Tab") { this.accept(); return true; }
+    if (e.key === "Escape") { this.hide(); return true; }
+    return false;
+  };
+
   // ---- grid (DOM) --------------------------------------------------------
   function SheetGrid(model, opts) {
     this.model = model;
@@ -193,10 +278,13 @@
     this.canEdit = !!opts.canEdit;
     this.onCommit = opts.onCommit;      // (cellsArray) -> void
     this.onSelChange = opts.onSelChange; // (r,c,sel) -> void
+    this.suggest = opts.suggest || null; // autocomplete funzioni
     this.active = { r: 0, c: 0 };
     this.sel = { r1: 0, c1: 0, r2: 0, c2: 0 }; // range selezione
     this.editor = null;
     this.remoteCursors = {}; // uid -> {r,c,el,color,email}
+    this._pointing = null;   // {pos,len} del riferimento inserito col mouse
+    this._pointDrag = null;  // {r,c} ancora del drag di selezione range
     this._build();
     this._bind();
     this.setActive(0, 0);
@@ -318,12 +406,17 @@
     if (initial != null) ed.setSelectionRange(ed.value.length, ed.value.length);
     else ed.select();
     var self = this;
+    ed.addEventListener("input", function () { self._pointing = null; if (self.suggest) self.suggest.update(ed); });
     ed.addEventListener("keydown", function (e) {
+      // se il menu funzioni e' aperto, gestisce lui frecce/Invio/Tab/Esc
+      if (self.suggest && self.suggest.onKeydown(e)) { e.preventDefault(); e.stopPropagation(); return; }
       if (e.key === "Enter") { e.preventDefault(); self.commitEdit(); self.setActive(r + 1, c); self.wrap.focus(); }
       else if (e.key === "Tab") { e.preventDefault(); self.commitEdit(); self.setActive(r, c + (e.shiftKey ? -1 : 1)); self.wrap.focus(); }
       else if (e.key === "Escape") { e.preventDefault(); self.cancelEdit(); self.wrap.focus(); }
       e.stopPropagation();
     });
+    // se si sta gia' digitando una formula (es. ho premuto "="), mostra subito i suggerimenti
+    if (self.suggest && ed.value.charAt(0) === "=") self.suggest.update(ed);
   };
 
   SheetGrid.prototype._positionEditor = function (ed, td) {
@@ -337,26 +430,61 @@
 
   SheetGrid.prototype.commitEdit = function () {
     if (!this.editor) return;
+    if (this.suggest) this.suggest.hide();
+    this._pointing = null; this._pointDrag = null;
     var e = this.editor, val = e.el.value;
     this.editor = null;
     e.el.remove();
     var prev = this.model.get(e.r, e.c);
     var prevRaw = prev ? (prev.formula || prev.value || "") : "";
     if (val !== prevRaw) {
-      var isFormula = val.charAt(0) === "=";
+      var norm = normalizeFormula(val);
       var style = prev ? prev.style : null;
       // value temporaneo = testo grezzo; il motore (in SheetApp) calcola il
       // valore reale delle formule e ridisegna.
-      this.model.setCell(e.r, e.c, val, isFormula ? val : null, style);
+      this.model.setCell(e.r, e.c, norm.raw, norm.formula, style);
       this.renderCell(e.r, e.c);
-      if (this.onCommit) this.onCommit([{ row: e.r, col: e.c, value: val, formula: isFormula ? val : null }]);
+      if (this.onCommit) this.onCommit([{ row: e.r, col: e.c, value: norm.raw, formula: norm.formula }]);
     }
   };
 
   SheetGrid.prototype.cancelEdit = function () {
     if (!this.editor) return;
+    if (this.suggest) this.suggest.hide();
+    this._pointing = null; this._pointDrag = null;
     this.editor.el.remove();
     this.editor = null;
+  };
+
+  // ---- point-and-click reference (stile Excel/Sheets) -------------------
+  // Mentre si edita una formula (= o +), cliccare/trascinare su una cella
+  // inserisce il riferimento (A1) o il range (A1:B2) nel punto del cursore.
+  SheetGrid.prototype._isFormulaEditor = function () {
+    return !!(this.editor && isFormulaText(this.editor.el.value));
+  };
+  SheetGrid.prototype._refInsertContext = function () {
+    if (this._pointing) return true;  // gia' in pointing: i click sostituiscono il ref
+    var ed = this.editor.el;
+    var caret = ed.selectionStart == null ? ed.value.length : ed.selectionStart;
+    var left = ed.value.slice(0, caret);
+    return /[=+\-*/(,:]\s*$/.test(left);  // subito dopo = + - * / ( , :
+  };
+  SheetGrid.prototype._insertRefAtCaret = function (ref, replaceLast) {
+    var ed = this.editor.el, val = ed.value;
+    var caret = ed.selectionStart == null ? val.length : ed.selectionStart;
+    if (replaceLast && this._pointing && caret === this._pointing.pos + this._pointing.len) {
+      var before = val.slice(0, this._pointing.pos);
+      var after = val.slice(this._pointing.pos + this._pointing.len);
+      ed.value = before + ref + after;
+      this._pointing.len = ref.length;
+    } else {
+      var l = val.slice(0, caret), r = val.slice(caret);
+      ed.value = l + ref + r;
+      this._pointing = { pos: caret, len: ref.length };
+    }
+    var pos = this._pointing.pos + this._pointing.len;
+    try { ed.setSelectionRange(pos, pos); } catch (e) {}
+    ed.focus();
   };
 
   // cancella il contenuto della selezione corrente
@@ -402,10 +530,10 @@
       for (var j = 0; j < cols.length; j++) {
         var r = r0 + i, c = c0 + j;
         if (r >= this.model.nRows || c >= this.model.nCols) continue;
-        var isF = cols[j].charAt(0) === "=";
-        this.model.setCell(r, c, cols[j], isF ? cols[j] : null, null);
+        var norm = normalizeFormula(cols[j]);
+        this.model.setCell(r, c, norm.raw, norm.formula, null);
         this.renderCell(r, c);
-        patch.push({ row: r, col: c, value: cols[j], formula: isF ? cols[j] : null });
+        patch.push({ row: r, col: c, value: norm.raw, formula: norm.formula });
       }
     }
     if (patch.length && this.onCommit) this.onCommit(patch);
@@ -463,17 +591,36 @@
     this.wrap.addEventListener("mousedown", function (e) {
       var p = self._cellFromEvent(e);
       if (!p) return;
+      // POINTING: se sto editando una formula e il caret accetta un riferimento,
+      // inserisci A1 nella formula invece di spostare la cella attiva. preventDefault
+      // mantiene il focus sull'editor (come in Excel/Sheets).
+      if (self._isFormulaEditor() && self._refInsertContext()) {
+        e.preventDefault();
+        self._insertRefAtCaret(colLabel(p.c) + (p.r + 1), !!self._pointing);
+        self._pointDrag = { r: p.r, c: p.c };
+        return;
+      }
       if (self.editor) self.commitEdit();
       self.setActive(p.r, p.c, e.shiftKey);
       dragging = true;
       self.wrap.focus();
     });
     this.wrap.addEventListener("mousemove", function (e) {
+      // drag durante il pointing -> range A1:B2
+      if (self._pointDrag && self._isFormulaEditor()) {
+        var pp = self._cellFromEvent(e); if (!pp) return;
+        var a = self._pointDrag;
+        var ref = (a.r === pp.r && a.c === pp.c)
+          ? colLabel(pp.c) + (pp.r + 1)
+          : colLabel(a.c) + (a.r + 1) + ":" + colLabel(pp.c) + (pp.r + 1);
+        self._insertRefAtCaret(ref, true);
+        return;
+      }
       if (!dragging) return;
       var p = self._cellFromEvent(e);
       if (p) self.setActive(p.r, p.c, true);
     });
-    document.addEventListener("mouseup", function () { dragging = false; });
+    document.addEventListener("mouseup", function () { dragging = false; self._pointDrag = null; });
 
     this.wrap.addEventListener("dblclick", function (e) {
       var p = self._cellFromEvent(e);
@@ -578,6 +725,7 @@
     this.model = new SheetModel(cfg.n_rows, cfg.n_cols);
     this.model.revision = cfg.revision || 0;
     this.engine = new FormulaEngine(this.model);
+    this.suggest = new FnSuggest();
     this.statusEl = document.getElementById("sheet-status");
     this.bannerEl = document.getElementById("sheet-conn-banner");
     this.cellrefEl = document.getElementById("sheet-cellref");
@@ -586,6 +734,7 @@
 
     this.grid = new SheetGrid(this.model, {
       canEdit: cfg.can_edit,
+      suggest: this.suggest,
       onCommit: function (cells) { self._onLocalCommit(cells); },
       onSelChange: function (r, c) { self._onSelChange(r, c); }
     });
@@ -701,20 +850,26 @@
 
   SheetApp.prototype._bindFormula = function () {
     var self = this;
+    this.formulaEl.addEventListener("input", function () { self.suggest.update(self.formulaEl); });
+    this.formulaEl.addEventListener("blur", function () { setTimeout(function () { self.suggest.hide(); }, 150); });
     this.formulaEl.addEventListener("keydown", function (e) {
+      // menu funzioni aperto: gestisce frecce/Invio/Tab/Esc
+      if (self.suggest.onKeydown(e)) { e.preventDefault(); return; }
       if (e.key === "Enter") {
         e.preventDefault();
         var r = self.grid.active.r, c = self.grid.active.c, val = self.formulaEl.value;
+        var norm = normalizeFormula(val);  // "+A1" -> "=+A1"
         var prev = self.model.get(r, c); var prevRaw = prev ? (prev.formula || prev.value || "") : "";
-        if (val !== prevRaw) {
-          var isF = val.charAt(0) === "=";
-          self.model.setCell(r, c, val, isF ? val : null, prev ? prev.style : null);
+        if (norm.raw !== prevRaw) {
+          self.model.setCell(r, c, norm.raw, norm.formula, prev ? prev.style : null);
           self.grid.renderCell(r, c);
-          self._onLocalCommit([{ row: r, col: c, value: val, formula: isF ? val : null }]);
+          self._onLocalCommit([{ row: r, col: c, value: norm.raw, formula: norm.formula }]);
         }
+        self.suggest.hide();
         self.grid.setActive(r + 1, c);
         self.grid.wrap.focus();
       } else if (e.key === "Escape") {
+        self.suggest.hide();
         self._onSelChange(self.grid.active.r, self.grid.active.c);
         self.grid.wrap.focus();
       }
@@ -896,9 +1051,11 @@
     if (this._ws) try { this._ws.close(); } catch (e) {}
   };
   window.ArgosSheetWsTransport = WsTransport;
-  // Esposti per i test (node) del motore formule; innocui nel browser.
+  // Esposti per i test (node); innocui nel browser.
   window.ArgosFormulaEngine = FormulaEngine;
   window.ArgosSheetModel = SheetModel;
+  window.ArgosFnSuggest = FnSuggest;
+  window.ArgosNormalizeFormula = normalizeFormula;
 
   // bootstrap
   if (document.readyState === "loading") {
