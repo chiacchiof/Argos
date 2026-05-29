@@ -73,6 +73,32 @@
   .share-add-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
   .share-add-form { display: flex; gap: 0.3rem; align-items: center; }
   .share-add-form select { min-width: 120px; }
+  .share-add-toggle { padding: 4px 10px; font-size: 0.82rem; }
+
+  /* menu ⋮ per-utente nelle persone con accesso */
+  .share-kebab { position: relative; }
+  .share-kebab > summary {
+    list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 4px 8px; border-radius: 7px; font-size: 0.82rem; color: var(--fg, #222);
+    border: 1px solid var(--border, #ddd);
+  }
+  .share-kebab > summary::-webkit-details-marker { display: none; }
+  .share-kebab > summary:hover { background: var(--surface-2, #f0f0f0); }
+  .share-kebab-dots { color: var(--fg-muted, #888); font-size: 1rem; line-height: 1; }
+  .share-kebab-menu {
+    position: absolute; right: 0; top: 34px; z-index: 70; min-width: 180px; padding: 5px;
+    background: var(--surface-1, #fff); border: 1px solid var(--border, #ddd); border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0,0,0,0.22); display: flex; flex-direction: column; gap: 2px;
+  }
+  .share-kebab:not([open]) .share-kebab-menu { display: none; }
+  .share-kebab-menu button {
+    text-align: left; padding: 7px 10px; border: none; background: transparent; cursor: pointer;
+    border-radius: 7px; font: inherit; color: var(--fg, #222);
+  }
+  .share-kebab-menu button:hover { background: var(--surface-2, #f0f0f0); }
+  .share-kebab-menu button.is-cur { font-weight: 700; }
+  .share-kebab-menu .kebab-danger { color: var(--danger, #ef4444); }
+  .share-kebab-menu hr { border: none; border-top: 1px solid var(--border, #ddd); margin: 4px 0; }
 </style>
 
 <div id="sheet-modal" class="sheet-modal-overlay" hidden onclick="if(event.target===this)argosCloseShareModal()">

@@ -25,7 +25,11 @@
 
 <div class="share-people-head">
   <strong>Persone con accesso</strong>
-  <button type="button" class="btn-icon share-add-toggle" title="Aggiungi persone" onclick="argosShareToggleAdd()">+</button>
+  <button type="button" class="btn btn-secondary share-add-toggle" onclick="argosShareToggleAdd()">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+         stroke-linecap="round" style="vertical-align:-2px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Aggiungi persone
+  </button>
 </div>
 
 <div class="share-add-panel" id="share-add-panel" hidden>
@@ -65,15 +69,25 @@
       {% if r.fixed %}
       <span class="share-role-fixed">{{ r.fixed }}</span>
       {% else %}
-      <form action="{{ share.base }}/share" method="post" class="share-form" style="display:flex; gap:.3rem; align-items:center">
-        <input type="hidden" name="user_id" value="{{ r.user_id }}">
-        <select name="role" onchange="argosShareApply(this.form)">
-          <option value="viewer" {% if r.role == 'viewer' %}selected{% endif %}>Sola lettura</option>
-          <option value="editor" {% if r.role == 'editor' %}selected{% endif %}>Modifica</option>
-        </select>
-        <button type="button" class="btn-icon btn-icon-danger" title="Rimuovi dalla condivisione"
-                onclick="argosShareRemove('{{ share.base }}', {{ r.user_id }})">&times;</button>
-      </form>
+      <details class="share-kebab">
+        <summary title="Opzioni">
+          <span class="share-cur-role">{{ 'Sola lettura' if r.role == 'viewer' else 'Modifica' }}</span>
+          <span class="share-kebab-dots">⋮</span>
+        </summary>
+        <div class="share-kebab-menu">
+          <button type="button" {% if r.role == 'viewer' %}class="is-cur"{% endif %}
+                  onclick="argosShareSet('{{ share.base }}', {{ r.user_id }}, 'viewer')">
+            Sola lettura{% if r.role == 'viewer' %} ✓{% endif %}
+          </button>
+          <button type="button" {% if r.role == 'editor' %}class="is-cur"{% endif %}
+                  onclick="argosShareSet('{{ share.base }}', {{ r.user_id }}, 'editor')">
+            Modifica{% if r.role == 'editor' %} ✓{% endif %}
+          </button>
+          <hr>
+          <button type="button" class="kebab-danger"
+                  onclick="argosShareRemove('{{ share.base }}', {{ r.user_id }})">Rimuovi accesso</button>
+        </div>
+      </details>
       {% endif %}
     </div>
   </div>

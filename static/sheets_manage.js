@@ -24,14 +24,15 @@
       .catch(function () { alert("Modifica non riuscita."); });
   };
 
-  // rimuove un utente dalla condivisione (role=none)
-  window.argosShareRemove = function (base, userId) {
-    var fd = new FormData(); fd.append("user_id", userId); fd.append("role", "none");
+  // imposta il ruolo di un utente condiviso (viewer/editor) o lo rimuove (none)
+  window.argosShareSet = function (base, userId, role) {
+    var fd = new FormData(); fd.append("user_id", userId); fd.append("role", role);
     fetch(base + "/share", { method: "POST", credentials: "same-origin", body: fd })
       .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
       .then(function (html) { body().innerHTML = html; })
-      .catch(function () { alert("Rimozione non riuscita."); });
+      .catch(function () { alert("Modifica non riuscita."); });
   };
+  window.argosShareRemove = function (base, userId) { window.argosShareSet(base, userId, "none"); };
 
   // mostra/nasconde il pannello "aggiungi persone"
   window.argosShareToggleAdd = function () {
@@ -78,7 +79,7 @@
       var d = btn.closest("details.sheet-kebab"); if (d) d.removeAttribute("open");
       return;
     }
-    document.querySelectorAll("details.sheet-kebab[open]").forEach(function (d) {
+    document.querySelectorAll("details.sheet-kebab[open], details.share-kebab[open]").forEach(function (d) {
       if (!d.contains(e.target)) d.removeAttribute("open");
     });
   });
