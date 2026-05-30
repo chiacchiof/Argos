@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from .config import RESULTS_DIR
+from .config import RESULTS_DIR, DATA_DIR
 
 
 def _is_inside(child: Path, parent: Path) -> bool:
@@ -230,6 +230,14 @@ def delete_job_artifact(task_id: int, result_path: str) -> bool:
     """
     if not result_path:
         return False
+    # Marker-based prima: estrae il nome run dal path (robusto a prefissi assoluti
+    # stantii, es. repo spostato 'AgentScraper'->'Argos', altra macchina) e cancella
+    # la run unit sotto l'ATTUALE RESULTS_DIR via delete_run_unit (traversal-safe).
+    run_name = run_name_of(task_id, result_path)
+    if run_name and delete_run_unit(task_id, run_name):
+        return True
+    # Fallback resolve-based: path gia' assoluto/corretto senza marker, oppure run
+    # gia' rimossa. Mantiene il vecchio comportamento.
     project_root = (RESULTS_DIR / str(task_id)).resolve()
     try:
         target = Path(result_path).resolve()
@@ -299,3 +307,293 @@ def list_recent_reports(project_id: int, limit: int = 3) -> list[dict]:
         )
     candidates.sort(key=lambda d: d["mtime"], reverse=True)
     return candidates[:limit]
+
+
+# ===========================================================================
+# Disk-usage management ("Spazio occupato"): sizing + safe deletion helpers.
+# Usati dalla pagina architect /spazio-occupato. Ogni path user-supplied
+# (run_name, file) viene risolto con resolve() e verificato con _is_inside
+# DENTRO la root prima di toccare il filesystem — stesso pattern dei reader.
+# ===========================================================================
+
+def dir_size(path: Path) -> int:
+    """Somma (uncapped) delle dimensioni dei file sotto `path`. Skippa symlink.
+    Robusto a file lockati/spariti (try/except OSError)."""
+    try:
+        if path.is_symlink():
+            return 0
+        if path.is_file():
+            return path.stat().st_size
+    except OSError:
+        return 0
+    total = 0
+    for f in path.rglob("*"):
+        try:
+            if f.is_file() and not f.is_symlink():
+                total += f.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _safe_run_unit(task_id: int, run_name: str) -> Path | None:
+    """Risolve RESULTS_DIR/{task_id}/{run_name} come 'run unit': figlio DIRETTO
+    della cartella del task (una run-dir o un file flat). Rifiuta traversal,
+    la root stessa, e qualsiasi path annidato piu' in profondita'."""
+    project_root = (RESULTS_DIR / str(task_id)).resolve()
+    try:
+        target = (project_root / run_name).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not _is_inside(target, project_root) or target == project_root:
+        return None
+    if target.parent != project_root:  # solo figli diretti
+        return None
+    return target
+
+
+def _run_date_label(name: str) -> str:
+    """'20260510T193703Z' (anche con suffisso .ext) → '2026-05-10 19:37:03'.
+    Per nomi non-timestamp (es. '_pending_queue.json') ritorna '' (niente label,
+    cosi' la UI non mostra slice senza senso tipo '_pen-di-ng')."""
+    n = name or ""
+    if len(n) >= 15 and n[:8].isdigit() and n[8] == "T" and n[9:15].isdigit():
+        return f"{n[0:4]}-{n[4:6]}-{n[6:8]} {n[9:11]}:{n[11:13]}:{n[13:15]}"
+    return ""
+
+
+def run_unit_info(task_id: int, run_name: str) -> dict | None:
+    """Metadati (size/type/files_count/mtime) di una run unit. None se assente."""
+    p = _safe_run_unit(task_id, run_name)
+    if p is None or not p.exists():
+        return None
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if p.is_file():
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        return {"name": run_name, "type": "file", "size": size,
+                "files_count": 1, "mtime": mtime,
+                "date_label": _run_date_label(run_name)}
+    files = [f for f in p.rglob("*") if f.is_file()]
+    total = 0
+    for f in files:
+        try:
+            total += f.stat().st_size
+        except OSError:
+            continue
+    return {"name": run_name, "type": "dir", "size": total,
+            "files_count": len(files), "mtime": mtime,
+            "date_label": _run_date_label(run_name)}
+
+
+def list_task_runs(task_id: int) -> list[dict]:
+    """Tutte le run unit di un task (run-dir + file flat), piu' recenti prima."""
+    folder = RESULTS_DIR / str(task_id)
+    if not folder.is_dir():
+        return []
+    out: list[dict] = []
+    for entry in folder.iterdir():
+        info = run_unit_info(task_id, entry.name)
+        if info:
+            out.append(info)
+    out.sort(key=lambda d: d["name"], reverse=True)
+    return out
+
+
+def task_disk_summary(task_id: int) -> dict:
+    """{size, run_count, last_mtime} aggregati di un task."""
+    runs = list_task_runs(task_id)
+    return {
+        "size": sum(r["size"] for r in runs),
+        "run_count": len(runs),
+        "last_mtime": max((r["mtime"] for r in runs), default=0.0),
+    }
+
+
+def run_name_of(task_id: int, result_path: str | None) -> str | None:
+    """Nome della run unit (primo segmento sotto data/results/{task_id}/) estratto
+    dal `jobs.result_path`.
+
+    MARKER-BASED, NON resolve(): il `result_path` salvato in DB puo' avere un
+    prefisso assoluto diverso dall'attuale RESULTS_DIR (job vecchi, repo spostato
+    es. da 'AgentScraper' a 'Argos', altra macchina). La cartella esiste comunque
+    sotto l'attuale RESULTS_DIR — quindi estraiamo il nome dal marker, e la safety
+    di path la fanno i consumer (list_run_files / _safe_run_unit / delete_run_unit)
+    che risolvono contro l'attuale RESULTS_DIR e fanno _is_inside.
+    """
+    if not result_path:
+        return None
+    norm = str(result_path).replace("\\", "/")
+    marker = f"/results/{int(task_id)}/"
+    idx = norm.rfind(marker)
+    if idx == -1:
+        return None
+    rel = norm[idx + len(marker):]
+    first = rel.split("/")[0] if rel else ""
+    return first or None
+
+
+def delete_task_folder(task_id: int) -> bool:
+    """Cancella l'INTERA cartella RESULTS_DIR/{task_id} (tutti i run). Usato per
+    le cartelle 'orfane' di task cancellati. Verifica che sia un figlio diretto
+    di RESULTS_DIR prima del rmtree (difesa, anche se task_id e' un int)."""
+    results_root = RESULTS_DIR.resolve()
+    folder = (results_root / str(task_id)).resolve()
+    if not _is_inside(folder, results_root) or folder == results_root:
+        return False
+    if folder.parent != results_root:
+        return False
+    if not folder.is_dir():
+        return False
+    shutil.rmtree(folder, ignore_errors=True)
+    return not folder.exists()
+
+
+def delete_run_unit(task_id: int, run_name: str) -> bool:
+    """Cancella un'intera run unit (run-dir o file flat). Traversal-safe."""
+    p = _safe_run_unit(task_id, run_name)
+    if p is None or not p.exists():
+        return False
+    if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+        return not p.exists()
+    try:
+        p.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def delete_run_file(task_id: int, run_name: str, file_path: str) -> bool:
+    """Cancella un SINGOLO file dentro una run-dir. Rifiuta dir, symlink,
+    traversal e il caso file_path vuoto (che punterebbe alla run-dir)."""
+    if not file_path:
+        return False
+    project_root = (RESULTS_DIR / str(task_id)).resolve()
+    run_dir = (project_root / run_name).resolve()
+    if not _is_inside(run_dir, project_root) or run_dir == project_root:
+        return False
+    if not run_dir.is_dir():
+        return False
+    try:
+        target = (run_dir / file_path).resolve()
+    except (OSError, RuntimeError):
+        return False
+    if not _is_inside(target, run_dir):
+        return False
+    if target.is_symlink() or not target.is_file():
+        return False
+    try:
+        target.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def delete_task_files_by_ext(
+    task_id: int, exts: set[str], run_names: list[str] | None = None,
+) -> dict:
+    """Cancella i file con suffisso in `exts` (lowercase, col punto, es. {'.md'})
+    nelle run unit indicate (o tutte). Le run unit che sono file flat vengono
+    cancellate solo se il loro suffisso e' in `exts`. Ritorna {deleted, freed}."""
+    folder = RESULTS_DIR / str(task_id)
+    if not folder.is_dir():
+        return {"deleted": 0, "freed": 0}
+    names = run_names if run_names else [e.name for e in folder.iterdir()]
+    deleted = 0
+    freed = 0
+    for name in names:
+        p = _safe_run_unit(task_id, name)
+        if p is None or not p.exists():
+            continue
+        if p.is_file():
+            if p.suffix.lower() in exts:
+                try:
+                    sz = p.stat().st_size
+                    p.unlink()
+                    deleted += 1
+                    freed += sz
+                except OSError:
+                    continue
+            continue
+        for f in list(p.rglob("*")):
+            try:
+                if not f.is_file() or f.is_symlink():
+                    continue
+                if f.suffix.lower() not in exts:
+                    continue
+                if not _is_inside(f.resolve(), p):
+                    continue
+                sz = f.stat().st_size
+                f.unlink()
+                deleted += 1
+                freed += sz
+            except OSError:
+                continue
+    return {"deleted": deleted, "freed": freed}
+
+
+# ---- Sessioni browser persistenti (FUORI da RESULTS_DIR) -------------------
+# Dominano lo spazio su disco (cache Chromium per-account). Mostrate nella
+# pagina Spazio occupato; cancellabili SOLO da super-admin con conferma forte
+# (cancellarle = logout dell'account -> re-login/QR al prossimo run).
+
+_SESSION_ROOTS: dict[str, str] = {
+    "social_sessions": "Sessioni social (cache browser per account)",
+    "whatsapp_sessions": "Sessioni WhatsApp Web",
+    "sessions": "Screenshot login falliti",
+}
+
+
+def session_breakdown() -> list[dict]:
+    """Per ogni root di sessione: dimensione totale + figli diretti (per-account)."""
+    out: list[dict] = []
+    for key, label in _SESSION_ROOTS.items():
+        root = DATA_DIR / key
+        if not root.is_dir():
+            out.append({"key": key, "label": label, "size": 0,
+                        "count": 0, "entries": [], "exists": False})
+            continue
+        entries: list[dict] = []
+        total = 0
+        for sub in root.iterdir():
+            if sub.is_symlink():
+                continue
+            sz = dir_size(sub)
+            total += sz
+            entries.append({"name": sub.name, "size": sz, "is_dir": sub.is_dir()})
+        entries.sort(key=lambda e: e["size"], reverse=True)
+        out.append({"key": key, "label": label, "size": total,
+                    "count": len(entries), "entries": entries, "exists": True})
+    return out
+
+
+def delete_session_entry(root_key: str, name: str) -> bool:
+    """Cancella un figlio diretto (sottocartella/file) di una root di sessione.
+    Allowlist sul root_key + figlio diretto + no symlink. Traversal-safe."""
+    if root_key not in _SESSION_ROOTS or not name:
+        return False
+    root = (DATA_DIR / root_key).resolve()
+    try:
+        target = (root / name).resolve()
+    except (OSError, RuntimeError):
+        return False
+    if not _is_inside(target, root) or target == root:
+        return False
+    if target.parent != root:
+        return False
+    if target.is_symlink():
+        return False
+    if target.is_dir():
+        shutil.rmtree(target, ignore_errors=True)
+        return not target.exists()
+    try:
+        target.unlink()
+        return True
+    except OSError:
+        return False

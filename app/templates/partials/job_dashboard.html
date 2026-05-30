@@ -130,19 +130,13 @@
   <p class="errors"><strong>Errore:</strong> {{ d.error }}</p>
   {% endif %}
 
-  {% if d.result_path %}
-    {% set norm = d.result_path.replace('\\','/') %}
-    {% set marker = '/results/' ~ d.task_id|string ~ '/' %}
-    {% set rel = norm.split(marker)[-1] %}
-    <p>📄 Report: <a href="/tasks/{{ d.task_id }}/results/{{ rel }}">{{ rel }}</a></p>
-  {% endif %}
+  {# Report / Cartella run / Log: spostati nella sezione "Output del run" in
+     fondo al box (hub unico), per non avere più strade separate. #}
 
   {% if d.subjobs %}
   {# Albero parent + sub-job: il parent (questo job) sta in cima, i sub
-     indentati con `└─`. Ogni riga ha link a report (se artifact c'e') e
-     link "log" che fa HTMX swap nell'area `#job-log-area` SEPARATA dal
-     dashboard, cosi' il polling OOB di /tasks/{id}/jobs (che riswappa
-     #job-status ogni 5s) non puo' cancellare il log mostrato. #}
+     indentati con `└─`. Ogni riga ha link al report (se artifact c'e') e
+     un link "log ↗" che apre il log a tutto schermo in una nuova scheda. #}
   <details class="subjobs-rollup" open>
     <summary>📂 Albero job &amp; sub-job ({{ d.subjobs|length }} sub)</summary>
     <ul class="subjobs-rollup-list">
@@ -155,15 +149,11 @@
           {% set _norm = d.result_path.replace('\\','/') %}
           {% set _marker = '/results/' ~ d.task_id|string ~ '/' %}
           {% set _rel = _norm.split(_marker)[-1] %}
-          — <a href="/tasks/{{ d.task_id }}/results/{{ _rel }}">{{ _rel }}</a>
+          — <a href="/tasks/{{ d.task_id }}/{{ 'file-view' if '.' in _rel else 'results' }}/{{ _rel }}" target="_blank" rel="noopener">{{ _rel }}</a>
         {% endif %}
         <a class="subjobs-rollup-log-link"
-           href="/jobs/{{ d.job_id }}/status"
-           hx-get="/jobs/{{ d.job_id }}/status"
-           hx-target="#job-log-area"
-           hx-swap="innerHTML"
-           onclick="document.getElementById('job-log-area').scrollIntoView({behavior:'smooth',block:'nearest'}); return false;"
-           title="Mostra il log qui sotto">📜 log</a>
+           href="/jobs/{{ d.job_id }}/status" target="_blank" hx-boost="false"
+           title="Apri il log in una nuova scheda">📜 log ↗</a>
       </li>
       {# Righe sub-job #}
       {% for s in d.subjobs %}
@@ -172,7 +162,7 @@
         <span class="status status-{{ s.status }}">{{ s.status }}</span>
         <strong>{{ s.display_id }}</strong>
         {% if s.result_rel_path %}
-          — <a href="/tasks/{{ d.task_id }}/results/{{ s.result_rel_path }}">{{ s.result_rel_path }}</a>
+          — <a href="/tasks/{{ d.task_id }}/{{ 'file-view' if '.' in s.result_rel_path else 'results' }}/{{ s.result_rel_path }}" target="_blank" rel="noopener">{{ s.result_rel_path }}</a>
         {% else %}
           — <span class="muted">nessun artifact</span>
         {% endif %}
@@ -180,12 +170,8 @@
           <span class="muted small">· {{ s.n_profiles }} profili</span>
         {% endif %}
         <a class="subjobs-rollup-log-link"
-           href="/jobs/{{ s.id }}/status"
-           hx-get="/jobs/{{ s.id }}/status"
-           hx-target="#job-log-area"
-           hx-swap="innerHTML"
-           onclick="document.getElementById('job-log-area').scrollIntoView({behavior:'smooth',block:'nearest'}); return false;"
-           title="Mostra il log qui sotto">📜 log</a>
+           href="/jobs/{{ s.id }}/status" target="_blank" hx-boost="false"
+           title="Apri il log in una nuova scheda">📜 log ↗</a>
         {% if s.error %}
           <br><small class="errors">⚠ {{ s.error|truncate(140) }}</small>
         {% endif %}
@@ -221,16 +207,55 @@
   </style>
   {% endif %}
 
-  <p class="dashboard-footer">
-    {# Swap su `#job-log-area` (div separato da #job-status, vedi task_detail.html).
-       Restando fuori dal target dell'OOB polling /tasks/{id}/jobs, il log
-       rimane visibile finche' l'utente non lo chiude o non lo sostituisce. #}
-    <a href="/jobs/{{ d.job_id }}/status"
-       hx-get="/jobs/{{ d.job_id }}/status"
-       hx-target="#job-log-area"
-       hx-swap="innerHTML"
-       onclick="document.getElementById('job-log-area').scrollIntoView({behavior:'smooth',block:'nearest'}); return false;"
-       title="Mostra il log qui sotto">📜 mostra log completo</a>
-  </p>
+  {# ====== Output del run: hub unico (report + cartella run + log inline) ====== #}
+  {% set _onorm = (d.result_path or '').replace('\\','/') %}
+  {% set _omarker = '/results/' ~ d.task_id|string ~ '/' %}
+  {% set _orel = _onorm.split(_omarker)[-1] if d.result_path else '' %}
+  {# run folder = primo segmento del path relativo (es. 20260516T050900Z/report.md).
+     Ricavato dal result_path: run_dir_name del dashboard e' valorizzato solo dai
+     runner browser, non dal qualifier/altri. #}
+  {% set _run = _orel.split('/')[0] if ('/' in _orel) else (d.run_dir_name or '') %}
+  <div class="run-output">
+    <div class="run-output-title">Output del run</div>
+    <div class="run-output-links">
+      {% if d.result_path %}
+        <a href="/tasks/{{ d.task_id }}/{{ 'file-view' if '.' in _orel else 'results' }}/{{ _orel }}" target="_blank" rel="noopener" title="Apri il report in una nuova scheda">📄 Report <span class="muted small">{{ _orel }}</span></a>
+      {% endif %}
+      {% if _run %}
+        <a href="#" onclick="window._argosToggleInlineBox(event, 'job-runfiles-inline-{{ d.job_id }}', '/jobs/{{ d.job_id }}/run-files')" title="Mostra i file del run qui sotto (jsonl, screenshot…)">📁 Cartella run</a>
+      {% endif %}
+      <a href="#" onclick="window._argosToggleInlineBox(event, 'job-log-inline-{{ d.job_id }}', '/jobs/{{ d.job_id }}/log')" title="Mostra/nascondi il log qui sotto">📜 Log completo</a>
+      <a href="/jobs/{{ d.job_id }}/status" target="_blank" hx-boost="false" class="muted small" title="Apri il log a tutto schermo in una nuova scheda">↗ nuova scheda</a>
+    </div>
+    {# hx-preserve: i box sopravvivono ai re-swap del dashboard (polling 3s sui job attivi). #}
+    <div id="job-runfiles-inline-{{ d.job_id }}" class="run-files-box" hx-preserve="true" style="display:none"></div>
+    <div id="job-log-inline-{{ d.job_id }}" class="run-log-box" hx-preserve="true" style="display:none"></div>
+  </div>
+  <style>
+    .run-output { margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px dashed var(--border, #444); }
+    .run-output-title { font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; margin-bottom: 0.35rem; }
+    .run-output-links { display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: center; }
+    .run-output-links a { font-size: 0.92em; }
+    .run-files-box, .run-log-box { margin-top: 0.7rem; }
+    .run-files-table { width: 100%; }
+  </style>
+  <script>
+    if (!window._argosToggleInlineBox) {
+      window._argosToggleInlineBox = function (ev, boxId, url) {
+        ev.preventDefault();
+        var box = document.getElementById(boxId);
+        if (!box) return;
+        if (!box.style.display || box.style.display === 'none') {
+          box.style.display = 'block';
+          if (!box.dataset.loaded) {
+            box.dataset.loaded = '1';
+            if (window.htmx) window.htmx.ajax('GET', url, { target: box, swap: 'innerHTML' });
+          }
+        } else {
+          box.style.display = 'none';
+        }
+      };
+    }
+  </script>
 </div>
 {% endif %}

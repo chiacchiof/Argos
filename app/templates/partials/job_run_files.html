@@ -1,0 +1,28 @@
+{# File della cartella run, inline nel box "dettagli". Il NOME apre il viewer in
+   una nuova scheda (jsonl/md/txt → reader; binari → download); la ⬇ scarica.
+   target="_blank"/download fanno sì che argos_loader IGNORI il click (niente
+   overlay di caricamento bloccato che resta su dopo un download). #}
+{% if files %}
+  <table class="data run-files-table">
+    <thead><tr><th>File</th><th style="text-align:right">Dim.</th><th></th></tr></thead>
+    <tbody>
+      {% for f in files %}
+      <tr>
+        <td><a href="/tasks/{{ task_id }}/file-view/{{ run_name }}/{{ f.path }}"
+               target="_blank" rel="noopener" title="Apri il file in una nuova scheda">{{ f.path }}</a></td>
+        <td style="text-align:right"><small class="muted">{{ f.size|human_bytes }}</small></td>
+        <td style="text-align:right"><a href="/tasks/{{ task_id }}/results/{{ run_name }}/{{ f.path }}"
+               download title="Scarica">⬇</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small" style="margin-top:.4rem">
+    <a href="/tasks/{{ task_id }}/results/{{ run_name }}" target="_blank" rel="noopener"
+       title="Apri la cartella run a tutto schermo">↗ apri la cartella in pagina</a>
+  </p>
+{% elif run_name %}
+  <p class="muted small">Cartella run vuota o non accessibile.</p>
+{% else %}
+  <p class="muted small">Output flat: nessuna cartella run (un singolo file, vedi Report).</p>
+{% endif %}

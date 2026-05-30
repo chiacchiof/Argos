@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}Spazio occupato — Argos{% endblock %}
+{% block content %}
+<section class="disk-page">
+  <style>
+    .disk-page .cards { display:flex; gap:.8rem; flex-wrap:wrap; margin:1rem 0 1.3rem; }
+    .disk-page .card { padding:.8rem 1.1rem; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; min-width:140px; }
+    .disk-page .card .lbl { font-size:.74em; text-transform:uppercase; letter-spacing:.05em; }
+    .disk-page .card .val { font-size:1.5rem; font-weight:600; }
+    .disk-page .toolbar { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin:.4rem 0 1rem; }
+    .disk-page .toolbar input[type=search] { min-width:240px; }
+    .disk-page .btn-danger { background:var(--danger,#b3261e); color:#fff; border:1px solid var(--danger,#b3261e); }
+    .disk-page .btn-sm, .disk-modal .btn-sm { font-size:.82em; padding:.25rem .6rem; }
+    .disk-modal .modal-content { max-width:980px; width:95%; }
+    .disk-modal table.data { width:100%; }
+    .disk-modal .disk-modal-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:.5rem; }
+    .disk-modal .modal-close { background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text-muted,#888); }
+    .disk-modal .disk-bulk-bar { display:flex; gap:.5rem; flex-wrap:wrap; margin:.6rem 0; }
+    .disk-modal .btn-danger { background:var(--danger,#b3261e); color:#fff; border:1px solid var(--danger,#b3261e); }
+    .disk-banner { padding:.5rem .8rem; border-radius:6px; margin:.5rem 0; font-size:.9em; }
+    .disk-banner.ok { background:rgba(46,160,67,.12); border:1px solid rgba(46,160,67,.4); }
+    .disk-banner.err { background:rgba(179,38,30,.12); border:1px solid rgba(179,38,30,.4); }
+    .disk-banner.warn { background:rgba(210,153,34,.14); border:1px solid rgba(210,153,34,.45); }
+    .disk-page .num { text-align:right; white-space:nowrap; }
+    .disk-sessions { margin-top:2.2rem; }
+    .disk-sessions .sess-card { border:1px solid var(--border); border-radius:8px; padding:.8rem 1rem; margin:.6rem 0; }
+  </style>
+
+  <div class="section-header">
+    <div>
+      <h2 style="margin:0">Spazio occupato</h2>
+      <p class="muted" style="margin:.3rem 0 0">
+        Spazio su disco dei <strong>run</strong> generati da task e workflow. Clicca
+        una riga per gestire i singoli run ed eliminarli (anche per tipo di file).
+      </p>
+    </div>
+  </div>
+
+  {% if msg %}<div class="disk-banner ok">{{ msg }}</div>{% endif %}
+
+  <div class="cards">
+    <div class="card">
+      <div class="lbl muted">Spazio run</div>
+      <div class="val">{{ total_results|human_bytes }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl muted">Run totali</div>
+      <div class="val">{{ n_runs }}</div>
+    </div>
+    <div class="card">
+      <div class="lbl muted">Voci</div>
+      <div class="val">{{ rows|length }}</div>
+    </div>
+    {% if is_super_admin %}
+    <div class="card">
+      <div class="lbl muted">Sessioni browser</div>
+      <div class="val">{{ sessions_total|human_bytes }}</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <form class="toolbar" method="get" action="/spazio-occupato">
+    <input type="search" name="q" value="{{ q }}" placeholder="Cerca task o workflow…">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+    <button type="submit" class="btn">Cerca</button>
+    {% if q %}<a class="btn-link" href="/spazio-occupato">Azzera</a>{% endif %}
+  </form>
+
+  {% macro sortable_th(col, label, cls='') %}
+    {% set is_active = (sort == col) %}
+    {% set next_dir = 'asc' if (is_active and sort_dir == 'desc') else 'desc' %}
+    {% set arrow = '↓' if (is_active and sort_dir == 'desc') else ('↑' if is_active else '⇅') %}
+    {% set base = qs_base if qs_base else '' %}
+    {% set sep = '&' if base else '' %}
+    <th class="sortable-th {{ cls }}">
+      <a href="?{{ base }}{{ sep }}sort={{ col }}&sort_dir={{ next_dir }}"
+         class="th-sort {% if is_active %}is-active{% endif %}" title="Ordina per {{ label }}">
+        {{ label }} <span class="th-sort-arrow">{{ arrow }}</span>
+      </a>
+    </th>
+  {% endmacro %}
+
+  {% if not rows %}
+  <div class="empty-state">
+    <span class="empty-icon"><svg class="icon" aria-hidden="true" style="width:2.6rem;height:2.6rem"><use href="#i-hard-drive"/></svg></span>
+    <div class="empty-title">Nessun run su disco{% if q %} per "{{ q }}"{% endif %}.</div>
+    <div class="empty-hint">Quando i task/workflow producono output, comparirà qui lo spazio occupato.</div>
+  </div>
+  {% else %}
+  <table class="data">
+    <thead>
+      <tr>
+        {{ sortable_th('name', 'Nome') }}
+        {{ sortable_th('kind', 'Tipo') }}
+        {{ sortable_th('runs', 'Run', 'num') }}
+        {{ sortable_th('size', 'Dimensione', 'num') }}
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.name }} {% if r.subtitle and r.subtitle not in ('workflow','orfano') %}<small class="muted">· {{ r.subtitle }}</small>{% endif %}</td>
+        <td>
+          {% if r.kind == 'task' %}<span class="badge">task</span>
+          {% elif r.kind == 'workflow' %}<span class="badge badge-pause">workflow</span>
+          {% else %}<span class="badge badge-cancel">orfano</span>{% endif %}
+        </td>
+        <td class="num">{{ r.runs }}</td>
+        <td class="num">{{ r.size|human_bytes }}</td>
+        <td class="num">
+          {% if r.kind == 'task' %}
+          <button type="button" class="btn btn-sm"
+                  hx-get="/spazio-occupato/task/{{ r.id }}/runs"
+                  hx-target="#disk-modal-body" hx-swap="innerHTML"
+                  onclick="document.getElementById('disk-modal').classList.add('open')">Gestisci</button>
+          {% elif r.kind == 'workflow' %}
+          <button type="button" class="btn btn-sm"
+                  hx-get="/spazio-occupato/workflow/{{ r.id }}/runs"
+                  hx-target="#disk-modal-body" hx-swap="innerHTML"
+                  onclick="document.getElementById('disk-modal').classList.add('open')">Gestisci</button>
+          {% else %}
+          <form method="post" action="/spazio-occupato/orphans/delete" style="display:inline"
+                onsubmit="return confirm('Cancellare definitivamente la cartella orfana del task #{{ r.id }} ({{ r.size|human_bytes }})? Irreversibile.')">
+            <input type="hidden" name="task_id" value="{{ r.id }}">
+            <button type="submit" class="btn btn-sm btn-danger">Elimina cartella</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if is_super_admin %}
+  <div class="disk-sessions">
+    <h3 style="margin-bottom:.2rem">Sessioni browser <small class="muted">({{ sessions_total|human_bytes }})</small></h3>
+    <p class="muted small">
+      Profili Chromium persistenti che tengono gli account loggati tra i run (cache,
+      cookie). <strong>Non sono run</strong>: dominano il disco ma cancellarli forza il
+      <strong>re-login</strong> (QR/credenziali) di quell'account. Solo super-admin.
+    </p>
+    {% for s in sessions %}
+    <div class="sess-card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong>{{ s.label }}</strong>
+        <span class="muted">{{ s.size|human_bytes }} · {{ s.count }} voci</span>
+      </div>
+      {% if s.entries %}
+      <table class="data" style="margin-top:.5rem">
+        <thead><tr><th>Voce</th><th class="num">Dim.</th><th></th></tr></thead>
+        <tbody>
+          {% for e in s.entries %}
+          <tr>
+            <td><code>{{ e.name }}</code></td>
+            <td class="num">{{ e.size|human_bytes }}</td>
+            <td class="num">
+              <form method="post" action="/spazio-occupato/sessions/delete" style="display:inline"
+                    onsubmit="var c=prompt('Cancellare questa sessione? L\'account andrà sloggato e servirà rifare il login (QR/credenziali). Digita ELIMINA per confermare.'); if(c===null){return false;} this.confirm.value=c; return true;">
+                <input type="hidden" name="root_key" value="{{ s.key }}">
+                <input type="hidden" name="name" value="{{ e.name }}">
+                <input type="hidden" name="confirm" value="">
+                <button type="submit" class="btn btn-sm btn-danger">Elimina</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted small" style="margin:.3rem 0 0">Vuota.</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# Modale condivisa: il body viene caricato via htmx #}
+  <div id="disk-modal" class="modal-backdrop disk-modal"
+       onclick="if(event.target===this) this.classList.remove('open')">
+    <div class="modal-content modal-wide">
+      <div id="disk-modal-body"><p class="muted">Caricamento…</p></div>
+    </div>
+  </div>
+</section>
+{% endblock %}

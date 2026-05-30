@@ -1,0 +1,56 @@
+<div class="disk-modal-head">
+  <h3 style="margin:0">Run del workflow "{{ wf.name }}" <small class="muted">#{{ wf.id }}</small></h3>
+  <button type="button" class="modal-close" title="Chiudi"
+          onclick="document.getElementById('disk-modal').classList.remove('open')">✕</button>
+</div>
+
+{% if error %}<div class="disk-banner err">{{ error }}</div>{% endif %}
+{% if info %}<div class="disk-banner ok">{{ info }}</div>{% endif %}
+
+<p class="muted small">
+  Totale: <strong>{{ total|human_bytes }}</strong> in {{ units|length }} run (su più task).
+  Questi run vivono nelle cartelle dei rispettivi task.
+</p>
+
+{% if not units %}
+  <p class="muted">Nessun run su disco per questo workflow.</p>
+{% else %}
+<form hx-target="#disk-modal-body" hx-swap="innerHTML">
+  <div class="disk-bulk-bar">
+    <button type="submit" class="btn btn-sm btn-danger" hx-include="closest form"
+            hx-post="/spazio-occupato/workflow/{{ wf.id }}/runs/delete" name="mode" value="selected"
+            hx-confirm="Cancellare i run selezionati? Operazione irreversibile.">Elimina selezionati</button>
+    <button type="submit" class="btn btn-sm btn-danger" hx-include="closest form"
+            hx-post="/spazio-occupato/workflow/{{ wf.id }}/runs/delete" name="mode" value="all"
+            hx-confirm="Cancellare TUTTI i run di questo workflow? Operazione irreversibile.">Elimina tutto</button>
+    <button type="submit" class="btn btn-sm" hx-include="closest form"
+            hx-post="/spazio-occupato/workflow/{{ wf.id }}/runs/delete-ext" name="ext" value="md"
+            hx-confirm="Cancellare i file .md nei run del workflow? I dati .jsonl restano.">Elimina .md</button>
+    <button type="submit" class="btn btn-sm" hx-include="closest form"
+            hx-post="/spazio-occupato/workflow/{{ wf.id }}/runs/delete-ext" name="ext" value="json"
+            hx-confirm="Cancellare i file .json di servizio nei run? (i .jsonl restano)">Elimina .json</button>
+  </div>
+
+  <table class="data">
+    <thead>
+      <tr>
+        <th><input type="checkbox" title="Seleziona/deseleziona tutto"
+                   onclick="var ck=this.checked; this.closest('table').querySelectorAll('tbody input[type=checkbox]').forEach(function(c){c.checked=ck});"></th>
+        <th>Run</th><th>Task</th><th class="num">File</th><th class="num">Dim.</th><th>Data</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in units %}
+      <tr>
+        <td><input type="checkbox" name="units" value="{{ u.task_id }}:{{ u.name }}"></td>
+        <td><code>{{ u.name }}</code></td>
+        <td><small class="muted">#{{ u.task_id }}</small></td>
+        <td class="num">{{ u.files_count }}</td>
+        <td class="num">{{ u.size|human_bytes }}</td>
+        <td><small class="muted">{{ u.date_label or '—' }}</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</form>
+{% endif %}

@@ -112,7 +112,7 @@ Ogni tenant ha:
 | **Crea nuovo tenant** | Form in alto. Nome obbligatorio. Slug auto-derivato se vuoto. |
 | **Attiva / Disattiva** | Disattivare blocca i login degli utenti del tenant ma preserva i dati. |
 | **Toggle memoria sito** | On = il tenant accede al pool community. Off = vede solo le sue righe. |
-| **Elimina** | **Cascata**: utenti collegati eliminati. Asset/task del tenant restano in DB (orfani da pulire manualmente — TODO). |
+| **Elimina** | **Cascata totale**: `DELETE FROM tenants` elimina via FK `ON DELETE CASCADE` TUTTO il dominio del tenant nel DB — utenti, task, workflow, job, asset (+tag), contatti, thread/messaggi, **fascicoli e fogli** (+ file-metadata, celle, condivisioni, chat), site memory, account canali, chiavi LLM, ecc. **NON** elimina i file su disco (documenti dei fascicoli nella RootProject del PC, output job in `data/results/`). Irreversibile: niente soft-delete. |
 
 ### Sequence "onboarding nuovo cliente"
 
@@ -533,8 +533,11 @@ git push
 
 1. `/admin/tenants` → toggle "Disattiva" (blocca login, preserva dati).
 2. Conserva dati per N giorni (GDPR / retention policy interna).
-3. Poi `Elimina` (cascata utenti). **Asset/task del tenant restano**
-   orfani in DB — puliscili manualmente da SQL se serve.
+3. Poi `Elimina`: **cascata totale** su tutto il dominio del tenant nel DB
+   (utenti, task, asset, contatti, fascicoli, fogli, site memory, account, ecc.).
+   Nessun orfano in DB. **Attenzione**: i file su disco (documenti dei fascicoli
+   nella RootProject, output job in `data/results/`) NON vengono eliminati —
+   rimuovili a parte se la retention lo richiede. Operazione irreversibile.
 
 ### Rotazione segreti
 

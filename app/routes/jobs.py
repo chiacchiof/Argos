@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .. import db, jobs
+from .. import db, jobs, storage
 from ..agent.job_chat_commands import HELP_TEXT, parse_chat_input
 from ..agent.runner_control import (
     MODES_SUPPORTING_LIVE_CHAT,
@@ -82,6 +82,35 @@ async def job_status(request: Request, job_id: int):
             "job": job, "task": task,
             "display_id": display_id, "parent_id": parent_id,
         },
+    )
+
+
+@router.get("/jobs/{job_id}/log", response_class=HTMLResponse)
+async def job_log_inline(request: Request, job_id: int):
+    """Solo il log del job (slim), per il caricamento inline nel box dettagli.
+    Tenant-safe via get_job. Si auto-aggiorna ogni 2s se il job e' in corso."""
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job non trovato")
+    return templates.TemplateResponse(
+        request, "partials/job_log_only.html", {"job": job}
+    )
+
+
+@router.get("/jobs/{job_id}/run-files", response_class=HTMLResponse)
+async def job_run_files_inline(request: Request, job_id: int):
+    """File della cartella run del job (slim, inline nel box dettagli) con link
+    di download/apertura. Tenant-safe via get_job. `files=None` se il job e' un
+    output flat (ReAct, nessuna sottocartella)."""
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job non trovato")
+    task_id = int(job["task_id"])
+    run_name = storage.run_name_of(task_id, job.get("result_path"))
+    files = storage.list_run_files(task_id, run_name) if run_name else None
+    return templates.TemplateResponse(
+        request, "partials/job_run_files.html",
+        {"task_id": task_id, "run_name": run_name, "files": files},
     )
 
 

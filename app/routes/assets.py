@@ -76,7 +76,7 @@ async def assets_list(
     asset_type: str | None = None,
     status: str | None = None,
     tags: str | None = None,           # legacy: tags=k:v,k:v (parsato per backcompat)
-    source_task_id: int | None = None,
+    source_task_id: str = "",          # str (non int): i filtri HTML inviano `source_task_id=` vuoto
     q: str | None = None,
     tag_mode: str = "and",
     tag_expr: str = "",
@@ -92,6 +92,7 @@ async def assets_list(
     asset_type = (asset_type or "").strip() or None
     status = (status or "").strip() or None
     q_clean = (q or "").strip() or None
+    source_task_id = _parse_optional_int(source_task_id)  # "" o non-numerico → None
     # Tag filters: nuovo formato (tag_key__N) preferito, legacy 'tags=' fallback.
     tag_filters = _resolve_unified_tag_filters(request, tags)
     tag_mode_v = (tag_mode or "and").strip().lower()
@@ -578,6 +579,46 @@ async def qualified_add(
         url=f"/qualified?qualifiers={slug}&status={decision}&flash={flash}",
         status_code=303,
     )
+
+
+@router.post("/qualified/remove-bulk")
+async def qualified_remove_bulk(request: Request):
+    """Rimuove la/e qualifica/he `qualifier_<slug>` dagli asset selezionati (o da
+    tutti i filtrati) SENZA eliminare gli asset. Se dopo la rimozione un asset non
+    ha piu' alcuna qualifica 'qualified', il suo status torna 'new' (esce dal
+    /qualified); se ha altre qualifiche, resta qualified per quelle (multi-qualifier).
+
+    Riceve via form: `qualifiers` (csv di slug, dai qualifier selezionati nel
+    filtro), `asset_ids[]` oppure `select_all_filtered=1` + i filtri /qualified.
+    L'eliminazione vera dell'asset NON e' disponibile qui: si fa da /assets."""
+    from urllib.parse import quote
+    form = await request.form()
+    # Qualifier da RIMUOVERE: campo dedicato `remove_slugs` (multi, dalla modale),
+    # tenuto separato da `qualifiers` che _audience_from_qualified_form usa come
+    # FILTRO audience nel caso select_all_filtered. Fallback: `qualifiers` (compat).
+    raw_slugs = form.getlist("remove_slugs") if hasattr(form, "getlist") else []
+    slugs = [s.strip().lower() for s in raw_slugs if isinstance(s, str) and s.strip()]
+    if not slugs:
+        slugs = [s.strip().lower() for s in (form.get("qualifiers") or "").split(",") if s.strip()]
+    redirect_to = (form.get("redirect_to") or "/qualified").strip() or "/qualified"
+    sep = "&" if "?" in redirect_to else "?"
+    if not slugs:
+        # senza un qualifier selezionato non si sa quale qualifica togliere
+        return RedirectResponse(
+            url=f"{redirect_to}{sep}flash={quote('Seleziona prima un qualifier per rimuovere la qualifica')}",
+            status_code=303,
+        )
+    assets = _audience_from_qualified_form(form)
+    n = 0
+    for a in assets:
+        aid = a.get("id")
+        if aid is None:
+            continue
+        # dequalify_asset e' tenant-safe (ContextVar): salta gli asset di altri tenant
+        if db.dequalify_asset(int(aid), slugs) is not None:
+            n += 1
+    flash = quote(f"Qualifica rimossa da {n} asset (qualifier: {', '.join(slugs)}). Gli asset non sono stati eliminati.")
+    return RedirectResponse(url=f"{redirect_to}{sep}flash={flash}", status_code=303)
 
 
 # ===========================================================================

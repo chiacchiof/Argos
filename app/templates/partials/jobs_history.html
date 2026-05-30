@@ -69,7 +69,7 @@
           {% set norm = j.result_path.replace('\\','/') %}
           {% set marker = '/results/' ~ task.id|string ~ '/' %}
           {% set rel = norm.split(marker)[-1] %}
-          <a href="/tasks/{{ task.id }}/results/{{ rel }}">{{ rel }}</a>
+          <a href="/tasks/{{ task.id }}/{{ 'file-view' if '.' in rel else 'results' }}/{{ rel }}" target="_blank" rel="noopener">{{ rel }}</a>
         {% else %}—{% endif %}
       </td>
       <td class="job-actions-cell">
@@ -78,9 +78,7 @@
            hx-target="#job-detail-{{ j.id }}"
            hx-swap="innerHTML"
            onclick="window._argosOpenJobDetail({{ j.id }}); return false;"
-           title="Mostra/nascondi dashboard del job (con pulsanti stop/pause se attivo)">📊 dettagli</a>
-        &middot;
-        <a href="/jobs/{{ j.id }}/status" hx-boost="false" target="_blank" title="Log completo in nuova tab">log</a>
+           title="Mostra/nascondi dashboard del job (report, cartella run, log)">📊 dettagli</a>
         &middot;
         {% if j_active %}
         <button type="button" class="btn-icon-trash" disabled
@@ -122,7 +120,7 @@
           {% set s_norm = s.result_path.replace('\\','/') %}
           {% set s_marker = '/results/' ~ task.id|string ~ '/' %}
           {% set s_rel = s_norm.split(s_marker)[-1] %}
-          <a href="/tasks/{{ task.id }}/results/{{ s_rel }}">{{ s_rel }}</a>
+          <a href="/tasks/{{ task.id }}/{{ 'file-view' if '.' in s_rel else 'results' }}/{{ s_rel }}" target="_blank" rel="noopener">{{ s_rel }}</a>
         {% else %}—{% endif %}
       </td>
       <td class="job-actions-cell">
@@ -131,9 +129,7 @@
            hx-target="#job-detail-{{ s.id }}"
            hx-swap="innerHTML"
            onclick="window._argosOpenJobDetail({{ s.id }}); return false;"
-           title="Mostra/nascondi dashboard del sub-job (con pulsanti stop se attivo)">📊 dettagli</a>
-        &middot;
-        <a href="/jobs/{{ s.id }}/status" hx-boost="false" target="_blank" title="Log completo in nuova tab">log</a>
+           title="Mostra/nascondi dashboard del sub-job (report, cartella run, log)">📊 dettagli</a>
         &middot;
         {% if s_active %}
         <button type="button" class="btn-icon-trash" disabled

@@ -171,13 +171,21 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             continue
     if explicit_ids:
         jlog(f"Audience snapshot: {len(explicit_ids)} asset_id espliciti da valutare.")
-        n_missing = 0
+        # Batch fetch: UNA query `WHERE id IN (...)` invece di N `get_asset()`
+        # sequenziali. Con snapshot grandi (es. 3000+ asset) il loop N+1 verso
+        # Neon (remoto) saturava il pool condiviso col web server per minuti,
+        # congelando l'intera UI (richieste appese fino al timeout del pool).
+        fetched = db.get_assets_by_ids(explicit_ids)
+        by_id = {int(a["id"]): a for a in fetched}
+        seen_ids: set[int] = set()
         for aid in explicit_ids:
-            a = db.get_asset(aid)
-            if not a:
-                n_missing += 1
+            if aid in seen_ids:
                 continue
-            assets_to_judge.append(a)
+            seen_ids.add(aid)
+            a = by_id.get(aid)
+            if a is not None:
+                assets_to_judge.append(a)
+        n_missing = len(seen_ids) - len(assets_to_judge)
         if n_missing:
             jlog(f"  WARN {n_missing} asset_id non trovati (eliminati post-snapshot)")
 
@@ -253,17 +261,23 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     # Modalità destroy:
     # - 'auto' (default): hard delete immediato sugli asset destroyed
     # - 'confirm': solo standalone, tag 'pending_destroy' + report finale UI
-    # - Forzato 'auto' se il job e' parte di un workflow_run (no UI nel mezzo)
+    # - 'off': non distrugge MAI; il verdetto `destroy` viene declassato a
+    #   `rejected` (record tenuto). Per qualifier puramente valutativi.
+    # - In un workflow_run non c'e' UI nel mezzo: 'confirm' → forzato 'auto'.
+    #   'off' invece resta 'off' (non richiede UI, è la scelta sicura).
     cur_job_row = db.get_job(job_id)
     in_workflow = bool(cur_job_row and cur_job_row.get("workflow_run_id"))
     raw_mode = (task.get("qualifier_destroy_mode") or "auto").strip().lower()
-    if raw_mode not in ("auto", "confirm"):
+    if raw_mode not in ("auto", "confirm", "off"):
         raw_mode = "auto"
-    destroy_mode = "auto" if in_workflow else raw_mode
-    jlog(
-        f"Destroy mode: '{destroy_mode}' "
-        f"({'workflow → forced auto' if in_workflow else 'standalone'})."
-    )
+    destroy_mode = "auto" if (in_workflow and raw_mode == "confirm") else raw_mode
+    if in_workflow and raw_mode == "confirm":
+        mode_note = "workflow → forced auto"
+    elif in_workflow:
+        mode_note = "workflow"
+    else:
+        mode_note = "standalone"
+    jlog(f"Destroy mode: '{destroy_mode}' ({mode_note}).")
 
     n_total = 0
     n_qualified = 0
@@ -292,6 +306,12 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
             jlog(f"  ⚠️ judge failed: {type(e).__name__}: {e}")
             n_failed += 1
             return
+
+        # destroy_mode 'off': il verdetto `destroy` non cancella nulla — viene
+        # declassato a `rejected` (record tenuto, finisce in rejected.jsonl).
+        if decision == "destroyed" and destroy_mode == "off":
+            decision = "rejected"
+            reason = ("[destroy off → reject] " + reason)[:300]
 
         # === DESTROY branch ===
         # `decision == "destroyed"`: il LLM ritiene il record garbage assoluto.
@@ -514,7 +534,12 @@ async def run_agent(task: dict[str, Any], job_id: int) -> str:
     else:
         source_label = f"profiles.jsonl `{artifact}`"
     destroy_section = ""
-    if destroy_mode == "auto":
+    if destroy_mode == "off":
+        destroy_section = (
+            "- **Destroy**: disattivato (i verdetti `destroy` sono stati "
+            "declassati a `rejected`; nessun asset cancellato).\n"
+        )
+    elif destroy_mode == "auto":
         destroy_section = f"- **Destroyed (hard delete)**: {n_destroyed} (vedi `destroyed.jsonl`)\n"
     elif n_pending_destroy or destroyed_path.stat().st_size > 0:
         destroy_section = (

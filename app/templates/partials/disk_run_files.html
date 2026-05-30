@@ -1,0 +1,39 @@
+<div class="disk-modal-head">
+  <h3 style="margin:0">File del run <small class="muted">{{ run_name }}</small></h3>
+  <button type="button" class="modal-close" title="Chiudi"
+          onclick="document.getElementById('disk-modal').classList.remove('open')">✕</button>
+</div>
+
+<p style="margin:.2rem 0 .6rem">
+  <a href="#" hx-get="/spazio-occupato/task/{{ task.id }}/runs"
+     hx-target="#disk-modal-body" hx-swap="innerHTML">← torna ai run</a>
+</p>
+
+{% if error %}<div class="disk-banner err">{{ error }}</div>{% endif %}
+{% if info %}<div class="disk-banner ok">{{ info }}</div>{% endif %}
+{% if active %}<div class="disk-banner warn">⚠️ Job attivi su questo task: la cancellazione è bloccata.</div>{% endif %}
+
+<p class="muted small">Totale: <strong>{{ total|human_bytes }}</strong> · {{ files|length }} file</p>
+
+{% if not files %}
+  <p class="muted">Nessun file in questo run.</p>
+{% else %}
+<table class="data">
+  <thead><tr><th>File</th><th class="num">Dim.</th><th></th></tr></thead>
+  <tbody>
+    {% for f in files %}
+    <tr>
+      <td><code>{{ f.path }}</code></td>
+      <td class="num">{{ f.size|human_bytes }}</td>
+      <td class="num">
+        <button type="button" class="btn btn-sm btn-danger"
+                hx-post="/spazio-occupato/task/{{ task.id }}/run/{{ run_name }}/file/delete"
+                hx-vals='{"file_path": {{ f.path|tojson }}}'
+                hx-target="#disk-modal-body" hx-swap="innerHTML"
+                hx-confirm="Cancellare {{ f.name }}? Irreversibile.">Elimina</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}

@@ -61,6 +61,25 @@ def _render_md(value: Any) -> str:
 templates.env.filters["render_md"] = _render_md
 
 
+def _human_bytes(value: Any) -> str:
+    """Filter Jinja: byte -> stringa leggibile (B/KB/MB/GB/TB). Usato dalla
+    pagina Spazio occupato. Robusto a None/non-numerico."""
+    try:
+        n = float(value or 0)
+    except (TypeError, ValueError):
+        return "0 B"
+    if n < 0:
+        n = 0
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{int(n)} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+templates.env.filters["human_bytes"] = _human_bytes
+
+
 def _static_css_mtime() -> int:
     """mtime di static/style.css per cache-busting. Cambia ad ogni modifica del
     file; serializzato come int (secondi). Usato in base.html:

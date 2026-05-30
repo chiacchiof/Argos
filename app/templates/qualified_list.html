@@ -392,6 +392,9 @@
               onsubmit="return window.bulkConfirmDelete(this, 'asset');">
           <input type="hidden" name="redirect_to" value="/qualified?{{ qs_base }}">
           <input type="hidden" name="select_all_filtered" value="0" id="qbulk-select-all-flag">
+          {# Qualifier selezionati nel filtro: serve a /qualified/remove-bulk per sapere
+             QUALE qualifica togliere (e a /assets/delete-bulk vengono ignorati). #}
+          {% if selected_qualifiers %}<input type="hidden" name="qualifiers" value="{{ selected_qualifiers|join(',') }}">{% endif %}
 
           {# Bulk action bar: select-all + counter + bottoni d'azione.
              Visibile SEMPRE: select-all + "Tutti i filtrati" + counter (servono
@@ -426,16 +429,17 @@
                     onclick="window.qbulkApplyTo('rilancia-qualifier-modal'); document.getElementById('rilancia-qualifier-modal').classList.add('open');">
               🎯 Rilancia qualifier (<span data-qbulk-action-count>0</span>)
             </button>
+            <button type="button" class="btn-secondary"
+                    id="qbulk-btn-dequalify" disabled
+                    title="Rimuove un qualifier (comune) dagli asset selezionati. NON elimina gli asset (per cancellarli usa /assets)."
+                    onclick="window.qbulkApplyTo('rimuovi-qualifier-modal'); window.qbulkPrepDequalifyModal(); document.getElementById('rimuovi-qualifier-modal').classList.add('open');">
+              🏷️ Rimuovi qualifier (<span data-qbulk-action-count>0</span>)
+            </button>
             <button type="button" class="btn-primary"
                     id="qbulk-btn-outreach" disabled
                     title="Crea task outreach con gli asset selezionati"
                     onclick="window.qbulkApplyTo('avvia-outreach-modal'); document.getElementById('avvia-outreach-modal').classList.add('open');">
               🚀 Avvia outreach (<span data-qbulk-action-count>0</span>)
-            </button>
-            <button type="submit" class="btn-danger-inline"
-                    id="qbulk-btn-delete" disabled
-                    title="Cancella definitivamente gli asset selezionati">
-              🗑️ Cancella (<span data-qbulk-action-count>0</span>)
             </button>
             <button type="button" class="btn-secondary"
                     id="qbulk-btn-export"
@@ -479,7 +483,8 @@
           <tbody>
             {% for a in assets %}
             <tr>
-              <td><input type="checkbox" name="asset_ids" value="{{ a.id }}" data-qbulk-row></td>
+              <td><input type="checkbox" name="asset_ids" value="{{ a.id }}" data-qbulk-row
+                     data-qualifiers="{% for k in a.tags if k.startswith('qualifier_') and not k.startswith('qualifier_score_') %}{{ k[10:] }},{% endfor %}"></td>
               <td>{{ a.id }}</td>
               <td><code>{{ a.asset_type }}</code></td>
               <td><a href="/assets/{{ a.id }}">{{ a.title or "(senza titolo)" }}</a></td>
@@ -829,6 +834,7 @@ function selectAssetForQualifier(assetId) {
   const btnRilancia = document.getElementById('qbulk-btn-rilancia');
   const btnOutreach = document.getElementById('qbulk-btn-outreach');
   const btnDelete = document.getElementById('qbulk-btn-delete');
+  const btnDequalify = document.getElementById('qbulk-btn-dequalify');
   const actionCounts = document.querySelectorAll('[data-qbulk-action-count]');
 
   const TOTAL = {{ total }};
@@ -859,7 +865,7 @@ function selectAssetForQualifier(assetId) {
     actionCounts.forEach(el => el.textContent = effective);
 
     // Greyout bottoni se 0 effective
-    [btnRilancia, btnOutreach, btnDelete].forEach(b => {
+    [btnRilancia, btnOutreach, btnDelete, btnDequalify].forEach(b => {
       if (b) b.disabled = effective === 0;
     });
 
@@ -928,6 +934,54 @@ function selectAssetForQualifier(assetId) {
     const sel = selectAllFiltered ? TOTAL : Array.from(rows).filter(c => c.checked).length;
     if (!sel) return false;
     return confirm(`Cancellare ${sel} ${label}${sel === 1 ? '' : 's'}? L'azione è permanente.`);
+  };
+
+  // --- Rimuovi qualifier (de-qualify) via modale ---------------------------
+  // Menu qualifier del tenant (slug). Serve nel caso "tutti i filtrati", dove
+  // non possiamo conoscere i qualifier per-asset lato client. Gli slug sono
+  // validati server-side (a-z0-9_), quindi sicuri da emettere inline.
+  const QUALIFIER_MENU = [{% for q in qualifier_menu %}"{{ q.slug }}"{% if not loop.last %}, {% endif %}{% endfor %}];
+
+  // Popola la modale con i qualifier presenti nella selezione: ordinati per
+  // quanti asset li hanno; quelli COMUNI A TUTTI i selezionati sono pre-spuntati.
+  window.qbulkPrepDequalifyModal = function () {
+    const container = document.getElementById('dequalify-qualifier-options');
+    const summary = document.getElementById('dequalify-modal-summary');
+    if (!container) return;
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    if (selectAllFiltered) {
+      if (summary) summary.textContent = `Tutti i ${TOTAL} asset filtrati. Scegli il qualifier da rimuovere: verrà tolto agli asset che ce l'hanno.`;
+      if (!QUALIFIER_MENU.length) { container.innerHTML = '<p class="muted small">Nessun qualifier disponibile.</p>'; return; }
+      container.innerHTML = QUALIFIER_MENU.map(s =>
+        `<label class="dequalify-opt"><input type="checkbox" name="remove_slugs" value="${esc(s)}"> <code>${esc(s)}</code></label>`
+      ).join('');
+      return;
+    }
+    const selectedRows = Array.from(rows).filter(c => c.checked);
+    const n = selectedRows.length;
+    if (summary) summary.textContent = `${n} asset selezionati. Quelli comuni a TUTTI sono pre-selezionati.`;
+    const counts = {};
+    selectedRows.forEach(c => {
+      (c.getAttribute('data-qualifiers') || '').split(',').map(s => s.trim()).filter(Boolean)
+        .forEach(s => { counts[s] = (counts[s] || 0) + 1; });
+    });
+    const slugs = Object.keys(counts);
+    if (!slugs.length) { container.innerHTML = '<p class="muted small">Gli asset selezionati non hanno qualifier.</p>'; return; }
+    slugs.sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
+    container.innerHTML = slugs.map(s => {
+      const all = counts[s] === n;
+      const meta = all ? `<span class="muted small">(in tutti i ${n})</span>` : `<span class="muted small">(${counts[s]}/${n})</span>`;
+      return `<label class="dequalify-opt"><input type="checkbox" name="remove_slugs" value="${esc(s)}" ${all ? 'checked' : ''}> <code>${esc(s)}</code> ${meta}</label>`;
+    }).join('');
+  };
+
+  // Conferma submit della modale: almeno un qualifier scelto + riepilogo.
+  window.qbulkDequalifyConfirm = function (modalForm) {
+    const checked = modalForm.querySelectorAll('input[name="remove_slugs"]:checked');
+    if (!checked.length) { alert('Seleziona almeno un qualifier da rimuovere.'); return false; }
+    const n = selectAllFiltered ? TOTAL : Array.from(rows).filter(c => c.checked).length;
+    const slugs = Array.from(checked).map(c => c.value).join(', ');
+    return confirm(`Rimuovere il/i qualifier [${slugs}] da ${n} asset?\n\nGli asset NON vengono eliminati. Quelli che restano senza qualifica 'qualified' tornano "nuovi".`);
   };
 
   // qbulkApplyToForm(form): variante per form diretti (es. il banner
@@ -1152,6 +1206,54 @@ function selectAssetForQualifier(assetId) {
 {# Modale: Rilancia qualifier sul set filtrato corrente.
    Crea un task qualifier con `target_asset_ids` = snapshot dei filtri attivi.
    Multi-qualifier additivo: i tag esistenti non vengono toccati. #}
+<div id="rimuovi-qualifier-modal" class="modal-backdrop"
+     onclick="if(event.target===this) this.classList.remove('open');">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>🏷️ Rimuovi qualifier dalla selezione</h3>
+      <button type="button" class="btn-link"
+              onclick="document.getElementById('rimuovi-qualifier-modal').classList.remove('open');">✕</button>
+    </div>
+    <p class="muted small" style="margin-top:0">
+      Toglie il/i qualifier scelto/i dagli asset selezionati. Gli asset
+      <strong>NON vengono eliminati</strong>: escono solo da quella qualifica. Se un asset
+      resta senza alcuna qualifica <code>qualified</code>, torna <code>new</code>.
+      Per cancellare davvero gli asset usa <code>/assets</code>.
+    </p>
+    <form method="post" action="/qualified/remove-bulk" class="add-contact-form"
+          onsubmit="return window.qbulkDequalifyConfirm(this);">
+      <input type="hidden" name="redirect_to" value="/qualified?{{ qs_base }}">
+      {# Filtri attivi: servono a _audience_from_qualified_form nel caso 'tutti i filtrati'. #}
+      {% if selected_qualifiers %}<input type="hidden" name="qualifiers" value="{{ selected_qualifiers|join(',') }}">{% endif %}
+      {% if filter_status %}<input type="hidden" name="status" value="{{ filter_status }}">{% endif %}
+      {% if filter_score_min is not none %}<input type="hidden" name="score_min" value="{{ filter_score_min }}">{% endif %}
+      {% if filter_type %}<input type="hidden" name="asset_type" value="{{ filter_type }}">{% endif %}
+      {% if filter_task %}<input type="hidden" name="source_task_id" value="{{ filter_task }}">{% endif %}
+      {% if filter_search %}<input type="hidden" name="q" value="{{ filter_search }}">{% endif %}
+      <input type="hidden" name="tag_mode" value="{{ tag_mode }}">
+      {% if tag_expr %}<input type="hidden" name="tag_expr" value="{{ tag_expr }}">{% endif %}
+      {% for tk, tv in (extra_tag_filters or []) %}
+        <input type="hidden" name="tag_key__{{ loop.index0 }}" value="{{ tk }}">
+        <input type="hidden" name="tag_value__{{ loop.index0 }}" value="{{ tv }}">
+      {% endfor %}
+
+      <p class="muted small" id="dequalify-modal-summary" style="margin-bottom:.4rem"></p>
+      <fieldset style="border:1px solid var(--border,#ddd); border-radius:8px; padding:.6rem .8rem; margin:0 0 .8rem">
+        <legend class="muted small">Quale/i qualifier rimuovere?</legend>
+        <div id="dequalify-qualifier-options" class="dequalify-options" style="display:flex; flex-direction:column; gap:.35rem">
+          <p class="muted small">Nessun qualifier nella selezione.</p>
+        </div>
+      </fieldset>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-link"
+                onclick="document.getElementById('rimuovi-qualifier-modal').classList.remove('open');">Annulla</button>
+        <button type="submit" class="btn-danger-inline">🏷️ Rimuovi qualifier</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div id="rilancia-qualifier-modal" class="modal-backdrop"
      onclick="if(event.target===this) this.classList.remove('open');">
   <div class="modal-content">

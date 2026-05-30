@@ -868,18 +868,24 @@
           <option value="confirm" {% if qdm == 'confirm' %}selected{% endif %}>
             confirm — propone destroy, conferma manuale via UI a fine job
           </option>
+          <option value="off" {% if qdm == 'off' %}selected{% endif %}>
+            off — non distrugge mai (il verdetto destroy diventa reject)
+          </option>
         </select>
       </label>
 
       <p class="muted small">
-        ⚠️ In <strong>workflow</strong> la modalità è sempre <code>auto</code>: la
-        catena task-task non può aspettare l'utente. <code>confirm</code> ha
-        effetto solo se lanci il qualifier come task standalone.
+        ⚠️ In <strong>workflow</strong> la modalità <code>confirm</code> viene
+        forzata a <code>auto</code> (la catena task-task non può aspettare
+        l'utente). <code>off</code> invece resta <code>off</code> anche in
+        workflow: non serve UI, è la scelta sicura.
         <br>
         ℹ️ Gli asset destroy vengono <strong>cancellati definitivamente</strong>
-        dal database (cascade su asset_tags). In <code>confirm</code> mode invece
+        dal database (cascade su asset_tags). In <code>confirm</code> mode
         ricevono il tag <code>qualifier_&lt;slug&gt;:pending_destroy</code> e
-        sono recuperabili finché non confermi.
+        sono recuperabili finché non confermi. In <code>off</code> mode il
+        verdetto destroy viene declassato a <code>reject</code>: nessun asset
+        viene mai cancellato.
       </p>
     </details>
 

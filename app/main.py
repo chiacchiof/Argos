@@ -16,6 +16,7 @@ from .routes import admin as admin_routes
 from .routes import assets as assets_routes
 from .routes import auth as auth_routes
 from .routes import dbconfig as dbconfig_routes
+from .routes import disk_usage as disk_usage_routes
 from .routes import docs as docs_routes
 from .routes import fascicoli as fascicoli_routes
 from .routes import fascicoli_sheets as fascicoli_sheets_routes
@@ -224,6 +225,7 @@ app.include_router(orchestrator_routes.router)
 app.include_router(assets_routes.router)
 app.include_router(import_csv_routes.router)
 app.include_router(site_memory_routes.router)
+app.include_router(disk_usage_routes.router)
 app.include_router(social_accounts_routes.router)
 app.include_router(accounts_email_routes.router)
 app.include_router(accounts_messaging_routes.router)

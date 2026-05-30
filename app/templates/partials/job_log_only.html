@@ -1,0 +1,31 @@
+{# Log "slim" del job, caricato inline nel box dettagli (job_dashboard.html).
+   Si auto-aggiorna ogni 2s finche' il job e' in corso. NON ripete report /
+   cartella run (gia' mostrati nel box) per evitare duplicazioni. #}
+{% set in_progress = job.status in ("queued", "running") %}
+<div class="job-log-only"
+     {% if in_progress %}hx-get="/jobs/{{ job.id }}/log" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  {% if job.log %}
+    <details open>
+      <summary>Log ({{ job.log.count('\n') }} righe)</summary>
+      <pre class="log" id="job-log-{{ job.id }}" data-job-log="{{ job.id }}">{{ job.log }}</pre>
+    </details>
+    {# Auto tail-follow: mantiene lo scroll in fondo solo se l'utente era gia'
+       in coda (entro 80px), altrimenti lascia la posizione (per leggere log vecchi). #}
+    <script>
+    (function () {
+      var jid = "{{ job.id }}";
+      var stickKey = "_jobLogStick_" + jid;
+      window[stickKey] = (typeof window[stickKey] === "boolean") ? window[stickKey] : true;
+      var pre = document.getElementById("job-log-" + jid);
+      if (!pre) return;
+      if (window[stickKey]) pre.scrollTop = pre.scrollHeight;
+      pre.addEventListener("scroll", function () {
+        var d = pre.scrollHeight - (pre.scrollTop + pre.clientHeight);
+        window[stickKey] = d < 80;
+      }, { passive: true });
+    })();
+    </script>
+  {% else %}
+    <p class="muted small">Nessun log per questo job.</p>
+  {% endif %}
+</div>

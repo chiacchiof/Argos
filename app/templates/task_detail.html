@@ -138,11 +138,9 @@
           <p class="muted">Nessuna esecuzione ancora lanciata. Premi "Esegui ora".</p>
         {% endif %}
       </div>
-      {# Area separata da #job-status: i link "📜 log" del parent e dei sub-job
-         (e il "mostra log completo") fanno HTMX swap qui. Restando fuori da
-         #job-status, l'OOB swap del polling esterno (/tasks/{id}/jobs) non
-         puo' piu' cancellare il log come succedeva prima (incident 2026-05-23). #}
-      <div id="job-log-area"></div>
+      {# #job-log-area rimosso: il log è ora inline nel box "dettagli"
+         (job_dashboard.html → sezione "Output del run"), così funziona anche
+         dalla tab Cronologia (prima il log finiva in un'area su un'altra tab). #}
 
       {# B-001: chat in-running con l'agente. Ancorata a task_id (stabile):
          carica la chat dell'ultimo job su page-load e quando parte un nuovo job

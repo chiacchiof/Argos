@@ -1874,9 +1874,10 @@ def create_task(
                                   outreach_filter_tags,
                                   gap_between_dms_min, gap_between_dms_max,
                                   llm_credential_id, discovery_llm_credential_id, browser_llm_credential_id,
+                                  qualifier_destroy_mode,
                                   tenant_id, created_by_user_id,
                                   created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 data["name"],
@@ -1951,6 +1952,9 @@ def create_task(
                 int(data["llm_credential_id"]) if data.get("llm_credential_id") else None,
                 int(data["discovery_llm_credential_id"]) if data.get("discovery_llm_credential_id") else None,
                 int(data["browser_llm_credential_id"]) if data.get("browser_llm_credential_id") else None,
+                (data.get("qualifier_destroy_mode") or "auto").strip().lower()
+                    if (data.get("qualifier_destroy_mode") or "auto").strip().lower() in ("auto", "confirm", "off")
+                    else "auto",
                 tenant_id,
                 created_by_user_id,
                 ts,
@@ -2082,7 +2086,7 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 int(data["discovery_llm_credential_id"]) if data.get("discovery_llm_credential_id") else None,
                 int(data["browser_llm_credential_id"]) if data.get("browser_llm_credential_id") else None,
                 (data.get("qualifier_destroy_mode") or "auto").strip().lower()
-                    if (data.get("qualifier_destroy_mode") or "auto").strip().lower() in ("auto", "confirm")
+                    if (data.get("qualifier_destroy_mode") or "auto").strip().lower() in ("auto", "confirm", "off")
                     else "auto",
                 now_iso(),
                 task_id,
@@ -4918,6 +4922,64 @@ def set_asset_tag(asset_id: int, tag_key: str, tag_value: str) -> bool:
             return True
     except Exception:
         return False
+
+
+def dequalify_asset(
+    asset_id: int, slugs: "list[str] | str", tenant_id: Any = _UNSET
+) -> str | None:
+    """Rimuove le qualifiche `qualifier_<slug>` (+ `qualifier_score_<slug>`) indicate
+    da un asset e ricalcola lo `status`. NON elimina l'asset.
+
+    Regola status: se dopo la rimozione NON resta alcun tag `qualifier_*` con
+    valore 'qualified' e lo status era 'qualified', lo status torna a 'new'
+    (l'asset esce dal /qualified). Se restano altre qualifiche 'qualified', lo
+    status resta invariato — gestisce il caso multi-qualifier (tolgo una qualifica,
+    le altre restano).
+
+    Tenant-safe: opera solo se l'asset appartiene al tenant corrente (ContextVar,
+    coerente con `delete_asset`). Ritorna il nuovo status, o None se l'asset non
+    esiste / non e' del tenant."""
+    if isinstance(slugs, str):
+        slugs = [slugs]
+    slugs = [(s or "").strip().lower() for s in slugs if (s or "").strip()]
+    if not slugs:
+        return None
+    tenant_id = _resolve_tenant(tenant_id)
+    keys: list[str] = []
+    for s in slugs:
+        keys.append(f"qualifier_{s}")
+        keys.append(f"qualifier_score_{s}")
+    placeholders = ",".join(["%s"] * len(keys))
+    with connect() as con:
+        if tenant_id is None:
+            row = con.execute(
+                "SELECT status FROM assets WHERE id = %s", (asset_id,)
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT status FROM assets WHERE id = %s AND tenant_id = %s",
+                (asset_id, tenant_id),
+            ).fetchone()
+        if not row:
+            return None  # asset inesistente o di altro tenant → nessuna scrittura
+        con.execute(
+            f"DELETE FROM asset_tags WHERE asset_id = %s AND tag_key IN ({placeholders})",
+            (asset_id, *keys),
+        )
+        remaining = con.execute(
+            "SELECT 1 FROM asset_tags WHERE asset_id = %s "
+            "AND tag_key LIKE 'qualifier_%%' AND tag_key NOT LIKE 'qualifier_score_%%' "
+            "AND tag_value = 'qualified' LIMIT 1",
+            (asset_id,),
+        ).fetchone()
+        new_status = row["status"]
+        if not remaining and row["status"] == "qualified":
+            con.execute(
+                "UPDATE assets SET status = 'new', updated_at = %s WHERE id = %s",
+                (now_iso(), asset_id),
+            )
+            new_status = "new"
+        return new_status
 
 
 def delete_asset(asset_id: int, tenant_id: Any = _UNSET) -> int:

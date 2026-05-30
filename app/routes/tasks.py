@@ -924,7 +924,7 @@ def _form_to_dict(
         # Qualifier-specific
         "qualifier_destroy_mode": (
             qualifier_destroy_mode.strip().lower()
-            if (qualifier_destroy_mode or "").strip().lower() in ("auto", "confirm")
+            if (qualifier_destroy_mode or "").strip().lower() in ("auto", "confirm", "off")
             else "auto"
         ),
         # LLM credential refs (vedi /accounts/llm-keys)

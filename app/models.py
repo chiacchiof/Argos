@@ -67,7 +67,8 @@ class TaskIn(BaseModel):
     #   - 'auto' (default): hard delete immediato
     #   - 'confirm': solo standalone, marca pending_destroy e chiede conferma
     #     all'utente a fine job. In workflow viene forzato a 'auto'.
-    qualifier_destroy_mode: Literal["auto", "confirm"] = "auto"
+    #   - 'off': non distrugge mai; 'destroy' viene declassato a 'rejected'.
+    qualifier_destroy_mode: Literal["auto", "confirm", "off"] = "auto"
     # Outreach social fields (agent_mode=outreach_social)
     social_platform: str | None = None
     # Single-select sender per outreach_social: account specifico fra IG/TT/FB.

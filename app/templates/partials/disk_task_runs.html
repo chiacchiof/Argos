@@ -1,0 +1,63 @@
+<div class="disk-modal-head">
+  <h3 style="margin:0">Run di "{{ task.name }}" <small class="muted">#{{ task.id }}</small></h3>
+  <button type="button" class="modal-close" title="Chiudi"
+          onclick="document.getElementById('disk-modal').classList.remove('open')">✕</button>
+</div>
+
+{% if error %}<div class="disk-banner err">{{ error }}</div>{% endif %}
+{% if info %}<div class="disk-banner ok">{{ info }}</div>{% endif %}
+{% if active %}<div class="disk-banner warn">⚠️ Questo task ha job attivi: la cancellazione è bloccata finché non li fermi.</div>{% endif %}
+
+<p class="muted small">Totale: <strong>{{ total|human_bytes }}</strong> in {{ runs|length }} run.</p>
+
+{% if not runs %}
+  <p class="muted">Nessun run su disco per questo task.</p>
+{% else %}
+<form hx-target="#disk-modal-body" hx-swap="innerHTML">
+  <div class="disk-bulk-bar">
+    <button type="submit" class="btn btn-sm btn-danger" hx-include="closest form"
+            hx-post="/spazio-occupato/task/{{ task.id }}/runs/delete" name="mode" value="selected"
+            hx-confirm="Cancellare i run selezionati? Operazione irreversibile.">Elimina selezionati</button>
+    <button type="submit" class="btn btn-sm btn-danger" hx-include="closest form"
+            hx-post="/spazio-occupato/task/{{ task.id }}/runs/delete" name="mode" value="all"
+            hx-confirm="Cancellare TUTTI i run di questo task? Operazione irreversibile.">Elimina tutto</button>
+    <button type="submit" class="btn btn-sm" hx-include="closest form"
+            hx-post="/spazio-occupato/task/{{ task.id }}/runs/delete-ext" name="ext" value="md"
+            hx-confirm="Cancellare i file .md (report) nei run? I dati .jsonl restano.">Elimina .md</button>
+    <button type="submit" class="btn btn-sm" hx-include="closest form"
+            hx-post="/spazio-occupato/task/{{ task.id }}/runs/delete-ext" name="ext" value="json"
+            hx-confirm="Cancellare i file .json di servizio nei run? (i .jsonl con i dati restano)">Elimina .json</button>
+  </div>
+  <p class="muted small">I bottoni <code>.md</code>/<code>.json</code> agiscono sui run selezionati se ne spunti qualcuno, altrimenti su tutti.</p>
+
+  <table class="data">
+    <thead>
+      <tr>
+        <th><input type="checkbox" title="Seleziona/deseleziona tutto"
+                   onclick="var ck=this.checked; this.closest('table').querySelectorAll('tbody input[type=checkbox]').forEach(function(c){c.checked=ck});"></th>
+        <th>Run</th><th class="num">File</th><th class="num">Dim.</th><th>Data</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in runs %}
+      <tr>
+        <td><input type="checkbox" name="run_names" value="{{ r.name }}"></td>
+        <td>
+          {% if r.type == 'dir' %}<svg class="icon" style="width:14px;height:14px;vertical-align:-2px"><use href="#i-folder"/></svg>{% endif %}
+          <code>{{ r.name }}</code>
+        </td>
+        <td class="num">{{ r.files_count }}</td>
+        <td class="num">{{ r.size|human_bytes }}</td>
+        <td><small class="muted">{{ r.date_label or '—' }}</small></td>
+        <td class="num">
+          {% if r.type == 'dir' %}
+          <a href="#" hx-get="/spazio-occupato/task/{{ task.id }}/run/{{ r.name }}/files"
+             hx-target="#disk-modal-body" hx-swap="innerHTML">file…</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</form>
+{% endif %}
