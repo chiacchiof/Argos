@@ -313,6 +313,26 @@ def test_steps_by_phase_keeps_nav_submit_off():
     assert [s.action for s in on["activity"]] == ["fill", "submit"]  # con ON resta
 
 
+def test_steps_by_phase_wizard_keeps_intermediate_submits():
+    """Form wizard multi-pagina: con auto_submit OFF si rimuove SOLO l'ultimo
+    submit (l'invio finale); gli 'Avanti' intermedi (anch'essi submit) restano,
+    così il runner attraversa tutte le pagine e si ferma prima del commit."""
+    from app.agent.runner_portal_fill import _steps_by_phase
+    wiz = [
+        ff.MacroField(selector="#f1", action="fill", column_name="A", phase="activity"),
+        ff.MacroField(selector="#avanti1", action="submit", phase="activity"),  # Avanti
+        ff.MacroField(selector="#f2", action="fill", column_name="B", phase="activity"),
+        ff.MacroField(selector="#avanti2", action="submit", phase="activity"),  # Avanti
+        ff.MacroField(selector="#f3", action="fill", column_name="C", phase="activity"),
+        ff.MacroField(selector="#invia", action="submit", phase="activity"),    # Invio finale
+    ]
+    off = _steps_by_phase(wiz, auto_submit=False, submit_selector="")
+    # solo l'ultimo submit (#invia) rimosso; i due Avanti restano
+    assert [s.selector for s in off["activity"]] == ["#f1", "#avanti1", "#f2", "#avanti2", "#f3"]
+    on = _steps_by_phase(wiz, auto_submit=True, submit_selector="")
+    assert len(on["activity"]) == 6  # con ON tutti gli step
+
+
 def test_steps_by_phase_groups_mixed():
     from app.agent.runner_portal_fill import _steps_by_phase
     mixed = [

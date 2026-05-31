@@ -272,20 +272,20 @@
         <a href="/workflows" class="nav-item {% if req_path.startswith('/workflows') %}is-active{% endif %}">
           <svg class="icon"><use href="#i-workflows"/></svg><span>Workflows</span>
         </a>
-        <a href="/assets" class="nav-item {% if req_path.startswith('/assets') %}is-active{% endif %}">
-          <svg class="icon"><use href="#i-assets"/></svg><span>Assets</span>
-        </a>
         <a href="/fascicoli" class="nav-item {% if req_path.startswith('/fascicoli') %}is-active{% endif %}">
           <svg class="icon"><use href="#i-folder"/></svg><span>Fascicoli</span>
         </a>
         <a href="/sheets" class="nav-item {% if req_path.startswith('/sheets') %}is-active{% endif %}">
           <svg class="icon"><use href="#i-tasks"/></svg><span>Fogli</span>
         </a>
-        <a href="/qualified" class="nav-item {% if req_path.startswith('/qualified') %}is-active{% endif %}">
-          <svg class="icon"><use href="#i-qualified"/></svg><span>Qualified</span>
-        </a>
         <a href="/inbox" class="nav-item {% if req_path.startswith('/inbox') %}is-active{% endif %}">
           <svg class="icon"><use href="#i-inbox"/></svg><span>Inbox</span>
+        </a>
+        <a href="/assets" class="nav-item {% if req_path.startswith('/assets') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-assets"/></svg><span>Assets</span>
+        </a>
+        <a href="/qualified" class="nav-item {% if req_path.startswith('/qualified') %}is-active{% endif %}">
+          <svg class="icon"><use href="#i-qualified"/></svg><span>Qualified</span>
         </a>
         {% if current_user.is_super_admin %}
         <a href="/admin" class="nav-item is-admin {% if req_path.startswith('/admin') %}is-active{% endif %}">

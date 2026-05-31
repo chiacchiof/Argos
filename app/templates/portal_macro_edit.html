@@ -138,6 +138,10 @@
         if (!idxs.length) {
           html += `<p class="muted small" style="margin:.3rem 0 0">nessuno step in questa fase</p>`;
         } else {
+          // In attività, l'ULTIMO submit è l'invio finale (gated da auto_submit);
+          // i submit precedenti sono "Avanti" di un wizard multi-pagina.
+          const submitIdxs = idxs.filter(i => (steps[i].action) === 'submit');
+          const lastSubmit = (key === 'activity' && submitIdxs.length) ? submitIdxs[submitIdxs.length - 1] : -1;
           html += `<table class="data" style="margin-top:.4rem"><tbody>`;
           idxs.forEach((i, pos) => {
             const s = steps[i];
@@ -151,7 +155,9 @@
                 ` <label class="hint" style="white-space:nowrap"><input type="checkbox" data-const="${i}" ${isConst?'checked':''}> valore fisso</label>` +
                 (isConst ? ` <input type="text" data-constval="${i}" value="${esc(s.const_value)}" placeholder="valore" style="width:130px">` : '');
             } else {
-              const tag = act === 'submit' ? '📨 invia' : '🔗 click';
+              let tag;
+              if (act === 'submit') tag = (i === lastSubmit) ? '📨 invio finale' : '➡ avanti (pagina succ.)';
+              else tag = '🔗 click';
               middle = `<span class="status">${tag}</span>`;
             }
             html +=

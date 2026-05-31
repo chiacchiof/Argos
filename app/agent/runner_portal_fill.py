@@ -51,12 +51,14 @@ def _steps_by_phase(
     - step senza phase valida → 'activity' (gestito da MacroField.from_dict)
     - submit_selector legacy → aggiunge uno step submit finale all'activity, se
       l'activity non contiene già uno step submit.
-    - se auto_submit è OFF, viene rimosso SOLO il submit della fase ATTIVITÀ
-      (l'invio del record, gated dalla doppia conferma di sicurezza). I 'submit'
-      delle fasi di navigazione (warmup/ritorno/chiusura) sono passaggi del
-      percorso — es. un bottone "Avanti"/"Nuovo" che tecnicamente fa submit — e
-      vanno SEMPRE eseguiti, altrimenti la navigazione si rompe (bug 2026-05-31:
-      "compila solo la seconda riga" perché il 'Nuovo' del warmup veniva rimosso)."""
+    - se auto_submit è OFF, viene rimosso SOLO l'ULTIMO submit della fase ATTIVITÀ
+      (l'invio finale del record, gated dalla conferma di sicurezza). NON vengono
+      toccati:
+        * i 'submit' delle fasi di navigazione (warmup/ritorno/chiusura) — es. un
+          bottone "Nuovo" che tecnicamente fa submit (bug "solo la seconda riga");
+        * i 'submit' INTERMEDI dell'attività — es. gli "Avanti" di un form wizard
+          multi-pagina, che servono ad attraversare le pagine. Con OFF il runner
+          compila tutte le pagine e si ferma SOLO prima dell'invio finale."""
     by_phase: dict[str, list[MacroField]] = {p: [] for p in PHASES}
     for s in steps:
         by_phase.get(s.phase, by_phase["activity"]).append(s)
@@ -70,7 +72,12 @@ def _steps_by_phase(
         ))
 
     if not auto_submit:
-        by_phase["activity"] = [s for s in by_phase["activity"] if s.action != "submit"]
+        # Rimuovi solo l'ULTIMO submit dell'attività (l'invio finale); gli "Avanti"
+        # intermedi di un wizard restano per attraversare le pagine.
+        act = by_phase["activity"]
+        last = max((i for i, s in enumerate(act) if s.action == "submit"), default=-1)
+        if last >= 0:
+            by_phase["activity"] = act[:last] + act[last + 1:]
     return by_phase
 
 
