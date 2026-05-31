@@ -1,0 +1,42 @@
+{# Storico recente da mostrare sotto il launcher strumenti. #}
+<section class="op-tools-history" aria-labelledby="op-tools-history-title">
+  <div class="op-tools-section-head">
+    <h3 id="op-tools-history-title" class="op-tools-section-title">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M12 7v5l3 2"/>
+      </svg>
+      Storia esecuzioni
+    </h3>
+    <button type="button" class="op-side-section-link"
+            hx-get="/history-modal"
+            hx-target="#op-modal-container"
+            hx-swap="innerHTML">Vedi tutto -></button>
+  </div>
+
+  {% if recent_finished %}
+  <ul class="op-live-recent-list op-tools-history-list">
+    {% for r in recent_finished %}
+    {% set ricon_id = (r.icon if r.icon and r.icon.startswith('op-i-') else 'op-i-' + (r.icon or 'cog').replace('i-', '')) %}
+    <li class="op-live-recent-item op-live-recent-{{ r.status }}">
+      <span class="op-live-recent-icon"><svg><use href="#{{ ricon_id }}"/></svg></span>
+      <div class="op-live-recent-meta">
+        <div class="op-live-recent-name">{{ r.display_name }}</div>
+        <div class="op-live-recent-sub">
+          {% if r.status == 'done' %}<span class="op-live-recent-badge op-live-recent-badge-done">OK Completato</span>
+          {% elif r.status == 'error' %}<span class="op-live-recent-badge op-live-recent-badge-error">Errore</span>
+          {% elif r.status == 'cancelled' %}<span class="op-live-recent-badge op-live-recent-badge-cancel">Annullato</span>
+          {% endif %}
+          {% if r.duration_sec is not none %}<span class="op-live-recent-duration">{{ '%d'|format(r.duration_sec // 60) }}m {{ '%d'|format(r.duration_sec % 60) }}s</span>{% endif %}
+        </div>
+      </div>
+      <button type="button" class="op-btn-mini op-btn-mini-ghost"
+              hx-get="/jobs/{{ r.job_id }}/operator-details"
+              hx-target="#op-modal-container"
+              hx-swap="innerHTML">Risultati</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="op-side-empty-hint">Nessuna esecuzione recente.</p>
+  {% endif %}
+</section>

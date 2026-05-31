@@ -79,13 +79,29 @@ def _isolate_test_db(monkeypatch):
     db_cloud.close_pool()
 
     # DROP + CREATE schema (più rapido di drop di ogni tabella).
-    # Doppia verifica: chiediamo a Postgres il nome del DB corrente prima di droppare.
+    # Tripla verifica prima del DROP distruttivo:
+    #  1. nome DB deve contenere "test" (current_database)
+    #  2. host effettivo della connessione deve essere locale (non Neon/cloud):
+    #     intercetta il caso in cui _apply_db_override abbia rimesso una DSN prod
+    #     anche se per qualche motivo il nome contenesse "test".
+    # Difesa ridondante con app.db._assert_dsn_safe_under_pytest (layer _resolve_dsn).
     with db.connect() as conn:
         row = conn.execute("SELECT current_database() AS db").fetchone()
         current_db = (row["db"] if isinstance(row, dict) else row[0])
-        if "test" not in str(current_db).lower():
+        hrow = conn.execute("SELECT inet_server_addr() AS h").fetchone()
+        server_addr = (hrow["h"] if isinstance(hrow, dict) else hrow[0]) if hrow else None
+        # inet_server_addr() è NULL per connessioni via socket unix locale; un
+        # indirizzo pubblico (non NULL, non loopback/privato) = NON locale.
+        addr_s = str(server_addr) if server_addr is not None else ""
+        is_remote = bool(addr_s) and not (
+            addr_s.startswith("127.") or addr_s.startswith("10.")
+            or addr_s.startswith("192.168.") or addr_s == "::1"
+            or addr_s.startswith("172.")
+        )
+        if "test" not in str(current_db).lower() or is_remote:
             raise RuntimeError(
-                f"REFUSING TO DROP SCHEMA: current_database()={current_db!r} non e' un DB di test. "
+                f"REFUSING TO DROP SCHEMA: current_database()={current_db!r} "
+                f"server_addr={addr_s!r} non e' un DB di test locale. "
                 "Verifica che _apply_db_override non abbia rimesso un DSN production."
             )
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")

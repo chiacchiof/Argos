@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from .. import db, db_cloud
 from ..agent.social.crypto_creds import decrypt, encrypt, is_configured
 from ..auth import require_architect_or_admin
+from ..messaging_suite import build_suite
 from ..templates import templates
 
 router = APIRouter(dependencies=[Depends(require_architect_or_admin)])
@@ -95,6 +96,7 @@ async def messaging_hub(
             "tenant_users": tenant_users,
             "flash": flash,
             "error": error,
+            "suite": build_suite(current_user) if current_user else [],
         },
     )
 

@@ -259,13 +259,30 @@ def test_dbconfig_accessible_with_cloud_active_no_user_login(client, monkeypatch
 # Apply override all'avvio
 # ---------------------------------------------------------------------------
 
-def test_apply_override_sets_env(env_with_secret, monkeypatch):
-    """Se il file cifrato esiste, apply_override deve popolare os.environ['DATABASE_URL']."""
+def test_apply_override_is_noop_under_pytest(env_with_secret, monkeypatch):
+    """Sotto pytest, apply_override DEVE essere no-op: non rimette mai la DSN
+    dell'override in os.environ (difesa anti-wipe Neon — vedi
+    test_db_safety_guard.py e feedback_pytest_neon_wipe_guard)."""
     from app import _runtime_db_override
 
     target_dsn = "postgresql://override:secret@override-host/override_db"
     _runtime_db_override.write_override(target_dsn, "Override test")
     monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    _runtime_db_override.apply_override()
+    # Siamo sotto pytest → l'env NON deve essere stato toccato.
+    assert "DATABASE_URL" not in os.environ
+
+
+def test_apply_override_sets_env_outside_pytest(env_with_secret, monkeypatch):
+    """Forzando _running_under_pytest()=False (simula il boot reale dell'app),
+    apply_override popola os.environ['DATABASE_URL'] dal file cifrato."""
+    from app import _runtime_db_override
+
+    target_dsn = "postgresql://override:secret@override-host/override_db"
+    _runtime_db_override.write_override(target_dsn, "Override test")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(_runtime_db_override, "_running_under_pytest", lambda: False)
 
     _runtime_db_override.apply_override()
     assert os.environ.get("DATABASE_URL") == target_dsn

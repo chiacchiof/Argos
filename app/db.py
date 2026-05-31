@@ -130,10 +130,61 @@ def _resolve_dsn() -> str:
             "(SQLite legacy rimosso in Fase 2). Setta DATABASE_URL in .env o "
             "via /dbconfig."
         )
+    _assert_dsn_safe_under_pytest(dsn)
     return dsn
 
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
+
+
+def _dsn_host_dbname(dsn: str) -> tuple[str, str]:
+    """(host, dbname) estratti da una DSN postgres. ('', '') se non parsabile."""
+    from urllib.parse import urlparse
+
+    try:
+        p = urlparse(dsn)
+        host = (p.hostname or "").lower()
+        dbname = (p.path or "").lstrip("/").split("?")[0].lower()
+        return host, dbname
+    except Exception:
+        return "", ""
+
+
+def _running_under_pytest() -> bool:
+    # PYTEST_CURRENT_TEST è settata da pytest durante la raccolta+esecuzione;
+    # 'pytest' in sys.modules copre anche conftest/collection time.
+    import sys
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
+def _assert_dsn_safe_under_pytest(dsn: str) -> None:
+    """Difesa in profondità: sotto pytest, RIFIUTA qualsiasi connessione verso un
+    DB che non sia palesemente di test (host non-locale o nome DB senza 'test').
+
+    Motivazione: l'override /dbconfig (`apply_override`) può rimettere la DSN di
+    Neon in `os.environ["DATABASE_URL"]` a OGNI import di `app`, anche DOPO il
+    monkeypatch del conftest. Se quella DSN venisse usata per il `DROP SCHEMA` del
+    fixture, svuoterebbe Neon (è il bug "Neon vuoto ogni tanto"). Questo guard sta
+    nel layer DB (`_resolve_dsn`), quindi protegge OGNI chiamante, non solo il
+    conftest: niente connessione di test può finire su prod.
+
+    Bypass esplicito SOLO per operazioni deliberate (es. promote/copy verso Neon
+    da script): settare ARGOS_ALLOW_REMOTE_DB_UNDER_PYTEST=1.
+    """
+    if not _running_under_pytest():
+        return
+    if os.environ.get("ARGOS_ALLOW_REMOTE_DB_UNDER_PYTEST") == "1":
+        return
+    host, dbname = _dsn_host_dbname(dsn)
+    is_local = host in _LOCAL_HOSTS or host == ""
+    if not is_local or "test" not in dbname:
+        raise RuntimeError(
+            "REFUSING DB CONNECTION UNDER PYTEST: la DSN risolta punta a un DB "
+            f"non-di-test (host={host!r}, db={dbname!r}). Probabile override "
+            "/dbconfig (Neon) riapplicato durante i test. I test devono girare "
+            "SOLO su un DB locale con 'test' nel nome. Se è un'operazione "
+            "deliberata, setta ARGOS_ALLOW_REMOTE_DB_UNDER_PYTEST=1."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +491,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   gap_between_dms_min REAL,
   gap_between_dms_max REAL,
   qualifier_destroy_mode TEXT NOT NULL DEFAULT 'auto',
+  portal_macro_id BIGINT,
+  portal_sheet_id BIGINT,
+  portal_auto_submit INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -1142,6 +1196,42 @@ CREATE TABLE IF NOT EXISTS project_sheet_users (
   PRIMARY KEY (sheet_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_project_sheet_users_user ON project_sheet_users(user_id);
+
+-- ============================================================
+-- Portal-fill (compilazione assistita di portali web, agent_mode='portal_fill')
+-- portal_macros: macro di compilazione per-portale, tenant-scoped. fields_json =
+-- lista ordinata dei campi {selector, semantic_label, source, column_name|const_value,
+-- strategy}. login_session_key punta a uno storage_state Playwright su disco (NESSUNA
+-- password nel DB). auto_submit e' opt-in per-macro (default 0 = stop prima del submit).
+-- portal_fill_log: esito per-riga di un run (audit/report).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS portal_macros (
+  id                 BIGSERIAL PRIMARY KEY,
+  tenant_id          BIGINT REFERENCES tenants(id) ON DELETE CASCADE,
+  name               TEXT NOT NULL,
+  portal_url         TEXT NOT NULL,
+  fields_json        TEXT NOT NULL DEFAULT '[]',
+  login_session_key  TEXT,
+  auto_submit        INTEGER NOT NULL DEFAULT 0,
+  submit_selector    TEXT,
+  created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_portal_macros_tenant ON portal_macros(tenant_id);
+
+CREATE TABLE IF NOT EXISTS portal_fill_log (
+  id          BIGSERIAL PRIMARY KEY,
+  tenant_id   BIGINT REFERENCES tenants(id) ON DELETE CASCADE,
+  job_id      BIGINT,
+  macro_id    BIGINT REFERENCES portal_macros(id) ON DELETE SET NULL,
+  sheet_id    BIGINT,
+  row_idx     INTEGER,
+  status      TEXT NOT NULL,
+  detail      TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_portal_fill_log_job ON portal_fill_log(job_id);
 
 -- DB esistenti: ruolo di default per i membri del tenant quando visibility='tenant'
 -- ('editor' = tutti modificano, 'viewer' = tutti in sola lettura). Posizionato in
@@ -1875,9 +1965,10 @@ def create_task(
                                   gap_between_dms_min, gap_between_dms_max,
                                   llm_credential_id, discovery_llm_credential_id, browser_llm_credential_id,
                                   qualifier_destroy_mode,
+                                  portal_macro_id, portal_sheet_id, portal_auto_submit,
                                   tenant_id, created_by_user_id,
                                   created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 data["name"],
@@ -1955,6 +2046,9 @@ def create_task(
                 (data.get("qualifier_destroy_mode") or "auto").strip().lower()
                     if (data.get("qualifier_destroy_mode") or "auto").strip().lower() in ("auto", "confirm", "off")
                     else "auto",
+                int(data["portal_macro_id"]) if data.get("portal_macro_id") else None,
+                int(data["portal_sheet_id"]) if data.get("portal_sheet_id") else None,
+                1 if data.get("portal_auto_submit") else 0,
                 tenant_id,
                 created_by_user_id,
                 ts,
@@ -2008,6 +2102,7 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 discovery_llm_credential_id = %s,
                 browser_llm_credential_id = %s,
                 qualifier_destroy_mode = %s,
+                portal_macro_id = %s, portal_sheet_id = %s, portal_auto_submit = %s,
                 updated_at = %s
             WHERE id = %s
               AND (%s::bigint IS NULL OR tenant_id = %s)
@@ -2088,6 +2183,9 @@ def update_task(task_id: int, data: dict[str, Any], tenant_id: Any = _UNSET) -> 
                 (data.get("qualifier_destroy_mode") or "auto").strip().lower()
                     if (data.get("qualifier_destroy_mode") or "auto").strip().lower() in ("auto", "confirm", "off")
                     else "auto",
+                int(data["portal_macro_id"]) if data.get("portal_macro_id") else None,
+                int(data["portal_sheet_id"]) if data.get("portal_sheet_id") else None,
+                1 if data.get("portal_auto_submit") else 0,
                 now_iso(),
                 task_id,
                 tenant_id,
@@ -3016,8 +3114,8 @@ def list_published_agents(
     """
     tenant_id = _resolve_tenant(tenant_id)
     args: list[Any] = []
-    where_t = ["is_published_agent = TRUE"]
-    where_w = ["is_published_agent = TRUE"]
+    where_t = ["is_published_agent = TRUE", "COALESCE(disabled, 0) = 0"]
+    where_w = ["is_published_agent = TRUE", "COALESCE(disabled, 0) = 0"]
     if tenant_id is not None:
         where_t.append("tenant_id = %s")
         where_w.append("tenant_id = %s")
@@ -3166,7 +3264,8 @@ def get_published_agent(
     sql = (
         f"SELECT id, agent_display_name, agent_description, agent_category, "
         f"  agent_icon, agent_input_schema, name "
-        f"FROM {table} WHERE id = %s AND is_published_agent = TRUE"
+        f"FROM {table} WHERE id = %s AND is_published_agent = TRUE "
+        f"AND COALESCE(disabled, 0) = 0"
     )
     args: list[Any] = [agent_id]
     if tenant_id is not None:
@@ -8338,6 +8437,142 @@ def list_contacts_for_whatsapp_outreach(
         args.append(tenant_id)
     sql += " ORDER BY id DESC LIMIT %s"
     args.append(limit)
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ===========================================================================
+# Portal-fill: macro di compilazione + log (feature agent_mode='portal_fill')
+# fields_json e' una lista JSON-encoded di campi; i caller fanno
+# json.loads(row["fields_json"]). Tenant-scoped via _resolve_tenant come il resto.
+# ===========================================================================
+
+def create_portal_macro(data: dict[str, Any], *, tenant_id: Any = _UNSET,
+                        created_by_user_id: Any = _UNSET) -> int:
+    """Crea una macro di compilazione portale. `data` accetta name, portal_url,
+    fields (list -> serializzata in fields_json), login_session_key, auto_submit,
+    submit_selector. Ritorna l'id."""
+    tenant_id = _resolve_tenant(tenant_id)
+    created_by_user_id = _resolve_user(created_by_user_id)
+    fields = data.get("fields")
+    fields_json = json.dumps(fields) if fields is not None else (data.get("fields_json") or "[]")
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO portal_macros
+              (tenant_id, name, portal_url, fields_json, login_session_key,
+               auto_submit, submit_selector, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            """,
+            (
+                tenant_id,
+                (data.get("name") or "").strip() or "Macro senza nome",
+                (data.get("portal_url") or "").strip(),
+                fields_json,
+                data.get("login_session_key") or None,
+                1 if data.get("auto_submit") else 0,
+                data.get("submit_selector") or None,
+                created_by_user_id,
+            ),
+        )
+        return int(cur.fetchone()['id'])
+
+
+def get_portal_macro(macro_id: int, *, tenant_id: Any = _UNSET) -> dict[str, Any] | None:
+    """Carica una macro (tenant-scoped). Ritorna None se non esiste / altro tenant."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM portal_macros WHERE id = %s"
+    args: list[Any] = [macro_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"; args.append(tenant_id)
+    with connect() as con:
+        row = con.execute(sql, args).fetchone()
+    return dict(row) if row else None
+
+
+def list_portal_macros(*, tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    """Lista macro del tenant (piu' recenti prima)."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM portal_macros WHERE 1=1"
+    args: list[Any] = []
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"; args.append(tenant_id)
+    sql += " ORDER BY id DESC"
+    with connect() as con:
+        rows = con.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_portal_macro(macro_id: int, data: dict[str, Any], *, tenant_id: Any = _UNSET) -> None:
+    """Aggiorna i campi forniti di una macro (tenant-scoped). Usato sia dalla UI
+    sia dall'auto-riparazione del runner (che ri-salva fields_json con i selettori
+    ri-mappati dall'LLM). Solo le chiavi presenti in `data` vengono toccate."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sets: list[str] = []
+    args: list[Any] = []
+    if "name" in data:
+        sets.append("name = %s"); args.append((data.get("name") or "").strip() or "Macro senza nome")
+    if "portal_url" in data:
+        sets.append("portal_url = %s"); args.append((data.get("portal_url") or "").strip())
+    if "fields" in data or "fields_json" in data:
+        fj = json.dumps(data["fields"]) if "fields" in data else (data.get("fields_json") or "[]")
+        sets.append("fields_json = %s"); args.append(fj)
+    if "login_session_key" in data:
+        sets.append("login_session_key = %s"); args.append(data.get("login_session_key") or None)
+    if "auto_submit" in data:
+        sets.append("auto_submit = %s"); args.append(1 if data.get("auto_submit") else 0)
+    if "submit_selector" in data:
+        sets.append("submit_selector = %s"); args.append(data.get("submit_selector") or None)
+    if not sets:
+        return
+    sets.append("updated_at = NOW()")
+    sql = f"UPDATE portal_macros SET {', '.join(sets)} WHERE id = %s"
+    args.append(macro_id)
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"; args.append(tenant_id)
+    with connect() as con:
+        con.execute(sql, args)
+        con.commit()
+
+
+def delete_portal_macro(macro_id: int, *, tenant_id: Any = _UNSET) -> None:
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "DELETE FROM portal_macros WHERE id = %s"
+    args: list[Any] = [macro_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"; args.append(tenant_id)
+    with connect() as con:
+        con.execute(sql, args)
+        con.commit()
+
+
+def insert_portal_fill_log(*, job_id: int | None, macro_id: int | None,
+                            sheet_id: int | None, row_idx: int | None,
+                            status: str, detail: str | None = None,
+                            tenant_id: Any = _UNSET) -> None:
+    """Registra l'esito di compilazione di una riga (audit/report)."""
+    tenant_id = _resolve_tenant(tenant_id)
+    with connect() as con:
+        con.execute(
+            """
+            INSERT INTO portal_fill_log
+              (tenant_id, job_id, macro_id, sheet_id, row_idx, status, detail)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (tenant_id, job_id, macro_id, sheet_id, row_idx, status, detail),
+        )
+        con.commit()
+
+
+def list_portal_fill_log(job_id: int, *, tenant_id: Any = _UNSET) -> list[dict[str, Any]]:
+    """Esiti per-riga di un job portal_fill (ordine cronologico)."""
+    tenant_id = _resolve_tenant(tenant_id)
+    sql = "SELECT * FROM portal_fill_log WHERE job_id = %s"
+    args: list[Any] = [job_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = %s"; args.append(tenant_id)
+    sql += " ORDER BY id ASC"
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
     return [dict(r) for r in rows]

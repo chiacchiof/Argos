@@ -9,7 +9,7 @@ OutputFormat = Literal["txt", "md", "both"]
 AgentMode = Literal[
     "react", "browser_use", "bulk_extract", "auto_extract", "site_explorer",
     "qualifier", "outreach", "outreach_social", "outreach_whatsapp", "responder",
-    "recon_social", "audience_discovery",
+    "recon_social", "audience_discovery", "portal_fill",
 ]
 BulkExtractionMethod = Literal["llm_per_page", "css_selectors"]
 MessageChannel = Literal["email", "telegram"]
@@ -142,6 +142,11 @@ class TaskIn(BaseModel):
     # esplicito continua a vincere.
     outreach_filter_tags: list[dict] = Field(default_factory=list)
 
+    # portal_fill: macro di compilazione + foglio sorgente + opt-in submit.
+    portal_macro_id: int | None = None
+    portal_sheet_id: int | None = None
+    portal_auto_submit: bool = False
+
     @field_validator("rating", mode="before")
     @classmethod
     def parse_rating(cls, v):
@@ -170,6 +175,17 @@ class TaskIn(BaseModel):
     def parse_status_tag(cls, v):
         if isinstance(v, str) and not v.strip():
             return None
+        return v
+
+    @field_validator("portal_macro_id", "portal_sheet_id", mode="before")
+    @classmethod
+    def parse_portal_ids(cls, v):
+        # Il <select> posta "" quando nessuna opzione è scelta → None.
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            return int(s) if s.isdigit() else None
         return v
 
     @field_validator("message_channels", mode="before")

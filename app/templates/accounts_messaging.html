@@ -15,6 +15,14 @@
   {% if flash %}<div class="flash-ok">✓ {{ flash | replace('+', ' ') }}</div>{% endif %}
   {% if error %}<div class="errors">⚠️ {{ error | replace('+', ' ') }}</div>{% endif %}
 
+  {% if suite %}
+  <div class="panel-card" style="margin-bottom:18px;">
+    <h3 style="margin:0 0 4px;">Apri i tuoi strumenti</h3>
+    <p class="muted" style="margin:0 0 14px;">Un click per aprire WhatsApp, Telegram o i social già collegati.</p>
+    {% include "partials/messaging_suite.html" %}
+  </div>
+  {% endif %}
+
   {# Tab nav server-side (link con ?tab=...) #}
   <nav class="tab-nav" aria-label="Messaging tabs" style="display:flex; gap:0.4rem; margin: 1rem 0; border-bottom: 1px solid var(--border);">
     <a href="/accounts/messaging?tab=browser"

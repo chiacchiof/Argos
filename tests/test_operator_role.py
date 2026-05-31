@@ -130,6 +130,45 @@ def test_operator_can_access_messages(setup_users):
         assert "Messaggi" in r.text
 
 
+def test_operator_can_reset_lead_outreach_optout(setup_users):
+    """Operator puo' riammettere un lead marcato opt-out dall'area Lead."""
+    asset_id = db.upsert_asset(
+        {
+            "asset_type": "profile_contacts",
+            "source_url": "https://example.test/katelyn",
+            "title": "Katelyn Ross",
+            "email": "katelyn@example.test",
+            "status": "qualified",
+            "outreach_status": "optedout",
+            "whatsapp_consent": "optedout",
+        },
+        tenant_id=setup_users["tenant"],
+    )
+
+    from app.main import app
+    client = TestClient(app)
+    with client:
+        client.post("/login", data={"email": "op@op", "password": "pw"},
+                   follow_redirects=False)
+
+        details = client.get(f"/leads/{asset_id}/details")
+        assert details.status_code == 200
+        assert "Riammetti" in details.text
+        assert f"/leads/{asset_id}/reset-outreach" in details.text
+
+        r = client.post(
+            f"/leads/{asset_id}/reset-outreach",
+            headers={"referer": "/leads"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert "Lead+riammesso+all'outreach" in r.headers["location"]
+
+    asset = db.get_asset(asset_id, tenant_id=None)
+    assert asset["outreach_status"] == "pending"
+    assert asset["whatsapp_consent"] == "cold"
+
+
 def test_architect_blocked_from_operator_home(setup_users):
     """Architect su /home → redirect 307 a `/` (UX gentile: architect ha la
     UI completa, viene mandato alla sua dashboard task invece di vedere un

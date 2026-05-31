@@ -98,6 +98,25 @@ def test_unpublish_via_set_agent_publication(setup_publish):
     assert db.get_published_agent("task", s["t1"], tenant_id=s["tenant"]) is None
 
 
+def test_disabled_published_agents_are_not_available(setup_publish):
+    """Un agente pubblicato ma disabilitato non e' disponibile per l'operator."""
+    s = setup_publish
+    db.set_agent_publication(
+        kind="task", agent_id=s["t1"], is_published=True,
+        display_name="Disabled task", tenant_id=s["tenant"],
+    )
+    db.set_agent_publication(
+        kind="workflow", agent_id=s["w1"], is_published=True,
+        display_name="Disabled workflow", tenant_id=s["tenant"],
+    )
+    db.set_task_disabled(s["t1"], True, tenant_id=s["tenant"])
+    db.set_workflow_disabled(s["w1"], True, tenant_id=s["tenant"])
+
+    assert db.get_published_agent("task", s["t1"], tenant_id=s["tenant"]) is None
+    assert db.get_published_agent("workflow", s["w1"], tenant_id=s["tenant"]) is None
+    assert db.list_published_agents(tenant_id=s["tenant"]) == []
+
+
 def test_published_agents_tenant_scoped(setup_publish):
     """Tenant A pubblica → tenant B non vede."""
     s = setup_publish

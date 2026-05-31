@@ -353,6 +353,20 @@ MODE_SCHEMAS: dict[str, ModeSchema] = {
             "input_artifact_path",
         ),
     ),
+    "portal_fill": ModeSchema(
+        mode="portal_fill",
+        family="outreach",
+        label="portal_fill — compila form di portali da un foglio",
+        hint="Compila i campi di un form su un portale web (sessione loggata) per ogni riga di un foglio collaborativo. Richiede una macro registrata da Strumenti → Compilazione portali.",
+        seed_kind=None,
+        seed_label=None,
+        seed_hint=None,
+        required=("portal_macro_id", "portal_sheet_id"),
+        optional=(
+            "portal_auto_submit",
+        ),
+        runner_status="beta",
+    ),
 }
 
 

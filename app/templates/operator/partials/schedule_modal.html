@@ -58,7 +58,7 @@
         <button type="button" class="op-btn-secondary" onclick="opCloseModal()">Annulla</button>
         {% if agent and current_cron %}
         <button type="button" class="op-btn-secondary"
-                onclick="document.getElementById('op-schedule-cron').value=''; document.getElementById('op-schedule-form').submit();"
+                onclick="var f=document.getElementById('op-schedule-form'); document.getElementById('op-schedule-cron').value=''; f.action='/agents/task/{{ agent.id }}/schedule'; f.submit();"
                 style="color: var(--op-error); border-color: rgba(248,113,113,0.3);">
           Rimuovi pianificazione
         </button>

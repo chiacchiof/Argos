@@ -69,6 +69,66 @@
 
 </div>
 
+{% if suite or agenda or recent_finished %}
+<section class="op-canvas" style="margin-top:24px;" aria-labelledby="op-suite-title">
+  <h2 id="op-suite-title" class="op-canvas-title">I tuoi strumenti</h2>
+  <p class="muted" style="margin:0 0 16px;">Apri WhatsApp, Telegram e i social direttamente da qui. Gli account configurati per l'outreach sono evidenziati.</p>
+
+  {% if suite %}
+  {% include "partials/messaging_suite.html" %}
+  {% endif %}
+
+  {% if agenda %}
+  <div class="op-tools-agenda">
+    <h3 class="op-tools-agenda-title">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      Agenti pianificati
+    </h3>
+    <ul class="op-agenda-list">
+      {% for a in agenda %}
+      {% set aicon_id = (a.icon if a.icon and a.icon.startswith('op-i-') else 'op-i-' + (a.icon or 'clock').replace('i-', '')) %}
+      <li class="op-agenda-item">
+        <span class="op-agenda-icon"><svg><use href="#{{ aicon_id }}"/></svg></span>
+        <div class="op-agenda-meta">
+          <div class="op-agenda-name">{{ a.display_name }}</div>
+          <div class="op-agenda-when">
+            {% if a.next_run_human %}
+              <span class="op-agenda-next">📅 {{ a.next_run_human }}</span>
+            {% else %}
+              <span class="op-agenda-cron"><code>{{ a.cron }}</code></span>
+            {% endif %}
+          </div>
+        </div>
+        <button type="button" class="op-btn-mini op-btn-mini-ghost"
+                hx-get="/agents/task/{{ a.task_id }}/schedule"
+                hx-target="#op-modal-container"
+                hx-swap="innerHTML">Modifica</button>
+      </li>
+      {% endfor %}
+    </ul>
+    <button type="button" class="op-btn-secondary op-tools-agenda-add"
+            hx-get="/agents/task/schedule"
+            hx-target="#op-modal-container"
+            hx-swap="innerHTML">
+      + Pianifica agente
+    </button>
+  </div>
+  {% else %}
+  <div class="op-tools-agenda op-tools-agenda-empty">
+    <button type="button" class="op-btn-secondary"
+            hx-get="/agents/task/schedule"
+            hx-target="#op-modal-container"
+            hx-swap="innerHTML">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      Pianifica un agente ricorrente
+    </button>
+  </div>
+  {% endif %}
+
+  {% include "operator/partials/recent_history.html" %}
+</section>
+{% endif %}
+
 {# Modal launch / details dinamico — popolato da HTMX. #}
 <div id="op-modal-container"></div>
 {% endblock %}

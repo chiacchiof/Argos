@@ -100,12 +100,26 @@ def clear_override() -> None:
         log.info("Override DSN rimosso. L'app userà nuovamente .env::DATABASE_URL al prossimo boot.")
 
 
+def _running_under_pytest() -> bool:
+    import sys
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
 def apply_override() -> None:
     """All'avvio: se esiste un override, sovrascrive `DATABASE_URL` in `os.environ`.
 
     Chiamato da `app/config.py` DOPO `load_dotenv`, in modo che `Settings()` veda
     già il valore overridato quando istanziato.
+
+    **Mai sotto pytest.** L'import di `app` (e quindi di `config`) avviene a OGNI
+    test; se qui riapplicassimo l'override /dbconfig (potenzialmente Neon prod)
+    DOPO il monkeypatch del conftest, una `connect()` successiva potrebbe finire
+    su Neon e il `DROP SCHEMA` del fixture lo svuoterebbe (bug "Neon vuoto ogni
+    tanto"). Sotto pytest l'unica fonte di DATABASE_URL è il monkeypatch del
+    conftest (DB di test locale). Difesa ridondante con `db._assert_dsn_safe_under_pytest`.
     """
+    if _running_under_pytest():
+        return
     data = read_override()
     if data and data.get("database_url"):
         os.environ["DATABASE_URL"] = data["database_url"]

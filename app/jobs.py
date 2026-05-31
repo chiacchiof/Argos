@@ -428,6 +428,10 @@ async def _run_job(job_id: int, task_id: int) -> None:
         elif mode == "responder":
             from .agent.runner_responder import run_agent as run_r
             await run_r(task, job_id)
+        elif mode == "portal_fill":
+            from .agent.runner_portal_fill import run_agent as run_pf
+            # Apre Chromium persistent (sessione loggata) → proactor thread su Windows.
+            await _run_in_proactor_thread(lambda: run_pf(task, job_id), job_id)
         else:
             # run_react può fallback a Playwright via fetch_url quando il
             # contenuto HTTP è scarso → serve ProactorEventLoop su Windows.

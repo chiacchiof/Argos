@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Email">
+  <rect width="48" height="48" rx="11" fill="#fff"/>
+  <path fill="#4285F4" d="M13.5 34.5h-3a1.5 1.5 0 0 1-1.5-1.5V17.7l4.5 3.4v13.4z"/>
+  <path fill="#34A853" d="M34.5 34.5h3a1.5 1.5 0 0 0 1.5-1.5V17.7l-4.5 3.4v13.4z"/>
+  <path fill="#EA4335" d="M13.5 21.1 24 29l10.5-7.9V15L24 22.9 13.5 15v6.1z"/>
+  <path fill="#C5221F" d="M9 15.5v2.2l4.5 3.4V15l-2.2-1.65A1.5 1.5 0 0 0 9 15.5z"/>
+  <path fill="#FBBC04" d="M39 15.5v2.2l-4.5 3.4V15l2.2-1.65A1.5 1.5 0 0 1 39 15.5z"/>
+</svg>

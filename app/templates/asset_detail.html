@@ -36,6 +36,21 @@
   <div class="flash-ok">{{ request.query_params.get('flash') }}</div>
   {% endif %}
 
+  {% if deeplinks %}
+  <div class="panel-card" style="margin-bottom:16px;">
+    <h3 style="margin:0 0 4px;">Contatta</h3>
+    <p class="muted" style="margin:0 0 12px;">Apri una conversazione con questo contatto direttamente nel canale giusto.</p>
+    <div class="deeplink-row">
+      {% for d in deeplinks %}
+      <a class="deeplink-btn" href="{{ d.url }}" target="_blank" rel="noopener noreferrer">
+        {% if d.logo %}<img src="/static/brand/logos/{{ d.logo }}?v={{ static_asset_mtime('brand/logos/' ~ d.logo) }}" alt="{{ d.label }}">{% endif %}
+        <span>{{ d.label }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   <details open class="collapsible-section">
     <summary>📋 Metadata</summary>
     <dl class="kv" style="margin:0.6rem 0">

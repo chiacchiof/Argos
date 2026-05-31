@@ -22,6 +22,7 @@ from .routes import fascicoli as fascicoli_routes
 from .routes import fascicoli_sheets as fascicoli_sheets_routes
 from .routes import fascicoli_sheets_ws as fascicoli_sheets_ws_routes
 from .routes import operator as operator_routes
+from .routes import tools as tools_routes
 from .routes import import_csv as import_csv_routes
 from .routes import inbox as inbox_routes
 from .routes import jobs as jobs_routes
@@ -235,6 +236,7 @@ app.include_router(fascicoli_routes.router)
 app.include_router(fascicoli_sheets_routes.router)
 app.include_router(fascicoli_sheets_ws_routes.ws_router)
 app.include_router(operator_routes.router)
+app.include_router(tools_routes.router)
 app.include_router(update_routes.router)
 
 

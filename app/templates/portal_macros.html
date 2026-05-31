@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Compilazione portali — Strumenti{% endblock %}
+{% block content %}
+<div class="page-wrap">
+
+  <div class="section-header">
+    <div>
+      <h2>Compilazione portali</h2>
+      <p class="muted">
+        Una <strong>macro</strong> compila un form su un portale web partendo dai dati di un
+        <a href="/sheets">foglio collaborativo</a>, una riga alla volta. Fai login una volta
+        (la sessione resta salvata), registra i campi del form, e lancia la compilazione.
+      </p>
+    </div>
+    <div>
+      <a href="/strumenti/portal-macros/new" class="btn-primary">+ Nuova macro</a>
+    </div>
+  </div>
+
+  {% if flash %}<div class="flash-ok">✓ {{ flash | replace('+', ' ') }}</div>{% endif %}
+  {% if error %}<div class="flash-error">⚠ {{ error | replace('+', ' ') }}</div>{% endif %}
+
+  {% if macros %}
+  <table class="data" style="margin-top:1.2rem">
+    <thead>
+      <tr><th>#</th><th>Nome</th><th>Portale</th><th>Campi</th><th>Auto-submit</th><th>Stato</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for m in macros %}
+      {% set fields = m.fields_json | safe_loads if m.fields_json else [] %}
+      {% set rec = recorder_status.get(m.id) or {} %}
+      <tr>
+        <td>{{ m.id }}</td>
+        <td><strong>{{ m.name }}</strong></td>
+        <td><small class="muted">{{ m.portal_url or '—' }}</small></td>
+        <td>{{ fields | length }}</td>
+        <td>{% if m.auto_submit %}<span class="status status-qualified">ON</span>{% else %}<span class="status">OFF</span>{% endif %}</td>
+        <td>
+          {% if rec.active %}<span class="status status-running">{{ rec.mode }} attivo</span>
+          {% elif m.login_session_key %}<span class="status status-qualified">sessione salvata</span>
+          {% else %}<span class="status">no login</span>{% endif %}
+        </td>
+        <td class="row-actions">
+          <a href="/strumenti/portal-macros/{{ m.id }}/edit" class="link-action">Apri</a>
+          <form method="post" action="/strumenti/portal-macros/{{ m.id }}/delete" style="display:inline"
+                onsubmit="return confirm('Eliminare la macro «{{ m.name }}»?')">
+            <button type="submit" class="link-action danger">Elimina</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-top:1.2rem">
+    Nessuna macro. <a href="/strumenti/portal-macros/new">Creane una →</a>
+  </p>
+  {% endif %}
+
+</div>
+{% endblock %}

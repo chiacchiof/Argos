@@ -1,0 +1,35 @@
+{#
+  Shared launcher grid for the messaging/social tool suite.
+  Expects `suite` in context: a list of channel dicts from app.messaging_suite.build_suite().
+  Uses <img> colored logos only (NO sprite <use> refs) so it renders identically under
+  base.html (architect) and operator_base.html (operator), which have different sprites.
+#}
+{% if suite %}
+<div class="suite-grid">
+  {% for ch in suite %}
+  <div class="suite-tile {% if ch.connected %}is-connected{% elif ch.launch_only %}is-launch{% else %}is-available{% endif %}">
+    <a class="suite-tile-main" href="{{ ch.launch_url }}" target="_blank" rel="noopener noreferrer" title="{{ ch.launch_label }}">
+      <span class="suite-tile-logo">
+        <img src="/static/brand/logos/{{ ch.logo }}?v={{ static_asset_mtime('brand/logos/' ~ ch.logo) }}" alt="{{ ch.label }}" width="40" height="40" loading="lazy">
+      </span>
+      <span class="suite-tile-body">
+        <span class="suite-tile-name">{{ ch.label }}</span>
+        <span class="suite-tile-status">
+          {% if ch.connected %}
+            <span class="suite-dot suite-dot-on"></span>{{ ch.n_accounts }} account collegat{{ 'i' if ch.n_accounts != 1 else 'o' }}
+          {% elif ch.launch_only %}
+            <span class="suite-dot suite-dot-neutral"></span>Apri al volo
+          {% else %}
+            <span class="suite-dot suite-dot-off"></span>Non collegato
+          {% endif %}
+        </span>
+      </span>
+      <svg class="suite-tile-ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg>
+    </a>
+    {% if ch.manage_url %}
+    <a class="suite-tile-cfg" href="{{ ch.manage_url }}">{% if ch.connected %}Gestisci account{% else %}Configura →{% endif %}</a>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+{% block title %}{% if macro %}Modifica macro{% else %}Nuova macro{% endif %} — Compilazione portali{% endblock %}
+{% block content %}
+<div class="page-wrap" style="max-width:920px">
+
+  <p><a href="/strumenti/portal-macros">← Compilazione portali</a></p>
+
+  {% if flash %}<div class="flash-ok">✓ {{ flash | replace('+', ' ') }}</div>{% endif %}
+  {% if error %}<div class="flash-error">⚠ {{ error | replace('+', ' ') }}</div>{% endif %}
+
+  <h2>{% if macro %}Macro #{{ macro.id }} — {{ macro.name }}{% else %}Nuova macro{% endif %}</h2>
+
+  {% set fields = (macro.fields_json | safe_loads) if macro and macro.fields_json else [] %}
+
+  {# ---- Dati macro ------------------------------------------------------ #}
+  <form method="post"
+        action="{% if macro %}/strumenti/portal-macros/{{ macro.id }}/edit{% else %}/strumenti/portal-macros{% endif %}"
+        class="settings-form">
+
+    <label>Nome <span class="hint">(es. "Iscrizione fornitori portale acquisti")</span>
+      <input name="name" required maxlength="200" value="{{ macro.name if macro else '' }}"
+             placeholder="es. Iscrizione fornitori">
+    </label>
+
+    <label>URL del portale <span class="hint">(la pagina col form da compilare)</span>
+      <input name="portal_url" type="url" value="{{ macro.portal_url if macro else '' }}"
+             placeholder="https://portale.example/nuovo">
+    </label>
+
+    <label>Selettore del bottone «Invia» <span class="hint">(opzionale, serve solo per l'auto-submit)</span>
+      <input name="submit_selector" value="{{ macro.submit_selector or '' if macro else '' }}"
+             placeholder="#salva  oppure  button[type=submit]">
+    </label>
+
+    <label class="checkbox-row">
+      <input type="checkbox" name="auto_submit" value="1" {% if macro and macro.auto_submit %}checked{% endif %}>
+      Auto-submit (invia il form per ogni riga)
+      <span class="hint">Se attivo, ogni esecuzione di questa macro invia il form e prosegue su tutte le righe. Se spento (default), compila solo la prima riga e si ferma per la revisione manuale. Puoi anche attivarlo al volo nel riquadro «Esegui».</span>
+    </label>
+
+    {# ---- Pannello a fasi: step registrati raggruppati per fase --------- #}
+    <div class="mapping-panel" style="margin:1rem 0">
+      <strong>Sequenza della macro (per fase)</strong>
+      <p class="hint" style="margin:.2rem 0 .6rem">
+        Gli step registrati dal recorder, raggruppati nelle 4 fasi. Per i campi da
+        compilare scegli la colonna del foglio (o «valore fisso»). I click di
+        navigazione e l'invio si eseguono così come sono.
+      </p>
+
+      <label style="max-width:420px">Foglio di riferimento <span class="hint">(per le colonne)</span>
+        <select id="ref-sheet">
+          <option value="">— scegli un foglio —</option>
+          {% for s in (sheets or []) %}
+          <option value="{{ s.id }}">{{ s.title }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <div id="phases-container" style="margin-top:.7rem"><!-- popolato dal JS --></div>
+      <p class="muted small" id="mapping-empty" style="display:none">
+        Nessuno step registrato. Usa <strong>⏺ Avvia recorder</strong> qui sotto: scegli la
+        fase nella barra in alto e clicca i campi / i link da registrare.
+      </p>
+    </div>
+
+    {# JSON degli step: nascosto, gestito dal pannello. Resta come storage. #}
+    <input type="hidden" name="fields_json" id="fields-json" value="{{ fields | tojson }}">
+
+    <details style="margin:.4rem 0">
+      <summary class="muted small">JSON avanzato (modifica manuale)</summary>
+      <textarea id="fields-json-raw" rows="8" spellcheck="false"
+                style="width:100%;font-family:var(--mono,monospace);font-size:.8rem">{{ fields | tojson(indent=2) }}</textarea>
+      <button type="button" class="btn-secondary" id="apply-raw-json" style="margin-top:.3rem">Applica JSON</button>
+    </details>
+
+    <div class="actions">
+      <button type="submit" class="btn-primary">Salva macro</button>
+      <a href="/strumenti/portal-macros" class="link-cancel">Annulla</a>
+    </div>
+  </form>
+
+  {# ---- JS del pannello a fasi ----------------------------------------- #}
+  <script>
+  (function () {
+    {% if macro %}
+    const macroId = {{ macro.id }};
+    let steps = {{ fields | tojson }};
+    let columns = [];
+
+    const PHASES = [
+      ['warmup',   '1 · Avvio (warmup)',  'azioni una tantum per arrivare al form (login, menu, link)'],
+      ['activity', '2 · Compilazione',    'compila i campi della riga + invia — eseguita per OGNI riga'],
+      ['return',   '3 · Ritorno',         'azioni per tornare al form per la riga successiva (es. «Nuovo»)'],
+      ['closing',  '4 · Chiusura',        'azioni finali una tantum (logout, conferma)'],
+    ];
+
+    const hidden = document.getElementById('fields-json');
+    const raw = document.getElementById('fields-json-raw');
+    const container = document.getElementById('phases-container');
+    const emptyMsg = document.getElementById('mapping-empty');
+    const refSheet = document.getElementById('ref-sheet');
+
+    const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    const phaseOf = s => (PHASES.some(p => p[0] === s.phase) ? s.phase : 'activity');
+
+    function syncHidden() {
+      hidden.value = JSON.stringify(steps);
+      if (raw) raw.value = JSON.stringify(steps, null, 2);
+    }
+
+    function colOptions(selected) {
+      let html = '<option value="">— nessuna —</option>';
+      for (const c of columns) {
+        html += `<option value="${esc(c)}"${c === selected ? ' selected' : ''}>${esc(c)}</option>`;
+      }
+      return html;
+    }
+
+    function moveStep(idx, dir) {
+      // Sposta lo step su/giù DENTRO la sua fase (scambia con il vicino stessa fase).
+      const ph = phaseOf(steps[idx]);
+      let j = idx + dir;
+      while (j >= 0 && j < steps.length && phaseOf(steps[j]) !== ph) j += dir;
+      if (j < 0 || j >= steps.length) return;
+      const t = steps[idx]; steps[idx] = steps[j]; steps[j] = t;
+      syncHidden(); render();
+    }
+
+    function render() {
+      container.innerHTML = '';
+      emptyMsg.style.display = steps.length ? 'none' : 'block';
+
+      for (const [key, title, desc] of PHASES) {
+        const idxs = steps.map((s, i) => [s, i]).filter(([s]) => phaseOf(s) === key).map(([, i]) => i);
+        const sec = document.createElement('div');
+        sec.style.cssText = 'margin:.5rem 0;border:1px solid var(--border);border-radius:6px;padding:.5rem .7rem';
+        let html = `<div style="font-weight:600">${title} <span class="hint" style="font-weight:400">— ${desc}</span></div>`;
+        if (!idxs.length) {
+          html += `<p class="muted small" style="margin:.3rem 0 0">nessuno step in questa fase</p>`;
+        } else {
+          html += `<table class="data" style="margin-top:.4rem"><tbody>`;
+          idxs.forEach((i, pos) => {
+            const s = steps[i];
+            const act = s.action || 'fill';
+            const label = esc(s.semantic_label || s.selector || '(step)');
+            let middle;
+            if (act === 'fill') {
+              const isConst = s.source === 'const';
+              middle =
+                `<select data-idx="${i}" class="col-select">${colOptions(s.column_name)}</select>` +
+                ` <label class="hint" style="white-space:nowrap"><input type="checkbox" data-const="${i}" ${isConst?'checked':''}> valore fisso</label>` +
+                (isConst ? ` <input type="text" data-constval="${i}" value="${esc(s.const_value)}" placeholder="valore" style="width:130px">` : '');
+            } else {
+              const tag = act === 'submit' ? '📨 invia' : '🔗 click';
+              middle = `<span class="status">${tag}</span>`;
+            }
+            html +=
+              `<tr><td style="width:42%"><strong>${label}</strong><br><small class="muted">${esc(s.selector)}</small></td>` +
+              `<td>${middle}</td>` +
+              `<td style="white-space:nowrap;text-align:right">` +
+                `<button type="button" class="link-action" data-up="${i}" ${pos===0?'disabled':''}>↑</button> ` +
+                `<button type="button" class="link-action" data-down="${i}" ${pos===idxs.length-1?'disabled':''}>↓</button> ` +
+                `<button type="button" class="link-action danger" data-del="${i}">rimuovi</button></td></tr>`;
+          });
+          html += `</tbody></table>`;
+        }
+        sec.innerHTML = html;
+        container.appendChild(sec);
+      }
+
+      // wiring
+      container.querySelectorAll('.col-select').forEach(sel => sel.addEventListener('change', e => {
+        const s = steps[+e.target.dataset.idx]; s.column_name = e.target.value; s.source = 'column'; syncHidden();
+      }));
+      container.querySelectorAll('[data-const]').forEach(cb => cb.addEventListener('change', e => {
+        steps[+e.target.dataset.const].source = e.target.checked ? 'const' : 'column'; syncHidden(); render();
+      }));
+      container.querySelectorAll('[data-constval]').forEach(inp => inp.addEventListener('input', e => {
+        steps[+e.target.dataset.constval].const_value = e.target.value; syncHidden();
+      }));
+      container.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', e => {
+        steps.splice(+e.target.dataset.del, 1); syncHidden(); render();
+      }));
+      container.querySelectorAll('[data-up]').forEach(b => b.addEventListener('click', e => moveStep(+e.target.dataset.up, -1)));
+      container.querySelectorAll('[data-down]').forEach(b => b.addEventListener('click', e => moveStep(+e.target.dataset.down, +1)));
+      syncHidden();
+    }
+
+    async function loadColumns(sheetId) {
+      if (!sheetId) { columns = []; render(); return; }
+      try {
+        const r = await fetch(`/strumenti/portal-macros/${macroId}/columns?sheet_id=${sheetId}`);
+        columns = (await r.json()).columns || [];
+      } catch (_) { columns = []; }
+      render();
+    }
+
+    refSheet.addEventListener('change', e => loadColumns(e.target.value));
+    if (document.getElementById('apply-raw-json')) {
+      document.getElementById('apply-raw-json').addEventListener('click', () => {
+        try { steps = JSON.parse(raw.value) || []; render(); } catch (_) { alert('JSON non valido'); }
+      });
+    }
+
+    if (refSheet.options.length > 1) { refSheet.selectedIndex = 1; loadColumns(refSheet.value); }
+    else { render(); }
+    {% endif %}
+  })();
+  </script>
+
+  {% if macro %}
+  {# ---- Login + recorder ------------------------------------------------ #}
+  <hr style="margin:1.6rem 0">
+  <h3>Sessione e recorder</h3>
+  {% set rec = recorder or {} %}
+  {% if rec.active %}
+    <div class="flash-ok">🟢 Sessione <strong>{{ rec.mode }}</strong> attiva (finestra Chromium aperta sul desktop).</div>
+    <form method="post" action="/strumenti/portal-macros/{{ macro.id }}/record/stop" style="display:inline">
+      <button type="submit" class="btn-secondary">Chiudi sessione</button>
+    </form>
+  {% else %}
+    <p class="muted small">
+      1) <strong>Login</strong>: apre il portale, fai login a mano (anche 2FA), poi chiudi la finestra — la sessione resta salvata, niente password nel DB.
+      2) <strong>Recorder</strong>: riapre il portale con una barra delle fasi in alto. Scegli la fase
+      (Avvio / Compilazione / Ritorno / Chiusura) e clicca i campi e i link da registrare in quella fase.
+      Poi chiudi la finestra e ricarica questa pagina: gli step appaiono nel pannello «Sequenza» qui sopra.
+    </p>
+    <div class="actions">
+      <form method="post" action="/strumenti/portal-macros/{{ macro.id }}/login" style="display:inline">
+        <button type="submit" class="btn-secondary">🔐 Login sul portale</button>
+      </form>
+      <form method="post" action="/strumenti/portal-macros/{{ macro.id }}/record" style="display:inline">
+        <button type="submit" class="btn-secondary">⏺ Avvia recorder</button>
+      </form>
+    </div>
+    <p class="muted small" style="margin-top:.5rem">
+      Dopo aver registrato i campi (e il bottone «Invia»), ricarica questa pagina:
+      i campi appaiono nel pannello «Campi del form → colonne» qui sopra, dove
+      <strong>assegni a ciascuno la colonna del foglio</strong> con un menu a tendina. Poi salva.
+    </p>
+  {% endif %}
+
+  {# ---- Esecuzione ------------------------------------------------------ #}
+  <hr style="margin:1.6rem 0">
+  <h3>Esegui</h3>
+  {% if not fields %}
+    <p class="muted">Registra o definisci almeno un campo prima di eseguire.</p>
+  {% else %}
+  <form method="post" action="/strumenti/portal-macros/{{ macro.id }}/run" class="settings-form">
+    <label>Foglio sorgente dati
+      <select name="portal_sheet_id" required>
+        <option value="">— scegli un foglio —</option>
+        {% for s in (sheets or []) %}
+        <option value="{{ s.id }}">{{ s.title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="checkbox-row">
+      <input type="checkbox" name="portal_auto_submit" value="1" {% if macro.auto_submit %}checked{% endif %}>
+      Auto-submit: invia e prosegui su tutte le righe
+      <span class="hint">Spento = compila solo la prima riga e si ferma. Eredita il default della macro qui sopra.</span>
+    </label>
+    <div class="actions">
+      <button type="submit" class="btn-primary">▶ Esegui compilazione</button>
+    </div>
+  </form>
+  {% endif %}
+  {% endif %}
+
+</div>
+{% endblock %}

@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from .. import db, export_csv, jobs
+from ..messaging_suite import build_suite
 from ..auth import require_operator
 from ..templates import templates
 
@@ -98,6 +99,7 @@ def _build_agenda_data(tenant_id: int | None = None) -> list[dict]:
             "SELECT id, name, agent_display_name, agent_icon, agent_category, "
             "  cron, agent_mode "
             "FROM tasks WHERE is_published_agent = TRUE "
+            "  AND COALESCE(disabled, 0) = 0 "
             "  AND cron IS NOT NULL AND cron != '' "
         )
         args: list = []
@@ -296,13 +298,14 @@ def _build_live_panel_data(tenant_id: int | None = None) -> tuple[list[dict], li
                 "FROM jobs j JOIN tasks t ON t.id = j.task_id "
                 "WHERE j.status IN ('done','error','cancelled') "
                 "  AND t.is_published_agent = TRUE "
+                "  AND COALESCE(t.disabled, 0) = 0 "
                 "  AND j.finished_at IS NOT NULL "
             )
             args2: list = []
             if tenant_id is not None:
                 sql_recent += "AND j.tenant_id = %s "
                 args2.append(tenant_id)
-            sql_recent += "ORDER BY j.finished_at DESC LIMIT 3"
+            sql_recent += "ORDER BY j.finished_at DESC LIMIT 6"
             for r in con.execute(sql_recent, tuple(args2)).fetchall():
                 duration = None
                 if r.get("started_at") and r.get("finished_at"):
@@ -328,41 +331,141 @@ def _build_live_panel_data(tenant_id: int | None = None) -> tuple[list[dict], li
     return live_jobs, recent_finished
 
 
+def _build_history_jobs(
+    tenant_id: int | None = None,
+    date_from: str = "",
+    date_to: str = "",
+    task_id_filter: int | None = None,
+    available_only: bool = True,
+    page: int = 1,
+    per_page: int = 25,
+) -> dict:
+    """Lista job completati con filtri opzionali data+task per la history modal."""
+    import re
+    from datetime import datetime, timezone as _tz
+
+    _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    date_from_s = date_from if _DATE_RE.match(date_from or "") else ""
+    date_to_s = date_to if _DATE_RE.match(date_to or "") else ""
+
+    jobs_list: list[dict] = []
+    total = 0
+    task_names: list[dict] = []
+    try:
+        where_parts = [
+            "j.status IN ('done','error','cancelled')",
+            "t.is_published_agent = TRUE",
+            "j.finished_at IS NOT NULL",
+        ]
+        if available_only:
+            where_parts.append("COALESCE(t.disabled, 0) = 0")
+        args: list = []
+        if tenant_id is not None:
+            where_parts.append("j.tenant_id = %s")
+            args.append(tenant_id)
+        if date_from_s:
+            where_parts.append("j.finished_at::date >= %s::date")
+            args.append(date_from_s)
+        if date_to_s:
+            where_parts.append("j.finished_at::date <= %s::date")
+            args.append(date_to_s)
+        if task_id_filter:
+            where_parts.append("j.task_id = %s")
+            args.append(task_id_filter)
+
+        from_clause = (
+            "FROM jobs j JOIN tasks t ON t.id = j.task_id WHERE "
+            + " AND ".join(where_parts)
+        )
+        with db.connect() as con:
+            count_row = con.execute(f"SELECT COUNT(*) {from_clause}", tuple(args)).fetchone()
+            total = int(count_row[0] if count_row else 0)
+
+            offset = max(0, (page - 1) * per_page)
+            rows = con.execute(
+                f"SELECT j.id AS job_id, j.task_id, j.status, j.started_at, j.finished_at,"
+                f"  t.agent_display_name, t.agent_icon, t.name "
+                f"{from_clause} "
+                f"ORDER BY j.finished_at DESC LIMIT %s OFFSET %s",
+                tuple(args) + (per_page, offset),
+            ).fetchall()
+            for r in rows:
+                dur = None
+                if r.get("started_at") and r.get("finished_at"):
+                    try:
+                        s = datetime.fromisoformat(str(r["started_at"]).replace("Z", "+00:00"))
+                        f = datetime.fromisoformat(str(r["finished_at"]).replace("Z", "+00:00"))
+                        dur = max(0, int((f - s).total_seconds()))
+                    except Exception:
+                        pass
+                jobs_list.append({
+                    "job_id": r["job_id"],
+                    "task_id": r["task_id"],
+                    "display_name": r.get("agent_display_name") or r.get("name") or f"Task #{r['task_id']}",
+                    "icon": r.get("agent_icon") or "op-i-cog",
+                    "status": r["status"],
+                    "finished_at_str": str(r.get("finished_at") or "")[:16].replace("T", " "),
+                    "duration_sec": dur,
+                })
+
+            # Dropdown task names (tenant-scoped, senza date filter)
+            t_args: list = []
+            t_sql = (
+                "SELECT DISTINCT j.task_id, t.agent_display_name, t.name, "
+                "  COALESCE(t.agent_display_name, t.name) AS sort_name "
+                "FROM jobs j JOIN tasks t ON t.id = j.task_id "
+                "WHERE j.status IN ('done','error','cancelled') "
+                "  AND t.is_published_agent = TRUE "
+            )
+            if available_only:
+                t_sql += "AND COALESCE(t.disabled, 0) = 0 "
+            if tenant_id is not None:
+                t_sql += "AND j.tenant_id = %s "
+                t_args.append(tenant_id)
+            t_sql += "ORDER BY sort_name"
+            for r in con.execute(t_sql, tuple(t_args)).fetchall():
+                task_names.append({
+                    "task_id": r["task_id"],
+                    "display_name": r.get("agent_display_name") or r.get("name") or f"Task #{r['task_id']}",
+                })
+    except Exception:
+        log.exception("_build_history_jobs failed")
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return {
+        "jobs": jobs_list,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "task_names": task_names,
+    }
+
+
 @router.get("/home", response_class=HTMLResponse)
 async def operator_home(
     request: Request,
     _partial: str = "",
-    tab: str = "live",
 ):
     """Dashboard operator: hero + agenti per categoria + pannello live.
 
     Con `?_partial=live` ritorna solo il pannello live (polling HTMX 3s).
     """
-    # Build dati pannello live (sempre, anche per render iniziale).
     tenant_id = db.current_tenant_id()
     live_jobs, recent_finished = _build_live_panel_data(tenant_id=tenant_id)
-    agenda = _build_agenda_data(tenant_id=tenant_id)
-    history = _build_history_data(tenant_id=tenant_id)
-
-    # Normalizza tab valida (default 'live')
-    active_tab = (tab or "live").strip().lower()
-    if active_tab not in ("live", "agenda", "history"):
-        active_tab = "live"
 
     if _partial == "live":
-        # Solo il pannello toolbox (polling 3s). Preserviamo la tab attiva
-        # passata dal client per evitare flickering al re-swap.
+        # Solo il pannello live (polling 3s) — agenda non serve qui.
         return templates.TemplateResponse(
             request,
             "operator/partials/live_panel.html",
             {
                 "live_jobs": live_jobs,
                 "recent_finished": recent_finished,
-                "agenda": agenda,
-                "history": history,
-                "active_tab": active_tab,
             },
         )
+
+    agenda = _build_agenda_data(tenant_id=tenant_id)
 
     agents = db.list_published_agents()
     grouped = _group_agents_by_category(agents)
@@ -380,11 +483,10 @@ async def operator_home(
             "live_jobs": live_jobs,
             "recent_finished": recent_finished,
             "agenda": agenda,
-            "history": history,
-            "active_tab": active_tab,
             "n_agents": len(agents),
             "chat_history": chat_history,
             "chat_capabilities": chat_capabilities,
+            "suite": build_suite(getattr(request.state, "current_user")) if getattr(request.state, "current_user", None) else [],
         },
     )
 
@@ -497,6 +599,41 @@ async def operator_schedule_save(
             status_code=303,
         )
     return RedirectResponse(url=f"/home?_msg={quote(msg)}", status_code=303)
+
+
+@router.get("/history-modal", response_class=HTMLResponse)
+async def operator_history_modal_view(
+    request: Request,
+    date_from: str = "",
+    date_to: str = "",
+    task_id: str = "",
+    availability: str = "available",
+    page: str = "1",
+):
+    """Modal storia completa: lista job completati con filtri data + task."""
+    tenant_id = db.current_tenant_id()
+    task_id_v = _parse_optional_int(task_id)
+    page_v = max(1, _parse_optional_int(page) or 1)
+    availability_v = "all" if (availability or "").strip().lower() == "all" else "available"
+    data = _build_history_jobs(
+        tenant_id=tenant_id,
+        date_from=date_from.strip(),
+        date_to=date_to.strip(),
+        task_id_filter=task_id_v,
+        available_only=(availability_v == "available"),
+        page=page_v,
+    )
+    return templates.TemplateResponse(
+        request,
+        "operator/partials/history_modal.html",
+        {
+            **data,
+            "filter_date_from": date_from.strip(),
+            "filter_date_to": date_to.strip(),
+            "filter_task_id": task_id_v or "",
+            "filter_availability": availability_v,
+        },
+    )
 
 
 @router.get("/agents/{kind}/{agent_id}/details", response_class=HTMLResponse)
@@ -1380,6 +1517,45 @@ async def operator_lead_optout(request: Request, asset_id: int):
     sep = "&" if "?" in referer else "?"
     if n > 0:
         return RedirectResponse(url=f"{referer}{sep}_msg=Lead+escluso+dall'outreach", status_code=303)
+    return RedirectResponse(url=f"{referer}{sep}_err=Lead+non+trovato", status_code=303)
+
+
+@router.post("/leads/{asset_id}/reset-outreach")
+async def operator_lead_reset_outreach(request: Request, asset_id: int):
+    """Riammette un lead escluso dall'outreach manualmente.
+
+    Reset conservativo: torna a `pending` e, se il consenso WhatsApp era stato
+    messo in opt-out insieme al lead, lo riporta a `cold`.
+    """
+    try:
+        tenant_id = db.current_tenant_id()
+        with db.connect() as con:
+            sql = (
+                "UPDATE assets SET outreach_status = 'pending', "
+                "  whatsapp_consent = CASE "
+                "    WHEN whatsapp_consent = 'optedout' THEN 'cold' "
+                "    ELSE whatsapp_consent "
+                "  END, "
+                "  updated_at = %s WHERE id = %s"
+            )
+            args: list = [db.now_iso(), int(asset_id)]
+            if tenant_id is not None:
+                sql += " AND tenant_id = %s"
+                args.append(tenant_id)
+            cur = con.execute(sql, tuple(args))
+            con.commit()
+            n = cur.rowcount or 0
+    except Exception as exc:
+        log.exception("operator_lead_reset_outreach failed for asset_id=%s", asset_id)
+        return RedirectResponse(
+            url=f"/leads?_err=Errore+riammissione:+{type(exc).__name__}",
+            status_code=303,
+        )
+
+    referer = request.headers.get("referer") or "/leads"
+    sep = "&" if "?" in referer else "?"
+    if n > 0:
+        return RedirectResponse(url=f"{referer}{sep}_msg=Lead+riammesso+all'outreach", status_code=303)
     return RedirectResponse(url=f"{referer}{sep}_err=Lead+non+trovato", status_code=303)
 
 

@@ -149,6 +149,13 @@
           ⊘ Opt-out
         </button>
       </form>
+      {% else %}
+      <form method="post" action="/leads/{{ asset.id }}/reset-outreach" style="display:inline"
+            onsubmit="return confirm('Riammettere questo lead negli outreach futuri?');">
+        <button type="submit" class="op-btn-secondary">
+          Riammetti
+        </button>
+      </form>
       {% endif %}
     </footer>
   </div>

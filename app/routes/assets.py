@@ -13,6 +13,7 @@ from .. import db
 from .. import export_csv
 from ..agent import asset_dedup
 from ..auth import require_architect_or_admin
+from ..deeplinks import build_contact_deeplinks
 from ..templates import templates
 from . import _tenant_filter as _tf
 
@@ -1294,6 +1295,7 @@ async def asset_detail(request: Request, asset_id: int):
             "raw_data": raw_data,
             "raw_pretty": raw_pretty,
             "linked_contacts": linked_contacts,
+            "deeplinks": build_contact_deeplinks(asset),
         },
     )
 

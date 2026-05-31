@@ -840,6 +840,10 @@ def _form_to_dict(
     # Modalità destroy del runner qualifier (auto = hard delete, confirm =
     # tag pending_destroy + conferma manuale a fine job standalone)
     qualifier_destroy_mode: str = "auto",
+    # Campi portal_fill (compilazione assistita portali, 2026-05-30)
+    portal_macro_id: str = "",
+    portal_sheet_id: str = "",
+    portal_auto_submit: str = "",
 ) -> dict:
     return {
         "name": name.strip(),
@@ -937,6 +941,10 @@ def _form_to_dict(
         "browser_llm_credential_id": (
             int(browser_llm_credential_id) if str(browser_llm_credential_id).strip().isdigit() else None
         ),
+        # portal_fill
+        "portal_macro_id": int(portal_macro_id) if str(portal_macro_id).strip().isdigit() else None,
+        "portal_sheet_id": int(portal_sheet_id) if str(portal_sheet_id).strip().isdigit() else None,
+        "portal_auto_submit": str(portal_auto_submit).strip() in ("1", "on", "true", "yes"),
     }
 
 
@@ -1142,9 +1150,22 @@ def _form_extra_context() -> dict:
         ensure_ascii=False,
     )
 
+    # portal_fill: macro registrate + fogli del tenant per i <select> del form.
+    try:
+        portal_macros_for_form = db.list_portal_macros()
+    except Exception:
+        portal_macros_for_form = []
+    try:
+        from ..fascicoli import sheets_db as _sdb
+        portal_sheets_for_form = _sdb.list_sheets(architect_view=True)
+    except Exception:
+        portal_sheets_for_form = []
+
     return {
         "extraction_templates": list_templates(),
         "default_schema": get_schema(None),
+        "portal_macros_for_form": portal_macros_for_form,
+        "portal_sheets_for_form": portal_sheets_for_form,
         "llm_providers": visible_providers,
         "env_key_status": _eks,
         "credentials_by_provider": credentials_by_provider,
@@ -1238,6 +1259,9 @@ async def create_task(
     speed_profile: str = Form("safe"),
     outreach_filter_source_task_id: str = Form(""),
     outreach_filter_source_follower_of: str = Form(""),
+    portal_macro_id: str = Form(""),
+    portal_sheet_id: str = Form(""),
+    portal_auto_submit: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -1307,6 +1331,9 @@ async def create_task(
         discovery_llm_credential_id=discovery_llm_credential_id,
         browser_llm_credential_id=browser_llm_credential_id,
         qualifier_destroy_mode=qualifier_destroy_mode,
+        portal_macro_id=portal_macro_id,
+        portal_sheet_id=portal_sheet_id,
+        portal_auto_submit=portal_auto_submit,
     )
     try:
         validated = TaskIn(**payload)
@@ -1406,6 +1433,9 @@ async def update_task(
     speed_profile: str = Form("safe"),
     outreach_filter_source_task_id: str = Form(""),
     outreach_filter_source_follower_of: str = Form(""),
+    portal_macro_id: str = Form(""),
+    portal_sheet_id: str = Form(""),
+    portal_auto_submit: str = Form(""),
 ):
     form = await request.form()
     target_contact_ids_raw = (
@@ -1500,6 +1530,9 @@ async def update_task(
         discovery_llm_credential_id=discovery_llm_credential_id,
         browser_llm_credential_id=browser_llm_credential_id,
         qualifier_destroy_mode=qualifier_destroy_mode,
+        portal_macro_id=portal_macro_id,
+        portal_sheet_id=portal_sheet_id,
+        portal_auto_submit=portal_auto_submit,
     )
     try:
         validated = TaskIn(**payload)

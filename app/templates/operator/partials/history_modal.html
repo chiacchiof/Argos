@@ -1,0 +1,145 @@
+{# Modal storia esecuzioni: lista job completati con filtri data + task.
+   Variabili: jobs, total, page, per_page, total_pages,
+              task_names, filter_date_from, filter_date_to, filter_task_id,
+              filter_availability #}
+<div class="op-modal-backdrop" onclick="if(event.target===this) opCloseModal()">
+  <div class="op-modal op-modal-history" role="dialog" aria-modal="true" aria-labelledby="op-history-modal-title">
+
+    <header class="op-modal-head">
+      <div class="op-modal-head-text">
+        <div class="op-modal-kind-row">
+          <span class="op-modal-category">{{ total }} esecuzion{{ 'e' if total == 1 else 'i' }}</span>
+        </div>
+        <h2 id="op-history-modal-title">Storia esecuzioni</h2>
+      </div>
+      <button type="button" class="op-modal-close" onclick="opCloseModal()" aria-label="Chiudi">
+        <svg><use href="#op-i-close"/></svg>
+      </button>
+    </header>
+
+    <div class="op-modal-body">
+
+      {# ── Filtri ── #}
+      <form class="op-history-filter"
+            hx-get="/history-modal"
+            hx-target="#op-modal-container"
+            hx-swap="innerHTML"
+            hx-push-url="false">
+        <div class="op-history-filter-row">
+          <label class="op-history-filter-field">
+            <span>Da</span>
+            <input type="date" name="date_from" value="{{ filter_date_from }}"
+                   class="op-history-filter-input">
+          </label>
+          <label class="op-history-filter-field">
+            <span>A</span>
+            <input type="date" name="date_to" value="{{ filter_date_to }}"
+                   class="op-history-filter-input">
+          </label>
+          <label class="op-history-filter-field op-history-filter-field-task">
+            <span>Task</span>
+            <select name="task_id" class="op-history-filter-input">
+              <option value="">Tutti</option>
+              {% for t in task_names %}
+              <option value="{{ t.task_id }}"
+                      {% if filter_task_id and filter_task_id|string == t.task_id|string %}selected{% endif %}>
+                {{ t.display_name }}
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="op-history-filter-field">
+            <span>Disponibilita</span>
+            <select name="availability" class="op-history-filter-input">
+              <option value="available" {% if filter_availability != 'all' %}selected{% endif %}>Solo disponibili</option>
+              <option value="all" {% if filter_availability == 'all' %}selected{% endif %}>Tutti gli storici</option>
+            </select>
+          </label>
+          <button type="submit" class="op-btn-primary op-history-filter-btn">Filtra</button>
+          {% if filter_date_from or filter_date_to or filter_task_id or filter_availability == 'all' %}
+          <a class="op-history-filter-clear"
+             hx-get="/history-modal"
+             hx-target="#op-modal-container"
+             hx-swap="innerHTML"
+             style="cursor:pointer">Azzera</a>
+          {% endif %}
+        </div>
+      </form>
+
+      {# ── Lista job ── #}
+      {% if jobs %}
+      <ul class="op-history-job-list">
+        {% for j in jobs %}
+        {% set icon_id = (j.icon if j.icon and j.icon.startswith('op-i-') else 'op-i-' + (j.icon or 'cog').replace('i-', '')) %}
+        <li class="op-history-job-item op-live-recent-{{ j.status }}">
+          <span class="op-live-recent-icon"><svg><use href="#{{ icon_id }}"/></svg></span>
+          <div class="op-live-recent-meta">
+            <div class="op-live-recent-name">{{ j.display_name }}</div>
+            <div class="op-live-recent-sub">
+              {% if j.status == 'done' %}<span class="op-live-recent-badge op-live-recent-badge-done">✓ Completato</span>
+              {% elif j.status == 'error' %}<span class="op-live-recent-badge op-live-recent-badge-error">✗ Errore</span>
+              {% elif j.status == 'cancelled' %}<span class="op-live-recent-badge op-live-recent-badge-cancel">⊘ Annullato</span>
+              {% endif %}
+              {% if j.duration_sec is not none %}<span class="op-live-recent-duration">{{ j.duration_sec // 60 }}m {{ j.duration_sec % 60 }}s</span>{% endif %}
+              {% if j.finished_at_str %}<span class="op-history-job-date">{{ j.finished_at_str }}</span>{% endif %}
+            </div>
+          </div>
+          <button type="button" class="op-btn-mini op-btn-mini-ghost"
+                  hx-get="/jobs/{{ j.job_id }}/operator-details"
+                  hx-target="#op-modal-container"
+                  hx-swap="innerHTML">Dettagli</button>
+        </li>
+        {% endfor %}
+      </ul>
+
+      {# ── Paginazione ── #}
+      {% if total_pages > 1 %}
+      <nav class="op-history-pagination" aria-label="Pagine storia">
+        {% if page > 1 %}
+        <button type="button" class="op-btn-mini"
+                hx-get="/history-modal?date_from={{ filter_date_from }}&date_to={{ filter_date_to }}&task_id={{ filter_task_id }}&availability={{ filter_availability }}&page={{ page - 1 }}"
+                hx-target="#op-modal-container"
+                hx-swap="innerHTML">← Prec</button>
+        {% endif %}
+        <span class="op-history-page-info">{{ page }} / {{ total_pages }}</span>
+        {% if page < total_pages %}
+        <button type="button" class="op-btn-mini"
+                hx-get="/history-modal?date_from={{ filter_date_from }}&date_to={{ filter_date_to }}&task_id={{ filter_task_id }}&availability={{ filter_availability }}&page={{ page + 1 }}"
+                hx-target="#op-modal-container"
+                hx-swap="innerHTML">Succ →</button>
+        {% endif %}
+      </nav>
+      {% endif %}
+
+      {% else %}
+      <div class="op-live-empty" style="padding: 32px 0;">
+        <div class="op-live-empty-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+        </div>
+        <p>Nessuna esecuzione trovata.</p>
+        {% if filter_date_from or filter_date_to or filter_task_id or filter_availability == 'all' %}
+        <small>Prova ad azzerare i filtri.</small>
+        {% endif %}
+      </div>
+      {% endif %}
+
+    </div>
+
+    <footer class="op-modal-foot">
+      <button type="button" class="op-btn-secondary" onclick="opCloseModal()">Chiudi</button>
+    </footer>
+  </div>
+</div>
+
+<script>
+  (function() {
+    window.opCloseModal = function() {
+      var c = document.getElementById('op-modal-container');
+      if (c) c.innerHTML = '';
+    };
+    function esc(e) { if (e.key === 'Escape') window.opCloseModal(); }
+    document.addEventListener('keydown', esc, { once: true });
+  })();
+</script>

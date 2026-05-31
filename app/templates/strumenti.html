@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Strumenti — Argos{% endblock %}
+{% block content %}
+<div class="page-wrap">
+
+  <div class="section-header">
+    <div>
+      <h2>Strumenti</h2>
+      <p class="muted">Apri i tuoi strumenti di messaggistica e social direttamente da Argos. Gli account che hai collegato per l'outreach sono evidenziati.</p>
+    </div>
+  </div>
+
+  {% include "partials/messaging_suite.html" %}
+
+  <div class="section-header" style="margin-top:1.8rem">
+    <div>
+      <h2>Compilazione portali</h2>
+      <p class="muted">Compila automaticamente i form di un portale web partendo da un foglio collaborativo. Registra i campi una volta, poi esegui su tutte le righe.</p>
+    </div>
+    <div>
+      <a href="/strumenti/portal-macros" class="btn-primary">Gestisci macro →</a>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

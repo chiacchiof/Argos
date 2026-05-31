@@ -397,6 +397,80 @@ def get_cells(sheet_id: int, *, tenant_id: Any = _UNSET) -> list[dict[str, Any]]
     return [_cell_to_wire(dict(r)) for r in rows]
 
 
+def rows_as_dicts(
+    sheet_id: int,
+    *,
+    tenant_id: Any = _UNSET,
+    header_row: int = 0,
+) -> list[dict[str, str]]:
+    """Ricostruisce un foglio (griglia sparsa di celle) come lista di righe-dict.
+
+    La `header_row` (default 0) fornisce i NOMI delle colonne: la cella
+    (header_row, col) e' il nome della colonna `col`. Ogni riga successiva
+    diventa `{nome_colonna: valore}`. Le colonne senza header e le righe
+    completamente vuote sono saltate. Tenant-scoped (delega a get_sheet/get_cells).
+
+    Usato dal runner portal_fill per mappare una riga del foglio ai campi di un
+    form. Ritorna [] se il foglio non esiste / non e' accessibile dal tenant.
+    """
+    sheet = get_sheet(sheet_id, tenant_id=tenant_id, architect_view=True)
+    if not sheet:
+        return []
+    cells = get_cells(sheet_id, tenant_id=tenant_id)
+    if not cells:
+        return []
+    # griglia sparsa: (row, col) -> testo (value, fallback formula)
+    grid: dict[tuple[int, int], str] = {}
+    max_row = 0
+    for c in cells:
+        r, col = int(c["row"]), int(c["col"])
+        txt = c.get("value")
+        if txt is None or txt == "":
+            txt = c.get("formula") or ""
+        grid[(r, col)] = str(txt)
+        if r > max_row:
+            max_row = r
+    # header: col_idx -> nome colonna (solo colonne con nome non vuoto)
+    headers: dict[int, str] = {}
+    n_cols = int(sheet.get("n_cols") or 0)
+    for col in range(n_cols):
+        name = (grid.get((header_row, col)) or "").strip()
+        if name:
+            headers[col] = name
+    if not headers:
+        return []
+    out: list[dict[str, str]] = []
+    for r in range(header_row + 1, max_row + 1):
+        row_dict = {name: grid.get((r, col), "") for col, name in headers.items()}
+        if any(v for v in row_dict.values()):
+            out.append(row_dict)
+    return out
+
+
+def sheet_column_names(
+    sheet_id: int,
+    *,
+    tenant_id: Any = _UNSET,
+    header_row: int = 0,
+) -> list[str]:
+    """Nomi colonna di un foglio = celle non vuote della riga header (default 0),
+    in ordine di colonna. Tenant-scoped. [] se foglio assente/senza intestazione.
+
+    Usato dal pannello di mapping campo->colonna della UI portal_fill."""
+    sheet = get_sheet(sheet_id, tenant_id=tenant_id, architect_view=True)
+    if not sheet:
+        return []
+    cells = get_cells(sheet_id, tenant_id=tenant_id)
+    by_col: dict[int, str] = {}
+    for c in cells:
+        if int(c["row"]) != header_row:
+            continue
+        name = (c.get("value") or c.get("formula") or "").strip()
+        if name:
+            by_col[int(c["col"])] = name
+    return [by_col[k] for k in sorted(by_col)]
+
+
 def _cell_to_wire(r: dict[str, Any]) -> dict[str, Any]:
     """Normalizza una riga cella nel formato wire del protocollo WS."""
     out: dict[str, Any] = {

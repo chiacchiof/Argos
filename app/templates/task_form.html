@@ -889,6 +889,59 @@
       </p>
     </details>
 
+    {# ============================================================
+       SEZIONE 8c: PORTAL_FILL — solo portal_fill (macro + foglio + submit)
+       ============================================================ #}
+    <details class="collapsible-section dyn-section" data-modes="portal_fill" open>
+      <summary>Compilazione portali — macro e foglio</summary>
+
+      {% if not portal_macros_for_form %}
+      <p class="muted small">
+        ⚠️ Nessuna macro registrata. Creane una da
+        <a href="/strumenti/portal-macros" target="_blank">Strumenti → Compilazione portali</a>
+        (definisce l'URL del portale, i campi del form e la sessione di login).
+      </p>
+      {% endif %}
+
+      <label>Macro di compilazione
+        <span class="hint">Mappa i campi del form del portale alle colonne del foglio. Gestiscile da <a href="/strumenti/portal-macros" target="_blank">Strumenti → Compilazione portali</a>.</span>
+        {% set sel_macro = p.get('portal_macro_id') %}
+        <select name="portal_macro_id">
+          <option value="">— scegli una macro —</option>
+          {% for m in (portal_macros_for_form or []) %}
+          <option value="{{ m.id }}" {% if sel_macro and sel_macro|string == m.id|string %}selected{% endif %}>
+            {{ m.name }} — {{ m.portal_url }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>Foglio sorgente dati
+        <span class="hint">Ogni riga del foglio = una compilazione. La riga 0 è l'intestazione (nomi colonna).</span>
+        {% set sel_sheet = p.get('portal_sheet_id') %}
+        <select name="portal_sheet_id">
+          <option value="">— scegli un foglio —</option>
+          {% for s in (portal_sheets_for_form or []) %}
+          <option value="{{ s.id }}" {% if sel_sheet and sel_sheet|string == s.id|string %}selected{% endif %}>
+            {{ s.title }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label class="checkbox-row">
+        <input type="checkbox" name="portal_auto_submit" value="1"
+               {% if p.get('portal_auto_submit') %}checked{% endif %}>
+        Auto-submit (invia il form per ogni riga)
+      </label>
+      <p class="muted small">
+        🛑 <strong>Default sicuro</strong>: a checkbox spenta il task compila e si
+        ferma <em>prima</em> dell'invio sulla prima riga, così rivedi a mano. Attivala
+        per inviare il form e proseguire su <strong>tutte</strong> le righe del foglio —
+        è l'unico interruttore (lo decidi sul task).
+      </p>
+    </details>
+
     </section>{# fine STEP 4 #}
 
     {# ============================================================
